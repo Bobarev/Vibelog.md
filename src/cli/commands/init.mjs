@@ -40,8 +40,10 @@ export async function runInit(args, flags, cwd) {
   // Проверяем, не инициализирован ли уже
   const existing = findBacklogDir(cwd);
   if (existing) {
-    printError(`Backlog уже инициализирован в ${existing}`);
-    printInfo('Если хотите переинициализировать, удалите папку backlog/ вручную.');
+    // Пишем в stdout (console.log), чтобы сообщение было видно при любом способе чтения вывода
+    console.log(`✗ Проект уже инициализирован: ${existing}`);
+    console.log('  Используйте --force для перезаписи или удалите папку backlog/ вручную.');
+    process.exitCode = 1;
     return;
   }
 
