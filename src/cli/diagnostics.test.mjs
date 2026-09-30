@@ -13,7 +13,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
@@ -21,6 +21,10 @@ import { dirname } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
 const testDir = join(__dirname, '..', '..', '.test-diagnostics');
+
+// Читаем версию динамически из package.json, чтобы тесты не ломались при бампе
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'));
+const VERSION = pkg.version;
 
 /**
  * Извлекает первый JSON-объект из строки.
@@ -73,7 +77,7 @@ describe('Диагностика — --version', () => {
   it('--version выводит имя, версию, пути, node', () => {
     const out = runCli(['--version']);
     assert.ok(out.includes('vibelog.md'), 'должно содержать имя');
-    assert.ok(out.includes('1.1.0'), 'должно содержать версию');
+    assert.ok(out.includes(VERSION), `должно содержать версию ${VERSION}`);
     assert.ok(out.includes('src:'), 'должно содержать src');
     assert.ok(out.includes('node:'), 'должно содержать node');
     assert.ok(out.includes('vibelog.mjs'), 'src должен указывать на bin/vibelog.mjs');
@@ -83,7 +87,7 @@ describe('Диагностика — --version', () => {
     const out = runCli(['--version', '--json']);
     const json = extractJson(out);
     assert.equal(json.name, 'vibelog.md');
-    assert.equal(json.version, '1.1.0');
+    assert.equal(json.version, VERSION);
     assert.ok(json.src.includes('vibelog.mjs'));
     assert.ok(json.node.startsWith('v'));
     assert.ok(json.engines.node >= '20');
@@ -91,7 +95,7 @@ describe('Диагностика — --version', () => {
 
   it('-v выводит только номер версии', () => {
     const out = runCli(['-v']).trim();
-    assert.equal(out, '1.1.0');
+    assert.equal(out, VERSION);
   });
 
   it('Версия читается из package.json (не 0.0.0)', () => {
@@ -136,22 +140,22 @@ describe('Диагностика — doctor', () => {
     assert.equal(mcpCheck.value, 11);
   });
 
-  it('doctor: exit code 0 при успехе (без backlog)', () => {
-    // В пустой директории backlog_dir будет false, но это опциональная проверка
-    // Обязательные: node, path, mcp_tools_count, mcp_tools_list
-    let exitCode = 0;
-    try {
-      execFileSync('node', [cliPath, 'doctor'], {
-        cwd: testDir, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
-      });
-    } catch (err) {
-      // SIGABRT от Catalina dyld — не ошибка команды
-      if (err.signal === 'SIGABRT') {
-        exitCode = 0;
-      } else {
-        exitCode = err.status;
-      }
-    }
-    assert.equal(exitCode, 0);
+  it('doctor: exit code 0 при успехе (с backlog)', () => {
+    // Инициализируем backlog, чтобы обязательная проверка backlog_dir прошла
+    runCli(['init', 'Test', '--prefix', 'tst']);
+    const out = runCli(['doctor', '--json']);
+    const json = extractJson(out);
+    assert.equal(json.ok, true, 'ok должен быть true при наличии backlog');
+  });
+
+  it('doctor: ok=false без backlog (обязательная проверка)', () => {
+    // Используем директорию ВНЕ проекта, чтобы findBacklogDir не поднялся вверх
+    const emptyDir = '/tmp/vibelog-doctor-empty';
+    rmSync(emptyDir, { recursive: true, force: true });
+    mkdirSync(emptyDir, { recursive: true });
+    const out = runCli(['doctor', '--json'], { cwd: emptyDir });
+    rmSync(emptyDir, { recursive: true, force: true });
+    const json = extractJson(out);
+    assert.equal(json.ok, false, 'ok должен быть false без backlog');
   });
 });
