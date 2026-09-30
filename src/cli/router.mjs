@@ -28,6 +28,7 @@ import { runMilestone } from './commands/milestone.mjs';
 import { runDoc } from './commands/doc.mjs';
 import { runConfig } from './commands/config.mjs';
 import { runDraft } from './commands/draft.mjs';
+import { runDecision } from './commands/decision.mjs';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -82,6 +83,8 @@ export async function route(args) {
       return runConfig(subcommand, positional, flags, cwd);
     case 'draft':
       return runDraft(subcommand, positional, flags, cwd);
+    case 'decision':
+      return runDecision(subcommand, positional, flags, cwd);
     default:
       console.error(`Ошибка: Неизвестная команда: ${command}`);
       showHelp();
@@ -108,6 +111,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('doc', colors.cyan)} create|list|...          Документы (spec/guide)
   ${colorize('config', colors.cyan)} get|set|list             Конфиг проекта
   ${colorize('draft', colors.cyan)} create|promote|...       Черновики задач
+  ${colorize('decision', colors.cyan)} create|list|...         Решения (ADR)
   ${colorize('doctor', colors.cyan)} [--json]                    Диагностика окружения
   ${colorize('--version', colors.cyan)}, ${colorize('-v', colors.cyan)}                 Версия и пути
   ${colorize('help', colors.cyan)}                                Эта справка
@@ -220,6 +224,16 @@ vibelog draft <subcommand> [опции]
   edit <id> [--title ...] [-d desc] [-l labels]
   promote <id>      — черновик → задача (черновик удаляется)
   archive <id>      — перенос в completed/`,
+
+    decision: `
+vibelog decision <subcommand> [опции]
+
+Подкоманды:
+  create <title> [-s status] [--context ...] [--decision ...] [--consequences ...]
+  list [--status S]
+  view <id>
+
+Статусы (free-form, дефолт proposed): proposed, accepted, rejected, superseded`,
   };
 
   const text = helpTexts[command];
