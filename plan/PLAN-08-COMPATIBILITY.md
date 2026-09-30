@@ -15,11 +15,11 @@
 
 ## Источники для сверки
 
-- `/Users/bob/Dev/ton/ai/Backlog.md/backlog/tasks/*.md` — реальные задачи
-- `/Users/bob/Dev/ton/ai/Backlog.md/backlog.config.yml` — конфиг
-- `/Users/bob/Dev/ton/ai/Backlog.md/CLI-INSTRUCTIONS.md` — CLI
-- `/Users/bob/Dev/ton/ai/Backlog.md/ADVANCED-CONFIG.md` — конфиг
-- `/Users/bob/Dev/ton/ai/Backlog.md/src/` — исходники
+- `../Backlog.md/backlog/tasks/*.md` — реальные задачи
+- `../Backlog.md/backlog.config.yml` — конфиг
+- `../Backlog.md/CLI-INSTRUCTIONS.md` — CLI
+- `../Backlog.md/ADVANCED-CONFIG.md` — конфиг
+- `../Backlog.md/src/` — исходники
 - `https://github.com/MrLesk/Backlog.md` — README, документация
 
 ## Тесты совместимости

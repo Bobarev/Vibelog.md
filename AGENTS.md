@@ -31,7 +31,7 @@
 **Порядок работы:**
 
 1. **Прочитай `plan/PLAN-00-OVERVIEW.md`** — общая архитектура и контекст.
-2. **Изучи оригинал Backlog.md** по пути `/Users/bob/Dev/ton/ai/Backlog.md` — исходники, формат задач, CLI-команды, MCP-инструменты, конфиг. Особое внимание: `src/`, `backlog/tasks/`, `backlog.config.yml`, `CLI-INSTRUCTIONS.md`, `ADVANCED-CONFIG.md`.
+2. **Изучи оригинал Backlog.md** по пути `../Backlog.md` — исходники, формат задач, CLI-команды, MCP-инструменты, конфиг. Особое внимание: `src/`, `backlog/tasks/`, `backlog.config.yml`, `CLI-INSTRUCTIONS.md`, `ADVANCED-CONFIG.md`.
 3. **Начни с `plan/PLAN-01-SCAFFOLD.md`** — структура проекта, `package.json`, pnpm.
 4. **Далее последовательно:** `PLAN-02`, `PLAN-03`, ..., `PLAN-08`.
 
@@ -74,7 +74,7 @@ node bin/vibelog.mjs task create "Реализовать PLAN-01: Scaffold" -d "
 
 ## Контекст: оригинал Backlog.md
 
-- Путь: `/Users/bob/Dev/ton/ai/Backlog.md`
+- Путь: `../Backlog.md`
 - Исходники на TypeScript/Bun — **читать можно**, запускать нельзя (Catalina).
 - Изучай `src/` для семантики, но реализуй на чистом Node.js.
 - Проверка совместимости — **статическая** (сравнение форматов файлов), а не через запуск оригинала (см. `plan/PLAN-08-COMPATIBILITY.md`).
@@ -82,4 +82,4 @@ node bin/vibelog.mjs task create "Реализовать PLAN-01: Scaffold" -d "
 ## Ссылки
 
 - Оригинал: https://github.com/MrLesk/Backlog.md
-- Локально: `/Users/bob/Dev/ton/ai/Backlog.md`
+- Локально: `../Backlog.md`

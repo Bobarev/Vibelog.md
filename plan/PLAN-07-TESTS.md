@@ -26,7 +26,7 @@ pnpm test
 ## Тесты совместимости
 
 Отдельный файл `src/core/compat.test.mjs`:
-- Читает реальные файлы из `/Users/bob/Dev/ton/ai/Backlog.md/backlog/tasks/`
+- Читает реальные файлы из `../Backlog.md/backlog/tasks/`
 - Проверяет, что все поля frontmatter распарсились
 - Проверяет, что AC и DoD распарсились
 - Проверяет, что сериализация обратно даёт тот же результат (round-trip)
