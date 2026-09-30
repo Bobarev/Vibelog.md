@@ -21,6 +21,8 @@ import {
 } from '../../core/store.mjs';
 import { loadConfig, normalizeTaskType } from '../../core/config.mjs';
 import { isReady } from '../../core/deps.mjs';
+import { findBacklogDir } from '../../core/paths.mjs';
+import { writeDraft } from '../../core/draft.mjs';
 
 /**
  * Выполняет команду task с подкомандой.
@@ -97,6 +99,36 @@ function taskCreate(positional, flags, cwd) {
   const plan = getFlag(flags, 'plan', '');
   const notes = getFlag(flags, 'notes', '');
 
+  // P2-флаги оригинала: project, parent, ordinal, final-summary, no-dod-defaults
+  const project = getFlag(flags, 'project', '');
+  const finalSummary = getFlag(flags, 'final-summary', '');
+
+  // --parent: валидация существования родительской задачи
+  const parent = getFlag(flags, 'parent', '');
+  if (parent && !getTask(cwd, parent)) {
+    printError(`Родительская задача ${parent} не найдена.`);
+    return;
+  }
+
+  // --ordinal: целое ≥ 0
+  let ordinal;
+  if (flags.ordinal !== undefined) {
+    ordinal = Number(getFlag(flags, 'ordinal'));
+    if (!Number.isInteger(ordinal) || ordinal < 0) {
+      printError(`--ordinal должен быть целым числом ≥ 0, получено: ${getFlag(flags, 'ordinal')}`);
+      return;
+    }
+  }
+
+  const noDodDefaults = flags['no-dod-defaults'] === true;
+
+  // --draft: черновик вместо задачи (ядро VL-13)
+  if (flags.draft) {
+    const draft = writeDraft(findBacklogDir(cwd), { title, description, labels }, loadConfig(cwd));
+    printSuccess(`Черновик ${draft.id} создан: ${draft.title}`);
+    return;
+  }
+
   const task = createTaskFile(cwd, {
     title,
     description,
@@ -112,6 +144,11 @@ function taskCreate(positional, flags, cwd) {
     definitionOfDone,
     implementationPlan: plan,
     implementationNotes: notes,
+    project,
+    parent_task_id: parent,
+    ordinal,
+    finalSummary,
+    noDodDefaults,
   });
 
   printSuccess(`Задача ${task.id} создана: ${task.title}`);
@@ -286,6 +323,24 @@ function taskEdit(positional, flags, cwd) {
       printError(err.message);
       return;
     }
+  }
+
+  // Финальные поля (P2 оригинала): final-summary / append / clear / ordinal
+  if (flags['final-summary']) updates.finalSummary = getFlag(flags, 'final-summary');
+  if (flags['append-final-summary']) {
+    const t = getTask(cwd, id);
+    if (t) {
+      updates.finalSummary = (t.finalSummary ? t.finalSummary + '\n' : '') + getFlag(flags, 'append-final-summary');
+    }
+  }
+  if (flags['clear-final-summary']) updates.finalSummary = '';
+  if (flags.ordinal !== undefined) {
+    const ord = Number(getFlag(flags, 'ordinal'));
+    if (!Number.isInteger(ord) || ord < 0) {
+      printError(`--ordinal должен быть целым числом ≥ 0, получено: ${getFlag(flags, 'ordinal')}`);
+      return;
+    }
+    updates.ordinal = ord;
   }
 
   // Assignee (полная замена)

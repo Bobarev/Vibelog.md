@@ -57,6 +57,9 @@ export function listTools() {
           milestone: { type: 'string', description: 'Веха (milestone)' },
           type: { type: 'string', description: 'Тип задачи (bug, feature, ...)' },
           due_date: { type: 'string', description: 'Срок (YYYY-MM-DD)' },
+          ordinal: { type: 'number', description: 'Порядковый номер для кастомной сортировки' },
+          project: { type: 'string', description: 'Проект' },
+          finalSummary: { type: 'string', maxLength: 20000, description: 'Итоговое резюме (для завершённых задач)' },
         },
         required: ['title'],
       },
@@ -409,6 +412,9 @@ function toolCreateTask(args, cwd) {
     milestone: args.milestone || '',
     type: args.type ? normalizeTaskType(loadConfig(cwd), args.type) : '',
     due_date: args.due_date || '',
+    ordinal: args.ordinal,
+    project: args.project || '',
+    finalSummary: args.finalSummary || '',
   });
   return `Задача ${task.id} создана: ${task.title}`;
 }

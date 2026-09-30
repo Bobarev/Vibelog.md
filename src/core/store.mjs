@@ -81,8 +81,19 @@ export function createTaskFile(cwd, input) {
   }
 
   const config = loadConfig(cwd);
+
+  // DoD-дефолты из конфига (как в оригинале): если критерии не переданы
+  // и не выставлен noDodDefaults, добавляем definition_of_done как unchecked
+  let effectiveInput = input;
+  if ((!input.definitionOfDone || input.definitionOfDone.length === 0) && input.noDodDefaults !== true) {
+    const defaults = config.definition_of_done || [];
+    if (defaults.length > 0) {
+      effectiveInput = { ...input, definitionOfDone: defaults.map(text => ({ text, checked: false })) };
+    }
+  }
+
   const id = input.id || nextTaskId(cwd, config.task_prefix);
-  const task = createTask({ ...input, id }, config);
+  const task = createTask({ ...effectiveInput, id }, config);
 
   const dir = tasksDir(backlogDir);
   const filename = taskFilename(task);
