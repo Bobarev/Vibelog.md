@@ -250,7 +250,7 @@ function checkSourcesMatch() {
  */
 function checkMcpToolsCount() {
   const tools = listTools();
-  const expected = 11;
+  const expected = 16;
   const ok = tools.length === expected;
   return {
     name: 'mcp_tools_count',
@@ -280,6 +280,11 @@ function checkMcpToolsList() {
     'backlog_update_dependencies',
     'backlog_update_status',
     'backlog_update_task',
+    'milestone_list',
+    'milestone_add',
+    'milestone_rename',
+    'milestone_remove',
+    'milestone_archive',
     'backlog_view_task',
   ].sort();
 

@@ -22,6 +22,11 @@ import {
 import { searchTasks } from '../core/search.mjs';
 import { isReady, blockedBy, validateDeps } from '../core/deps.mjs';
 import { loadConfig } from '../core/config.mjs';
+import {
+  writeMilestone, listMilestones, getMilestone,
+  renameMilestone, deleteMilestone, archiveMilestone,
+} from '../core/milestone.mjs';
+import { findBacklogDir } from '../core/paths.mjs';
 
 /**
  * Возвращает список всех MCP-инструментов.
@@ -184,6 +189,67 @@ export function listTools() {
         properties: {},
       },
     },
+    // === Milestones ===
+    {
+      name: 'milestone_list',
+      description: 'Список вех (milestones)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          include_archived: { type: 'boolean', description: 'Включить архивные вехи' },
+        },
+      },
+    },
+    {
+      name: 'milestone_add',
+      description: 'Создать веху (milestone)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Название вехи' },
+          description: { type: 'string', description: 'Описание' },
+          due_date: { type: 'string', description: 'Срок (YYYY-MM-DD)' },
+        },
+        required: ['name'],
+      },
+    },
+    {
+      name: 'milestone_rename',
+      description: 'Переименовать веху. Обновляет milestone в задачах.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          from: { type: 'string', description: 'Текущее название' },
+          to: { type: 'string', description: 'Новое название' },
+          update_tasks: { type: 'boolean', description: 'Обновить задачи (по умолчанию true)' },
+        },
+        required: ['from', 'to'],
+      },
+    },
+    {
+      name: 'milestone_remove',
+      description: 'Удалить веху. Обрабатывает связанные задачи.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Название вехи' },
+          task_handling: { type: 'string', enum: ['clear', 'keep', 'reassign'], description: 'Что делать с задачами (по умолчанию clear)' },
+          reassign_to: { type: 'string', description: 'Целевая веха для reassign' },
+        },
+        required: ['name'],
+      },
+    },
+    {
+      name: 'milestone_archive',
+      description: 'Архивировать веху (перенести в completed/)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Название вехи' },
+        },
+        required: ['name'],
+      },
+    },
   ];
 }
 
@@ -220,6 +286,16 @@ export async function handleToolCall(name, args, cwd) {
       return toolSearch(args, cwd);
     case 'backlog_ready':
       return toolReady(args, cwd);
+    case 'milestone_list':
+      return toolMilestoneList(args, cwd);
+    case 'milestone_add':
+      return toolMilestoneAdd(args, cwd);
+    case 'milestone_rename':
+      return toolMilestoneRename(args, cwd);
+    case 'milestone_remove':
+      return toolMilestoneRemove(args, cwd);
+    case 'milestone_archive':
+      return toolMilestoneArchive(args, cwd);
     default:
       throw new Error(`Неизвестный инструмент: ${name}`);
   }
@@ -576,4 +652,79 @@ function toolReady(args, cwd) {
 function formatNow() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+// ============================================================
+// Milestones (v1.3)
+// ============================================================
+
+function toolMilestoneList(args, cwd) {
+  const backlogDir = findBacklogDir(cwd);
+  if (!backlogDir) throw new Error('Backlog не найден.');
+  let milestones = listMilestones(backlogDir, { includeArchived: !!args.include_archived });
+  if (!args.include_archived) {
+    milestones = milestones.filter(m => m.status !== 'archived');
+  }
+  return JSON.stringify(milestones, null, 2);
+}
+
+function toolMilestoneAdd(args, cwd) {
+  const backlogDir = findBacklogDir(cwd);
+  if (!backlogDir) throw new Error('Backlog не найден.');
+  const milestone = writeMilestone(backlogDir, {
+    name: args.name,
+    description: args.description || '',
+    due_date: args.due_date || '',
+  });
+  return `Веха "${milestone.name}" создана.`;
+}
+
+function toolMilestoneRename(args, cwd) {
+  const backlogDir = findBacklogDir(cwd);
+  if (!backlogDir) throw new Error('Backlog не найден.');
+  const updated = renameMilestone(backlogDir, args.from, args.to);
+  if (!updated) throw new Error(`Веха "${args.from}" не найдена.`);
+
+  let updatedCount = 0;
+  if (args.update_tasks !== false) {
+    const tasks = listTasks(cwd);
+    for (const task of tasks) {
+      if (task.milestone && task.milestone.toLowerCase() === args.from.toLowerCase()) {
+        updateTaskFile(cwd, task.id, { milestone: args.to });
+        updatedCount++;
+      }
+    }
+  }
+  return `Веха переименована: ${args.from} → ${args.to}. Задач обновлено: ${updatedCount}`;
+}
+
+function toolMilestoneRemove(args, cwd) {
+  const backlogDir = findBacklogDir(cwd);
+  if (!backlogDir) throw new Error('Backlog не найден.');
+  const deleted = deleteMilestone(backlogDir, args.name);
+  if (!deleted) throw new Error(`Веха "${args.name}" не найдена.`);
+
+  const handling = args.task_handling || 'clear';
+  let updatedCount = 0;
+  const tasks = listTasks(cwd);
+  for (const task of tasks) {
+    if (task.milestone && task.milestone.toLowerCase() === args.name.toLowerCase()) {
+      if (handling === 'clear') {
+        updateTaskFile(cwd, task.id, { milestone: '' });
+        updatedCount++;
+      } else if (handling === 'reassign' && args.reassign_to) {
+        updateTaskFile(cwd, task.id, { milestone: args.reassign_to });
+        updatedCount++;
+      }
+    }
+  }
+  return `Веха "${args.name}" удалена. Задач обработано: ${updatedCount} (${handling})`;
+}
+
+function toolMilestoneArchive(args, cwd) {
+  const backlogDir = findBacklogDir(cwd);
+  if (!backlogDir) throw new Error('Backlog не найден.');
+  const archived = archiveMilestone(backlogDir, args.name);
+  if (!archived) throw new Error(`Веха "${args.name}" не найдена.`);
+  return `Веха "${args.name}" архивирована.`;
 }

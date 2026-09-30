@@ -86,14 +86,14 @@ describe('MCP-сервер', () => {
     assert.ok(responses[0].result.capabilities.tools);
   });
 
-  it('tools/list — возвращает 11 инструментов', async () => {
+  it('tools/list — возвращает 16 инструментов', async () => {
     const responses = await callMcp([
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
       { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
     ]);
     const listResp = responses.find(r => r.id === 2);
     assert.ok(listResp);
-    assert.equal(listResp.result.tools.length, 11);
+    assert.equal(listResp.result.tools.length, 16);
     const names = listResp.result.tools.map(t => t.name);
     // Существующие
     assert.ok(names.includes('backlog_create_task'));

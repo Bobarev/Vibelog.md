@@ -63,9 +63,9 @@ function runCli(...args) {
 // ============================================================
 
 describe('MCP v1.1 — список инструментов', () => {
-  it('Все 11 инструментов зарегистрированы', () => {
+  it('Все 16 инструментов зарегистрированы', () => {
     const tools = listTools();
-    assert.equal(tools.length, 11);
+    assert.equal(tools.length, 16);
     const names = tools.map(t => t.name);
     assert.ok(names.includes('backlog_create_task'));
     assert.ok(names.includes('backlog_list_tasks'));

@@ -24,6 +24,7 @@ import { runMcp } from './commands/mcp.mjs';
 import { runBrowser } from './commands/browser.mjs';
 import { runVersion } from './commands/version.mjs';
 import { runDoctor } from './commands/doctor.mjs';
+import { runMilestone } from './commands/milestone.mjs';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -68,6 +69,8 @@ export async function route(args) {
       return runBrowser(positional, flags, cwd);
     case 'doctor':
       return runDoctor(positional, flags, cwd);
+    case 'milestone':
+      return runMilestone(subcommand, positional, flags, cwd);
     default:
       console.error(`Ошибка: Неизвестная команда: ${command}`);
       showHelp();
@@ -90,6 +93,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('search', colors.cyan)} "query" [--json]            Поиск задач
   ${colorize('instructions', colors.cyan)} [topic]               Инструкции для агентов
   ${colorize('mcp', colors.cyan)} start                        MCP-сервер (JSON-RPC)
+  ${colorize('milestone', colors.cyan)} add|list|rename|...      Управление вехами
   ${colorize('doctor', colors.cyan)} [--json]                    Диагностика окружения
   ${colorize('--version', colors.cyan)}, ${colorize('-v', colors.cyan)}                 Версия и пути
   ${colorize('help', colors.cyan)}                                Эта справка
@@ -157,6 +161,16 @@ vibelog doctor [--json]
 Диагностика окружения:
   Проверяет Node.js, PATH, симлинки, MCP-инструменты, backlog/, конфиг.
   --json — структурированный результат`,
+
+    milestone: `
+vibelog milestone <subcommand> [опции]
+
+Подкоманды:
+  add <name> [-d desc] [--due-date YYYY-MM-DD]
+  list [--show-completed]
+  rename <from> <to> [--no-update-tasks]
+  remove <name> [--task-handling clear|keep|reassign] [--reassign-to <name>]
+  archive <name>`,
   };
 
   const text = helpTexts[command];

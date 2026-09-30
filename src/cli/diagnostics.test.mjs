@@ -132,12 +132,12 @@ describe('Диагностика — doctor', () => {
     assert.ok(names.includes('mcp_tools_list'), 'проверка списка MCP');
   });
 
-  it('doctor --json: MCP-инструменты — 11 штук', () => {
+  it('doctor --json: MCP-инструменты — 16 штук', () => {
     const out = runCli(['doctor', '--json']);
     const json = extractJson(out);
     const mcpCheck = json.checks.find(c => c.name === 'mcp_tools_count');
     assert.ok(mcpCheck);
-    assert.equal(mcpCheck.value, 11);
+    assert.equal(mcpCheck.value, 16);
   });
 
   it('doctor: exit code 0 при успехе (с backlog)', () => {
