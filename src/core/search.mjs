@@ -1,44 +1,76 @@
 /**
- * Поиск задач Vibelog.md по текстовому запросу.
+ * Поиск задач Vibelog.md: текстовый запрос + фильтры полей.
  *
- * Ищет по заголовку, описанию и меткам.
- * Поддерживает регистронезависимый substring-поиск.
+ * Текстовый substring-поиск (id/title/description/labels) и фильтры
+ * точного совпадения (status/type/priority/project) — case-insensitive,
+ * как в оригинале Backlog.md (task_search).
  */
 
 import { listTasks } from './store.mjs';
 
 /**
- * Ищет задачи по текстовому запросу.
+ * Ищет задачи по запросу и фильтрам.
  *
- * Проверяет совпадение запроса (без учёта регистра) с:
- * - заголовком задачи
- * - описанием
- * - метками (labels)
- * - ID задачи
+ * Фильтры комбинируются по AND. Все поля необязательны (как required: []
+ * в оригинальной схеме task_search): вызов без query, только с фильтрами, валиден.
  *
  * @param {string} cwd — текущая рабочая директория
- * @param {string} query — текстовый запрос
+ * @param {object|string} filters — {query, status, type, priority, project, modifiedFiles, limit}
+ *   или строка (= query, обратная совместимость со старой сигнатурой)
  * @returns {object[]} — массив совпавших задач
  */
-export function searchTasks(cwd, query) {
-  if (!query || query.trim() === '') return listTasks(cwd);
+export function searchTasks(cwd, filters = {}) {
+  // Обратная совместимость: строковый второй аргумент — это query
+  // (CLI search.mjs передаёт строку)
+  if (typeof filters === 'string') {
+    filters = { query: filters };
+  }
 
-  const q = query.toLowerCase().trim();
-  const allTasks = listTasks(cwd);
+  const { query, status, type, priority, project, modifiedFiles, limit } = filters;
+  let tasks = listTasks(cwd);
 
-  return allTasks.filter(task => {
-    // Поиск по ID
-    if (task.id && task.id.toLowerCase().includes(q)) return true;
+  // Текстовый запрос: substring по id/title/description/labels
+  if (query && query.trim() !== '') {
+    const q = query.toLowerCase().trim();
+    tasks = tasks.filter(task => {
+      if (task.id && task.id.toLowerCase().includes(q)) return true;
+      if (task.title && task.title.toLowerCase().includes(q)) return true;
+      if (task.description && task.description.toLowerCase().includes(q)) return true;
+      if (task.labels && task.labels.some(l => l.toLowerCase().includes(q))) return true;
+      return false;
+    });
+  }
 
-    // Поиск по заголовку
-    if (task.title && task.title.toLowerCase().includes(q)) return true;
+  // Фильтры точного совпадения (AND, case-insensitive)
+  if (status) {
+    tasks = tasks.filter(t => t.status && t.status.toLowerCase() === status.toLowerCase());
+  }
+  if (type) {
+    tasks = tasks.filter(t => t.type && t.type.toLowerCase() === type.toLowerCase());
+  }
+  if (priority) {
+    tasks = tasks.filter(t => t.priority && t.priority.toLowerCase() === priority.toLowerCase());
+  }
+  if (project) {
+    tasks = tasks.filter(t => t.project && t.project.toLowerCase() === project.toLowerCase());
+  }
 
-    // Поиск по описанию
-    if (task.description && task.description.toLowerCase().includes(q)) return true;
+  // modifiedFiles: подстрока по путям из t.modified_files (case-insensitive).
+  // Как в оригинале: задача проходит, если хотя бы один путь задачи
+  // содержит хотя бы один переданный фильтр.
+  if (Array.isArray(modifiedFiles) && modifiedFiles.length > 0) {
+    const needles = modifiedFiles.map(m => String(m).toLowerCase());
+    tasks = tasks.filter(t => {
+      const files = Array.isArray(t.modified_files)
+        ? t.modified_files
+        : (t.modified_files ? [t.modified_files] : []);
+      return files.some(f => needles.some(n => String(f).toLowerCase().includes(n)));
+    });
+  }
 
-    // Поиск по меткам
-    if (task.labels && task.labels.some(l => l.toLowerCase().includes(q))) return true;
+  if (limit && limit > 0) {
+    tasks = tasks.slice(0, limit);
+  }
 
-    return false;
-  });
+  return tasks;
 }

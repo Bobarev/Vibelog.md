@@ -228,11 +228,16 @@ describe('Совместимость: MCP-инструменты', () => {
     assert.ok('status' in list.inputSchema.properties);
   });
 
-  it('backlog_search имеет обязательный параметр query', () => {
+  it('backlog_search: фильтры оригинала task_search, query опционален', () => {
     const tools = listTools();
     const search = tools.find(t => t.name === 'backlog_search');
     assert.ok(search);
-    assert.ok(search.inputSchema.required.includes('query'));
+    const props = search.inputSchema.properties;
+    // Как в оригинале Backlog.md (task_search): required: []
+    for (const p of ['query', 'status', 'type', 'project', 'priority', 'modifiedFiles', 'limit']) {
+      assert.ok(p in props, `параметр ${p} отсутствует`);
+    }
+    assert.ok(!search.inputSchema.required || !search.inputSchema.required.includes('query'));
   });
 });
 

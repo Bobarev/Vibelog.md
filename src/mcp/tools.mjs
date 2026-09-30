@@ -175,13 +175,18 @@ export function listTools() {
     },
     {
       name: 'backlog_search',
-      description: 'Поиск задач по текстовому запросу',
+      description: 'Поиск задач с фильтрами (query, status, type, project, priority, modifiedFiles, limit)',
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Поисковый запрос' },
+          query: { type: 'string', maxLength: 200, description: 'Поисковый запрос (substring по id/title/description/labels)' },
+          status: { type: 'string', description: 'Фильтр по статусу' },
+          type: { type: 'string', description: 'Фильтр по типу (bug, feature, ...)' },
+          project: { type: 'string', description: 'Фильтр по проекту' },
+          priority: { type: 'string', description: 'Фильтр по приоритету' },
+          modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Фильтр по подстроке в modified_files задачи' },
+          limit: { type: 'number', minimum: 1, maximum: 100, description: 'Максимум результатов' },
         },
-        required: ['query'],
       },
     },
     {
@@ -624,12 +629,24 @@ function toolUpdateDependencies(args, cwd) {
  * @returns {string}
  */
 function toolSearch(args, cwd) {
-  const tasks = searchTasks(cwd, args.query);
+  const tasks = searchTasks(cwd, {
+    query: args.query,
+    status: args.status,
+    type: args.type,
+    project: args.project,
+    priority: args.priority,
+    modifiedFiles: args.modifiedFiles,
+    limit: args.limit,
+  });
   const simplified = tasks.map(t => ({
     id: t.id,
     title: t.title,
     status: t.status,
     priority: t.priority,
+    type: t.type,
+    project: t.project,
+    labels: t.labels,
+    milestone: t.milestone,
   }));
   return JSON.stringify(simplified, null, 2);
 }
