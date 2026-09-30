@@ -26,6 +26,7 @@ import { runVersion } from './commands/version.mjs';
 import { runDoctor } from './commands/doctor.mjs';
 import { runMilestone } from './commands/milestone.mjs';
 import { runDoc } from './commands/doc.mjs';
+import { runConfig } from './commands/config.mjs';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -76,6 +77,8 @@ export async function route(args) {
       return runMilestone(subcommand, positional, flags, cwd);
     case 'doc':
       return runDoc(subcommand, positional, flags, cwd);
+    case 'config':
+      return runConfig(subcommand, positional, flags, cwd);
     default:
       console.error(`Ошибка: Неизвестная команда: ${command}`);
       showHelp();
@@ -100,6 +103,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('mcp', colors.cyan)} start                        MCP-сервер (JSON-RPC)
   ${colorize('milestone', colors.cyan)} add|list|rename|...      Управление вехами
   ${colorize('doc', colors.cyan)} create|list|...          Документы (spec/guide)
+  ${colorize('config', colors.cyan)} get|set|list             Конфиг проекта
   ${colorize('doctor', colors.cyan)} [--json]                    Диагностика окружения
   ${colorize('--version', colors.cyan)}, ${colorize('-v', colors.cyan)}                 Версия и пути
   ${colorize('help', colors.cyan)}                                Эта справка
@@ -193,6 +197,14 @@ vibelog doc <subcommand> [опции]
   view <id>
   update <id> [--title ...] [--type ...] [--tags ...]
   search <query>`,
+
+    config: `
+vibelog config <subcommand> [опции]
+
+Подкоманды:
+  get <key>           Показать значение ключа
+  set <key> <value>   Изменить значение (массивы: JSON или через запятую)
+  list                Все ключи конфига`,
   };
 
   const text = helpTexts[command];
