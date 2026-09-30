@@ -134,10 +134,10 @@ vibelog init [name] [--prefix LB] [--skills[=qwen]] [--no-skills] [--no-mcp] [--
 vibelog task <subcommand> [опции]
 
 Подкоманды:
-  create "Title" [-d desc] [--ac ...] [--dod ...] [--priority ...] [--labels ...] [--deps ...] [--milestone ...] [--type ...]
+  create "Title" [-d desc] [--ac ...] [--dod ...] [--priority ...] [--labels ...] [--deps ...] [--milestone ...] [--type ...] [--plan ...] [--notes ...]
   list [-s status] [-l labels] [--type type] [--ready] [--sort priority|created|updated] [--json]
   view <id> [--json]
-  edit <id> [--title ...] [--status ...] [--type ...] [--ac ...] [--check-ac N] [--dod ...] [--check-dod N] [--comment ...] [--assignee ...] [--remove-label ...]
+  edit <id> [--title ...] [--status ...] [--type ...] [--ac ...] [--check-ac N] [--dod ...] [--check-dod N] [--comment ...] [--assignee ...] [--remove-label ...] [--plan ...] [--notes ...] [--append-notes ...]
   complete <id>
   archive <id>`,
 

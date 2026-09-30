@@ -93,6 +93,10 @@ function taskCreate(positional, flags, cwd) {
   const acceptanceCriteria = getFlagArray(flags, 'ac');
   const definitionOfDone = getFlagArray(flags, 'dod');
 
+  // План и заметки при создании (как в оригинале task create --plan/--notes)
+  const plan = getFlag(flags, 'plan', '');
+  const notes = getFlag(flags, 'notes', '');
+
   const task = createTaskFile(cwd, {
     title,
     description,
@@ -106,6 +110,8 @@ function taskCreate(positional, flags, cwd) {
     due_date: dueDate,
     acceptanceCriteria,
     definitionOfDone,
+    implementationPlan: plan,
+    implementationNotes: notes,
   });
 
   printSuccess(`Задача ${task.id} создана: ${task.title}`);
