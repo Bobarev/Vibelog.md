@@ -108,4 +108,9 @@ describe('VL-6 — init MCP-настройка', () => {
     assert.ok(out.includes('Не удалось разобрать'), `out: ${out}`);
     assert.ok(existsSync(join(testDir, 'backlog', 'config.yml')), 'backlog должен быть создан');
   });
+
+  it('init --help показывает --no-mcp', () => {
+    const out = runCli('init', '--help');
+    assert.ok(out.includes('--no-mcp'), `help должен содержать --no-mcp: ${out}`);
+  });
 });

@@ -117,7 +117,7 @@ ${colorize('Подробнее:', colors.dim)} vibelog <command> --help`);
 function showCommandHelp(command) {
   const helpTexts = {
     init: `
-vibelog init [name] [--prefix LB] [--skills[=qwen]] [--no-skills] [--force]
+vibelog init [name] [--prefix LB] [--skills[=qwen]] [--no-skills] [--no-mcp] [--force]
 
 Инициализирует backlog-директорию и конфиг.
   name        — имя проекта (по умолчанию "My Project")
@@ -125,6 +125,7 @@ vibelog init [name] [--prefix LB] [--skills[=qwen]] [--no-skills] [--force]
   --skills    — создать команды /vibelog:* для Qwen Code (.qwen/commands/)
   --skills=qwen — явно указать агента (claude пока не поддерживается)
   --no-skills — не создавать команды
+  --no-mcp    — не настраивать MCP-сервер (.qwen/settings.json)
   --force     — перезаписать существующие команды`,
 
     task: `
