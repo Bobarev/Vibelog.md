@@ -80,6 +80,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('browser', colors.cyan)} [--port N] [--no-open]      Веб-интерфейс
   ${colorize('search', colors.cyan)} "query" [--json]            Поиск задач
   ${colorize('instructions', colors.cyan)} [topic]               Инструкции для агентов
+  ${colorize('mcp', colors.cyan)} start                        MCP-сервер (JSON-RPC)
   ${colorize('help', colors.cyan)}                                Эта справка
 
 ${colorize('Примеры:', colors.bold)}
@@ -111,10 +112,10 @@ vibelog init [name] [--prefix LB]
 vibelog task <subcommand> [опции]
 
 Подкоманды:
-  create "Title" [-d desc] [--ac ...] [--priority ...] [--labels ...]
+  create "Title" [-d desc] [--ac ...] [--priority ...] [--labels ...] [--deps ...] [--milestone ...]
   list [-s status] [-l labels] [--json]
   view <id> [--json]
-  edit <id> [--title ...] [--status ...] [--ac ...] [--check-ac N]
+  edit <id> [--title ...] [--status ...] [--ac ...] [--check-ac N] [--dod ...]
   complete <id>
   archive <id>`,
 
