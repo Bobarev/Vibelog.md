@@ -21,6 +21,7 @@ import { runBoard } from './commands/board.mjs';
 import { runSearch } from './commands/search.mjs';
 import { runInstructions } from './commands/instructions.mjs';
 import { runMcp } from './commands/mcp.mjs';
+import { runBrowser } from './commands/browser.mjs';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -56,6 +57,8 @@ export async function route(args) {
       return runInstructions(positional, flags, cwd);
     case 'mcp':
       return runMcp(subcommand, positional, flags, cwd);
+    case 'browser':
+      return runBrowser(positional, flags, cwd);
     default:
       console.error(`Ошибка: Неизвестная команда: ${command}`);
       showHelp();
@@ -74,6 +77,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('init', colors.cyan)} [name] [--prefix LB]          Инициализировать backlog
   ${colorize('task', colors.cyan)} create|list|view|edit|...     Управление задачами
   ${colorize('board', colors.cyan)} [--export]                   Канбан-доска
+  ${colorize('browser', colors.cyan)} [--port N] [--no-open]      Веб-интерфейс
   ${colorize('search', colors.cyan)} "query" [--json]            Поиск задач
   ${colorize('instructions', colors.cyan)} [topic]               Инструкции для агентов
   ${colorize('help', colors.cyan)}                                Эта справка
