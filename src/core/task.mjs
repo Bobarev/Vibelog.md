@@ -312,10 +312,11 @@ function formatDateTime(date) {
  * @returns {string} — имя файла (например "back-100 - Add-web-server.md")
  */
 export function taskFilename(task) {
+  // Сохраняем буквы (включая кириллицу), цифры, пробелы и дефисы
   const slug = task.title
-    .replace(/[^a-zA-Z0-9\s-]/g, '') // убираем спецсимволы
+    .replace(/[^\p{L}\p{N}\s-]/gu, '') // убираем всё кроме букв, цифр, пробелов, дефисов
     .replace(/\s+/g, '-') // пробелы → дефисы
     .replace(/-+/g, '-') // множественные дефисы → один
     .replace(/^-|-$/g, ''); // убираем дефисы в начале/конце
-  return `${task.id} - ${slug}.md`;
+  return `${task.id} - ${slug || 'task'}.md`;
 }
