@@ -18,6 +18,16 @@ pnpm install
 pnpm link --global
 ```
 
+## Документация
+
+| Документ | Для чего |
+|---|---|
+| [Руководство пользователя](docs/user-guide.md) | Полный обзор: команды, флаги, форматы файлов, примеры |
+| [Best practices и производительность](docs/best-practices.md) | Workflow с Qwen Code, dogfooding, сценарии «было/стало» |
+| [CLI-справочник](docs/cli-reference.md) | Все команды, подкоманды и флаги |
+| [MCP-справочник](docs/mcp-reference.md) | 21 MCP-инструмент: параметры и примеры вызовов |
+| [MCP-подключение](MCP-SETUP.md) | Подключение Vibelog MCP к Qwen Code |
+
 ## Быстрый старт
 
 ```bash
@@ -127,7 +137,7 @@ Vibelog.md doctor
 ✓ path: /Users/bob/Library/pnpm/vibelog
 ✓ symlink: /Users/bob/Library/pnpm/vibelog (pnpm shim → .../bin/vibelog.mjs)
 ✓ sources_match: ok
-✓ mcp_tools_count: 11
+✓ mcp_tools_count: 21
 ✓ mcp_tools_list: ["backlog_add_comment", ...]
 ✓ backlog_dir: ./backlog
 ✓ config: {"project_name":"My Project","task_prefix":"LB"}
