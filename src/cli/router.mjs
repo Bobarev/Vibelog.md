@@ -27,6 +27,7 @@ import { runDoctor } from './commands/doctor.mjs';
 import { runMilestone } from './commands/milestone.mjs';
 import { runDoc } from './commands/doc.mjs';
 import { runConfig } from './commands/config.mjs';
+import { runDraft } from './commands/draft.mjs';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -79,6 +80,8 @@ export async function route(args) {
       return runDoc(subcommand, positional, flags, cwd);
     case 'config':
       return runConfig(subcommand, positional, flags, cwd);
+    case 'draft':
+      return runDraft(subcommand, positional, flags, cwd);
     default:
       console.error(`Ошибка: Неизвестная команда: ${command}`);
       showHelp();
@@ -104,6 +107,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('milestone', colors.cyan)} add|list|rename|...      Управление вехами
   ${colorize('doc', colors.cyan)} create|list|...          Документы (spec/guide)
   ${colorize('config', colors.cyan)} get|set|list             Конфиг проекта
+  ${colorize('draft', colors.cyan)} create|promote|...       Черновики задач
   ${colorize('doctor', colors.cyan)} [--json]                    Диагностика окружения
   ${colorize('--version', colors.cyan)}, ${colorize('-v', colors.cyan)}                 Версия и пути
   ${colorize('help', colors.cyan)}                                Эта справка
@@ -205,6 +209,17 @@ vibelog config <subcommand> [опции]
   get <key>           Показать значение ключа
   set <key> <value>   Изменить значение (массивы: JSON или через запятую)
   list                Все ключи конфига`,
+
+    draft: `
+vibelog draft <subcommand> [опции]
+
+Подкоманды:
+  create <title> [-d desc] [-l labels]
+  list
+  view <id>
+  edit <id> [--title ...] [-d desc] [-l labels]
+  promote <id>      — черновик → задача (черновик удаляется)
+  archive <id>      — перенос в completed/`,
   };
 
   const text = helpTexts[command];
