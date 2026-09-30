@@ -26,6 +26,10 @@ import {
   writeMilestone, listMilestones, getMilestone,
   renameMilestone, deleteMilestone, archiveMilestone,
 } from '../core/milestone.mjs';
+import {
+  writeDocument, listDocuments, getDocument,
+  updateDocument, searchDocuments,
+} from '../core/document.mjs';
 import { findBacklogDir } from '../core/paths.mjs';
 
 /**
@@ -258,6 +262,68 @@ export function listTools() {
         required: ['name'],
       },
     },
+    // === Documents (v1.4) ===
+    {
+      name: 'document_list',
+      description: 'Список документов (docs/), с опциональным текстовым фильтром',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Фильтр по id/title/tags/телу' },
+        },
+      },
+    },
+    {
+      name: 'document_view',
+      description: 'Показать документ по id (фронтматтер + содержимое)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'ID документа (например doc-1)' },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'document_create',
+      description: 'Создать документ (спецификацию/гайд)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Заголовок' },
+          content: { type: 'string', description: 'Markdown-содержимое' },
+          type: { type: 'string', enum: ['readme', 'guide', 'specification', 'other'], description: 'Тип документа' },
+          tags: { type: 'array', items: { type: 'string', maxLength: 100 }, description: 'Теги' },
+        },
+        required: ['title', 'content'],
+      },
+    },
+    {
+      name: 'document_update',
+      description: 'Обновить документ (только переданные поля)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'ID документа' },
+          title: { type: 'string', description: 'Новый заголовок' },
+          content: { type: 'string', description: 'Новое содержимое (полная замена)' },
+          type: { type: 'string', enum: ['readme', 'guide', 'specification', 'other'], description: 'Тип' },
+          tags: { type: 'array', items: { type: 'string', maxLength: 100 }, description: 'Теги (полная замена)' },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'document_search',
+      description: 'Поиск документов по запросу',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', maxLength: 200, description: 'Поисковый запрос' },
+        },
+        required: ['query'],
+      },
+    },
   ];
 }
 
@@ -304,6 +370,16 @@ export async function handleToolCall(name, args, cwd) {
       return toolMilestoneRemove(args, cwd);
     case 'milestone_archive':
       return toolMilestoneArchive(args, cwd);
+    case 'document_list':
+      return toolDocumentList(args, cwd);
+    case 'document_view':
+      return toolDocumentView(args, cwd);
+    case 'document_create':
+      return toolDocumentCreate(args, cwd);
+    case 'document_update':
+      return toolDocumentUpdate(args, cwd);
+    case 'document_search':
+      return toolDocumentSearch(args, cwd);
     default:
       throw new Error(`Неизвестный инструмент: ${name}`);
   }
@@ -753,4 +829,68 @@ function toolMilestoneArchive(args, cwd) {
   const archived = archiveMilestone(backlogDir, args.name);
   if (!archived) throw new Error(`Веха "${args.name}" не найдена.`);
   return `Веха "${args.name}" архивирована.`;
+}
+
+
+// ============================================================
+// Documents (v1.4)
+// ============================================================
+
+function toolDocumentList(args, cwd) {
+  const backlogDir = findBacklogDir(cwd);
+  if (!backlogDir) throw new Error('Backlog не найден.');
+  let entries = listDocuments(backlogDir);
+  if (args.query) {
+    const q = args.query.toLowerCase();
+    entries = entries.filter(e =>
+      e.document.id.toLowerCase().includes(q) ||
+      e.document.title.toLowerCase().includes(q) ||
+      e.document.tags.some(t => String(t).toLowerCase().includes(q)) ||
+      (e.body && e.body.toLowerCase().includes(q))
+    );
+  }
+  return JSON.stringify(entries.map(e => e.document), null, 2);
+}
+
+function toolDocumentView(args, cwd) {
+  const backlogDir = findBacklogDir(cwd);
+  if (!backlogDir) throw new Error('Backlog не найден.');
+  const entry = getDocument(backlogDir, args.id);
+  if (!entry) throw new Error(`Документ ${args.id} не найден.`);
+  return JSON.stringify({ ...entry.document, content: entry.body }, null, 2);
+}
+
+function toolDocumentCreate(args, cwd) {
+  const backlogDir = findBacklogDir(cwd);
+  if (!backlogDir) throw new Error('Backlog не найден.');
+  const doc = writeDocument(backlogDir, {
+    title: args.title,
+    type: args.type || '',
+    tags: args.tags || [],
+    content: args.content || '',
+  });
+  return `Документ ${doc.id} создан: ${doc.title} (тип: ${doc.type})`;
+}
+
+function toolDocumentUpdate(args, cwd) {
+  const backlogDir = findBacklogDir(cwd);
+  if (!backlogDir) throw new Error('Backlog не найден.');
+  const updates = {};
+  if (args.title !== undefined) updates.title = args.title;
+  if (args.content !== undefined) updates.content = args.content;
+  if (args.type !== undefined) updates.type = args.type;
+  if (args.tags !== undefined) updates.tags = args.tags;
+  if (Object.keys(updates).length === 0) {
+    throw new Error('Не указаны поля для обновления (title, content, type, tags).');
+  }
+  const updated = updateDocument(backlogDir, args.id, updates);
+  if (!updated) throw new Error(`Документ ${args.id} не найден.`);
+  return `Документ ${updated.document.id} обновлён: ${updated.document.title}`;
+}
+
+function toolDocumentSearch(args, cwd) {
+  const backlogDir = findBacklogDir(cwd);
+  if (!backlogDir) throw new Error('Backlog не найден.');
+  const entries = searchDocuments(backlogDir, args.query);
+  return JSON.stringify(entries.map(e => e.document), null, 2);
 }

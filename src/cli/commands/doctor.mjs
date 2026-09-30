@@ -250,7 +250,7 @@ function checkSourcesMatch() {
  */
 function checkMcpToolsCount() {
   const tools = listTools();
-  const expected = 16;
+  const expected = 21;
   const ok = tools.length === expected;
   return {
     name: 'mcp_tools_count',
@@ -285,6 +285,11 @@ function checkMcpToolsList() {
     'milestone_rename',
     'milestone_remove',
     'milestone_archive',
+    'document_list',
+    'document_view',
+    'document_create',
+    'document_update',
+    'document_search',
     'backlog_view_task',
   ].sort();
 
