@@ -69,16 +69,24 @@ docs(plan): уточнить формат AC по результатам ана�
 
 Причина: пользователь работает на macOS 10.15 Catalina, где внешние рантаймы либо отсутствуют, либо нестабильны. Плюс проект позиционируется как zero-dependency Node.js.
 
-## Как отслеживать прогресс
+## Работа через Vibelog
 
-Используй сам Vibelog.md для трекинга задач (dogfooding):
+Проект использует Vibelog.md для трекинга. Все новые задачи — через MCP или CLI. Не создавай новые файлы `PLAN-*.md` для мелких фич — работай через `backlog/tasks/`.
+
+Для крупных эпиков (milestones, docs, decisions) — план в `plan/` допустим, но задачи всё равно в `backlog/`.
+
+Примеры:
 
 ```bash
-node bin/vibelog.mjs init "Vibelog.md"
-node bin/vibelog.mjs task create "Реализовать PLAN-01: Scaffold" -d "..." --ac "..."
-```
+# Создать задачу
+vibelog task create "Добавить фичу X" -d "Описание" --ac "Критерий 1" --priority High
 
-На этапе PLAN-01 CLI ещё не готов — первые задачи можно создавать как markdown-файлы вручную, следуя формату из плана.
+# Список задач
+vibelog task list --ready
+
+# Завершить задачу
+vibelog task complete <id>
+```
 
 ## Контекст: оригинал Backlog.md
 
