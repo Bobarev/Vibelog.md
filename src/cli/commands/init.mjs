@@ -74,6 +74,9 @@ export async function runInit(args, flags, cwd) {
 
   // --- Команды Qwen Code (--skills) ---
   handleSkills(flags, cwd);
+
+  // --- MCP-сервер Qwen Code (по умолчанию включён) ---
+  handleMcpSetup(flags, cwd);
 }
 
 /**
@@ -123,6 +126,48 @@ function handleSkills(flags, cwd) {
 
   // Обновляем AGENTS.md
   updateAgentsMd(cwd);
+}
+
+/**
+ * Настраивает MCP-сервер Vibelog в .qwen/settings.json.
+ *
+ * По умолчанию init добавляет секцию mcpServers.vibelog, чтобы Qwen Code
+ * подхватил сервер без ручной настройки. Отключение: --no-mcp.
+ * Merge, а не replace: чужие ключи (ui, $version, другие mcpServers) сохраняются.
+ *
+ * @param {Record<string, unknown>} flags — флаги командной строки
+ * @param {string} cwd — текущая рабочая директория
+ */
+function handleMcpSetup(flags, cwd) {
+  // --no-mcp — отключает автонастройку
+  if (flags['no-mcp']) return;
+
+  const settingsPath = join(cwd, '.qwen', 'settings.json');
+  let settings = {};
+
+  if (existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    } catch {
+      // Не роняем init из-за битого settings.json — сообщаем и выходим
+      printError(`Не удалось разобрать ${settingsPath} (некорректный JSON). MCP-секция не добавлена.`);
+      return;
+    }
+  }
+
+  // Merge: добавляем/перезаписываем только vibelog-секцию
+  if (!settings.mcpServers || typeof settings.mcpServers !== 'object') {
+    settings.mcpServers = {};
+  }
+  settings.mcpServers.vibelog = {
+    command: 'vibelog',
+    args: ['mcp', 'start'],
+    trust: true,
+  };
+
+  mkdirSync(dirname(settingsPath), { recursive: true });
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
+  printSuccess('MCP-сервер vibelog настроен: .qwen/settings.json (перезапустите Qwen Code)');
 }
 
 /**

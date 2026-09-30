@@ -88,9 +88,11 @@ describe('PLAN-10 — init --skills', () => {
   });
   after(() => cleanup());
 
-  it('init без --skills — .qwen/ НЕ создаётся', () => {
+  it('init без --skills — команды /vibelog:* НЕ создаются', () => {
     runCli(['init', 'Test', '--prefix', 'tst']);
-    assert.ok(!existsSync(join(testDir, '.qwen')), '.qwen не должен существовать');
+    // .qwen/settings.json теперь создаётся всегда (VL-6, MCP-автонастройка),
+    // но команды /vibelog:* — только по флагу --skills
+    assert.ok(!existsSync(join(testDir, '.qwen', 'commands', 'vibelog')), 'команды /vibelog:* не должны существовать');
   });
 
   it('init --skills создаёт .qwen/commands/vibelog/', () => {
