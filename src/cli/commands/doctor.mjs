@@ -8,7 +8,7 @@
  * наш — про окружение. Разные цели.
  */
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
@@ -154,9 +154,7 @@ function checkSymlink() {
     const expected = join(__dirname, '..', '..', '..', 'bin', 'vibelog.mjs');
 
     // Проверяем, симлинк это или shell-скрипт pnpm
-    const real = execSync(`realpath "${out}" 2>/dev/null || python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "${out}" 2>/dev/null`, {
-      encoding: 'utf-8', timeout: 2000,
-    }).trim();
+    const real = realpathSync(out);
 
     // Если это симлинк — сравниваем напрямую
     if (real === expected) {
@@ -189,6 +187,35 @@ function checkSymlink() {
 }
 
 /**
+ * Определяет реальный путь к bin/vibelog.mjs, учитывая симлинки и pnpm shims.
+ *
+ * @param {string} binPath — путь из PATH (симлинк или shell-скрипт)
+ * @returns {string|null} — реальный путь к целевому файлу
+ */
+function resolveBinTarget(binPath) {
+  const expected = join(__dirname, '..', '..', '..', 'bin', 'vibelog.mjs');
+
+  // Симлинк — realpath резолвит напрямую
+  const real = realpathSync(binPath);
+  if (real === expected) return real;
+
+  // pnpm shim (shell-скрипт) — ищем путь к целевому файлу внутри
+  try {
+    const content = readFileSync(binPath, 'utf-8');
+    // pnpm shim содержит exec node "$basedir/..." или подобное
+    const match = content.match(/exec\s+node\s+["']?\$basedir\/([^"'\s]+)/);
+    if (match) {
+      const target = join(dirname(binPath), match[1]);
+      return realpathSync(target);
+    }
+    // Fallback: если shim ссылается на известный путь
+    if (content.includes('vibelog.mjs')) return expected;
+  } catch { /* не shell-скрипт */ }
+
+  return real;
+}
+
+/**
  * Проверка 4: PATH и process.argv[1] — одна копия.
  *
  * @returns {{name, ok, value, expected, hint}}
@@ -200,9 +227,7 @@ function checkSourcesMatch() {
     try {
       const out = execSync('which vibelog 2>/dev/null', { encoding: 'utf-8', timeout: 2000 }).trim();
       if (out) {
-        binPath = execSync(`realpath "${out}" 2>/dev/null || python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "${out}" 2>/dev/null`, {
-          encoding: 'utf-8', timeout: 2000,
-        }).trim();
+        binPath = resolveBinTarget(out);
       }
     } catch { /* PATH не найден */ }
 
