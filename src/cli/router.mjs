@@ -20,6 +20,7 @@ import { runTask } from './commands/task.mjs';
 import { runBoard } from './commands/board.mjs';
 import { runSearch } from './commands/search.mjs';
 import { runInstructions } from './commands/instructions.mjs';
+import { runMcp } from './commands/mcp.mjs';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -53,6 +54,8 @@ export async function route(args) {
       return runSearch(args.slice(1), flags, cwd);
     case 'instructions':
       return runInstructions(positional, flags, cwd);
+    case 'mcp':
+      return runMcp(subcommand, positional, flags, cwd);
     default:
       console.error(`Ошибка: Неизвестная команда: ${command}`);
       showHelp();
