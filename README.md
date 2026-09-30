@@ -40,8 +40,19 @@ vibelog board
 # Веб-интерфейс (kanban с drag-and-drop)
 vibelog browser
 
-# Поиск
+# Поиск (флаги: --status/--type/--priority/--limit)
 vibelog search "авторизация"
+
+# Вехи (milestones)
+vibelog milestone add v1.4
+
+# Документы, черновики, решения (ADR)
+vibelog doc create "Гайд API" --type guide
+vibelog draft create "Идея виджета"
+vibelog decision create "Перейти на pnpm" -s accepted
+
+# Конфиг проекта
+vibelog config list
 
 # Инструкции для AI-агентов
 vibelog instructions overview
@@ -49,21 +60,33 @@ vibelog instructions overview
 
 ## MCP-инструменты
 
-11 инструментов для подключения к AI-агентам (Qwen Code, Claude Code и др.):
+21 инструмент для подключения к AI-агентам (Qwen Code, Claude Code и др.).
+Автоматическая настройка: `vibelog init` пишет `mcpServers` в `.qwen/settings.json`
+(см. [MCP-SETUP.md](MCP-SETUP.md)).
 
 | Инструмент | Описание |
 |---|---|
-| `backlog_create_task` | Создать задачу |
-| `backlog_list_tasks` | Список задач (фильтры: status, labels, milestone, ready, sort) |
+| `backlog_create_task` | Создать задачу (title, priority, type, milestone, project, ordinal, finalSummary) |
+| `backlog_list_tasks` | Список задач (фильтры: status, labels, type, milestone, ready, sort) |
 | `backlog_view_task` | Просмотр задачи по ID |
 | `backlog_update_status` | Обновить статус |
-| `backlog_update_task` | Универсальное обновление полей (title, priority, plan, notes, final_summary) |
-| `backlog_manage_ac` | Управление AC (add/check/uncheck/remove/list) |
-| `backlog_manage_dod` | Управление DoD (add/check/uncheck/remove/list) |
+| `backlog_update_task` | Универсальное обновление полей (title, priority, type, plan, notes, final_summary) |
+| `backlog_manage_ac` | Управление AC (add/check/uncheck/remove/list; index — номер или массив) |
+| `backlog_manage_dod` | Управление DoD (add/check/uncheck/remove/list; index — номер или массив) |
 | `backlog_add_comment` | Добавить комментарий |
 | `backlog_update_dependencies` | Управление зависимостями (add/remove, детект циклов) |
-| `backlog_search` | Поиск по текстовому запросу |
+| `backlog_search` | Поиск с фильтрами (query, status, type, project, priority, modifiedFiles, limit) |
 | `backlog_ready` | Задачи, готовые к выполнению |
+| `milestone_list` | Список вех |
+| `milestone_add` | Создать веху |
+| `milestone_rename` | Переименовать веху (обновляет задачи) |
+| `milestone_remove` | Удалить веху (clear/keep/reassign задач) |
+| `milestone_archive` | Архивировать веху |
+| `document_list` | Список документов |
+| `document_view` | Показать документ |
+| `document_create` | Создать документ |
+| `document_update` | Обновить документ |
+| `document_search` | Поиск по документам |
 
 Подключение к Qwen Code: см. [MCP-SETUP.md](MCP-SETUP.md).
 

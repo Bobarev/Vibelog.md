@@ -1,0 +1,51 @@
+# Changelog
+
+Все заметные изменения Vibelog.md. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [Semantic Versioning](https://semver.org/lang/ru/).
+
+## [1.4.0] — 2026-10-01
+
+Первый релиз после v1.2.0: два плановых релиза фич (v1.3 + v1.4) в одном.
+
+### Добавлено — v1.4
+
+- **Documents**: `vibelog doc create/list/view/update/search` + 5 MCP-инструментов `document_*`. Файлы `backlog/docs/<id>-<slug>.md`, типы `readme/guide/specification/other`.
+- **Config**: `vibelog config get/set/list` — управление `backlog/config.yml` с типизацией (массивы/boolean/числа), whitelist ключей.
+- **Drafts**: `vibelog draft create/list/view/edit/promote/archive` — черновики задач (`draft-N`, статус Draft) в `backlog/drafts/`; `promote` создаёт задачу с префиксом конфига.
+- **Decisions (ADR)**: `vibelog decision create/list/view` — `backlog/decisions/`, статусы `proposed/accepted/rejected/superseded`, тело Context/Decision/Consequences/Alternatives.
+- `task edit`: batch AC/DoD — `--check-ac 1,3`, `--uncheck-dod 1,2`; MCP `manage_ac`/`manage_dod` принимают массив индексов (как `acceptanceCriteriaCheck` оригинала), `remove` — по убыванию без сдвига.
+- `task list`: `--limit N`, `--skip N` — после фильтрации и сортировки.
+
+### Добавлено — v1.3
+
+- **Milestones**: `vibelog milestone add/list/rename/remove/archive` + 5 MCP-инструментов `milestone_*`. Файлы `backlog/milestones/`, `rename` обновляет задачи, `remove --task-handling clear|keep|reassign`.
+- **Types**: типы задач (`bug/feature/enhancement/task/chore/docs/spike`) — ключ `types` в конфиге, `--type` в create/list/edit, фильтр `type` в MCP; валидация case-insensitive с каноническим написанием.
+- `task create --plan/--notes` — план и заметки при создании.
+- `task create`: DoD-дефолты из `config.definition_of_done` (unchecked) + `--no-dod-defaults` — **исправлена несовместимость**: раньше дефолты не добавлялись вовсе.
+- `task create`: `--project`, `--parent` (валидация существования), `--ordinal`, `--final-summary`, `--draft` (черновик вместо задачи).
+- `task edit`: `--final-summary`, `--append-final-summary`, `--clear-final-summary`, `--ordinal`.
+- MCP `backlog_create_task`: параметры `type`, `ordinal`, `finalSummary`, `project` — паритет с `task_create` оригинала.
+- `vibelog init` автоматически настраивает MCP-сервер в `.qwen/settings.json` (массив `mcpServers.vibelog` c `trust: true`); отключение — `--no-mcp`.
+
+### Изменено
+
+- Всего **21** MCP-инструмент (было 11 в v1.2.0).
+- `backlog_search`: фильтры `status/type/project/priority/modifiedFiles/limit`, `query` необязателен — как `task_search` оригинала; вывод расширен (type, project, labels, milestone).
+- `vibelog search`: флаги `--status/--type/--priority/--limit`, запрос необязателен при наличии фильтра.
+- doctor: проверка числа MCP-инструментов (21) и их имён.
+
+### Исправлено
+
+- MCP-сервер: терялся последний JSON-RPC ответ при закрытии stdin (гонка `process.exit(0)` с буферизацией stdout-pipe).
+- `vibelog search`: значения флагов попадали в поисковый запрос (`search --status Done` искал «Done»); первое слово запроса терялось в `subcommand`.
+
+## [1.2.0] — 2026-09-30
+
+- Планы PLAN-01..10: scaffold, YAML/frontmatter-парсеры, core, CLI, MCP-сервер, web-интерфейс (kanban), compat с Backlog.md (94 задачи), v1.1-workflow (5 MCP-инструментов), diagnostics (`vibelog doctor`), команды `/vibelog:*` для Qwen Code (spec → plan → code).
+
+## [1.1.0] — 2026-09-30
+
+- MCP-инструменты полного workflow: `backlog_update_task`, `backlog_manage_ac`, `backlog_manage_dod`, `backlog_add_comment`, `backlog_update_dependencies` (итого 11).
+
+## [1.0.0] — 2026-09-30
+
+- Первый релиз: markdown-нативный таск-менеджер для git-репозиториев, совместимый с Backlog.md. Чистый Node.js, zero runtime dependencies, macOS 10.15 Catalina + Qwen Code.

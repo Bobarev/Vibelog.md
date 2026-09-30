@@ -14,7 +14,15 @@
  */
 
 import { createInterface } from 'node:readline';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { handleToolCall, listTools } from './tools.mjs';
+
+// Версия из package.json — чтобы не дублировать при релизах
+const packageJson = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf-8'),
+);
 
 /**
  * Запускает MCP-сервер.
@@ -124,7 +132,7 @@ function handleInitialize(id, params, send) {
     },
     serverInfo: {
       name: 'vibelog-md',
-      version: '1.2.0',
+      version: packageJson.version,
     },
   });
 }
