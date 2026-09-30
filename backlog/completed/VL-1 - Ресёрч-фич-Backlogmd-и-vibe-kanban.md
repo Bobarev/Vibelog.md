@@ -1,11 +1,11 @@
 ---
 id: VL-1
 title: Ресёрч фич Backlog.md и vibe-kanban
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-09-30 17:24'
-updated_date: '2026-09-30 17:24'
+updated_date: '2026-09-30 18:08'
 due_date: ''
 labels: []
 dependencies: []
@@ -26,9 +26,9 @@ modified_files: []
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Таблица CLI-команд Backlog.md (все команды, все флаги)
-- [ ] #2 Таблица MCP-инструментов (все 17 в оригинале)
-- [ ] #3 Таблица фич (docs, decisions, drafts, milestones, web UI)
-- [ ] #4 Раздел по vibe-kanban: webui, worktree-per-task, MCP-автогенерация, параллельность
-- [ ] #5 Приоритизация: что делать в v1.3, v1.4, что не нужно
+- [x] #1 Таблица CLI-команд Backlog.md (все команды, все флаги)
+- [x] #2 Таблица MCP-инструментов (все 17 в оригинале)
+- [x] #3 Таблица фич (docs, decisions, drafts, milestones, web UI)
+- [x] #4 Раздел по vibe-kanban: webui, worktree-per-task, MCP-автогенерация, параллельность
+- [x] #5 Приоритизация: что делать в v1.3, v1.4, что не нужно
 <!-- AC:END -->
