@@ -24,11 +24,32 @@ Qwen **не может через MCP**:
 
 ## Право на корректировку
 
-Если при изучении оригинала Backlog.md (`/Users/bob/Dev/ton/ai/Backlog.md`) обнаружатся расхождения — **правь этот план** и коммить отдельно:
+Если при изучении оригинала Backlog.md (`../Backlog.md`) обнаружатся расхождения — **правь этот план** и коммить отдельно:
 
 ```
 docs(plan): уточнить MCP-инструменты по результатам анализа Backlog.md
 ```
+
+## Расхождения с оригиналом (по результатам анализа src/mcp/)
+
+Оригинал Backlog.md имеет **17 MCP-инструментов** (7 задач + 5 milestone + 5 documents + 2 DoD + 1 workflow). У нас **11** (task-only).
+
+Ключевые расхождения в схемах (приняты осознанно):
+
+| Аспект | Оригинал | Vibelog.md v1.1 |
+|---|---|---|
+| Имена инструментов | `task_create`, `task_edit`, `task_list` | `backlog_create_task`, `backlog_update_task`, `backlog_list_tasks` |
+| AC/DoD операции | Batch-массивы в `task_edit`: `acceptanceCriteriaCheck: [1,2]` | Отдельные `manage_ac`/`manage_dod` с одиночными операциями |
+| Комментарии | `commentsAppend` (массив строк) в `task_edit` | Отдельный `backlog_add_comment` |
+| Plan/Notes | `planSet`/`planAppend`/`planClear`, `notesSet`/`notesAppend`/`notesClear` | `plan`/`notes`/`append_notes` (одиночные) |
+| DoD в edit | `definitionOfDoneAdd/Remove/Check/Uncheck` (batch) | `manage_dod` с одиночными операциями |
+| Формат комментариев | `author:`/`created:`/`---`/текст/`---` в `<!-- COMMENTS:BEGIN -->` | **Идентичен** ✅ |
+| Формат AC/DoD | `- [ ] #1 text` в `<!-- AC:BEGIN -->`/`<!-- DOD:BEGIN -->` | **Идентичен** ✅ |
+| Статусы по умолчанию | `["To Do", "In Progress", "Done"]` + "Draft" в enum | **Идентичен** ✅ |
+| Приоритеты | `High`, `Medium`, `Low` | **Идентичен** ✅ |
+| `additionalProperties: false` | Строгая валидация схем | Нет (пропускаем лишние поля) |
+
+Формат файлов задач — **полностью совместим**. Расхождения только в API-слое (имена, batch vs одиночные операции).
 
 ## Что нужно сделать
 
