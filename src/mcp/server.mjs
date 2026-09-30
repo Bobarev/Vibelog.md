@@ -100,7 +100,10 @@ export function startMcpServer(cwd) {
   });
 
   rl.on('close', () => {
-    process.exit(0);
+    // Не выходим через process.exit(0) сразу: вывод в pipe буферизуется,
+    // и немедленный exit обрывает последний JSON-RPC ответ (гонка на close).
+    // Пустая write-операция колбэкуется только после сброса всех очередных данных.
+    process.stdout.write('', () => process.exit(0));
   });
 }
 
