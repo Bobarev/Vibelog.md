@@ -21,7 +21,7 @@ import {
 } from '../core/store.mjs';
 import { searchTasks } from '../core/search.mjs';
 import { isReady, blockedBy, validateDeps } from '../core/deps.mjs';
-import { loadConfig } from '../core/config.mjs';
+import { loadConfig, normalizeTaskType } from '../core/config.mjs';
 import {
   writeMilestone, listMilestones, getMilestone,
   renameMilestone, deleteMilestone, archiveMilestone,
@@ -51,6 +51,7 @@ export function listTools() {
           status: { type: 'string', description: 'Статус (по умолчанию из конфига)' },
           assignee: { type: 'array', items: { type: 'string' }, description: 'Исполнители' },
           milestone: { type: 'string', description: 'Веха (milestone)' },
+          type: { type: 'string', description: 'Тип задачи (bug, feature, ...)' },
           due_date: { type: 'string', description: 'Срок (YYYY-MM-DD)' },
         },
         required: ['title'],
@@ -65,6 +66,7 @@ export function listTools() {
           status: { type: 'string', description: 'Фильтр по статусу' },
           labels: { type: 'array', items: { type: 'string' }, description: 'Фильтр по меткам' },
           milestone: { type: 'string', description: 'Фильтр по вехе' },
+          type: { type: 'string', description: 'Фильтр по типу' },
           ready: { type: 'boolean', description: 'Только задачи без открытых блокеров' },
           sort: { type: 'string', enum: ['priority', 'created', 'updated'], description: 'Сортировка' },
           limit: { type: 'number', description: 'Максимальное количество задач' },
@@ -107,6 +109,7 @@ export function listTools() {
           assignee: { type: 'array', items: { type: 'string' }, description: 'Исполнители (полная замена)' },
           labels: { type: 'array', items: { type: 'string' }, description: 'Метки (полная замена)' },
           milestone: { type: 'string', description: 'Веха' },
+          type: { type: 'string', description: 'Тип задачи' },
           status: { type: 'string', description: 'Статус' },
           plan: { type: 'string', description: 'План реализации (записывает в ## Implementation Plan)' },
           notes: { type: 'string', description: 'Заметки (полная замена ## Implementation Notes)' },
@@ -323,6 +326,7 @@ function toolCreateTask(args, cwd) {
     status: args.status || '',
     assignee: args.assignee || [],
     milestone: args.milestone || '',
+    type: args.type ? normalizeTaskType(loadConfig(cwd), args.type) : '',
     due_date: args.due_date || '',
   });
   return `Задача ${task.id} создана: ${task.title}`;
@@ -351,6 +355,9 @@ function toolListTasks(args, cwd) {
   if (args.milestone) {
     tasks = tasks.filter(t => t.milestone && t.milestone.toLowerCase() === args.milestone.toLowerCase());
   }
+  if (args.type) {
+    tasks = tasks.filter(t => t.type && t.type.toLowerCase() === args.type.toLowerCase());
+  }
   if (args.ready) {
     tasks = tasks.filter(t => isReady(cwd, t));
   }
@@ -377,6 +384,7 @@ function toolListTasks(args, cwd) {
     labels: t.labels,
     assignee: t.assignee,
     milestone: t.milestone,
+    type: t.type,
   }));
 
   return JSON.stringify(simplified, null, 2);
@@ -434,6 +442,7 @@ function toolUpdateTask(args, cwd) {
   if (args.labels !== undefined) updates.labels = args.labels;
   if (args.milestone !== undefined) updates.milestone = args.milestone;
   if (args.status !== undefined) updates.status = args.status;
+  if (args.type !== undefined) updates.type = normalizeTaskType(loadConfig(cwd), args.type);
 
   // Секции тела
   if (args.plan !== undefined) updates.implementationPlan = args.plan;

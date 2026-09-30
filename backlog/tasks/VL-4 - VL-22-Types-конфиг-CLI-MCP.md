@@ -1,11 +1,11 @@
 ---
 id: VL-4
 title: 'VL-2.2: Types — конфиг + CLI + MCP'
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-09-30 18:23'
-updated_date: '2026-09-30 18:27'
+updated_date: '2026-09-30 22:39'
 due_date: ''
 labels:
   - v1.3
@@ -42,12 +42,12 @@ MCP (расширить существующие):
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 task create --type записывает type во frontmatter
-- [ ] #2 task list --type фильтрует по типу
-- [ ] #3 backlog_create_task/list_tasks/update_task принимают параметр type
-- [ ] #4 Валидация type по конфигу (case-insensitive)
-- [ ] #5 Round-trip с Backlog.md сохраняется
-- [ ] #6 Тесты проходят
+- [x] #1 task create --type записывает type во frontmatter
+- [x] #2 task list --type фильтрует по типу
+- [x] #3 backlog_create_task/list_tasks/update_task принимают параметр type
+- [x] #4 Валидация type по конфигу (case-insensitive)
+- [x] #5 Round-trip с Backlog.md сохраняется
+- [x] #6 Тесты проходят
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -91,3 +91,21 @@ MCP (расширить существующие):
 - node -e проверка defaultConfig
 - ручной тест: vibelog task create X --type bug
 <!-- SECTION:PLAN:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author: @agent
+created: 2026-09-30 22:39
+---
+Фаза 3 (Code) завершена. 6/6 AC.
+Реализовано:
+- src/core/config.mjs: DEFAULT_TASK_TYPES (bug/feature/enhancement/task/chore/docs/spike — как в оригинале), types в defaultConfig, normalizeTaskType() — case-insensitive с возвратом канонического написания из конфига (семантика enum-валидации оригинала Backlog.md), fallback на дефолты без ключа types.
+- CLI: task create/list/edit --type (валидация + ошибка при невалидном типе, задача не создаётся).
+- MCP: type в схемах и хендлерах backlog_create_task / backlog_list_tasks (фильтр + поле в выводе) / backlog_update_task.
+- router.mjs: help обновлён (--type в create/list/edit).
+- Round-trip: type уже поддерживался taskToMarkdown/markdownToTask — проверено тестом.
+Дополнительно исправлен гон в src/mcp/server.mjs: process.exit(0) на rl close обрывал буферизованный stdout-pipe и терял последний JSON-RPC ответ (воспроизводилось на tools/list с 16 инструментами). Фикс: exit в колбэке пустой write — после сброса очереди stdout. Проверено 3 изолированными прогонами.
+Тесты: src/mcp/types.test.mjs (новый: конфиг/нормализация, MCP create/list/update, CLI --type, кастомный types, round-trip). pnpm test — 230/230 ✓; pnpm lint ✓; ручной CLI-тест в /tmp ✓.
+Изменения не закоммичены — жду подтверждения.
+---
+<!-- COMMENTS:END -->

@@ -19,7 +19,7 @@ import {
   listTasks, getTask, createTaskFile,
   updateTaskFile, completeTaskFile, archiveTaskFile,
 } from '../../core/store.mjs';
-import { loadConfig } from '../../core/config.mjs';
+import { loadConfig, normalizeTaskType } from '../../core/config.mjs';
 import { isReady } from '../../core/deps.mjs';
 
 /**
@@ -78,6 +78,18 @@ function taskCreate(positional, flags, cwd) {
   const milestone = getFlag(flags, 'milestone', '');
   const dueDate = getFlag(flags, 'due-date', '');
 
+  // Тип задачи (валидация по конфигу, case-insensitive)
+  const type = getFlag(flags, 'type', '');
+  let normalizedType = '';
+  if (type) {
+    try {
+      normalizedType = normalizeTaskType(loadConfig(cwd), type);
+    } catch (err) {
+      printError(err.message);
+      return;
+    }
+  }
+
   const acceptanceCriteria = getFlagArray(flags, 'ac');
   const definitionOfDone = getFlagArray(flags, 'dod');
 
@@ -90,6 +102,7 @@ function taskCreate(positional, flags, cwd) {
     labels,
     dependencies,
     milestone,
+    type: normalizedType,
     due_date: dueDate,
     acceptanceCriteria,
     definitionOfDone,
@@ -114,6 +127,12 @@ function taskList(positional, flags, cwd) {
   const statusFilter = getFlag(flags, 'status');
   if (statusFilter) {
     tasks = tasks.filter(t => t.status.toLowerCase() === statusFilter.toLowerCase());
+  }
+
+  // Фильтрация по типу
+  const typeFilter = getFlag(flags, 'type');
+  if (typeFilter) {
+    tasks = tasks.filter(t => t.type && t.type.toLowerCase() === typeFilter.toLowerCase());
   }
 
   // Фильтрация по метке
@@ -211,6 +230,14 @@ function taskEdit(positional, flags, cwd) {
   if (flags.description) updates.description = getFlag(flags, 'description');
   if (flags.milestone) updates.milestone = getFlag(flags, 'milestone');
   if (flags['due-date']) updates.due_date = getFlag(flags, 'due-date');
+  if (flags.type) {
+    try {
+      updates.type = normalizeTaskType(loadConfig(cwd), getFlag(flags, 'type'));
+    } catch (err) {
+      printError(err.message);
+      return;
+    }
+  }
 
   // Assignee (полная замена)
   const assignee = getFlagArray(flags, 'assignee');

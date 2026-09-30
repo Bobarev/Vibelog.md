@@ -18,6 +18,8 @@ import { configPath, findBacklogDir } from './paths.mjs';
  * @param {string} prefix — префикс ID задач (например, "LB")
  * @returns {Record<string, unknown>}
  */
+export const DEFAULT_TASK_TYPES = ['bug', 'feature', 'enhancement', 'task', 'chore', 'docs', 'spike'];
+
 export function defaultConfig(projectName, prefix) {
   return {
     project_name: projectName,
@@ -26,6 +28,7 @@ export function defaultConfig(projectName, prefix) {
     statuses: ['To Do', 'In Progress', 'Review', 'Done', 'Blocked'],
     labels: [],
     priorities: ['High', 'Medium', 'Low'],
+    types: [...DEFAULT_TASK_TYPES],
     definition_of_done: [
       'Тесты проходят',
       'Документация обновлена',
@@ -42,6 +45,31 @@ export function defaultConfig(projectName, prefix) {
     active_branch_days: 30,
     max_column_width: 20,
   };
+}
+
+/**
+ * Нормализует тип задачи по списку types из конфига.
+ *
+ * Семантика оригинала Backlog.md: сравнение case-insensitive,
+ * возвращается каноническое написание из конфига.
+ * Если types в конфиге отсутствует — используется DEFAULT_TASK_TYPES.
+ *
+ * @param {Record<string, unknown>} config — объект конфига
+ * @param {string} type — тип задачи (например "Bug")
+ * @returns {string} — канонический тип ("bug") или '' если type пустой
+ * @throws {Error} — если тип не входит в список
+ */
+export function normalizeTaskType(config, type) {
+  if (!type) return '';
+  const types = Array.isArray(config?.types) && config.types.length > 0
+    ? config.types
+    : DEFAULT_TASK_TYPES;
+  const candidate = String(type).toLowerCase();
+  const canonical = types.find(t => String(t).toLowerCase() === candidate);
+  if (!canonical) {
+    throw new Error(`Недопустимый тип "${type}". Допустимые: ${types.join(', ')}`);
+  }
+  return String(canonical);
 }
 
 /**

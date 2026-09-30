@@ -100,7 +100,7 @@ ${colorize('Команды:', colors.bold)}
 
 ${colorize('Примеры:', colors.bold)}
   vibelog init "My Project"
-  vibelog task create "Заголовок" -d "Описание" --ac "Критерий"
+  vibelog task create "Заголовок" -d "Описание" --ac "Критерий" --type bug
   vibelog task list -s "To Do"
   vibelog task view LB-1
   vibelog board
@@ -131,10 +131,10 @@ vibelog init [name] [--prefix LB] [--skills[=qwen]] [--no-skills] [--force]
 vibelog task <subcommand> [опции]
 
 Подкоманды:
-  create "Title" [-d desc] [--ac ...] [--dod ...] [--priority ...] [--labels ...] [--deps ...] [--milestone ...]
-  list [-s status] [-l labels] [--ready] [--sort priority|created|updated] [--json]
+  create "Title" [-d desc] [--ac ...] [--dod ...] [--priority ...] [--labels ...] [--deps ...] [--milestone ...] [--type ...]
+  list [-s status] [-l labels] [--type type] [--ready] [--sort priority|created|updated] [--json]
   view <id> [--json]
-  edit <id> [--title ...] [--status ...] [--ac ...] [--check-ac N] [--dod ...] [--check-dod N] [--comment ...] [--assignee ...] [--remove-label ...]
+  edit <id> [--title ...] [--status ...] [--type ...] [--ac ...] [--check-ac N] [--dod ...] [--check-dod N] [--comment ...] [--assignee ...] [--remove-label ...]
   complete <id>
   archive <id>`,
 
