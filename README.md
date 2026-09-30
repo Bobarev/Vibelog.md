@@ -118,6 +118,33 @@ Vibelog.md doctor
 
 Если Qwen Code не видит новые MCP-инструменты — MCP-сервер закэширован. Перезапустите Qwen.
 
+## Работа с Qwen Code
+
+### Команды `/vibelog:*`
+
+```bash
+vibelog init "Мой проект" --skills
+```
+
+Создаёт в `.qwen/commands/vibelog/` три команды Qwen Code:
+
+| Команда | Фаза | Описание |
+|---|---|---|
+| `/vibelog:spec <описание>` | 1 | Разбить фичу на 2-3 задачи |
+| `/vibelog:plan <ID>` | 2 | Составить план реализации |
+| `/vibelog:code <ID>` | 3 | Реализовать план, отметить AC |
+
+Workflow: spec → plan → code. На каждой фазе агент ждёт подтверждения.
+
+### Флаги init
+
+```bash
+vibelog init "Name" --skills          # создать команды (qwen по умолчанию)
+vibelog init "Name" --skills=qwen     # явно указать агента
+vibelog init "Name" --skills --force  # перезаписать существующие
+vibelog init "Name" --no-skills       # не создавать команды
+```
+
 ## Совместимость с Backlog.md
 
 - Формат задач: `backlog/tasks/<prefix>-<id> - <title>.md`

@@ -15,7 +15,8 @@ import { dirname } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
-const testDir = join(__dirname, '..', '..', '.test-cli');
+// Вне проекта — чтобы findBacklogDir не поднялся вверх к backlog/ проекта
+const testDir = '/tmp/vibelog-cli-test';
 
 function run(args, opts = {}) {
   try {

@@ -50,20 +50,30 @@ export function parseArgs(args) {
     const arg = args[i];
 
     if (arg.startsWith('--')) {
-      // Длинный флаг: --flag или --flag value
-      const flagName = arg.slice(2);
+      // Длинный флаг: --flag, --flag value, --flag=value
+      let flagName = arg.slice(2);
+      let inlineValue;
 
-      // Проверяем, есть ли следующий аргумент (не флаг)
-      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
-      // Флаг со значением
-      const value = args[i + 1];
-      addFlag(result.flags, flagName, value);
-      i += 2;
-    } else {
-      // Флаг-переключатель
-      addFlag(result.flags, flagName, true);
-      i++;
-    }
+      // Поддержка --flag=value
+      const eqIdx = flagName.indexOf('=');
+      if (eqIdx !== -1) {
+        inlineValue = flagName.slice(eqIdx + 1);
+        flagName = flagName.slice(0, eqIdx);
+      }
+
+      if (inlineValue !== undefined) {
+        // --flag=value
+        addFlag(result.flags, flagName, inlineValue);
+        i++;
+      } else if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        // --flag value
+        addFlag(result.flags, flagName, args[i + 1]);
+        i += 2;
+      } else {
+        // --flag (переключатель)
+        addFlag(result.flags, flagName, true);
+        i++;
+      }
     } else if (arg.startsWith('-') && arg.length === 2) {
       // Короткий флаг: -f value или -f
       const flagChar = arg[1];

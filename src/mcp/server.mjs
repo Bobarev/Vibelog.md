@@ -121,7 +121,7 @@ function handleInitialize(id, params, send) {
     },
     serverInfo: {
       name: 'vibelog-md',
-      version: '1.1.1',
+      version: '1.2.0',
     },
   });
 }
