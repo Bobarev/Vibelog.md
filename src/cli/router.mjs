@@ -22,6 +22,8 @@ import { runSearch } from './commands/search.mjs';
 import { runInstructions } from './commands/instructions.mjs';
 import { runMcp } from './commands/mcp.mjs';
 import { runBrowser } from './commands/browser.mjs';
+import { runVersion } from './commands/version.mjs';
+import { runDoctor } from './commands/doctor.mjs';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -31,6 +33,11 @@ import { runBrowser } from './commands/browser.mjs';
  */
 export async function route(args) {
   const { command, subcommand, positional, flags } = parseArgs(args);
+
+  // --version / -v — перехват ДО роутинга (совместимо с оригиналом Backlog.md)
+  if (args.includes('--version') || args.includes('-v')) {
+    return runVersion(args, flags);
+  }
 
   // Без команды — показываем справку
   if (!command || command === 'help') {
@@ -59,6 +66,8 @@ export async function route(args) {
       return runMcp(subcommand, positional, flags, cwd);
     case 'browser':
       return runBrowser(positional, flags, cwd);
+    case 'doctor':
+      return runDoctor(positional, flags, cwd);
     default:
       console.error(`Ошибка: Неизвестная команда: ${command}`);
       showHelp();
@@ -81,6 +90,8 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('search', colors.cyan)} "query" [--json]            Поиск задач
   ${colorize('instructions', colors.cyan)} [topic]               Инструкции для агентов
   ${colorize('mcp', colors.cyan)} start                        MCP-сервер (JSON-RPC)
+  ${colorize('doctor', colors.cyan)} [--json]                    Диагностика окружения
+  ${colorize('--version', colors.cyan)}, ${colorize('-v', colors.cyan)}                 Версия и пути
   ${colorize('help', colors.cyan)}                                Эта справка
 
 ${colorize('Примеры:', colors.bold)}
@@ -135,6 +146,13 @@ vibelog instructions [topic]
 
 Выводит инструкции для AI-агентов.
 Темы: overview, task-creation, task-execution, task-finalization`,
+
+    doctor: `
+vibelog doctor [--json]
+
+Диагностика окружения:
+  Проверяет Node.js, PATH, симлинки, MCP-инструменты, backlog/, конфиг.
+  --json — структурированный результат`,
   };
 
   const text = helpTexts[command];

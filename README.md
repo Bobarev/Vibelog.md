@@ -67,6 +67,57 @@ vibelog instructions overview
 
 Подключение к Qwen Code: см. [MCP-SETUP.md](MCP-SETUP.md).
 
+## Диагностика
+
+### Версия и пути
+
+```bash
+$ vibelog --version
+vibelog.md 1.1.1
+  bin:  /Users/bob/Library/pnpm/vibelog
+  src:  /Users/bob/Dev/ton/ai/Vibelog.md/bin/vibelog.mjs
+  node: v22.8.0
+
+$ vibelog -v
+1.1.1
+
+$ vibelog --version --json
+{
+  "name": "vibelog.md",
+  "version": "1.1.1",
+  "bin": "/Users/bob/Library/pnpm/vibelog",
+  "src": ".../bin/vibelog.mjs",
+  "node": "v22.8.0",
+  "engines": { "node": ">=20" }
+}
+```
+
+### Проверка окружения
+
+```bash
+$ vibelog doctor
+
+Vibelog.md doctor
+────────────────
+
+✓ node: v22.8.0
+✓ path: /Users/bob/Library/pnpm/vibelog
+✓ symlink: /Users/bob/Library/pnpm/vibelog (pnpm shim → .../bin/vibelog.mjs)
+✓ sources_match: ok
+✓ mcp_tools_count: 11
+✓ mcp_tools_list: ["backlog_add_comment", ...]
+✓ backlog_dir: ./backlog
+✓ config: {"project_name":"My Project","task_prefix":"LB"}
+✓ tasks_count: 6
+✓ roundtrip: 5
+
+⚠ Qwen Code: MCP-сервер мог быть закэширован. Перезапусти Qwen.
+```
+
+`vibelog doctor` проверяет: Node.js >= 20, `vibelog` в PATH, симлинк/pnpm shim, MCP-инструменты, `backlog/`, конфиг, round-trip с Backlog.md.
+
+Если Qwen Code не видит новые MCP-инструменты — MCP-сервер закэширован. Перезапустите Qwen.
+
 ## Совместимость с Backlog.md
 
 - Формат задач: `backlog/tasks/<prefix>-<id> - <title>.md`
