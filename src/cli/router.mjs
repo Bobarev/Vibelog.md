@@ -60,7 +60,9 @@ export async function route(args) {
     case 'board':
       return runBoard(positional, flags, cwd);
     case 'search':
-      return runSearch(args.slice(1), flags, cwd);
+      // search без подкоманд: первое слово запроса попадает в subcommand,
+      // остальные — в positional; значения флагов в запрос не идут
+      return runSearch([subcommand, ...positional].filter(Boolean), flags, cwd);
     case 'instructions':
       return runInstructions(positional, flags, cwd);
     case 'mcp':
@@ -90,7 +92,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('task', colors.cyan)} create|list|view|edit|...     Управление задачами
   ${colorize('board', colors.cyan)} [--export]                   Канбан-доска
   ${colorize('browser', colors.cyan)} [--port N] [--no-open]      Веб-интерфейс
-  ${colorize('search', colors.cyan)} "query" [--json]            Поиск задач
+  ${colorize('search', colors.cyan)} "query" [--status ...]      Поиск задач с фильтрами
   ${colorize('instructions', colors.cyan)} [topic]               Инструкции для агентов
   ${colorize('mcp', colors.cyan)} start                        MCP-сервер (JSON-RPC)
   ${colorize('milestone', colors.cyan)} add|list|rename|...      Управление вехами
@@ -146,9 +148,14 @@ vibelog board [--export]
   --export — экспорт в markdown-формат`,
 
     search: `
-vibelog search "query" [--json]
+vibelog search "query" [--status S] [--type T] [--priority P] [--limit N] [--json]
 
-Поиск задач по заголовку, описанию и меткам.`,
+Поиск задач по текстовому запросу + фильтры полей.
+Запрос необязателен, если указан хотя бы один фильтр.
+  --status   — фильтр по статусу
+  --type     — фильтр по типу (bug, feature, ...)
+  --priority — фильтр по приоритету
+  --limit    — максимум результатов`,
 
     instructions: `
 vibelog instructions [topic]
