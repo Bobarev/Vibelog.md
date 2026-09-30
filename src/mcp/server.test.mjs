@@ -86,21 +86,28 @@ describe('MCP-сервер', () => {
     assert.ok(responses[0].result.capabilities.tools);
   });
 
-  it('tools/list — возвращает 6 инструментов', async () => {
+  it('tools/list — возвращает 11 инструментов', async () => {
     const responses = await callMcp([
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
       { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
     ]);
     const listResp = responses.find(r => r.id === 2);
     assert.ok(listResp);
-    assert.equal(listResp.result.tools.length, 6);
+    assert.equal(listResp.result.tools.length, 11);
     const names = listResp.result.tools.map(t => t.name);
+    // Существующие
     assert.ok(names.includes('backlog_create_task'));
     assert.ok(names.includes('backlog_list_tasks'));
     assert.ok(names.includes('backlog_view_task'));
     assert.ok(names.includes('backlog_update_status'));
     assert.ok(names.includes('backlog_search'));
     assert.ok(names.includes('backlog_ready'));
+    // Новые v1.1
+    assert.ok(names.includes('backlog_update_task'));
+    assert.ok(names.includes('backlog_manage_ac'));
+    assert.ok(names.includes('backlog_manage_dod'));
+    assert.ok(names.includes('backlog_add_comment'));
+    assert.ok(names.includes('backlog_update_dependencies'));
   });
 
   it('tools/call — backlog_create_task создаёт задачу', async () => {

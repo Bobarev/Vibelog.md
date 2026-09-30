@@ -25,23 +25,57 @@ pnpm link --global
 vibelog init "Мой проект"
 
 # Создание задачи
-vibelog task create "Добавить авторизацию" -d "Реализовать JWT-авторизацию" --ac "Токен создаётся" --ac "Токен обновляется"
+vibelog task create "Добавить авторизацию" -d "Реализовать JWT" --ac "Токен создаётся" --ac "Токен обновляется"
 
-# Доска задач (веб)
+# Список задач
+vibelog task list
+vibelog task list --ready --sort priority
+
+# Просмотр задачи
+vibelog task view LB-1
+
+# Доска задач (терминал)
 vibelog board
 
-# Браузер (kanban в браузере)
+# Веб-интерфейс (kanban с drag-and-drop)
 vibelog browser
+
+# Поиск
+vibelog search "авторизация"
+
+# Инструкции для AI-агентов
+vibelog instructions overview
 ```
+
+## MCP-инструменты
+
+11 инструментов для подключения к AI-агентам (Qwen Code, Claude Code и др.):
+
+| Инструмент | Описание |
+|---|---|
+| `backlog_create_task` | Создать задачу |
+| `backlog_list_tasks` | Список задач (фильтры: status, labels, milestone, ready, sort) |
+| `backlog_view_task` | Просмотр задачи по ID |
+| `backlog_update_status` | Обновить статус |
+| `backlog_update_task` | Универсальное обновление полей (title, priority, plan, notes, final_summary) |
+| `backlog_manage_ac` | Управление AC (add/check/uncheck/remove/list) |
+| `backlog_manage_dod` | Управление DoD (add/check/uncheck/remove/list) |
+| `backlog_add_comment` | Добавить комментарий |
+| `backlog_update_dependencies` | Управление зависимостями (add/remove, детект циклов) |
+| `backlog_search` | Поиск по текстовому запросу |
+| `backlog_ready` | Задачи, готовые к выполнению |
+
+Подключение к Qwen Code: см. [MCP-SETUP.md](MCP-SETUP.md).
 
 ## Совместимость с Backlog.md
 
-- Формат задач: `backlog/tasks/task-<id> - <title>.md`
-- Frontmatter: YAML с полями `id`, `title`, `status`, `priority`, `assignee`, `created_date`, `updated_date`, `labels`, `dependencies`, `milestone`, `references`, `documentation`
-- AC: `- [ ] #1 Текст критерия`
-- DoD: `- [ ] Критерий` в блоках `<!-- DOD:BEGIN -->...<!-- DOD:END -->`
-- Конфиг: `backlog.config.yml`
-- CLI-команды и MCP-инструменты — идентичны
+- Формат задач: `backlog/tasks/<prefix>-<id> - <title>.md`
+- Frontmatter: YAML с полями `id`, `title`, `status`, `priority`, `assignee`, `created_date`, `updated_date`, `labels`, `dependencies`, `milestone`
+- AC: `- [ ] #1 Текст критерия` в блоках `<!-- AC:BEGIN -->...<!-- AC:END -->`
+- DoD: `- [ ] #1 Текст` в блоках `<!-- DOD:BEGIN -->...<!-- DOD:END -->`
+- Комментарии: `<!-- COMMENTS:BEGIN -->...<!-- COMMENTS:END -->` с автором и timestamp
+- Конфиг: `backlog/config.yml` или `backlog.config.yml`
+- Round-trip подтверждён на 94 реальных задачах Backlog.md
 
 ## Лицензия
 

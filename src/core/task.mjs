@@ -25,6 +25,7 @@ const SECTION_MARKERS = {
   plan: { begin: '<!-- SECTION:PLAN:BEGIN -->', end: '<!-- SECTION:PLAN:END -->' },
   notes: { begin: '<!-- SECTION:NOTES:BEGIN -->', end: '<!-- SECTION:NOTES:END -->' },
   finalSummary: { begin: '<!-- SECTION:FINAL_SUMMARY:BEGIN -->', end: '<!-- SECTION:FINAL_SUMMARY:END -->' },
+  comments: { begin: '<!-- COMMENTS:BEGIN -->', end: '<!-- COMMENTS:END -->' },
 };
 
 /**
@@ -76,6 +77,7 @@ export function createTask(input, config) {
     implementationPlan: input.implementationPlan || '',
     implementationNotes: input.implementationNotes || '',
     finalSummary: input.finalSummary || '',
+    comments: input.comments || [],
   };
 }
 
@@ -197,6 +199,20 @@ export function taskToMarkdown(task) {
     sections.push(SECTION_MARKERS.finalSummary.end);
   }
 
+  if (task.comments && task.comments.length > 0) {
+    sections.push('');
+    sections.push('## Comments');
+    sections.push(SECTION_MARKERS.comments.begin);
+    for (const comment of task.comments) {
+      sections.push(`author: ${comment.author || '@agent'}`);
+      sections.push(`created: ${comment.created || formatDateTime(new Date())}`);
+      sections.push('---');
+      sections.push(comment.text || '');
+      sections.push('---');
+    }
+    sections.push(SECTION_MARKERS.comments.end);
+  }
+
   const body = sections.join('\n');
   return serializeFrontmatter(frontmatter, body);
 }
@@ -217,6 +233,7 @@ export function markdownToTask(content) {
   const plan = extractSection(body, SECTION_MARKERS.plan);
   const notes = extractSection(body, SECTION_MARKERS.notes);
   const finalSummary = extractSection(body, SECTION_MARKERS.finalSummary);
+  const comments = extractComments(body, SECTION_MARKERS.comments);
 
   return {
     // Frontmatter
@@ -246,6 +263,7 @@ export function markdownToTask(content) {
     implementationPlan: plan,
     implementationNotes: notes,
     finalSummary,
+    comments,
   };
 }
 
@@ -288,6 +306,61 @@ function extractChecklist(body, markers) {
     }
   }
   return items;
+}
+
+/**
+ * Извлекает комментарии из секции.
+ *
+ * Формат каждого комментария:
+ * ```
+ * author: @username
+ * created: 2026-01-01 12:00
+ * ---
+ * Текст комментария
+ * ---
+ * ```
+ *
+ * @param {string} body — тело задачи
+ * @param {{ begin: string, end: string }} markers — маркеры секции
+ * @returns {Array<{author: string, created: string, text: string}>} — массив комментариев
+ */
+function extractComments(body, markers) {
+  const section = extractSection(body, markers);
+  if (!section) return [];
+
+  const comments = [];
+  const lines = section.split('\n');
+  let current = null;
+
+  for (const line of lines) {
+    // Новый комментарий: author: @username
+    const authorMatch = line.match(/^author:\s*(.+)/);
+    if (authorMatch) {
+      if (current) comments.push(current);
+      current = { author: authorMatch[1].trim(), created: '', text: '' };
+      continue;
+    }
+
+    // Дата комментария
+    const createdMatch = line.match(/^created:\s*(.+)/);
+    if (createdMatch && current) {
+      current.created = createdMatch[1].trim();
+      continue;
+    }
+
+    // Разделитель --- начинает/заканчивает текст
+    if (line.trim() === '---') {
+      continue;
+    }
+
+    // Текст комментария
+    if (current && line.trim()) {
+      current.text += (current.text ? '\n' : '') + line;
+    }
+  }
+
+  if (current) comments.push(current);
+  return comments;
 }
 
 /**

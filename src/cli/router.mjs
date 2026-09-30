@@ -112,10 +112,10 @@ vibelog init [name] [--prefix LB]
 vibelog task <subcommand> [опции]
 
 Подкоманды:
-  create "Title" [-d desc] [--ac ...] [--priority ...] [--labels ...] [--deps ...] [--milestone ...]
-  list [-s status] [-l labels] [--json]
+  create "Title" [-d desc] [--ac ...] [--dod ...] [--priority ...] [--labels ...] [--deps ...] [--milestone ...]
+  list [-s status] [-l labels] [--ready] [--sort priority|created|updated] [--json]
   view <id> [--json]
-  edit <id> [--title ...] [--status ...] [--ac ...] [--check-ac N] [--dod ...]
+  edit <id> [--title ...] [--status ...] [--ac ...] [--check-ac N] [--dod ...] [--check-dod N] [--comment ...] [--assignee ...] [--remove-label ...]
   complete <id>
   archive <id>`,
 

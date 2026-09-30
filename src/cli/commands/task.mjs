@@ -20,6 +20,7 @@ import {
   updateTaskFile, completeTaskFile, archiveTaskFile,
 } from '../../core/store.mjs';
 import { loadConfig } from '../../core/config.mjs';
+import { isReady } from '../../core/deps.mjs';
 
 /**
  * Выполняет команду task с подкомандой.
@@ -123,6 +124,22 @@ function taskList(positional, flags, cwd) {
     );
   }
 
+  // Фильтр: только готовые к работе
+  if (flags.ready) {
+    tasks = tasks.filter(t => isReady(cwd, t));
+  }
+
+  // Сортировка
+  const sortField = getFlag(flags, 'sort');
+  if (sortField === 'priority') {
+    const order = { High: 0, Medium: 1, Low: 2 };
+    tasks.sort((a, b) => (order[a.priority] ?? 3) - (order[b.priority] ?? 3));
+  } else if (sortField === 'created') {
+    tasks.sort((a, b) => (b.created_date || '').localeCompare(a.created_date || ''));
+  } else if (sortField === 'updated') {
+    tasks.sort((a, b) => (b.updated_date || '').localeCompare(a.updated_date || ''));
+  }
+
   // JSON-вывод
   if (flags.json) {
     console.log(JSON.stringify({ schemaVersion: 1, kind: 'task-list', data: tasks }, null, 2));
@@ -195,10 +212,24 @@ function taskEdit(positional, flags, cwd) {
   if (flags.milestone) updates.milestone = getFlag(flags, 'milestone');
   if (flags['due-date']) updates.due_date = getFlag(flags, 'due-date');
 
-  // Массивы
+  // Assignee (полная замена)
+  const assignee = getFlagArray(flags, 'assignee');
+  if (assignee.length > 0) updates.assignee = assignee;
+
+  // Массивы labels (полная замена через --labels)
   const newLabels = getFlagArray(flags, 'labels');
   if (newLabels.length > 0) updates.labels = newLabels;
 
+  // Удаление конкретного label (--remove-label)
+  if (flags['remove-label']) {
+    const task = getTask(cwd, id);
+    if (task) {
+      const toRemove = getFlag(flags, 'remove-label').toLowerCase();
+      updates.labels = (task.labels || []).filter(l => l.toLowerCase() !== toRemove);
+    }
+  }
+
+  // Массивы deps
   const newDeps = getFlagArray(flags, 'deps');
   if (newDeps.length > 0) updates.dependencies = newDeps;
 
@@ -249,7 +280,7 @@ function taskEdit(positional, flags, cwd) {
     }
   }
 
-  // DoD
+  // DoD: добавление
   const newDod = getFlagArray(flags, 'dod');
   if (newDod.length > 0) {
     const task = getTask(cwd, id);
@@ -258,6 +289,41 @@ function taskEdit(positional, flags, cwd) {
         ...task.definitionOfDone,
         ...newDod.map(text => ({ text, checked: false })),
       ];
+    }
+  }
+
+  // DoD: отметка
+  if (flags['check-dod']) {
+    const task = getTask(cwd, id);
+    if (task) {
+      const idx = parseInt(getFlag(flags, 'check-dod'), 10) - 1;
+      if (idx >= 0 && idx < task.definitionOfDone.length) {
+        task.definitionOfDone[idx].checked = true;
+        updates.definitionOfDone = task.definitionOfDone;
+      }
+    }
+  }
+
+  // DoD: снятие отметки
+  if (flags['uncheck-dod']) {
+    const task = getTask(cwd, id);
+    if (task) {
+      const idx = parseInt(getFlag(flags, 'uncheck-dod'), 10) - 1;
+      if (idx >= 0 && idx < task.definitionOfDone.length) {
+        task.definitionOfDone[idx].checked = false;
+        updates.definitionOfDone = task.definitionOfDone;
+      }
+    }
+  }
+
+  // DoD: удаление
+  if (flags['remove-dod']) {
+    const task = getTask(cwd, id);
+    if (task) {
+      const idx = parseInt(getFlag(flags, 'remove-dod'), 10) - 1;
+      if (idx >= 0 && idx < task.definitionOfDone.length) {
+        updates.definitionOfDone = task.definitionOfDone.filter((_, i) => i !== idx);
+      }
     }
   }
 
@@ -272,6 +338,20 @@ function taskEdit(positional, flags, cwd) {
     const task = getTask(cwd, id);
     if (task) {
       updates.implementationNotes = (task.implementationNotes || '') + '\n' + getFlag(flags, 'append-notes');
+    }
+  }
+
+  // Комментарий
+  if (flags.comment) {
+    const task = getTask(cwd, id);
+    if (task) {
+      const author = getFlag(flags, 'comment-author', '@agent');
+      const now = new Date();
+      const created = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      updates.comments = [
+        ...(task.comments || []),
+        { author, created, text: getFlag(flags, 'comment') },
+      ];
     }
   }
 
