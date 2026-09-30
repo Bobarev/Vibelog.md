@@ -7,8 +7,10 @@
  *
  * Ошибки ловим здесь, чтобы показать пользователю понятное сообщение
  * (а не стектрейс Node.js), и выйти с ненулевым кодом.
+ *
+ * Импорт идёт из dist/ — перед использованием нужна сборка `pnpm build`.
  */
-import { route } from '../src/cli/router.mjs';
+import { route } from '../dist/cli/router.mjs';
 
 route(process.argv.slice(2)).catch(err => {
   console.error(`Ошибка: ${err.message}`);

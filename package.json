@@ -7,7 +7,9 @@
     "vibelog": "./bin/vibelog.mjs"
   },
   "scripts": {
-    "test": "node --test",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm build && node --test src",
     "lint": "node --check bin/vibelog.mjs"
   },
   "engines": {
@@ -15,5 +17,9 @@
   },
   "packageManager": "pnpm@10.7.1",
   "license": "MIT",
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  }
 }
