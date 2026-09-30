@@ -1,0 +1,28 @@
+project_name: Vibelog.md
+task_prefix: VL
+default_status: To Do
+statuses:
+  - To Do
+  - In Progress
+  - Review
+  - Done
+  - Blocked
+labels: []
+priorities:
+  - High
+  - Medium
+  - Low
+definition_of_done:
+  - Тесты проходят
+  - Документация обновлена
+  - Нет регрессий
+date_format: 'yyyy-mm-dd hh:mm'
+default_editor: ''
+auto_open_browser: true
+default_port: 6420
+remote_operations: true
+auto_commit: false
+bypass_git_hooks: false
+check_active_branches: true
+active_branch_days: 30
+max_column_width: 20
