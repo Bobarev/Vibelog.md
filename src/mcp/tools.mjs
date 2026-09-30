@@ -132,7 +132,7 @@ export function listTools() {
           id: { type: 'string', description: 'ID задачи' },
           action: { type: 'string', enum: ['add', 'check', 'uncheck', 'remove', 'list'], description: 'Действие' },
           text: { type: 'string', description: 'Текст критерия (для action=add)' },
-          index: { type: 'number', description: 'Номер критерия, начиная с 1 (для check/uncheck/remove)' },
+          index: { anyOf: [{ type: 'number' }, { type: 'array', items: { type: 'number' } }], description: 'Номер(а) критерия с 1, массив — для check/uncheck/remove' },
         },
         required: ['id', 'action'],
       },
@@ -146,7 +146,7 @@ export function listTools() {
           id: { type: 'string', description: 'ID задачи' },
           action: { type: 'string', enum: ['add', 'check', 'uncheck', 'remove', 'list'], description: 'Действие' },
           text: { type: 'string', description: 'Текст критерия (для action=add)' },
-          index: { type: 'number', description: 'Номер критерия, начиная с 1 (для check/uncheck/remove)' },
+          index: { anyOf: [{ type: 'number' }, { type: 'array', items: { type: 'number' } }], description: 'Номер(а) критерия с 1, массив — для check/uncheck/remove' },
         },
         required: ['id', 'action'],
       },
@@ -599,34 +599,40 @@ function manageChecklist(args, cwd, field) {
       return `Добавлен критерий #${list.length}: ${args.text}`;
     }
 
-    case 'check': {
-      const idx = args.index - 1;
-      if (idx < 0 || idx >= list.length) {
-        throw new Error(`Неверный индекс: ${args.index}. Доступно: 1-${list.length}`);
-      }
-      list[idx].checked = true;
-      updateTaskFile(cwd, args.id, { [field]: list });
-      return `Отмечен критерий #${args.index}: ${list[idx].text}`;
-    }
-
+    case 'check':
     case 'uncheck': {
-      const idx = args.index - 1;
-      if (idx < 0 || idx >= list.length) {
-        throw new Error(`Неверный индекс: ${args.index}. Доступно: 1-${list.length}`);
+      // index: одиночный номер или массив (как acceptanceCriteriaCheck оригинала)
+      const indexes = (Array.isArray(args.index) ? args.index : [args.index]).map(Number);
+      for (const i of indexes) {
+        const idx = i - 1;
+        if (!Number.isInteger(idx) || idx < 0 || idx >= list.length) {
+          throw new Error(`Неверный индекс: ${i}. Доступно: 1-${list.length}`);
+        }
       }
-      list[idx].checked = false;
+      const checked = args.action === 'check';
+      for (const i of indexes) {
+        list[i - 1].checked = checked;
+      }
       updateTaskFile(cwd, args.id, { [field]: list });
-      return `Снята отметка с критерия #${args.index}: ${list[idx].text}`;
+      return checked
+        ? `Отмечены критерии #${indexes.join(', #')}`
+        : `Сняты отметки с критериев #${indexes.join(', #')}`;
     }
 
     case 'remove': {
-      const idx = args.index - 1;
-      if (idx < 0 || idx >= list.length) {
-        throw new Error(`Неверный индекс: ${args.index}. Доступно: 1-${list.length}`);
+      // Несколько индексов — удаляем по убыванию, чтобы не сдвигать позиции
+      const indexes = (Array.isArray(args.index) ? args.index : [args.index]).map(Number);
+      for (const i of indexes) {
+        const idx = i - 1;
+        if (!Number.isInteger(idx) || idx < 0 || idx >= list.length) {
+          throw new Error(`Неверный индекс: ${i}. Доступно: 1-${list.length}`);
+        }
       }
-      const removed = list.splice(idx, 1)[0];
+      for (const i of [...indexes].sort((a, b) => b - a)) {
+        list.splice(i - 1, 1);
+      }
       updateTaskFile(cwd, args.id, { [field]: list });
-      return `Удалён критерий #${args.index}: ${removed.text}`;
+      return `Удалены критерии #${indexes.join(', #')}`;
     }
 
     default:

@@ -165,6 +165,24 @@ function taskList(positional, flags, cwd) {
     tasks.sort((a, b) => (b.updated_date || '').localeCompare(a.updated_date || ''));
   }
 
+  // Обрезка после фильтрации и сортировки (как в оригинале)
+  if (flags.skip !== undefined) {
+    const skip = Number(getFlag(flags, 'skip'));
+    if (!Number.isInteger(skip) || skip < 0) {
+      printError(`--skip должен быть целым числом ≥ 0, получено: ${getFlag(flags, 'skip')}`);
+      return;
+    }
+    tasks = tasks.slice(skip);
+  }
+  if (flags.limit !== undefined) {
+    const limit = Number(getFlag(flags, 'limit'));
+    if (!Number.isInteger(limit) || limit < 0) {
+      printError(`--limit должен быть целым числом ≥ 0, получено: ${getFlag(flags, 'limit')}`);
+      return;
+    }
+    tasks = tasks.slice(0, limit);
+  }
+
   // JSON-вывод
   if (flags.json) {
     console.log(JSON.stringify({ schemaVersion: 1, kind: 'task-list', data: tasks }, null, 2));
@@ -221,6 +239,31 @@ function taskView(positional, flags, cwd) {
  * @param {Record<string, unknown>} flags
  * @param {string} cwd
  */
+/**
+ * Разбирает список индексов через запятую (--check-ac 1,3).
+ *
+ * Невалидные индексы: printError, валидные возвращаются (0-based).
+ *
+ * @param {string} raw — значение флага
+ * @param {number} max — максимум (длина списка)
+ * @param {string} label — для сообщений об ошибках (AC/DoD)
+ * @returns {number[]}
+ */
+function parseIndexes(raw, max, label) {
+  const result = [];
+  for (const part of String(raw).split(',')) {
+    const s = part.trim();
+    if (!s) continue;
+    const n = Number(s);
+    if (!Number.isInteger(n) || n < 1 || n > max) {
+      printError(`Неверный индекс ${s} (${label}: допустимо 1-${max})`);
+      continue;
+    }
+    result.push(n - 1);
+  }
+  return result;
+}
+
 function taskEdit(positional, flags, cwd) {
   const id = positional[0];
   if (!id) {
@@ -278,27 +321,27 @@ function taskEdit(positional, flags, cwd) {
     }
   }
 
-  // AC: отметка
+  // AC: отметка (несколько индексов через запятую: --check-ac 1,3)
   if (flags['check-ac']) {
     const task = getTask(cwd, id);
     if (task) {
-      const idx = parseInt(getFlag(flags, 'check-ac'), 10) - 1;
-      if (idx >= 0 && idx < task.acceptanceCriteria.length) {
-        task.acceptanceCriteria[idx].checked = true;
-        updates.acceptanceCriteria = task.acceptanceCriteria;
+      const list = task.acceptanceCriteria;
+      for (const i of parseIndexes(getFlag(flags, 'check-ac'), list.length, 'AC')) {
+        list[i].checked = true;
       }
+      updates.acceptanceCriteria = list;
     }
   }
 
-  // AC: снятие отметки
+  // AC: снятие отметки (несколько индексов: --uncheck-ac 1,2)
   if (flags['uncheck-ac']) {
     const task = getTask(cwd, id);
     if (task) {
-      const idx = parseInt(getFlag(flags, 'uncheck-ac'), 10) - 1;
-      if (idx >= 0 && idx < task.acceptanceCriteria.length) {
-        task.acceptanceCriteria[idx].checked = false;
-        updates.acceptanceCriteria = task.acceptanceCriteria;
+      const list = task.acceptanceCriteria;
+      for (const i of parseIndexes(getFlag(flags, 'uncheck-ac'), list.length, 'AC')) {
+        list[i].checked = false;
       }
+      updates.acceptanceCriteria = list;
     }
   }
 
@@ -325,27 +368,27 @@ function taskEdit(positional, flags, cwd) {
     }
   }
 
-  // DoD: отметка
+  // DoD: отметка (несколько индексов: --check-dod 1,2)
   if (flags['check-dod']) {
     const task = getTask(cwd, id);
     if (task) {
-      const idx = parseInt(getFlag(flags, 'check-dod'), 10) - 1;
-      if (idx >= 0 && idx < task.definitionOfDone.length) {
-        task.definitionOfDone[idx].checked = true;
-        updates.definitionOfDone = task.definitionOfDone;
+      const list = task.definitionOfDone;
+      for (const i of parseIndexes(getFlag(flags, 'check-dod'), list.length, 'DoD')) {
+        list[i].checked = true;
       }
+      updates.definitionOfDone = list;
     }
   }
 
-  // DoD: снятие отметки
+  // DoD: снятие отметки (несколько индексов: --uncheck-dod 1,2)
   if (flags['uncheck-dod']) {
     const task = getTask(cwd, id);
     if (task) {
-      const idx = parseInt(getFlag(flags, 'uncheck-dod'), 10) - 1;
-      if (idx >= 0 && idx < task.definitionOfDone.length) {
-        task.definitionOfDone[idx].checked = false;
-        updates.definitionOfDone = task.definitionOfDone;
+      const list = task.definitionOfDone;
+      for (const i of parseIndexes(getFlag(flags, 'uncheck-dod'), list.length, 'DoD')) {
+        list[i].checked = false;
       }
+      updates.definitionOfDone = list;
     }
   }
 

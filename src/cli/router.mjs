@@ -151,9 +151,9 @@ vibelog task <subcommand> [опции]
 
 Подкоманды:
   create "Title" [-d desc] [--ac ...] [--dod ...] [--priority ...] [--labels ...] [--deps ...] [--milestone ...] [--type ...] [--plan ...] [--notes ...]
-  list [-s status] [-l labels] [--type type] [--ready] [--sort priority|created|updated] [--json]
+  list [-s status] [-l labels] [--type type] [--ready] [--sort priority|created|updated] [--limit N] [--skip N] [--json]
   view <id> [--json]
-  edit <id> [--title ...] [--status ...] [--type ...] [--ac ...] [--check-ac N] [--dod ...] [--check-dod N] [--comment ...] [--assignee ...] [--remove-label ...] [--plan ...] [--notes ...] [--append-notes ...]
+  edit <id> [--title ...] [--status ...] [--type ...] [--ac ...] [--check-ac N[,N]] [--dod ...] [--check-dod N[,N]] [--comment ...] [--assignee ...] [--remove-label ...] [--plan ...] [--notes ...] [--append-notes ...]
   complete <id>
   archive <id>`,
 
