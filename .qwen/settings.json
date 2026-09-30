@@ -1,0 +1,13 @@
+{
+  "ui": {
+    "theme": "Qwen Light"
+  },
+  "mcpServers": {
+    "vibelog": {
+      "command": "vibelog",
+      "args": ["mcp", "start"],
+      "trust": true
+    }
+  },
+  "$version": 4
+}
