@@ -123,6 +123,78 @@ describe('task.mjs — модель задачи', () => {
     assert.deepStrictEqual(parsed.labels, ['feature']);
     assert.deepStrictEqual(parsed.dependencies, ['tst-1']);
   });
+
+  // --- Баги совместимости PLAN-09.2 ---
+
+  it('Баг A: ## Final Summary без (Optional)', () => {
+    const task = createTask({ id: 'tst-10', title: 'Test', finalSummary: 'Итог' }, { default_status: 'To Do' });
+    const md = taskToMarkdown(task);
+    assert.ok(md.includes('## Final Summary\n'), 'заголовок Final Summary без (Optional)');
+    assert.ok(!md.includes('Final Summary (Optional)'), 'не должно содержать (Optional)');
+  });
+
+  it('Баг A: ## Implementation Plan и Notes без (Optional)', () => {
+    const task = createTask({
+      id: 'tst-11', title: 'Test',
+      implementationPlan: 'План', implementationNotes: 'Заметки',
+    }, { default_status: 'To Do' });
+    const md = taskToMarkdown(task);
+    assert.ok(md.includes('## Implementation Plan\n'));
+    assert.ok(!md.includes('Implementation Plan (Optional)'));
+    assert.ok(md.includes('## Implementation Notes\n'));
+    assert.ok(!md.includes('Implementation Notes (Optional)'));
+  });
+
+  it('Баг C: frontmatter содержит полный набор полей', () => {
+    const task = createTask({ id: 'tst-12', title: 'Test' }, { default_status: 'To Do' });
+    const md = taskToMarkdown(task);
+    // Пустые массивы пишутся
+    assert.ok(md.includes('assignee: []'), 'assignee: []');
+    assert.ok(md.includes('labels: []'), 'labels: []');
+    assert.ok(md.includes('dependencies: []'), 'dependencies: []');
+    assert.ok(md.includes('references: []'), 'references: []');
+    // Пустые строки пишутся
+    assert.ok(md.includes('reporter:'), 'reporter:');
+    assert.ok(md.includes('due_date:'), 'due_date:');
+    assert.ok(md.includes('milestone:'), 'milestone:');
+    // ordinal пишется
+    assert.ok(md.includes('ordinal: 0'), 'ordinal: 0');
+  });
+
+  it('Баг C: priority в lowercase при записи', () => {
+    const task = createTask({ id: 'tst-13', title: 'Test', priority: 'High' }, { default_status: 'To Do' });
+    const md = taskToMarkdown(task);
+    assert.ok(md.includes('priority: high'), 'priority: high (lowercase)');
+    assert.ok(!md.includes('priority: High'), 'не должно быть High с заглавной');
+  });
+
+  it('Баг C: priority нормализуется при чтении (round-trip)', () => {
+    const task = createTask({ id: 'tst-14', title: 'Test', priority: 'Medium' }, { default_status: 'To Do' });
+    const md = taskToMarkdown(task);
+    const parsed = markdownToTask(md);
+    assert.equal(parsed.priority, 'Medium', 'round-trip сохраняет Medium');
+  });
+
+  it('Баг C: round-trip с полным frontmatter', () => {
+    const config = { default_status: 'To Do' };
+    const original = createTask({
+      id: 'tst-15', title: 'Full round-trip',
+      priority: 'High', assignee: ['@dev'], labels: ['bug'],
+      dependencies: ['tst-1'], references: ['https://example.com'],
+      milestone: 'v1.0', reporter: '@pavel', due_date: '2026-12-31',
+    }, config);
+    const md = taskToMarkdown(original);
+    const parsed = markdownToTask(md);
+
+    assert.equal(parsed.priority, 'High');
+    assert.deepStrictEqual(parsed.assignee, ['@dev']);
+    assert.deepStrictEqual(parsed.labels, ['bug']);
+    assert.deepStrictEqual(parsed.dependencies, ['tst-1']);
+    assert.deepStrictEqual(parsed.references, ['https://example.com']);
+    assert.equal(parsed.milestone, 'v1.0');
+    assert.equal(parsed.reporter, '@pavel');
+    assert.equal(parsed.due_date, '2026-12-31');
+  });
 });
 
 describe('id.mjs — генерация ID', () => {

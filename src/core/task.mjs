@@ -54,7 +54,7 @@ export function createTask(input, config) {
     id: input.id,
     title: input.title,
     status: input.status || config.default_status || 'To Do',
-    priority: input.priority || '',
+    priority: normalizePriority(input.priority),
     assignee: input.assignee || [],
     reporter: input.reporter || '',
     created_date: input.created_date || now,
@@ -106,28 +106,29 @@ export function createTask(input, config) {
  * @returns {string} — полное содержимое markdown-файла
  */
 export function taskToMarkdown(task) {
-  // Фронтматтер — все поля кроме тела
+  // Фронтматтер — полный набор полей, как в оригинале Backlog.md.
+  // Пустые массивы пишутся как `[]`, priority — lowercase.
   const frontmatter = {
     id: task.id,
     title: task.title,
     status: task.status,
+    assignee: task.assignee || [],
+    reporter: task.reporter || '',
+    created_date: task.created_date,
+    updated_date: task.updated_date,
+    due_date: task.due_date || '',
+    labels: task.labels || [],
+    dependencies: task.dependencies || [],
+    milestone: task.milestone || '',
+    references: task.references || [],
+    priority: task.priority ? task.priority.toLowerCase() : '',
+    type: task.type || '',
+    project: task.project || '',
+    parent_task_id: task.parent_task_id || '',
+    ordinal: task.ordinal || 0,
+    documentation: task.documentation || [],
+    modified_files: task.modified_files || [],
   };
-  if (task.priority) frontmatter.priority = task.priority;
-  if (task.assignee && task.assignee.length > 0) frontmatter.assignee = task.assignee;
-  if (task.reporter) frontmatter.reporter = task.reporter;
-  frontmatter.created_date = task.created_date;
-  frontmatter.updated_date = task.updated_date;
-  if (task.due_date) frontmatter.due_date = task.due_date;
-  if (task.labels && task.labels.length > 0) frontmatter.labels = task.labels;
-  if (task.dependencies && task.dependencies.length > 0) frontmatter.dependencies = task.dependencies;
-  if (task.milestone) frontmatter.milestone = task.milestone;
-  if (task.type) frontmatter.type = task.type;
-  if (task.project) frontmatter.project = task.project;
-  if (task.parent_task_id) frontmatter.parent_task_id = task.parent_task_id;
-  if (task.ordinal) frontmatter.ordinal = task.ordinal;
-  if (task.references && task.references.length > 0) frontmatter.references = task.references;
-  if (task.documentation && task.documentation.length > 0) frontmatter.documentation = task.documentation;
-  if (task.modified_files && task.modified_files.length > 0) frontmatter.modified_files = task.modified_files;
 
   // Тело — собираем секции
   const sections = [];
@@ -177,7 +178,7 @@ export function taskToMarkdown(task) {
 
   if (task.implementationPlan) {
     sections.push('');
-    sections.push('## Implementation Plan (Optional)');
+    sections.push('## Implementation Plan');
     sections.push(SECTION_MARKERS.plan.begin);
     sections.push(task.implementationPlan);
     sections.push(SECTION_MARKERS.plan.end);
@@ -185,7 +186,7 @@ export function taskToMarkdown(task) {
 
   if (task.implementationNotes) {
     sections.push('');
-    sections.push('## Implementation Notes (Optional)');
+    sections.push('## Implementation Notes');
     sections.push(SECTION_MARKERS.notes.begin);
     sections.push(task.implementationNotes);
     sections.push(SECTION_MARKERS.notes.end);
@@ -193,7 +194,7 @@ export function taskToMarkdown(task) {
 
   if (task.finalSummary) {
     sections.push('');
-    sections.push('## Final Summary (Optional)');
+    sections.push('## Final Summary');
     sections.push(SECTION_MARKERS.finalSummary.begin);
     sections.push(task.finalSummary);
     sections.push(SECTION_MARKERS.finalSummary.end);
@@ -240,7 +241,7 @@ export function markdownToTask(content) {
     id: data.id || '',
     title: data.title || '',
     status: data.status || 'To Do',
-    priority: data.priority || '',
+    priority: normalizePriority(data.priority),
     assignee: Array.isArray(data.assignee) ? data.assignee : (data.assignee ? [data.assignee] : []),
     reporter: data.reporter || '',
     created_date: data.created_date || '',
@@ -361,6 +362,19 @@ function extractComments(body, markers) {
 
   if (current) comments.push(current);
   return comments;
+}
+
+/**
+ * Нормализует приоритет к канонической форме (первая буква заглавная).
+ *
+ * В файле хранится lowercase (`high`), в API используется `High`.
+ *
+ * @param {string} raw — приоритет из frontmatter
+ * @returns {string}
+ */
+function normalizePriority(raw) {
+  if (!raw) return '';
+  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
 }
 
 /**
