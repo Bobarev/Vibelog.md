@@ -1,0 +1,19 @@
+{
+  "name": "vibelog.md",
+  "version": "0.1.0",
+  "description": "Markdown-нативный таск-менеджер для git-репозиториев, совместимый с Backlog.md. Чистый Node.js, без нативных зависимостей.",
+  "type": "module",
+  "bin": {
+    "vibelog": "./bin/vibelog.mjs"
+  },
+  "scripts": {
+    "test": "node --test",
+    "lint": "node --check bin/vibelog.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.7.1",
+  "license": "MIT",
+  "private": true
+}

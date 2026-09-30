@@ -18,11 +18,19 @@
 1. **Zero runtime dependencies** — только встроенные модули Node.js (`fs`, `path`, `http`, `url`, `readline`, `crypto`, `child_process`).
 2. **ES Modules** — `"type": "module"`, все файлы `.mjs`.
 3. **Максимальная совместимость с Backlog.md:**
-   - Формат задач: `backlog/tasks/task-<id> - <title>.md`
-   - Frontmatter: YAML с полями `id`, `title`, `status`, `priority`, `assignee`, `created_date`, `updated_date`, `labels`, `dependencies`, `milestone`, `references`, `documentation`
-   - Формат AC: `- [ ] #1 Criterion text`
-   - Формат DoD: `- [ ] Criterion text` с маркерами `<!-- DOD:BEGIN --> ... <!-- DOD:END -->`
-   - Конфиг: `backlog.config.yml` (YAML)
+   - Формат задач: `backlog/tasks/<prefix>-<id> - <title>.md` (где `<prefix>` — `task_prefix` из конфига, например `back`)
+   - Frontmatter: YAML с полями `id`, `title`, `status`, `priority`, `assignee[]`, `reporter`, `created_date`, `updated_date`, `due_date`, `labels[]`, `dependencies[]`, `milestone`, `type`, `project`, `parent_task_id`, `ordinal`, `references[]`, `documentation[]`, `modified_files[]`
+   - Тело задачи разделено секциями через HTML-маркеры:
+     - `<!-- SECTION:DESCRIPTION:BEGIN -->...<!-- SECTION:DESCRIPTION:END -->`
+     - `<!-- AC:BEGIN -->...<!-- AC:END -->`
+     - `<!-- DOD:BEGIN -->...<!-- DOD:END -->`
+     - `<!-- SECTION:PLAN:BEGIN -->...<!-- SECTION:PLAN:END -->`
+     - `<!-- SECTION:NOTES:BEGIN -->...<!-- SECTION:NOTES:END -->`
+     - `<!-- SECTION:FINAL_SUMMARY:BEGIN -->...<!-- SECTION:FINAL_SUMMARY:END -->`
+   - Формат AC: `- [ ] #1 Текст критерия` (нумерованные чеклисты)
+   - Формат DoD: `- [ ] #1 Текст критерия` (нумерованные чеклисты)
+   - Конфиг: `backlog/config.yml` (внутри папки backlog) ИЛИ `backlog.config.yml` (корень проекта)
+   - Структура `backlog/`: `tasks/`, `completed/`, `drafts/`, `docs/`, `decisions/`, `milestones/`, `config.yml`
    - CLI-команды и флаги — идентичны
    - MCP-инструменты — идентичны
 4. **Git-native** — задачи в репозитории.
@@ -89,7 +97,7 @@ Vibelog.md/
 └── example-backlog/
     ├── backlog.config.yml
     └── tasks/
-        └── task-LB-1 - ... .md
+        └── LB-1 - Example Task.md
 ```
 
 ## Технические ограничения
