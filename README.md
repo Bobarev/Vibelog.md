@@ -195,4 +195,4 @@ vibelog init "Name" --no-skills       # не создавать команды
 
 ## Лицензия
 
-MIT
+[Unlicense](http://unlicense.org) (public domain)

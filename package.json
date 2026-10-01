@@ -6,19 +6,25 @@
   "bin": {
     "vibelog": "./bin/vibelog.mjs"
   },
+  "files": [
+    "bin",
+    "dist",
+    "templates",
+    "web/dist"
+  ],
   "scripts": {
     "build": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
     "web:build": "pnpm --dir web build",
     "typecheck": "tsc --noEmit",
     "test": "pnpm build && node --test src",
-    "lint": "node --check bin/vibelog.mjs"
+    "lint": "node --check bin/vibelog.mjs",
+    "prepublishOnly": "pnpm build"
   },
   "engines": {
     "node": ">=20"
   },
   "packageManager": "pnpm@10.7.1",
-  "license": "MIT",
-  "private": true,
+  "license": "Unlicense",
   "devDependencies": {
     "@types/node": "^26.6.3",
     "typescript": "^7.0.2"
