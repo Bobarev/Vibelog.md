@@ -1,11 +1,11 @@
 ---
 id: VL-23
 title: Миграция ядра src/core на TypeScript
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-01 02:22'
-updated_date: '2026-10-01 02:34'
+updated_date: '2026-10-01 03:03'
 due_date: ''
 labels:
   - typescript
@@ -29,9 +29,9 @@ modified_files: []
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Все 15 модулей src/core/*.mjs (config, yaml, frontmatter, markdown, task, store, deps, id, paths, git, search, milestone, document, draft, decision) переведены на TypeScript; pnpm typecheck без ошибок, strict-режим без as any и необоснованных any
-- [ ] #2 Формат данных Backlog.md не изменился: round-trip задач/вех/решений сохраняет все поля (совместимость frontmatter, AC/DoD, статусов) — существующие compat-тесты проходят против dist-сборки
-- [ ] #3 Тесты ядра зелёные: pnpm test проходит по модулям core (схема запуска тестов против dist определена в VL-22)
+- [x] #1 Все 15 модулей src/core/*.mjs (config, yaml, frontmatter, markdown, task, store, deps, id, paths, git, search, milestone, document, draft, decision) переведены на TypeScript; pnpm typecheck без ошибок, strict-режим без as any и необоснованных any
+- [x] #2 Формат данных Backlog.md не изменился: round-trip задач/вех/решений сохраняет все поля (совместимость frontmatter, AC/DoD, статусов) — существующие compat-тесты проходят против dist-сборки
+- [x] #3 Тесты ядра зелёные: pnpm test проходит по модулям core (схема запуска тестов против dist определена в VL-22)
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -61,3 +61,22 @@ pnpm typecheck && pnpm build && pnpm test — без падений; grep -rn "\
 - git.mjs/execSync, process.cwd() — типы из @types/node; логику не менять
 - Смешанное состояние specifier'ов (.js у мигрированных, .mjs у остальных) — норма перехода; финальный grep обязателен
 <!-- SECTION:PLAN:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author: @agent
+created: 2026-10-01 03:03
+---
+Фаза 3 (Code) VL-23 выполнена 2026-10-01. Все 15 модулей src/core мигрированы на TypeScript (git rm .mjs + новые .ts, strict-режим).
+
+Порядок миграции (слои зависимостей): 1) yaml, markdown, frontmatter, id, paths, git; 2) config; 3) task, deps; 4) store; 5) search, milestone, document, draft, decision.
+
+Контракты данных: добавлены интерфейсы Task/TaskInput/ChecklistItem/TaskComment (task.ts), Milestone, Document, Decision, DraftEntry, SearchFilters — используются в VL-24 для типизации CLI/MCP.
+
+Механика specifier'ов: в не-test .mjs/.ts файлах './X.mjs' → './X.js' (кроме './commands/X.mjs' — CLI-команды, защита от ложных срабатываний); тесты переведены на импорт из dist ('../../dist/core/X.js'). Дист-сборка: build чистит dist перед tsc (фикс осиротевших .mjs).
+
+Особенности типизации: касты listTasks as Task[] в deps.ts (JSDoc store давал object[]); касты data.X as string/number в markdownTo* (YAML unknown); config.default_status/definition_of_done/task_prefix — касты на границе без смены рантайма; findGitRoot в paths.ts не вызывается в оригинале — импорт сохранён с комментарием (void findGitRoot).
+
+Проверки: pnpm typecheck — 0 ошибок strict; pnpm test — 306/306; grep: .mjs specifier'ы в .ts отсутствуют, импортёров core на .mjs нет, в src/core только *.test.mjs; dist/core: 15 .js / 0 .mjs; MCP round-trip — 21 инструмент; --version и milestone list работают.
+---
+<!-- COMMENTS:END -->
