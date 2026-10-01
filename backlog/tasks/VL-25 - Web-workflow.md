@@ -1,11 +1,11 @@
 ---
 id: VL-25
 title: Web workflow
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-01 11:30'
-updated_date: '2026-10-01 11:30'
+updated_date: '2026-10-01 14:48'
 due_date: ''
 labels: []
 dependencies: []
@@ -204,7 +204,18 @@ Qwen должен:
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
+
+## Final Summary
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Эпик выполнен 2026-10-01. Три подзадачи закрыты:
+
+- **VL-26** (коммит 6b0af65): `vibelog browser` отдаёт React UI из `web/dist` (Vite + React + Tailwind + shadcn), фолбэк на inline HTML. web/dist коммитится в git.
+- **VL-27** (коммит 66361fd): Kanban-доска портирована из шаблона arhamkhnz на @dnd-kit/react ^0.5; колонки — статусы из конфига; drag-and-drop выполняет PATCH /api/tasks/:id; отчёт-комментарий виден на карточке.
+- **VL-28** (коммит b494d07): оркестратор — перенос в Spec/In Progress/Review запускает фазу qwen (spec/plan/code) через POST /api/tasks/:id/trigger: spawn `qwen <промпт> --approval-mode yolo` с headless-промптом из templates/qwen-commands/phase-*.md; guard двойного запуска, поллинг → авто-refresh доски. Статусы конфига расширены: Backlog, Spec, Planned.
+
+Проверки: pnpm test 318/318, pnpm web:build OK, ручная верификация API-цикла (202/409/exitCode:0/404) и доски в браузере (chrome-devtools MCP). Итого эпика: 3 задачи Done, 9 коммитов (feat + docs(task)).
+<!-- SECTION:FINAL_SUMMARY:END -->
