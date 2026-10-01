@@ -15,8 +15,9 @@
 import { mkdirSync, writeFileSync, existsSync, readFileSync, copyFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs, getFlag } from '../args.mjs';
-import { printSuccess, printInfo, printError } from '../ui.mjs';
+import { getFlag } from '../args.js';
+import type { FlagValues } from '../args.js';
+import { printSuccess, printInfo, printError } from '../ui.js';
 import { defaultConfig } from '../../core/config.js';
 import { stringifyYaml } from '../../core/yaml.js';
 import { findBacklogDir } from '../../core/paths.js';
@@ -27,13 +28,13 @@ const templatesDir = join(__dirname, '..', '..', '..', 'templates', 'qwen-comman
 /**
  * Выполняет команду init.
  *
- * @param {string[]} args — позиционные аргументы (после "init")
- * @param {Record<string, unknown>} flags — флаги
- * @param {string} cwd — текущая рабочая директория
+ * @param args — позиционные аргументы (после "init")
+ * @param flags — флаги
+ * @param cwd — текущая рабочая директория
  */
-export async function runInit(args, flags, cwd) {
-  // Имя проекта — всё до первого флага (args уже不含 "init")
-  const nameParts = [];
+export async function runInit(args: string[], flags: FlagValues, cwd: string): Promise<void> {
+  // Имя проекта — всё до первого флага (args уже не содержит "init")
+  const nameParts: string[] = [];
   for (const arg of args) {
     if (arg.startsWith('-')) break;
     nameParts.push(arg);
@@ -82,10 +83,10 @@ export async function runInit(args, flags, cwd) {
 /**
  * Обрабатывает флаг --skills: создаёт команды /vibelog:* в .qwen/commands/.
  *
- * @param {Record<string, unknown>} flags — флаги CLI
- * @param {string} cwd — текущая рабочая директория
+ * @param flags — флаги CLI
+ * @param cwd — текущая рабочая директория
  */
-function handleSkills(flags, cwd) {
+function handleSkills(flags: FlagValues, cwd: string): void {
   // --no-skills — отключает, даже если default изменится
   if (flags['no-skills']) return;
 
@@ -135,15 +136,15 @@ function handleSkills(flags, cwd) {
  * подхватил сервер без ручной настройки. Отключение: --no-mcp.
  * Merge, а не replace: чужие ключи (ui, $version, другие mcpServers) сохраняются.
  *
- * @param {Record<string, unknown>} flags — флаги командной строки
- * @param {string} cwd — текущая рабочая директория
+ * @param flags — флаги командной строки
+ * @param cwd — текущая рабочая директория
  */
-function handleMcpSetup(flags, cwd) {
+function handleMcpSetup(flags: FlagValues, cwd: string): void {
   // --no-mcp — отключает автонастройку
   if (flags['no-mcp']) return;
 
   const settingsPath = join(cwd, '.qwen', 'settings.json');
-  let settings = {};
+  let settings: Record<string, unknown> = {};
 
   if (existsSync(settingsPath)) {
     try {
@@ -159,7 +160,7 @@ function handleMcpSetup(flags, cwd) {
   if (!settings.mcpServers || typeof settings.mcpServers !== 'object') {
     settings.mcpServers = {};
   }
-  settings.mcpServers.vibelog = {
+  (settings.mcpServers as Record<string, unknown>).vibelog = {
     command: 'vibelog',
     args: ['mcp', 'start'],
     trust: true,
@@ -173,9 +174,9 @@ function handleMcpSetup(flags, cwd) {
 /**
  * Дописывает секцию VIBELOG:SKILLS в AGENTS.md (если её ещё нет).
  *
- * @param {string} cwd — текущая рабочая директория
+ * @param cwd — текущая рабочая директория
  */
-function updateAgentsMd(cwd) {
+function updateAgentsMd(cwd: string): void {
   const agentsPath = join(cwd, 'AGENTS.md');
   const section = `<!-- VIBELOG:SKILLS:BEGIN -->
 ## Команды Vibelog

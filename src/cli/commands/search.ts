@@ -6,19 +6,22 @@
  * Запрос необязателен, если указан хотя бы один фильтр.
  */
 
-import { getFlag } from '../args.mjs';
-import { printTaskTable, printInfo, printError } from '../ui.mjs';
+import { getFlag } from '../args.js';
+import type { FlagValues } from '../args.js';
+import { printTaskTable, printInfo, printError } from '../ui.js';
 import { searchTasks } from '../../core/search.js';
 import { loadConfig } from '../../core/config.js';
 
 /**
  * Выполняет команду search.
  *
- * @param {string[]} positional — [запрос]
- * @param {Record<string, unknown>} flags
- * @param {string} cwd
+ * @param args — позиционные аргументы (слова запроса)
  */
-export async function runSearch(args, flags, cwd) {
+export async function runSearch(
+  args: string[],
+  flags: FlagValues,
+  cwd: string
+): Promise<void> {
   // Собираем все позиционные аргументы (не флаги) в запрос
   const query = args.filter(a => !a.startsWith('-')).join(' ');
 
@@ -27,7 +30,7 @@ export async function runSearch(args, flags, cwd) {
   const priority = getFlag(flags, 'priority', '');
 
   // limit: строка из флагов → число с валидацией
-  let limit;
+  let limit: number | undefined;
   if (flags.limit !== undefined) {
     limit = Number(getFlag(flags, 'limit'));
     if (!Number.isFinite(limit) || limit <= 0) {
@@ -71,5 +74,5 @@ export async function runSearch(args, flags, cwd) {
 
   const config = loadConfig(cwd);
   console.log(`\nРезультаты поиска: ${criteria}\n`);
-  printTaskTable(tasks, { maxWidth: config.max_column_width || 20 });
+  printTaskTable(tasks, { maxWidth: (config.max_column_width as number) || 20 });
 }

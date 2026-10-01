@@ -22,7 +22,7 @@ import { dirname } from 'node:path';
 import { parseFrontmatter, serializeFrontmatter } from '../../dist/core/frontmatter.js';
 import { markdownToTask, taskToMarkdown, taskFilename } from '../../dist/core/task.js';
 import { parseYaml, stringifyYaml } from '../../dist/core/yaml.js';
-import { listTools } from '../../dist/mcp/tools.mjs';
+import { listTools } from '../../dist/mcp/tools.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

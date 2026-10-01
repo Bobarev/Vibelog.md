@@ -4,25 +4,25 @@
  * Поднимает HTTP-сервер на 127.0.0.1 и открывает канбан в браузере.
  */
 
-import { getFlag } from '../args.mjs';
-import { startWebServer } from '../../web/server.mjs';
+import { startWebServer } from '../../web/server.js';
 import { loadConfig } from '../../core/config.js';
+import type { FlagValues } from '../args.js';
 
 /**
  * Выполняет команду browser.
- *
- * @param {string[]} positional
- * @param {Record<string, unknown>} flags
- * @param {string} cwd
  */
-export async function runBrowser(positional, flags, cwd) {
+export async function runBrowser(
+  positional: string[],
+  flags: FlagValues,
+  cwd: string
+): Promise<void> {
   let port = 3030;
   if (flags.port) {
     port = parseInt(String(flags.port), 10);
   } else {
     try {
       const config = loadConfig(cwd);
-      port = config.default_port || 3030;
+      port = (config.default_port as number) || 3030;
     } catch { /* используем дефолт */ }
   }
 

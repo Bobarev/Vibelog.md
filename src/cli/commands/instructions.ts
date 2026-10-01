@@ -5,12 +5,13 @@
  * в контексте AI-агентов (Qwen Code).
  */
 
-import { printInfo, printError, colorize, colors } from '../ui.mjs';
+import { printInfo, printError } from '../ui.js';
+import type { FlagValues } from '../args.js';
 
 /**
  * Тексты инструкций для агентов (на русском).
  */
-const INSTRUCTIONS = {
+const INSTRUCTIONS: Record<string, string> = {
   overview: `# Vibelog.md — Инструкция для AI-агента (Qwen Code)
 
 ## Обзор
@@ -135,11 +136,13 @@ vibelog task complete <id>
 /**
  * Выполняет команду instructions.
  *
- * @param {string[]} positional — [topic]
- * @param {Record<string, unknown>} flags
- * @param {string} cwd
+ * @param positional — [topic]
  */
-export async function runInstructions(positional, flags, cwd) {
+export async function runInstructions(
+  positional: string[],
+  flags: FlagValues,
+  cwd: string
+): Promise<void> {
   const topic = positional[0] || 'overview';
 
   const text = INSTRUCTIONS[topic];

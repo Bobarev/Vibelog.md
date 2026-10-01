@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 import { stringifyYaml } from '../../dist/core/yaml.js';
-import { listTools, handleToolCall } from '../../dist/mcp/tools.mjs';
+import { listTools, handleToolCall } from '../../dist/mcp/tools.js';
 import { documentToMarkdown, markdownToDocument } from '../../dist/core/document.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

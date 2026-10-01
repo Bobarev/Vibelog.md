@@ -2,7 +2,7 @@
  * MCP-инструменты Vibelog.md.
  *
  * Совместимы с Backlog.md по именам и формату параметров.
- * Каждый инструмент — обёртка над функциями ядра (store.mjs, search.mjs, deps.mjs).
+ * Каждый инструмент — обёртка над функциями ядра (store, search, deps).
  *
  * v1.1 — добавлены инструменты записи:
  * - backlog_update_task — универсальное обновление полей задачи
@@ -20,7 +20,7 @@ import {
   updateTaskFile, completeTaskFile,
 } from '../core/store.js';
 import { searchTasks } from '../core/search.js';
-import { isReady, blockedBy, validateDeps } from '../core/deps.js';
+import { isReady, validateDeps } from '../core/deps.js';
 import { loadConfig, normalizeTaskType } from '../core/config.js';
 import {
   writeMilestone, listMilestones, getMilestone,
@@ -30,14 +30,32 @@ import {
   writeDocument, listDocuments, getDocument,
   updateDocument, searchDocuments,
 } from '../core/document.js';
+import type { UpdateDocumentInput } from '../core/document.js';
 import { findBacklogDir } from '../core/paths.js';
+import type { Task, TaskComment, ChecklistItem } from '../core/task.js';
+
+// completeTaskFile импортирован для паритета с оригинальным модулем;
+// в текущей логике инструментов не вызывается (оставлено без изменений).
+void completeTaskFile;
+
+/**
+ * Аргументы MCP-инструмента: произвольный JSON со stdio.
+ * Значения проверяются схемами и ядром; касты на сайтах использования
+ * отражают контракт схемы конкретного инструмента.
+ */
+export type ToolArgs = Record<string, unknown>;
+
+/** Описание MCP-инструмента (формат tools/list). */
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
 
 /**
  * Возвращает список всех MCP-инструментов.
- *
- * @returns {Array<{name: string, description: string, inputSchema: object}>}
  */
-export function listTools() {
+export function listTools(): ToolDefinition[] {
   return [
     // === Управление задачами ===
     {
@@ -333,13 +351,13 @@ export function listTools() {
 /**
  * Вызывает MCP-инструмент по имени.
  *
- * @param {string} name — имя инструмента
- * @param {object} args — аргументы инструмента
- * @param {string} cwd — рабочая директория
- * @returns {Promise<string>} — результат (строка)
- * @throws {Error} — если инструмент не найден или произошла ошибка
+ * @param name — имя инструмента
+ * @param args — аргументы инструмента
+ * @param cwd — рабочая директория
+ * @returns результат (строка)
+ * @throws если инструмент не найден или произошла ошибка
  */
-export async function handleToolCall(name, args, cwd) {
+export async function handleToolCall(name: string, args: ToolArgs, cwd: string): Promise<string> {
   switch (name) {
     case 'backlog_create_task':
       return toolCreateTask(args, cwd);
@@ -394,56 +412,52 @@ export async function handleToolCall(name, args, cwd) {
 
 /**
  * Создаёт задачу.
- *
- * @param {object} args
- * @param {string} cwd
- * @returns {string}
  */
-function toolCreateTask(args, cwd) {
+function toolCreateTask(args: ToolArgs, cwd: string): string {
   const task = createTaskFile(cwd, {
-    title: args.title,
-    description: args.description || '',
-    priority: args.priority || '',
-    labels: args.labels || [],
-    dependencies: args.dependencies || [],
-    acceptanceCriteria: (args.acceptanceCriteria || []).map(text => ({ text, checked: false })),
-    status: args.status || '',
-    assignee: args.assignee || [],
-    milestone: args.milestone || '',
-    type: args.type ? normalizeTaskType(loadConfig(cwd), args.type) : '',
-    due_date: args.due_date || '',
-    ordinal: args.ordinal,
-    project: args.project || '',
-    finalSummary: args.finalSummary || '',
+    title: args.title as string,
+    description: (args.description as string) || '',
+    priority: (args.priority as string) || '',
+    labels: (args.labels as string[]) || [],
+    dependencies: (args.dependencies as string[]) || [],
+    acceptanceCriteria: ((args.acceptanceCriteria as string[]) || []).map(text => ({ text, checked: false })),
+    status: (args.status as string) || '',
+    assignee: (args.assignee as string[]) || [],
+    milestone: (args.milestone as string) || '',
+    type: args.type ? normalizeTaskType(loadConfig(cwd), args.type as string) : '',
+    due_date: (args.due_date as string) || '',
+    ordinal: args.ordinal as number,
+    project: (args.project as string) || '',
+    finalSummary: (args.finalSummary as string) || '',
   });
   return `Задача ${task.id} создана: ${task.title}`;
 }
 
 /**
  * Выводит список задач с фильтрацией, сортировкой.
- *
- * @param {object} args
- * @param {string} cwd
- * @returns {string}
  */
-function toolListTasks(args, cwd) {
+function toolListTasks(args: ToolArgs, cwd: string): string {
   let tasks = listTasks(cwd);
 
   if (args.status) {
-    tasks = tasks.filter(t => t.status.toLowerCase() === args.status.toLowerCase());
+    const status = (args.status as string).toLowerCase();
+    tasks = tasks.filter(t => t.status.toLowerCase() === status);
   }
-  if (args.labels && args.labels.length > 0) {
+  if (args.labels && (args.labels as string[]).length > 0) {
+    const labels = (args.labels as string[]).map(l => l.toLowerCase());
     tasks = tasks.filter(t =>
-      t.labels && args.labels.some(l =>
-        t.labels.some(tl => tl.toLowerCase() === l.toLowerCase())
+      t.labels && labels.some(l =>
+        t.labels.some(tl => tl.toLowerCase() === l)
       )
     );
   }
   if (args.milestone) {
-    tasks = tasks.filter(t => t.milestone && t.milestone.toLowerCase() === args.milestone.toLowerCase());
+    const ms = (args.milestone as string).toLowerCase();
+    tasks = tasks.filter(t => t.milestone && t.milestone.toLowerCase() === ms);
   }
   if (args.type) {
-    tasks = tasks.filter(t => t.type && t.type.toLowerCase() === args.type.toLowerCase());
+    const type = (args.type as string).toLowerCase();
+    tasks = tasks.filter(t => t.type && t.type.toLowerCase() === type);
   }
   if (args.ready) {
     tasks = tasks.filter(t => isReady(cwd, t));
@@ -451,7 +465,7 @@ function toolListTasks(args, cwd) {
 
   // Сортировка
   if (args.sort === 'priority') {
-    const priorityOrder = { High: 0, Medium: 1, Low: 2 };
+    const priorityOrder: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
     tasks.sort((a, b) => (priorityOrder[a.priority] ?? 3) - (priorityOrder[b.priority] ?? 3));
   } else if (args.sort === 'created') {
     tasks.sort((a, b) => (b.created_date || '').localeCompare(a.created_date || ''));
@@ -460,7 +474,7 @@ function toolListTasks(args, cwd) {
   }
 
   if (args.limit) {
-    tasks = tasks.slice(0, args.limit);
+    tasks = tasks.slice(0, args.limit as number);
   }
 
   const simplified = tasks.map(t => ({
@@ -479,13 +493,9 @@ function toolListTasks(args, cwd) {
 
 /**
  * Просматривает задачу по ID.
- *
- * @param {object} args
- * @param {string} cwd
- * @returns {string}
  */
-function toolViewTask(args, cwd) {
-  const task = getTask(cwd, args.id);
+function toolViewTask(args: ToolArgs, cwd: string): string {
+  const task = getTask(cwd, args.id as string);
   if (!task) {
     throw new Error(`Задача ${args.id} не найдена.`);
   }
@@ -494,13 +504,9 @@ function toolViewTask(args, cwd) {
 
 /**
  * Обновляет статус задачи.
- *
- * @param {object} args
- * @param {string} cwd
- * @returns {string}
  */
-function toolUpdateStatus(args, cwd) {
-  const task = updateTaskFile(cwd, args.id, { status: args.status });
+function toolUpdateStatus(args: ToolArgs, cwd: string): string {
+  const task = updateTaskFile(cwd, args.id as string, { status: args.status as string });
   return `Статус задачи ${task.id} обновлён: ${task.status}`;
 }
 
@@ -513,82 +519,69 @@ function toolUpdateStatus(args, cwd) {
  *
  * Обновляет только переданные поля. updated_date обновляется всегда.
  * Поля plan/notes/append_notes/final_summary пишут в соответствующие секции тела.
- *
- * @param {object} args
- * @param {string} cwd
- * @returns {string}
  */
-function toolUpdateTask(args, cwd) {
-  const updates = {};
+function toolUpdateTask(args: ToolArgs, cwd: string): string {
+  const updates: Partial<Task> = {};
 
   // Frontmatter-поля
-  if (args.title !== undefined) updates.title = args.title;
-  if (args.description !== undefined) updates.description = args.description;
-  if (args.priority !== undefined) updates.priority = args.priority;
-  if (args.assignee !== undefined) updates.assignee = args.assignee;
-  if (args.labels !== undefined) updates.labels = args.labels;
-  if (args.milestone !== undefined) updates.milestone = args.milestone;
-  if (args.status !== undefined) updates.status = args.status;
-  if (args.type !== undefined) updates.type = normalizeTaskType(loadConfig(cwd), args.type);
+  if (args.title !== undefined) updates.title = args.title as string;
+  if (args.description !== undefined) updates.description = args.description as string;
+  if (args.priority !== undefined) updates.priority = args.priority as string;
+  if (args.assignee !== undefined) updates.assignee = args.assignee as string[];
+  if (args.labels !== undefined) updates.labels = args.labels as string[];
+  if (args.milestone !== undefined) updates.milestone = args.milestone as string;
+  if (args.status !== undefined) updates.status = args.status as string;
+  if (args.type !== undefined) updates.type = normalizeTaskType(loadConfig(cwd), args.type as string);
 
   // Секции тела
-  if (args.plan !== undefined) updates.implementationPlan = args.plan;
-  if (args.notes !== undefined) updates.implementationNotes = args.notes;
-  if (args.final_summary !== undefined) updates.finalSummary = args.final_summary;
+  if (args.plan !== undefined) updates.implementationPlan = args.plan as string;
+  if (args.notes !== undefined) updates.implementationNotes = args.notes as string;
+  if (args.final_summary !== undefined) updates.finalSummary = args.final_summary as string;
 
   // append_notes — дописывает в конец существующих заметок
   if (args.append_notes !== undefined) {
-    const task = getTask(cwd, args.id);
+    const task = getTask(cwd, args.id as string);
     if (!task) throw new Error(`Задача ${args.id} не найдена.`);
     updates.implementationNotes = (task.implementationNotes || '') +
-      (task.implementationNotes ? '\n' : '') + args.append_notes;
+      (task.implementationNotes ? '\n' : '') + (args.append_notes as string);
   }
 
   if (Object.keys(updates).length === 0) {
     throw new Error('Не указаны поля для обновления.');
   }
 
-  const task = updateTaskFile(cwd, args.id, updates);
+  const task = updateTaskFile(cwd, args.id as string, updates);
   return `Задача ${task.id} обновлена: ${Object.keys(updates).join(', ')}`;
 }
 
 /**
  * Управление Acceptance Criteria.
- *
- * @param {object} args
- * @param {string} cwd
- * @returns {string}
  */
-function toolManageAc(args, cwd) {
+function toolManageAc(args: ToolArgs, cwd: string): string {
   return manageChecklist(args, cwd, 'acceptanceCriteria');
 }
 
 /**
  * Управление Definition of Done.
- *
- * @param {object} args
- * @param {string} cwd
- * @returns {string}
  */
-function toolManageDod(args, cwd) {
+function toolManageDod(args: ToolArgs, cwd: string): string {
   return manageChecklist(args, cwd, 'definitionOfDone');
 }
 
 /**
  * Общая логика управления чеклистами (AC / DoD).
  *
- * @param {object} args — { id, action, text?, index? }
- * @param {string} cwd
- * @param {string} field — 'acceptanceCriteria' или 'definitionOfDone'
- * @returns {string}
+ * @param field — 'acceptanceCriteria' или 'definitionOfDone'
  */
-function manageChecklist(args, cwd, field) {
-  const task = getTask(cwd, args.id);
+function manageChecklist(args: ToolArgs, cwd: string, field: 'acceptanceCriteria' | 'definitionOfDone'): string {
+  const task = getTask(cwd, args.id as string);
   if (!task) throw new Error(`Задача ${args.id} не найдена.`);
 
-  const list = task[field] || [];
+  // runtime-элементы всегда объекты (markdownToTask); строки допускает контракт Task
+  const list = (task[field] || []) as ChecklistItem[];
+  const action = args.action as string;
 
-  switch (args.action) {
+  switch (action) {
     case 'list': {
       if (list.length === 0) return 'Чеклист пуст.';
       const lines = list.map((item, i) => {
@@ -600,8 +593,8 @@ function manageChecklist(args, cwd, field) {
 
     case 'add': {
       if (!args.text) throw new Error('Для action=add требуется параметр text.');
-      list.push({ text: args.text, checked: false });
-      updateTaskFile(cwd, args.id, { [field]: list });
+      list.push({ text: args.text as string, checked: false });
+      updateTaskFile(cwd, args.id as string, { [field]: list });
       return `Добавлен критерий #${list.length}: ${args.text}`;
     }
 
@@ -615,11 +608,11 @@ function manageChecklist(args, cwd, field) {
           throw new Error(`Неверный индекс: ${i}. Доступно: 1-${list.length}`);
         }
       }
-      const checked = args.action === 'check';
+      const checked = action === 'check';
       for (const i of indexes) {
         list[i - 1].checked = checked;
       }
-      updateTaskFile(cwd, args.id, { [field]: list });
+      updateTaskFile(cwd, args.id as string, { [field]: list });
       return checked
         ? `Отмечены критерии #${indexes.join(', #')}`
         : `Сняты отметки с критериев #${indexes.join(', #')}`;
@@ -637,7 +630,7 @@ function manageChecklist(args, cwd, field) {
       for (const i of [...indexes].sort((a, b) => b - a)) {
         list.splice(i - 1, 1);
       }
-      updateTaskFile(cwd, args.id, { [field]: list });
+      updateTaskFile(cwd, args.id as string, { [field]: list });
       return `Удалены критерии #${indexes.join(', #')}`;
     }
 
@@ -648,50 +641,43 @@ function manageChecklist(args, cwd, field) {
 
 /**
  * Добавляет комментарий к задаче.
- *
- * @param {object} args
- * @param {string} cwd
- * @returns {string}
  */
-function toolAddComment(args, cwd) {
-  const task = getTask(cwd, args.id);
+function toolAddComment(args: ToolArgs, cwd: string): string {
+  const task = getTask(cwd, args.id as string);
   if (!task) throw new Error(`Задача ${args.id} не найдена.`);
 
-  const comment = {
-    author: args.author || '@agent',
+  const comment: TaskComment = {
+    author: (args.author as string) || '@agent',
     created: formatNow(),
-    text: args.comment,
+    text: args.comment as string,
   };
 
   const comments = [...(task.comments || []), comment];
-  updateTaskFile(cwd, args.id, { comments });
+  updateTaskFile(cwd, args.id as string, { comments });
 
   return `Комментарий добавлен к задаче ${args.id} (${comment.author})`;
 }
 
 /**
  * Обновляет зависимости задачи.
- *
- * @param {object} args
- * @param {string} cwd
- * @returns {string}
  */
-function toolUpdateDependencies(args, cwd) {
-  const task = getTask(cwd, args.id);
+function toolUpdateDependencies(args: ToolArgs, cwd: string): string {
+  const task = getTask(cwd, args.id as string);
   if (!task) throw new Error(`Задача ${args.id} не найдена.`);
 
   let deps = [...(task.dependencies || [])];
 
   // Добавляем новые зависимости
-  if (args.add && args.add.length > 0) {
-    for (const dep of args.add) {
+  if (args.add && (args.add as string[]).length > 0) {
+    for (const dep of args.add as string[]) {
       if (!deps.includes(dep)) deps.push(dep);
     }
   }
 
   // Удаляем зависимости
-  if (args.remove && args.remove.length > 0) {
-    deps = deps.filter(d => !args.remove.includes(d));
+  if (args.remove && (args.remove as string[]).length > 0) {
+    const remove = args.remove as string[];
+    deps = deps.filter(d => !remove.includes(d));
   }
 
   // Проверяем циклы
@@ -701,7 +687,7 @@ function toolUpdateDependencies(args, cwd) {
     throw new Error(`Обнаружен цикл зависимостей: ${validation.cycle.join(' → ')}`);
   }
 
-  updateTaskFile(cwd, args.id, { dependencies: deps });
+  updateTaskFile(cwd, args.id as string, { dependencies: deps });
   return `Зависимости задачи ${args.id} обновлены: [${deps.join(', ')}]`;
 }
 
@@ -711,20 +697,16 @@ function toolUpdateDependencies(args, cwd) {
 
 /**
  * Ищет задачи по запросу.
- *
- * @param {object} args
- * @param {string} cwd
- * @returns {string}
  */
-function toolSearch(args, cwd) {
+function toolSearch(args: ToolArgs, cwd: string): string {
   const tasks = searchTasks(cwd, {
-    query: args.query,
-    status: args.status,
-    type: args.type,
-    project: args.project,
-    priority: args.priority,
-    modifiedFiles: args.modifiedFiles,
-    limit: args.limit,
+    query: args.query as string,
+    status: args.status as string,
+    type: args.type as string,
+    project: args.project as string,
+    priority: args.priority as string,
+    modifiedFiles: args.modifiedFiles as string[],
+    limit: args.limit as number,
   });
   const simplified = tasks.map(t => ({
     id: t.id,
@@ -741,12 +723,8 @@ function toolSearch(args, cwd) {
 
 /**
  * Возвращает задачи, готовые к выполнению.
- *
- * @param {object} args
- * @param {string} cwd
- * @returns {string}
  */
-function toolReady(args, cwd) {
+function toolReady(args: ToolArgs, cwd: string): string {
   const allTasks = listTasks(cwd);
   const ready = allTasks.filter(t => isReady(cwd, t));
   const simplified = ready.map(t => ({
@@ -761,9 +739,9 @@ function toolReady(args, cwd) {
 /**
  * Форматирует текущую дату.
  *
- * @returns {string} — "YYYY-MM-DD HH:MM"
+ * @returns "YYYY-MM-DD HH:MM"
  */
-function formatNow() {
+function formatNow(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
@@ -772,7 +750,7 @@ function formatNow() {
 // Milestones (v1.3)
 // ============================================================
 
-function toolMilestoneList(args, cwd) {
+function toolMilestoneList(args: ToolArgs, cwd: string): string {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) throw new Error('Backlog не найден.');
   let milestones = listMilestones(backlogDir, { includeArchived: !!args.include_archived });
@@ -782,29 +760,31 @@ function toolMilestoneList(args, cwd) {
   return JSON.stringify(milestones, null, 2);
 }
 
-function toolMilestoneAdd(args, cwd) {
+function toolMilestoneAdd(args: ToolArgs, cwd: string): string {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) throw new Error('Backlog не найден.');
   const milestone = writeMilestone(backlogDir, {
-    name: args.name,
-    description: args.description || '',
-    due_date: args.due_date || '',
+    name: args.name as string,
+    description: (args.description as string) || '',
+    due_date: (args.due_date as string) || '',
   });
   return `Веха "${milestone.name}" создана.`;
 }
 
-function toolMilestoneRename(args, cwd) {
+function toolMilestoneRename(args: ToolArgs, cwd: string): string {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) throw new Error('Backlog не найден.');
-  const updated = renameMilestone(backlogDir, args.from, args.to);
+  const from = args.from as string;
+  const to = args.to as string;
+  const updated = renameMilestone(backlogDir, from, to);
   if (!updated) throw new Error(`Веха "${args.from}" не найдена.`);
 
   let updatedCount = 0;
   if (args.update_tasks !== false) {
     const tasks = listTasks(cwd);
     for (const task of tasks) {
-      if (task.milestone && task.milestone.toLowerCase() === args.from.toLowerCase()) {
-        updateTaskFile(cwd, task.id, { milestone: args.to });
+      if (task.milestone && task.milestone.toLowerCase() === from.toLowerCase()) {
+        updateTaskFile(cwd, task.id, { milestone: to });
         updatedCount++;
       }
     }
@@ -812,22 +792,23 @@ function toolMilestoneRename(args, cwd) {
   return `Веха переименована: ${args.from} → ${args.to}. Задач обновлено: ${updatedCount}`;
 }
 
-function toolMilestoneRemove(args, cwd) {
+function toolMilestoneRemove(args: ToolArgs, cwd: string): string {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) throw new Error('Backlog не найден.');
-  const deleted = deleteMilestone(backlogDir, args.name);
+  const name = args.name as string;
+  const deleted = deleteMilestone(backlogDir, name);
   if (!deleted) throw new Error(`Веха "${args.name}" не найдена.`);
 
-  const handling = args.task_handling || 'clear';
+  const handling = (args.task_handling as string) || 'clear';
   let updatedCount = 0;
   const tasks = listTasks(cwd);
   for (const task of tasks) {
-    if (task.milestone && task.milestone.toLowerCase() === args.name.toLowerCase()) {
+    if (task.milestone && task.milestone.toLowerCase() === name.toLowerCase()) {
       if (handling === 'clear') {
         updateTaskFile(cwd, task.id, { milestone: '' });
         updatedCount++;
       } else if (handling === 'reassign' && args.reassign_to) {
-        updateTaskFile(cwd, task.id, { milestone: args.reassign_to });
+        updateTaskFile(cwd, task.id, { milestone: args.reassign_to as string });
         updatedCount++;
       }
     }
@@ -835,25 +816,24 @@ function toolMilestoneRemove(args, cwd) {
   return `Веха "${args.name}" удалена. Задач обработано: ${updatedCount} (${handling})`;
 }
 
-function toolMilestoneArchive(args, cwd) {
+function toolMilestoneArchive(args: ToolArgs, cwd: string): string {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) throw new Error('Backlog не найден.');
-  const archived = archiveMilestone(backlogDir, args.name);
+  const archived = archiveMilestone(backlogDir, args.name as string);
   if (!archived) throw new Error(`Веха "${args.name}" не найдена.`);
   return `Веха "${args.name}" архивирована.`;
 }
-
 
 // ============================================================
 // Documents (v1.4)
 // ============================================================
 
-function toolDocumentList(args, cwd) {
+function toolDocumentList(args: ToolArgs, cwd: string): string {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) throw new Error('Backlog не найден.');
   let entries = listDocuments(backlogDir);
   if (args.query) {
-    const q = args.query.toLowerCase();
+    const q = (args.query as string).toLowerCase();
     entries = entries.filter(e =>
       e.document.id.toLowerCase().includes(q) ||
       e.document.title.toLowerCase().includes(q) ||
@@ -864,45 +844,45 @@ function toolDocumentList(args, cwd) {
   return JSON.stringify(entries.map(e => e.document), null, 2);
 }
 
-function toolDocumentView(args, cwd) {
+function toolDocumentView(args: ToolArgs, cwd: string): string {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) throw new Error('Backlog не найден.');
-  const entry = getDocument(backlogDir, args.id);
+  const entry = getDocument(backlogDir, args.id as string);
   if (!entry) throw new Error(`Документ ${args.id} не найден.`);
   return JSON.stringify({ ...entry.document, content: entry.body }, null, 2);
 }
 
-function toolDocumentCreate(args, cwd) {
+function toolDocumentCreate(args: ToolArgs, cwd: string): string {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) throw new Error('Backlog не найден.');
   const doc = writeDocument(backlogDir, {
-    title: args.title,
-    type: args.type || '',
-    tags: args.tags || [],
-    content: args.content || '',
+    title: args.title as string,
+    type: (args.type as string) || '',
+    tags: (args.tags as string[]) || [],
+    content: (args.content as string) || '',
   });
   return `Документ ${doc.id} создан: ${doc.title} (тип: ${doc.type})`;
 }
 
-function toolDocumentUpdate(args, cwd) {
+function toolDocumentUpdate(args: ToolArgs, cwd: string): string {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) throw new Error('Backlog не найден.');
-  const updates = {};
-  if (args.title !== undefined) updates.title = args.title;
-  if (args.content !== undefined) updates.content = args.content;
-  if (args.type !== undefined) updates.type = args.type;
-  if (args.tags !== undefined) updates.tags = args.tags;
+  const updates: UpdateDocumentInput = {};
+  if (args.title !== undefined) updates.title = args.title as string;
+  if (args.content !== undefined) updates.content = args.content as string;
+  if (args.type !== undefined) updates.type = args.type as string;
+  if (args.tags !== undefined) updates.tags = args.tags as string[];
   if (Object.keys(updates).length === 0) {
     throw new Error('Не указаны поля для обновления (title, content, type, tags).');
   }
-  const updated = updateDocument(backlogDir, args.id, updates);
+  const updated = updateDocument(backlogDir, args.id as string, updates);
   if (!updated) throw new Error(`Документ ${args.id} не найден.`);
   return `Документ ${updated.document.id} обновлён: ${updated.document.title}`;
 }
 
-function toolDocumentSearch(args, cwd) {
+function toolDocumentSearch(args: ToolArgs, cwd: string): string {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) throw new Error('Backlog не найден.');
-  const entries = searchDocuments(backlogDir, args.query);
+  const entries = searchDocuments(backlogDir, args.query as string);
   return JSON.stringify(entries.map(e => e.document), null, 2);
 }

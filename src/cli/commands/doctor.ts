@@ -13,41 +13,46 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 
-import { listTools } from '../../mcp/tools.mjs';
-import { findBacklogDir, tasksDir, configPath } from '../../core/paths.js';
+import { listTools } from '../../mcp/tools.js';
+import { findBacklogDir } from '../../core/paths.js';
 import { loadConfig } from '../../core/config.js';
 import { listTasks } from '../../core/store.js';
-import { markdownToTask, taskToMarkdown } from '../../core/task.js';
-import { parseYaml } from '../../core/yaml.js';
+import { markdownToTask } from '../../core/task.js';
+import type { FlagValues } from '../args.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** Является ли stdout TTY (для цветов) */
 const isTTY = process.stdout.isTTY;
 
+/** Результат одной проверки doctor. */
+interface CheckResult {
+  name: string;
+  ok: boolean;
+  value: unknown;
+  expected?: unknown;
+  hint?: string;
+}
+
 /**
  * Оборачивает текст в ANSI-цвет, если TTY.
- *
- * @param {string} text
- * @param {string} color
- * @returns {string}
  */
-function colorize(text, color) {
+function colorize(text: string, color: 'green' | 'yellow' | 'red' | 'dim'): string {
   if (!isTTY) return text;
-  const codes = { green: '\x1b[32m', yellow: '\x1b[33m', red: '\x1b[31m', dim: '\x1b[2m' };
+  const codes: Record<string, string> = { green: '\x1b[32m', yellow: '\x1b[33m', red: '\x1b[31m', dim: '\x1b[2m' };
   return `${codes[color] || ''}${text}\x1b[0m`;
 }
 
 /**
  * Выполняет команду doctor.
- *
- * @param {string[]} positional
- * @param {Record<string, unknown>} flags
- * @param {string} cwd
  */
-export async function runDoctor(positional, flags, cwd) {
-  const checks = [];
-  const warnings = [];
+export async function runDoctor(
+  positional: string[],
+  flags: FlagValues,
+  cwd: string
+): Promise<void> {
+  const checks: CheckResult[] = [];
+  const warnings: string[] = [];
 
   // 1. Node.js
   checks.push(checkNode());
@@ -102,10 +107,8 @@ export async function runDoctor(positional, flags, cwd) {
 
 /**
  * Проверка 1: версия Node.js >= 20.
- *
- * @returns {{name, ok, value, expected, hint}}
  */
-function checkNode() {
+function checkNode(): CheckResult {
   const major = parseInt(process.version.replace('v', '').split('.')[0], 10);
   const ok = major >= 20;
   return {
@@ -119,10 +122,8 @@ function checkNode() {
 
 /**
  * Проверка 2: vibelog резолвится в PATH.
- *
- * @returns {{name, ok, value, expected, hint}}
  */
-function checkPath() {
+function checkPath(): CheckResult {
   try {
     const out = execSync('which vibelog 2>/dev/null', { encoding: 'utf-8', timeout: 2000 }).trim();
     return {
@@ -143,10 +144,8 @@ function checkPath() {
 
 /**
  * Проверка 3: симлинк ведёт на реальный bin/vibelog.mjs.
- *
- * @returns {{name, ok, value, expected, hint}}
  */
-function checkSymlink() {
+function checkSymlink(): CheckResult {
   try {
     const out = execSync('which vibelog 2>/dev/null', { encoding: 'utf-8', timeout: 2000 }).trim();
     if (!out) return { name: 'symlink', ok: false, value: null, hint: 'vibelog не найден в PATH' };
@@ -189,10 +188,9 @@ function checkSymlink() {
 /**
  * Определяет реальный путь к bin/vibelog.mjs, учитывая симлинки и pnpm shims.
  *
- * @param {string} binPath — путь из PATH (симлинк или shell-скрипт)
- * @returns {string|null} — реальный путь к целевому файлу
+ * @param binPath — путь из PATH (симлинк или shell-скрипт)
  */
-function resolveBinTarget(binPath) {
+function resolveBinTarget(binPath: string): string {
   const expected = join(__dirname, '..', '..', '..', 'bin', 'vibelog.mjs');
 
   // Симлинк — realpath резолвит напрямую
@@ -217,13 +215,11 @@ function resolveBinTarget(binPath) {
 
 /**
  * Проверка 4: PATH и process.argv[1] — одна копия.
- *
- * @returns {{name, ok, value, expected, hint}}
  */
-function checkSourcesMatch() {
+function checkSourcesMatch(): CheckResult {
   try {
     const srcPath = realpathSync(process.argv[1]);
-    let binPath = null;
+    let binPath: string | null = null;
     try {
       const out = execSync('which vibelog 2>/dev/null', { encoding: 'utf-8', timeout: 2000 }).trim();
       if (out) {
@@ -245,10 +241,8 @@ function checkSourcesMatch() {
 
 /**
  * Проверка 5: количество MCP-инструментов.
- *
- * @returns {{name, ok, value, expected, hint}}
  */
-function checkMcpToolsCount() {
+function checkMcpToolsCount(): CheckResult {
   const tools = listTools();
   const expected = 21;
   const ok = tools.length === expected;
@@ -263,10 +257,8 @@ function checkMcpToolsCount() {
 
 /**
  * Проверка 6: список MCP-инструментов совпадает с ожидаемым.
- *
- * @returns {{name, ok, value, expected, hint}}
  */
-function checkMcpToolsList() {
+function checkMcpToolsList(): CheckResult {
   const tools = listTools();
   const actual = tools.map(t => t.name).sort();
   const expected = [
@@ -306,11 +298,8 @@ function checkMcpToolsList() {
 
 /**
  * Проверка 7: backlog/ найден.
- *
- * @param {string} cwd
- * @returns {{name, ok, value, expected, hint}}
  */
-function checkBacklogDir(cwd) {
+function checkBacklogDir(cwd: string): CheckResult {
   const dir = findBacklogDir(cwd);
   const ok = !!dir;
   return {
@@ -323,11 +312,8 @@ function checkBacklogDir(cwd) {
 
 /**
  * Проверка 8: конфиг читается.
- *
- * @param {string} cwd
- * @returns {{name, ok, value, expected, hint}}
  */
-function checkConfig(cwd) {
+function checkConfig(cwd: string): CheckResult {
   try {
     const config = loadConfig(cwd);
     return {
@@ -340,18 +326,15 @@ function checkConfig(cwd) {
       name: 'config',
       ok: false,
       value: null,
-      hint: err.message,
+      hint: (err as Error).message,
     };
   }
 }
 
 /**
  * Проверка 9: задачи парсятся.
- *
- * @param {string} cwd
- * @returns {{name, ok, value, expected, hint}}
  */
-function checkTasks(cwd) {
+function checkTasks(cwd: string): CheckResult {
   try {
     const tasks = listTasks(cwd);
     return {
@@ -364,17 +347,15 @@ function checkTasks(cwd) {
       name: 'tasks_count',
       ok: false,
       value: null,
-      hint: err.message,
+      hint: (err as Error).message,
     };
   }
 }
 
 /**
  * Проверка 10: round-trip с Backlog.md (опциональная).
- *
- * @returns {{name, ok, value, expected, hint}}
  */
-function checkRoundtrip() {
+function checkRoundtrip(): CheckResult {
   const backlogRoot = join(__dirname, '..', '..', '..', '..', 'Backlog.md');
   const tasksDirPath = join(backlogRoot, 'backlog', 'tasks');
 
@@ -398,11 +379,8 @@ function checkRoundtrip() {
 
 /**
  * Печатает результаты в человекочитаемом виде.
- *
- * @param {Array} checks
- * @param {string[]} warnings
  */
-function printHuman(checks, warnings) {
+function printHuman(checks: CheckResult[], warnings: string[]): void {
   console.log('\nVibelog.md doctor');
   console.log('────────────────\n');
 
@@ -414,12 +392,12 @@ function printHuman(checks, warnings) {
       if (typeof check.value === 'object' && check.value !== null) {
         line += JSON.stringify(check.value);
       } else if (check.value !== null && check.value !== undefined) {
-        line += check.value;
+        line += String(check.value);
       } else {
         line += 'ok';
       }
     } else {
-      line += check.value ?? 'ошибка';
+      line += String(check.value ?? 'ошибка');
       if (check.hint) {
         console.log(line);
         console.log(`  ${colorize(check.hint, 'yellow')}`);

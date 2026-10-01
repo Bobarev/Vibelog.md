@@ -5,22 +5,23 @@
  * Опция export — экспорт в markdown.
  */
 
-import { getFlag } from '../args.mjs';
-import { printBoard, printInfo, printError } from '../ui.mjs';
+import { printBoard, printInfo } from '../ui.js';
 import { listTasks } from '../../core/store.js';
 import { loadConfig } from '../../core/config.js';
+import type { Task } from '../../core/task.js';
+import type { FlagValues } from '../args.js';
 
 /**
  * Выполняет команду board.
- *
- * @param {string[]} positional
- * @param {Record<string, unknown>} flags
- * @param {string} cwd
  */
-export async function runBoard(positional, flags, cwd) {
+export async function runBoard(
+  positional: string[],
+  flags: FlagValues,
+  cwd: string
+): Promise<void> {
   const config = loadConfig(cwd);
-  const statuses = config.statuses || ['To Do', 'In Progress', 'Done'];
-  const maxWidth = config.max_column_width || 30;
+  const statuses = (config.statuses as string[]) || ['To Do', 'In Progress', 'Done'];
+  const maxWidth = (config.max_column_width as number) || 30;
 
   const tasks = listTasks(cwd);
 
@@ -41,12 +42,9 @@ export async function runBoard(positional, flags, cwd) {
 
 /**
  * Экспортирует доску в markdown-формате.
- *
- * @param {object[]} tasks
- * @param {string[]} statuses
  */
-function printBoardMarkdown(tasks, statuses) {
-  const grouped = {};
+function printBoardMarkdown(tasks: Task[], statuses: string[]): void {
+  const grouped: Record<string, Task[]> = {};
   for (const status of statuses) grouped[status] = [];
   for (const task of tasks) {
     const status = task.status || 'To Do';

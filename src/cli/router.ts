@@ -13,30 +13,29 @@
  * - help — справка
  */
 
-import { parseArgs } from './args.mjs';
-import { printHeader, printInfo, colorize, colors } from './ui.mjs';
-import { runInit } from './commands/init.mjs';
-import { runTask } from './commands/task.mjs';
-import { runBoard } from './commands/board.mjs';
-import { runSearch } from './commands/search.mjs';
-import { runInstructions } from './commands/instructions.mjs';
-import { runMcp } from './commands/mcp.mjs';
-import { runBrowser } from './commands/browser.mjs';
-import { runVersion } from './commands/version.mjs';
-import { runDoctor } from './commands/doctor.mjs';
-import { runMilestone } from './commands/milestone.mjs';
-import { runDoc } from './commands/doc.mjs';
-import { runConfig } from './commands/config.mjs';
-import { runDraft } from './commands/draft.mjs';
-import { runDecision } from './commands/decision.mjs';
+import { parseArgs } from './args.js';
+import { printHeader, printInfo, colorize, colors } from './ui.js';
+import { runInit } from './commands/init.js';
+import { runTask } from './commands/task.js';
+import { runBoard } from './commands/board.js';
+import { runSearch } from './commands/search.js';
+import { runInstructions } from './commands/instructions.js';
+import { runMcp } from './commands/mcp.js';
+import { runBrowser } from './commands/browser.js';
+import { runVersion } from './commands/version.js';
+import { runDoctor } from './commands/doctor.js';
+import { runMilestone } from './commands/milestone.js';
+import { runDoc } from './commands/doc.js';
+import { runConfig } from './commands/config.js';
+import { runDraft } from './commands/draft.js';
+import { runDecision } from './commands/decision.js';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
  *
- * @param {string[]} args — аргументы командной строки (без node и пути к скрипту)
- * @returns {Promise<void>}
+ * @param args — аргументы командной строки (без node и пути к скрипту)
  */
-export async function route(args) {
+export async function route(args: string[]): Promise<void> {
   const { command, subcommand, positional, flags } = parseArgs(args);
 
   // --version / -v — перехват ДО роутинга (совместимо с оригиналом Backlog.md)
@@ -95,7 +94,7 @@ export async function route(args) {
 /**
  * Выводит общую справку.
  */
-function showHelp() {
+function showHelp(): void {
   console.log(`
 ${colorize('Vibelog.md', colors.bold)} — markdown-нативный таск-менеджер
 
@@ -129,11 +128,9 @@ ${colorize('Подробнее:', colors.dim)} vibelog <command> --help`);
 
 /**
  * Выводит справку по конкретной команде.
- *
- * @param {string} command
  */
-function showCommandHelp(command) {
-  const helpTexts = {
+function showCommandHelp(command: string): void {
+  const helpTexts: Record<string, string> = {
     init: `
 vibelog init [name] [--prefix LB] [--skills[=qwen]] [--no-skills] [--no-mcp] [--force]
 

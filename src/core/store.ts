@@ -13,8 +13,12 @@ import { createTask, taskToMarkdown, markdownToTask, taskFilename } from './task
 import type { Task, TaskInput } from './task.js';
 import { nextTaskId } from './id.js';
 
-/** Вход createTaskFile: TaskInput + флаг отключения DoD-дефолтов. */
-export interface CreateTaskFileInput extends TaskInput {
+/**
+ * Вход createTaskFile: TaskInput (id опционален — генерируется nextTaskId)
+ * + флаг отключения DoD-дефолтов.
+ */
+export interface CreateTaskFileInput extends Omit<TaskInput, 'id'> {
+  id?: string;
   noDodDefaults?: boolean;
 }
 

@@ -15,8 +15,11 @@ Markdown-нативный таск-менеджер для git-репозито�
 
 ```bash
 pnpm install
+pnpm build
 pnpm link --global
 ```
+
+Исходники на TypeScript: `vibelog` запускает скомпилированный код из `dist/` — после изменений выполняйте `pnpm build`.
 
 ## Документация
 

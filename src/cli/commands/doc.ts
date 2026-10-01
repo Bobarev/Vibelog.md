@@ -11,23 +11,25 @@
  * Файлы: backlog/docs/<id>-<slug>.md (YAML-фронтматтер + markdown).
  */
 
-import { getFlag, getFlagArray } from '../args.mjs';
-import { printSuccess, printError, printInfo } from '../ui.mjs';
+import { getFlag, getFlagArray } from '../args.js';
+import type { FlagValues } from '../args.js';
+import { printSuccess, printError, printInfo } from '../ui.js';
 import { findBacklogDir } from '../../core/paths.js';
 import {
   writeDocument, listDocuments, getDocument,
   updateDocument, searchDocuments, DOCUMENT_TYPES,
 } from '../../core/document.js';
+import type { UpdateDocumentInput } from '../../core/document.js';
 
 /**
  * Выполняет команду doc.
- *
- * @param {string} subcommand
- * @param {string[]} positional
- * @param {Record<string, unknown>} flags
- * @param {string} cwd
  */
-export async function runDoc(subcommand, positional, flags, cwd) {
+export async function runDoc(
+  subcommand: string,
+  positional: string[],
+  flags: FlagValues,
+  cwd: string
+): Promise<void> {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) {
     printError('Backlog не найден. Выполните: vibelog init');
@@ -52,7 +54,7 @@ export async function runDoc(subcommand, positional, flags, cwd) {
   }
 }
 
-function docCreate(positional, flags, backlogDir) {
+function docCreate(positional: string[], flags: FlagValues, backlogDir: string): void {
   const title = positional[0];
   if (!title) {
     printError('Укажите заголовок: vibelog doc create <title> [--type T] [--tags a,b]');
@@ -68,11 +70,11 @@ function docCreate(positional, flags, backlogDir) {
     });
     printSuccess(`Документ ${doc.id} создан: ${doc.title} (тип: ${doc.type})`);
   } catch (err) {
-    printError(err.message);
+    printError((err as Error).message);
   }
 }
 
-function docList(flags, backlogDir) {
+function docList(flags: FlagValues, backlogDir: string): void {
   let entries = listDocuments(backlogDir);
   const typeFilter = getFlag(flags, 'type', '');
   if (typeFilter) {
@@ -90,7 +92,7 @@ function docList(flags, backlogDir) {
   console.log(`\n  ${entries.length} документов`);
 }
 
-function docView(positional, backlogDir) {
+function docView(positional: string[], backlogDir: string): void {
   const id = positional[0];
   if (!id) {
     printError('Укажите ID: vibelog doc view <id>');
@@ -112,13 +114,13 @@ function docView(positional, backlogDir) {
   }
 }
 
-function docUpdate(positional, flags, backlogDir) {
+function docUpdate(positional: string[], flags: FlagValues, backlogDir: string): void {
   const id = positional[0];
   if (!id) {
     printError('Укажите ID: vibelog doc update <id> [--title ...] [--type ...] [--tags ...]');
     return;
   }
-  const updates = {};
+  const updates: UpdateDocumentInput = {};
   if (flags.title) updates.title = getFlag(flags, 'title');
   if (flags.type) updates.type = getFlag(flags, 'type');
   if (flags.tags) {
@@ -136,11 +138,11 @@ function docUpdate(positional, flags, backlogDir) {
     }
     printSuccess(`Документ ${updated.document.id} обновлён: ${updated.document.title}`);
   } catch (err) {
-    printError(err.message);
+    printError((err as Error).message);
   }
 }
 
-function docSearch(positional, backlogDir) {
+function docSearch(positional: string[], backlogDir: string): void {
   const query = positional.join(' ');
   if (!query) {
     printError('Укажите запрос: vibelog doc search <query>');

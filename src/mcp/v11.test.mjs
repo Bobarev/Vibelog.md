@@ -22,7 +22,7 @@ import { execFileSync } from 'node:child_process';
 
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { markdownToTask, taskToMarkdown } from '../../dist/core/task.js';
-import { listTools, handleToolCall } from '../../dist/mcp/tools.mjs';
+import { listTools, handleToolCall } from '../../dist/mcp/tools.js';
 import { createTaskFile, getTask } from '../../dist/core/store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

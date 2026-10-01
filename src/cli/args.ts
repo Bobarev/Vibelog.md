@@ -10,6 +10,21 @@
  */
 
 /**
+ * Объект флагов после парсинга.
+ * Значения: строка, переключатель (boolean) или массив повторов флага.
+ * Тип намеренно широкий (unknown): реальные типы проверяют getFlag/getFlagArray/hasFlag.
+ */
+export type FlagValues = Record<string, unknown>;
+
+/** Результат парсинга аргументов CLI. */
+export interface ParsedArgs {
+  command: string;
+  subcommand: string;
+  positional: string[];
+  flags: FlagValues;
+}
+
+/**
  * Парсит массив аргументов в структурированный объект.
  *
  * Возвращает { command, subcommand, positional, flags }:
@@ -18,11 +33,10 @@
  * - positional: остальные позиции
  * - flags: объект с флагами (массивы для повторяющихся)
  *
- * @param {string[]} args — аргументы командной строки (без node и пути к скрипту)
- * @returns {{ command: string, subcommand: string, positional: string[], flags: Record<string, string|boolean|string[]> }}
+ * @param args — аргументы командной строки (без node и пути к скрипту)
  */
-export function parseArgs(args) {
-  const result = {
+export function parseArgs(args: string[]): ParsedArgs {
+  const result: ParsedArgs = {
     command: '',
     subcommand: '',
     positional: [],
@@ -52,7 +66,7 @@ export function parseArgs(args) {
     if (arg.startsWith('--')) {
       // Длинный флаг: --flag, --flag value, --flag=value
       let flagName = arg.slice(2);
-      let inlineValue;
+      let inlineValue: string | undefined;
 
       // Поддержка --flag=value
       const eqIdx = flagName.indexOf('=');
@@ -101,18 +115,15 @@ export function parseArgs(args) {
 /**
  * Добавляет флаг в объект.
  * Если флаг уже существует — превращает значение в массив.
- *
- * @param {Record<string, unknown>} flags — объект флагов
- * @param {string} key — имя флага
- * @param {unknown} value — значение
  */
-function addFlag(flags, key, value) {
-  if (flags[key] === undefined) {
+function addFlag(flags: FlagValues, key: string, value: unknown): void {
+  const current = flags[key];
+  if (current === undefined) {
     flags[key] = value;
-  } else if (Array.isArray(flags[key])) {
-    flags[key].push(value);
+  } else if (Array.isArray(current)) {
+    current.push(value);
   } else {
-    flags[key] = [flags[key], value];
+    flags[key] = [current, value];
   }
 }
 
@@ -126,11 +137,10 @@ function addFlag(flags, key, value) {
  * -l → labels
  * -p → priority (или parent, зависит от контекста)
  *
- * @param {string} char — символ флага (без дефиса)
- * @returns {string} — длинное имя флага
+ * @param char — символ флага (без дефиса)
  */
-function shortFlagMap(char) {
-  const map = {
+function shortFlagMap(char: string): string {
+  const map: Record<string, string> = {
     d: 'description',
     a: 'assignee',
     s: 'status',
@@ -143,12 +153,9 @@ function shortFlagMap(char) {
 /**
  * Получает значение флага как строку.
  *
- * @param {Record<string, unknown>} flags — объект флагов
- * @param {string} key — имя флага
- * @param {string} [defaultValue=''] — значение по умолчанию
- * @returns {string}
+ * @param defaultValue — значение по умолчанию
  */
-export function getFlag(flags, key, defaultValue = '') {
+export function getFlag(flags: Record<string, unknown>, key: string, defaultValue = ''): string {
   const val = flags[key];
   if (val === undefined || val === true) return defaultValue;
   if (Array.isArray(val)) return val[0];
@@ -157,12 +164,8 @@ export function getFlag(flags, key, defaultValue = '') {
 
 /**
  * Получает значение флага как массив строк.
- *
- * @param {Record<string, unknown>} flags — объект флагов
- * @param {string} key — имя флага
- * @returns {string[]}
  */
-export function getFlagArray(flags, key) {
+export function getFlagArray(flags: Record<string, unknown>, key: string): string[] {
   const val = flags[key];
   if (val === undefined) return [];
   if (Array.isArray(val)) return val.map(String);
@@ -171,11 +174,7 @@ export function getFlagArray(flags, key) {
 
 /**
  * Проверяет, установлен ли флаг-переключатель.
- *
- * @param {Record<string, unknown>} flags — объект флагов
- * @param {string} key — имя флага
- * @returns {boolean}
  */
-export function hasFlag(flags, key) {
+export function hasFlag(flags: Record<string, unknown>, key: string): boolean {
   return flags[key] === true || flags[key] !== undefined;
 }

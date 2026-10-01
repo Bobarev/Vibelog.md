@@ -9,25 +9,25 @@
  * - archive <name> — архивировать
  */
 
-import { getFlag } from '../args.mjs';
-import { printSuccess, printError, printInfo } from '../ui.mjs';
-import { findBacklogDir, tasksDir } from '../../core/paths.js';
-import { loadConfig } from '../../core/config.js';
+import { getFlag } from '../args.js';
+import type { FlagValues } from '../args.js';
+import { printSuccess, printError, printInfo } from '../ui.js';
+import { findBacklogDir } from '../../core/paths.js';
 import {
   writeMilestone, listMilestones, renameMilestone,
   deleteMilestone, archiveMilestone,
 } from '../../core/milestone.js';
-import { listTasks, updateTaskFile, getTask } from '../../core/store.js';
+import { listTasks, updateTaskFile } from '../../core/store.js';
 
 /**
  * Выполняет команду milestone.
- *
- * @param {string} subcommand
- * @param {string[]} positional
- * @param {Record<string, unknown>} flags
- * @param {string} cwd
  */
-export async function runMilestone(subcommand, positional, flags, cwd) {
+export async function runMilestone(
+  subcommand: string,
+  positional: string[],
+  flags: FlagValues,
+  cwd: string
+): Promise<void> {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) {
     printError('Backlog не найден. Выполните: vibelog init');
@@ -52,7 +52,7 @@ export async function runMilestone(subcommand, positional, flags, cwd) {
   }
 }
 
-function milestoneAdd(positional, flags, backlogDir) {
+function milestoneAdd(positional: string[], flags: FlagValues, backlogDir: string): void {
   const name = positional[0];
   if (!name) {
     printError('Укажите название: vibelog milestone add <name>');
@@ -64,7 +64,7 @@ function milestoneAdd(positional, flags, backlogDir) {
   printSuccess(`Веха "${milestone.name}" создана.`);
 }
 
-function milestoneList(positional, flags, backlogDir) {
+function milestoneList(positional: string[], flags: FlagValues, backlogDir: string): void {
   // --show-completed читает архивные вехи из backlog/completed/
   let milestones = listMilestones(backlogDir, { includeArchived: !!flags['show-completed'] });
   if (!flags['show-completed']) {
@@ -83,7 +83,12 @@ function milestoneList(positional, flags, backlogDir) {
   console.log(`\n  ${milestones.length} вех`);
 }
 
-function milestoneRename(positional, flags, backlogDir, cwd) {
+function milestoneRename(
+  positional: string[],
+  flags: FlagValues,
+  backlogDir: string,
+  cwd: string
+): void {
   const from = positional[0];
   const to = positional[1];
   if (!from || !to) {
@@ -111,7 +116,12 @@ function milestoneRename(positional, flags, backlogDir, cwd) {
   }
 }
 
-function milestoneRemove(positional, flags, backlogDir, cwd) {
+function milestoneRemove(
+  positional: string[],
+  flags: FlagValues,
+  backlogDir: string,
+  cwd: string
+): void {
   const name = positional[0];
   if (!name) {
     printError('Использование: vibelog milestone remove <name>');
@@ -148,7 +158,7 @@ function milestoneRemove(positional, flags, backlogDir, cwd) {
   if (updated > 0) printInfo(`Задач обновлено: ${updated}`);
 }
 
-function milestoneArchive(positional, backlogDir) {
+function milestoneArchive(positional: string[], backlogDir: string): void {
   const name = positional[0];
   if (!name) {
     printError('Использование: vibelog milestone archive <name>');

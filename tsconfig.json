@@ -5,14 +5,21 @@
     "moduleResolution": "NodeNext",
     "rootDir": "src",
     "outDir": "dist",
-    "allowJs": true,
-    "checkJs": false,
     "strict": true,
     "noEmitOnError": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "allowJs": false
   },
-  "include": ["src/**/*"],
-  "exclude": ["src/**/*.test.mjs", "dist", "node_modules"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "src/**/*.test.mjs",
+    "dist",
+    "node_modules"
+  ]
 }

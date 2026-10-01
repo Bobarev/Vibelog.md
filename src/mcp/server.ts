@@ -5,7 +5,7 @@
  * Каждое сообщение — одна JSON-строка, завершающаяся \n.
  *
  * Методы:
- * - initialize —.handshake, возвращает capabilities
+ * - initialize — handshake, возвращает capabilities
  * - notifications/initialized — уведомление после handshake
  * - tools/list — список доступных инструментов
  * - tools/call — вызов инструмента
@@ -17,28 +17,45 @@ import { createInterface } from 'node:readline';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { handleToolCall, listTools } from './tools.mjs';
+import { handleToolCall, listTools } from './tools.js';
+import type { ToolArgs } from './tools.js';
 
 // Версия из package.json — чтобы не дублировать при релизах
 const packageJson = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf-8'),
-);
+) as { version: string };
+
+/** JSON-RPC id: число, строка или null (ошибки парсинга). */
+type RpcId = number | string | null | undefined;
+
+/** Входящее JSON-RPC сообщение. */
+interface RpcMessage {
+  id?: number | string;
+  method?: string;
+  params?: Record<string, unknown>;
+}
+
+/** Функция отправки JSON-RPC ответа. */
+type SendResponse = (id: RpcId, result: unknown) => void;
+
+/** Функция отправки JSON-RPC ошибки. */
+type SendError = (id: RpcId, code: number, message: string, data?: unknown) => void;
 
 /**
  * Запускает MCP-сервер.
  *
  * Читает JSON-RPC сообщения из stdin, обрабатывает и отвечает в stdout.
  *
- * @param {string} cwd — рабочая директория проекта
+ * @param cwd — рабочая директория проекта
  */
-export function startMcpServer(cwd) {
+export function startMcpServer(cwd: string): void {
   const rl = createInterface({
     input: process.stdin,
     terminal: false,
   });
 
   // Отправляем JSON-RPC ответ
-  function sendResponse(id, result) {
+  function sendResponse(id: RpcId, result: unknown): void {
     const response = {
       jsonrpc: '2.0',
       id,
@@ -48,7 +65,7 @@ export function startMcpServer(cwd) {
   }
 
   // Отправляем JSON-RPC ошибку
-  function sendError(id, code, message, data) {
+  function sendError(id: RpcId, code: number, message: string, data?: unknown): void {
     const response = {
       jsonrpc: '2.0',
       id,
@@ -62,11 +79,11 @@ export function startMcpServer(cwd) {
   }
 
   // Обрабатываем входящее сообщение
-  rl.on('line', async (line) => {
+  rl.on('line', async (line: string) => {
     const trimmed = line.trim();
     if (!trimmed) return;
 
-    let msg;
+    let msg: RpcMessage;
     try {
       msg = JSON.parse(trimmed);
     } catch {
@@ -102,7 +119,7 @@ export function startMcpServer(cwd) {
       }
     } catch (err) {
       if (id !== undefined) {
-        sendError(id, -32603, err.message);
+        sendError(id, -32603, (err as Error).message);
       }
     }
   });
@@ -120,11 +137,10 @@ export function startMcpServer(cwd) {
  *
  * Возвращает capabilities сервера и информацию о продукте.
  *
- * @param {number|string} id — JSON-RPC id
- * @param {object} params — параметры запроса
- * @param {function} send — функция отправки ответа
+ * @param params — параметры запроса (в оригинале не используются)
+ * @param send — функция отправки ответа
  */
-function handleInitialize(id, params, send) {
+function handleInitialize(id: RpcId, params: Record<string, unknown> | undefined, send: SendResponse): void {
   send(id, {
     protocolVersion: '2024-11-05',
     capabilities: {
@@ -142,10 +158,9 @@ function handleInitialize(id, params, send) {
  *
  * Возвращает список доступных инструментов.
  *
- * @param {number|string} id — JSON-RPC id
- * @param {function} send — функция отправки ответа
+ * @param send — функция отправки ответа
  */
-function handleToolsList(id, send) {
+function handleToolsList(id: RpcId, send: SendResponse): void {
   send(id, {
     tools: listTools(),
   });
@@ -156,14 +171,20 @@ function handleToolsList(id, send) {
  *
  * Вызывает инструмент по имени и возвращает результат.
  *
- * @param {number|string} id — JSON-RPC id
- * @param {object} params — { name, arguments }
- * @param {string} cwd — рабочая директория
- * @param {function} send — функция отправки ответа
- * @param {function} sendErr — функция отправки ошибки
+ * @param params — { name, arguments }
+ * @param cwd — рабочая директория
+ * @param send — функция отправки ответа
+ * @param sendErr — функция отправки ошибки
  */
-async function handleToolsCall(id, params, cwd, send, sendErr) {
-  const { name, arguments: args } = params;
+async function handleToolsCall(
+  id: RpcId,
+  params: Record<string, unknown> | undefined,
+  cwd: string,
+  send: SendResponse,
+  sendErr: SendError
+): Promise<void> {
+  // Деструктуризация намеренно по оригиналу: undefined params → TypeError → -32603
+  const { name, arguments: args } = params as { name?: string; arguments?: ToolArgs };
 
   if (!name) {
     sendErr(id, -32602, 'Missing tool name');
@@ -185,7 +206,7 @@ async function handleToolsCall(id, params, cwd, send, sendErr) {
       content: [
         {
           type: 'text',
-          text: `Ошибка: ${err.message}`,
+          text: `Ошибка: ${(err as Error).message}`,
         },
       ],
       isError: true,

@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 import { stringifyYaml } from '../../dist/core/yaml.js';
-import { listTools, handleToolCall } from '../../dist/mcp/tools.mjs';
+import { listTools, handleToolCall } from '../../dist/mcp/tools.js';
 import { createTaskFile, getTask } from '../../dist/core/store.js';
 import { listMilestones } from '../../dist/core/milestone.js';
 

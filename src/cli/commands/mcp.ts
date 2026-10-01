@@ -5,18 +5,24 @@
  * Предназначен для подключения к AI-агентам (Qwen Code).
  */
 
-import { startMcpServer } from '../../mcp/server.mjs';
-import { printInfo } from '../ui.mjs';
+import { startMcpServer } from '../../mcp/server.js';
+import { printInfo } from '../ui.js';
+import type { FlagValues } from '../args.js';
 
 /**
  * Выполняет команду mcp.
  *
- * @param {string} subcommand — подкоманда (start)
- * @param {string[]} positional — позиционные аргументы
- * @param {Record<string, unknown>} flags — флаги
- * @param {string} cwd — текущая рабочая директория
+ * @param subcommand — подкоманда (start)
+ * @param positional — позиционные аргументы
+ * @param flags — флаги
+ * @param cwd — текущая рабочая директория
  */
-export async function runMcp(subcommand, positional, flags, cwd) {
+export async function runMcp(
+  subcommand: string,
+  positional: string[],
+  flags: FlagValues,
+  cwd: string
+): Promise<void> {
   if (subcommand === 'start') {
     // В режиме MCP не выводим ничего в stderr — только JSON-RPC в stdout
     startMcpServer(cwd);

@@ -10,11 +10,12 @@
  * - archive — архивировать задачу
  */
 
-import { parseArgs, getFlag, getFlagArray } from '../args.mjs';
+import { getFlag, getFlagArray } from '../args.js';
+import type { FlagValues } from '../args.js';
 import {
   printSuccess, printError, printInfo,
   printTaskTable, printTaskDetail,
-} from '../ui.mjs';
+} from '../ui.js';
 import {
   listTasks, getTask, createTaskFile,
   updateTaskFile, completeTaskFile, archiveTaskFile,
@@ -23,16 +24,19 @@ import { loadConfig, normalizeTaskType } from '../../core/config.js';
 import { isReady } from '../../core/deps.js';
 import { findBacklogDir } from '../../core/paths.js';
 import { writeDraft } from '../../core/draft.js';
+import type { Task, ChecklistItem, TaskComment } from '../../core/task.js';
 
 /**
  * Выполняет команду task с подкомандой.
  *
- * @param {string} subcommand — подкоманда (create, list, view, edit, complete, archive)
- * @param {string[]} positional — позиционные аргументы
- * @param {Record<string, unknown>} flags — флаги
- * @param {string} cwd — текущая рабочая директория
+ * @param subcommand — подкоманда (create, list, view, edit, complete, archive)
  */
-export async function runTask(subcommand, positional, flags, cwd) {
+export async function runTask(
+  subcommand: string,
+  positional: string[],
+  flags: FlagValues,
+  cwd: string
+): Promise<void> {
   switch (subcommand) {
     case 'create':
       return taskCreate(positional, flags, cwd);
@@ -59,12 +63,8 @@ export async function runTask(subcommand, positional, flags, cwd) {
  * Создаёт новую задачу.
  *
  * vibelog task create "Заголовок" [-d описание] [--ac "критерий"] [--labels bug]
- *
- * @param {string[]} positional — [заголовок]
- * @param {Record<string, unknown>} flags
- * @param {string} cwd
  */
-function taskCreate(positional, flags, cwd) {
+function taskCreate(positional: string[], flags: FlagValues, cwd: string): void {
   const title = positional[0];
   if (!title) {
     printError('Укажите заголовок задачи: vibelog task create "Заголовок"');
@@ -87,7 +87,7 @@ function taskCreate(positional, flags, cwd) {
     try {
       normalizedType = normalizeTaskType(loadConfig(cwd), type);
     } catch (err) {
-      printError(err.message);
+      printError((err as Error).message);
       return;
     }
   }
@@ -111,7 +111,7 @@ function taskCreate(positional, flags, cwd) {
   }
 
   // --ordinal: целое ≥ 0
-  let ordinal;
+  let ordinal: number | undefined;
   if (flags.ordinal !== undefined) {
     ordinal = Number(getFlag(flags, 'ordinal'));
     if (!Number.isInteger(ordinal) || ordinal < 0) {
@@ -124,7 +124,7 @@ function taskCreate(positional, flags, cwd) {
 
   // --draft: черновик вместо задачи (ядро VL-13)
   if (flags.draft) {
-    const draft = writeDraft(findBacklogDir(cwd), { title, description, labels }, loadConfig(cwd));
+    const draft = writeDraft(findBacklogDir(cwd) as string, { title, description, labels }, loadConfig(cwd));
     printSuccess(`Черновик ${draft.id} создан: ${draft.title}`);
     return;
   }
@@ -158,12 +158,8 @@ function taskCreate(positional, flags, cwd) {
  * Выводит список задач.
  *
  * vibelog task list [-s статус] [--json]
- *
- * @param {string[]} positional
- * @param {Record<string, unknown>} flags
- * @param {string} cwd
  */
-function taskList(positional, flags, cwd) {
+function taskList(positional: string[], flags: FlagValues, cwd: string): void {
   let tasks = listTasks(cwd);
 
   // Фильтрация по статусу
@@ -194,7 +190,7 @@ function taskList(positional, flags, cwd) {
   // Сортировка
   const sortField = getFlag(flags, 'sort');
   if (sortField === 'priority') {
-    const order = { High: 0, Medium: 1, Low: 2 };
+    const order: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
     tasks.sort((a, b) => (order[a.priority] ?? 3) - (order[b.priority] ?? 3));
   } else if (sortField === 'created') {
     tasks.sort((a, b) => (b.created_date || '').localeCompare(a.created_date || ''));
@@ -233,7 +229,7 @@ function taskList(positional, flags, cwd) {
 
   const config = loadConfig(cwd);
   printTaskTable(tasks, {
-    maxWidth: config.max_column_width || 20,
+    maxWidth: (config.max_column_width as number) || 20,
   });
 }
 
@@ -241,12 +237,8 @@ function taskList(positional, flags, cwd) {
  * Просматривает задачу по ID.
  *
  * vibelog task view <id> [--json]
- *
- * @param {string[]} positional — [id]
- * @param {Record<string, unknown>} flags
- * @param {string} cwd
  */
-function taskView(positional, flags, cwd) {
+function taskView(positional: string[], flags: FlagValues, cwd: string): void {
   const id = positional[0];
   if (!id) {
     printError('Укажите ID задачи: vibelog task view <id>');
@@ -268,26 +260,16 @@ function taskView(positional, flags, cwd) {
 }
 
 /**
- * Редактирует задачу.
- *
- * vibelog task edit <id> [--title ...] [--status ...] [--ac "текст"] [--check-ac N]
- *
- * @param {string[]} positional — [id]
- * @param {Record<string, unknown>} flags
- * @param {string} cwd
- */
-/**
  * Разбирает список индексов через запятую (--check-ac 1,3).
  *
  * Невалидные индексы: printError, валидные возвращаются (0-based).
  *
- * @param {string} raw — значение флага
- * @param {number} max — максимум (длина списка)
- * @param {string} label — для сообщений об ошибках (AC/DoD)
- * @returns {number[]}
+ * @param raw — значение флага
+ * @param max — максимум (длина списка)
+ * @param label — для сообщений об ошибках (AC/DoD)
  */
-function parseIndexes(raw, max, label) {
-  const result = [];
+function parseIndexes(raw: string, max: number, label: string): number[] {
+  const result: number[] = [];
   for (const part of String(raw).split(',')) {
     const s = part.trim();
     if (!s) continue;
@@ -301,14 +283,19 @@ function parseIndexes(raw, max, label) {
   return result;
 }
 
-function taskEdit(positional, flags, cwd) {
+/**
+ * Редактирует задачу.
+ *
+ * vibelog task edit <id> [--title ...] [--status ...] [--ac "текст"] [--check-ac N]
+ */
+function taskEdit(positional: string[], flags: FlagValues, cwd: string): void {
   const id = positional[0];
   if (!id) {
     printError('Укажите ID задачи: vibelog task edit <id>');
     return;
   }
 
-  const updates = {};
+  const updates: Partial<Task> = {};
 
   if (flags.title) updates.title = getFlag(flags, 'title');
   if (flags.status) updates.status = getFlag(flags, 'status');
@@ -320,7 +307,7 @@ function taskEdit(positional, flags, cwd) {
     try {
       updates.type = normalizeTaskType(loadConfig(cwd), getFlag(flags, 'type'));
     } catch (err) {
-      printError(err.message);
+      printError((err as Error).message);
       return;
     }
   }
@@ -380,7 +367,7 @@ function taskEdit(positional, flags, cwd) {
   if (flags['check-ac']) {
     const task = getTask(cwd, id);
     if (task) {
-      const list = task.acceptanceCriteria;
+      const list = task.acceptanceCriteria as ChecklistItem[];
       for (const i of parseIndexes(getFlag(flags, 'check-ac'), list.length, 'AC')) {
         list[i].checked = true;
       }
@@ -392,7 +379,7 @@ function taskEdit(positional, flags, cwd) {
   if (flags['uncheck-ac']) {
     const task = getTask(cwd, id);
     if (task) {
-      const list = task.acceptanceCriteria;
+      const list = task.acceptanceCriteria as ChecklistItem[];
       for (const i of parseIndexes(getFlag(flags, 'uncheck-ac'), list.length, 'AC')) {
         list[i].checked = false;
       }
@@ -427,7 +414,7 @@ function taskEdit(positional, flags, cwd) {
   if (flags['check-dod']) {
     const task = getTask(cwd, id);
     if (task) {
-      const list = task.definitionOfDone;
+      const list = task.definitionOfDone as ChecklistItem[];
       for (const i of parseIndexes(getFlag(flags, 'check-dod'), list.length, 'DoD')) {
         list[i].checked = true;
       }
@@ -439,7 +426,7 @@ function taskEdit(positional, flags, cwd) {
   if (flags['uncheck-dod']) {
     const task = getTask(cwd, id);
     if (task) {
-      const list = task.definitionOfDone;
+      const list = task.definitionOfDone as ChecklistItem[];
       for (const i of parseIndexes(getFlag(flags, 'uncheck-dod'), list.length, 'DoD')) {
         list[i].checked = false;
       }
@@ -479,10 +466,8 @@ function taskEdit(positional, flags, cwd) {
       const author = getFlag(flags, 'comment-author', '@agent');
       const now = new Date();
       const created = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-      updates.comments = [
-        ...(task.comments || []),
-        { author, created, text: getFlag(flags, 'comment') },
-      ];
+      const comment: TaskComment = { author, created, text: getFlag(flags, 'comment') };
+      updates.comments = [...(task.comments || []), comment];
     }
   }
 
@@ -499,11 +484,8 @@ function taskEdit(positional, flags, cwd) {
  * Завершает задачу (меняет статус на Done и архивирует).
  *
  * vibelog task complete <id>
- *
- * @param {string[]} positional — [id]
- * @param {string} cwd
  */
-function taskComplete(positional, cwd) {
+function taskComplete(positional: string[], cwd: string): void {
   const id = positional[0];
   if (!id) {
     printError('Укажите ID задачи: vibelog task complete <id>');
@@ -514,7 +496,7 @@ function taskComplete(positional, cwd) {
     completeTaskFile(cwd, id);
     printSuccess(`Задача ${id} завершена и архивирована.`);
   } catch (err) {
-    printError(err.message);
+    printError((err as Error).message);
   }
 }
 
@@ -522,11 +504,8 @@ function taskComplete(positional, cwd) {
  * Архивирует задачу.
  *
  * vibelog task archive <id>
- *
- * @param {string[]} positional — [id]
- * @param {string} cwd
  */
-function taskArchive(positional, cwd) {
+function taskArchive(positional: string[], cwd: string): void {
   const id = positional[0];
   if (!id) {
     printError('Укажите ID задачи: vibelog task archive <id>');
@@ -537,6 +516,6 @@ function taskArchive(positional, cwd) {
     archiveTaskFile(cwd, id);
     printSuccess(`Задача ${id} архивирована.`);
   } catch (err) {
-    printError(err.message);
+    printError((err as Error).message);
   }
 }

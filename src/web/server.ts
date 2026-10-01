@@ -10,21 +10,23 @@
  */
 
 import { createServer } from 'node:http';
+import type { Server } from 'node:http';
 import { exec } from 'node:child_process';
-import { handleApi } from './api.mjs';
-import { getAssetsHtml } from './assets.mjs';
+import { handleApi } from './api.js';
+import { getAssetsHtml } from './assets.js';
 
 /**
  * Запускает HTTP-сервер веб-интерфейса.
  *
- * @param {string} cwd — рабочая директория проекта
- * @param {number} [port=3030] — порт для прослушивания
- * @param {boolean} [openBrowser=true] — открывать ли браузер автоматически
+ * @param cwd — рабочая директория проекта
+ * @param port — порт для прослушивания
+ * @param openBrowser — открывать ли браузер автоматически
  */
-export function startWebServer(cwd, port = 3030, openBrowser = true) {
+export function startWebServer(cwd: string, port = 3030, openBrowser = true): Server {
   const server = createServer((req, res) => {
-    const url = req.url.split('?')[0];
-    const method = req.method;
+    const url = (req.url ?? '').split('?')[0];
+    // '' не совпадает ни с одним эндпоинтом — тот же 404, что и у undefined
+    const method = req.method || '';
 
     // CORS-заголовки (для локальной разработки)
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -41,9 +43,9 @@ export function startWebServer(cwd, port = 3030, openBrowser = true) {
     // API-маршруты
     if (url.startsWith('/api/')) {
       let body = '';
-      req.on('data', chunk => { body += chunk; });
+      req.on('data', chunk => { body += chunk.toString(); });
       req.on('end', () => {
-        let parsed = null;
+        let parsed: Record<string, unknown> | null = null;
         if (body) {
           try { parsed = JSON.parse(body); } catch { /* ignore */ }
         }
@@ -79,7 +81,8 @@ export function startWebServer(cwd, port = 3030, openBrowser = true) {
   });
 
   server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EADDRINUSE') {
       console.error(`Порт ${port} уже занят. Попробуйте другой: vibelog browser --port ${port + 1}`);
     } else {
       console.error(`Ошибка сервера: ${err.message}`);

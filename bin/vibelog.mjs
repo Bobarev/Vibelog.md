@@ -10,7 +10,7 @@
  *
  * Импорт идёт из dist/ — перед использованием нужна сборка `pnpm build`.
  */
-import { route } from '../dist/cli/router.mjs';
+import { route } from '../dist/cli/router.js';
 
 route(process.argv.slice(2)).catch(err => {
   console.error(`Ошибка: ${err.message}`);

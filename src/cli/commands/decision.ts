@@ -10,8 +10,9 @@
  * (фронтматтер id/title/date/status + секции Context/Decision/...).
  */
 
-import { getFlag } from '../args.mjs';
-import { printSuccess, printError, printInfo } from '../ui.mjs';
+import { getFlag } from '../args.js';
+import type { FlagValues } from '../args.js';
+import { printSuccess, printError, printInfo } from '../ui.js';
 import { findBacklogDir } from '../../core/paths.js';
 import {
   writeDecision, listDecisions, getDecision, DECISION_STATUSES,
@@ -19,13 +20,13 @@ import {
 
 /**
  * Выполняет команду decision.
- *
- * @param {string} subcommand
- * @param {string[]} positional
- * @param {Record<string, unknown>} flags
- * @param {string} cwd
  */
-export async function runDecision(subcommand, positional, flags, cwd) {
+export async function runDecision(
+  subcommand: string,
+  positional: string[],
+  flags: FlagValues,
+  cwd: string
+): Promise<void> {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) {
     printError('Backlog не найден. Выполните: vibelog init');
@@ -46,7 +47,7 @@ export async function runDecision(subcommand, positional, flags, cwd) {
   }
 }
 
-function decisionCreate(positional, flags, backlogDir) {
+function decisionCreate(positional: string[], flags: FlagValues, backlogDir: string): void {
   const title = positional[0];
   if (!title) {
     printError('Укажите заголовок: vibelog decision create <title> [-s status] [--context ...]');
@@ -64,7 +65,7 @@ function decisionCreate(positional, flags, backlogDir) {
   printSuccess(`Решение ${decision.id} создано: ${decision.title} (статус: ${decision.status})`);
 }
 
-function decisionList(flags, backlogDir) {
+function decisionList(flags: FlagValues, backlogDir: string): void {
   const statusFilter = getFlag(flags, 'status', '');
   const entries = listDecisions(backlogDir, statusFilter ? { status: statusFilter } : {});
   if (entries.length === 0) {
@@ -79,7 +80,7 @@ function decisionList(flags, backlogDir) {
   console.log(`\n  ${entries.length} решений`);
 }
 
-function decisionView(positional, backlogDir) {
+function decisionView(positional: string[], backlogDir: string): void {
   const id = positional[0];
   if (!id) {
     printError('Укажите ID: vibelog decision view <id>');

@@ -2,6 +2,22 @@
 
 Все заметные изменения Vibelog.md. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [1.5.0] — 2026-10-01
+
+Миграция проекта на TypeScript. Поведение и форматы данных не изменились.
+
+### Изменено
+
+- **Весь исходный код на TypeScript** (`src/**/*.ts`, strict-режим): ядро (15 модулей `src/core`), CLI (роутер + 14 команд), MCP-сервер (21 инструмент), веб-интерфейс. Сборка: `pnpm build` (`tsc`) → `dist/` (ESM); `bin/vibelog.mjs` — шим на `dist/cli/router.js`.
+- **TypeScript и `@types/node` — только devDependencies**; runtime остаётся zero-dependency (чистый ESM без нативных модулей, совместимость с macOS Catalina сохранена).
+- Скрипты: `build` (tsc), `typecheck` (tsc --noEmit), `test` (build + `node --test src`). Тесты (`*.test.mjs`) импортируют скомпилированный код из `dist/`.
+- Публичные контракты ядра типизированы: `Task`, `TaskInput`, `ChecklistItem`, `TaskComment`, `Milestone`, `Document`, `Decision`, `SearchFilters`.
+- README: установка включает `pnpm build`; AGENTS.md: правило «только .mjs» заменено на схему «.ts → tsc → dist».
+
+### Примечания
+
+- Форматы данных Backlog.md не менялись — round-trip совместимость покрыта compat-тестами (306/306).
+
 ## [1.4.0] — 2026-10-01
 
 Первый релиз после v1.2.0: два плановых релиза фич (v1.3 + v1.4) в одном.

@@ -12,8 +12,9 @@
  * Файлы: backlog/drafts/<id> - <slug>.md (task-shaped, статус Draft).
  */
 
-import { getFlag, getFlagArray } from '../args.mjs';
-import { printSuccess, printError, printInfo } from '../ui.mjs';
+import { getFlag, getFlagArray } from '../args.js';
+import type { FlagValues } from '../args.js';
+import { printSuccess, printError, printInfo } from '../ui.js';
 import { findBacklogDir } from '../../core/paths.js';
 import { loadConfig } from '../../core/config.js';
 import { createTaskFile } from '../../core/store.js';
@@ -21,16 +22,17 @@ import {
   writeDraft, listDrafts, getDraft, updateDraft,
   archiveDraft, removeDraftFile,
 } from '../../core/draft.js';
+import type { Task } from '../../core/task.js';
 
 /**
  * Выполняет команду draft.
- *
- * @param {string} subcommand
- * @param {string[]} positional
- * @param {Record<string, unknown>} flags
- * @param {string} cwd
  */
-export async function runDraft(subcommand, positional, flags, cwd) {
+export async function runDraft(
+  subcommand: string,
+  positional: string[],
+  flags: FlagValues,
+  cwd: string
+): Promise<void> {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) {
     printError('Backlog не найден. Выполните: vibelog init');
@@ -58,12 +60,17 @@ export async function runDraft(subcommand, positional, flags, cwd) {
 }
 
 /** Разбирает флаги labels: --labels a,b или повторные -l. */
-function parseLabels(flags) {
+function parseLabels(flags: FlagValues): string[] {
   return getFlagArray(flags, 'labels')
     .flatMap(l => l.split(',').map(s => s.trim()).filter(Boolean));
 }
 
-function draftCreate(positional, flags, backlogDir, cwd) {
+function draftCreate(
+  positional: string[],
+  flags: FlagValues,
+  backlogDir: string,
+  cwd: string
+): void {
   const title = positional[0];
   if (!title) {
     printError('Укажите заголовок: vibelog draft create <title> [-d desc] [-l labels]');
@@ -78,7 +85,7 @@ function draftCreate(positional, flags, backlogDir, cwd) {
   printSuccess(`Черновик ${draft.id} создан: ${draft.title}`);
 }
 
-function draftList(backlogDir) {
+function draftList(backlogDir: string): void {
   const drafts = listDrafts(backlogDir);
   if (drafts.length === 0) {
     printInfo('Черновиков нет.');
@@ -92,7 +99,7 @@ function draftList(backlogDir) {
   console.log(`\n  ${drafts.length} черновиков`);
 }
 
-function draftView(positional, backlogDir) {
+function draftView(positional: string[], backlogDir: string): void {
   const id = positional[0];
   if (!id) {
     printError('Укажите ID: vibelog draft view <id>');
@@ -114,13 +121,13 @@ function draftView(positional, backlogDir) {
   }
 }
 
-function draftEdit(positional, flags, backlogDir) {
+function draftEdit(positional: string[], flags: FlagValues, backlogDir: string): void {
   const id = positional[0];
   if (!id) {
     printError('Использование: vibelog draft edit <id> [--title ...] [-d desc] [-l labels]');
     return;
   }
-  const updates = {};
+  const updates: Partial<Task> = {};
   if (flags.title) updates.title = getFlag(flags, 'title');
   if (flags.description || flags.d) updates.description = getFlag(flags, 'description', '');
   if (flags.labels || flags.l) updates.labels = parseLabels(flags);
@@ -137,7 +144,7 @@ function draftEdit(positional, flags, backlogDir) {
   printSuccess(`Черновик ${updated.task.id} обновлён: ${updated.task.title}`);
 }
 
-function draftPromote(positional, backlogDir, cwd) {
+function draftPromote(positional: string[], backlogDir: string, cwd: string): void {
   const id = positional[0];
   if (!id) {
     printError('Использование: vibelog draft promote <id>');
@@ -163,7 +170,7 @@ function draftPromote(positional, backlogDir, cwd) {
   printSuccess(`Черновик ${d.id} → задача ${task.id}: ${task.title}`);
 }
 
-function draftArchive(positional, backlogDir) {
+function draftArchive(positional: string[], backlogDir: string): void {
   const id = positional[0];
   if (!id) {
     printError('Использование: vibelog draft archive <id>');

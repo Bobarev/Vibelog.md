@@ -6,6 +6,7 @@
  */
 
 import readline from 'node:readline';
+import type { Task, ChecklistItem } from '../core/task.js';
 
 /**
  * ANSI-коды цветов.
@@ -25,71 +26,66 @@ export const colors = {
   gray: '\x1b[90m',
 };
 
+/** Опции отображения таблицы задач. */
+export interface TaskTableOptions {
+  columns?: string[];
+  maxWidth?: number;
+}
+
 /**
  * Оборачивает текст в ANSI-цвет.
  *
- * @param {string} text — текст
- * @param {string} color — ANSI-код цвета
- * @returns {string}
+ * @param text — текст
+ * @param color — ANSI-код цвета
  */
-export function colorize(text, color) {
+export function colorize(text: string, color: string): string {
   return `${color}${text}${colors.reset}`;
 }
 
 /**
  * Выводит заголовок команды.
  *
- * @param {string} title — текст заголовка
+ * @param title — текст заголовка
  */
-export function printHeader(title) {
+export function printHeader(title: string): void {
   console.log(`\n${colorize(` ${title} `, colors.bold + colors.cyan)}\n`);
 }
 
 /**
  * Выводит сообщение об успехе.
- *
- * @param {string} message
  */
-export function printSuccess(message) {
+export function printSuccess(message: string): void {
   console.log(`${colorize('✓', colors.green)} ${message}`);
 }
 
 /**
  * Выводит сообщение об ошибке.
- *
- * @param {string} message
  */
-export function printError(message) {
+export function printError(message: string): void {
   console.error(`${colorize('✗', colors.red)} ${message}`);
 }
 
 /**
  * Выводит информационное сообщение.
- *
- * @param {string} message
  */
-export function printInfo(message) {
+export function printInfo(message: string): void {
   console.log(`${colorize('ℹ', colors.blue)} ${message}`);
 }
 
 /**
  * Выводит предупреждение.
- *
- * @param {string} message
  */
-export function printWarning(message) {
+export function printWarning(message: string): void {
   console.log(`${colorize('⚠', colors.yellow)} ${message}`);
 }
 
 /**
  * Выводит таблицу задач в терминале.
  *
- * @param {object[]} tasks — массив задач
- * @param {object} [options] — опции отображения
- * @param {string[]} [options.columns] — список полей для отображения
- * @param {number} [options.maxWidth=20] — максимальная ширина колонки
+ * @param tasks — массив задач
+ * @param options — columns: список полей; maxWidth: ширина колонки
  */
-export function printTaskTable(tasks, options = {}) {
+export function printTaskTable(tasks: Task[], options: TaskTableOptions = {}): void {
   const columns = options.columns || ['id', 'title', 'status', 'priority', 'labels'];
   const maxWidth = options.maxWidth || 20;
 
@@ -101,13 +97,14 @@ export function printTaskTable(tasks, options = {}) {
   // Формируем строки
   const rows = tasks.map(task => {
     return columns.map(col => {
-      let val = task[col];
+      // Динамический доступ к полю: колонки задаются конфигом/флагами
+      let val = (task as unknown as Record<string, unknown>)[col];
       if (Array.isArray(val)) val = val.join(', ');
       if (val === undefined || val === null) val = '';
-      val = String(val);
+      let str = String(val);
       // Обрезаем длинные значения
-      if (val.length > maxWidth) val = val.slice(0, maxWidth - 2) + '..';
-      return val;
+      if (str.length > maxWidth) str = str.slice(0, maxWidth - 2) + '..';
+      return str;
     });
   });
 
@@ -137,13 +134,11 @@ export function printTaskTable(tasks, options = {}) {
 
 /**
  * Выводит одну задачу в развёрнутом виде.
- *
- * @param {object} task — объект задачи
  */
-export function printTaskDetail(task) {
+export function printTaskDetail(task: Task): void {
   printHeader(`${task.id} — ${task.title}`);
 
-  const fields = [
+  const fields: Array<[string, unknown]> = [
     ['Статус', task.status],
     ['Приоритет', task.priority],
     ['Исполнитель', Array.isArray(task.assignee) ? task.assignee.join(', ') : task.assignee],
@@ -164,17 +159,20 @@ export function printTaskDetail(task) {
     console.log(task.description);
   }
 
-  if (task.acceptanceCriteria && task.acceptanceCriteria.length > 0) {
+  // runtime-элементы всегда объекты (markdownToTask); строки допускает контракт Task
+  const acItems = task.acceptanceCriteria as ChecklistItem[];
+  if (acItems && acItems.length > 0) {
     console.log(`\n${colorize('Критерии приёмки:', colors.bold)}`);
-    for (const ac of task.acceptanceCriteria) {
+    for (const ac of acItems) {
       const mark = ac.checked ? colorize('✓', colors.green) : colorize('○', colors.dim);
-      console.log(`  ${mark} #${task.acceptanceCriteria.indexOf(ac) + 1} ${ac.text}`);
+      console.log(`  ${mark} #${acItems.indexOf(ac) + 1} ${ac.text}`);
     }
   }
 
-  if (task.definitionOfDone && task.definitionOfDone.length > 0) {
+  const dodItems = task.definitionOfDone as ChecklistItem[];
+  if (dodItems && dodItems.length > 0) {
     console.log(`\n${colorize('Definition of Done:', colors.bold)}`);
-    for (const dod of task.definitionOfDone) {
+    for (const dod of dodItems) {
       const mark = dod.checked ? colorize('✓', colors.green) : colorize('○', colors.dim);
       console.log(`  ${mark} ${dod.text}`);
     }
@@ -184,13 +182,13 @@ export function printTaskDetail(task) {
 /**
  * Рендерит ANSI-канбан-доску.
  *
- * @param {object[]} tasks — массив задач
- * @param {string[]} statuses — список статусов (колонки)
- * @param {number} [maxWidth=30] — максимальная ширина колонки
+ * @param tasks — массив задач
+ * @param statuses — список статусов (колонки)
+ * @param maxWidth — максимальная ширина колонки
  */
-export function printBoard(tasks, statuses, maxWidth = 30) {
+export function printBoard(tasks: Task[], statuses: string[], maxWidth = 30): void {
   // Группируем задачи по статусу
-  const grouped = {};
+  const grouped: Record<string, Task[]> = {};
   for (const status of statuses) {
     grouped[status] = [];
   }
@@ -229,16 +227,15 @@ export function printBoard(tasks, statuses, maxWidth = 30) {
 /**
  * Запрашивает ввод пользователя через readline.
  *
- * @param {string} prompt — текст приглашения
- * @returns {Promise<string>} — введённая строка
+ * @returns введённая строка
  */
-export function prompt(promptText) {
+export function prompt(promptText: string): Promise<string> {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
   });
 
-  return new Promise(resolve => {
+  return new Promise<string>(resolve => {
     rl.question(promptText, answer => {
       rl.close();
       resolve(answer.trim());
@@ -248,11 +245,8 @@ export function prompt(promptText) {
 
 /**
  * Запрашивает подтверждение (да/нет).
- *
- * @param {string} question — текст вопроса
- * @returns {Promise<boolean>}
  */
-export async function confirm(question) {
+export async function confirm(question: string): Promise<boolean> {
   const answer = await prompt(`${question} (y/n): `);
   return answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes';
 }

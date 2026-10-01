@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { searchTasks } from '../../dist/core/search.js';
-import { handleToolCall } from '../../dist/mcp/tools.mjs';
+import { handleToolCall } from '../../dist/mcp/tools.js';
 import { createTaskFile } from '../../dist/core/store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

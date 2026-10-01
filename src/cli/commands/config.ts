@@ -10,8 +10,9 @@
  * Семантика оригинала: фиксированный список ключей + парсинг значения по типу.
  */
 
-import { printSuccess, printError, printInfo } from '../ui.mjs';
+import { printSuccess, printError, printInfo } from '../ui.js';
 import { loadConfig, saveConfig, defaultConfig } from '../../core/config.js';
+import type { FlagValues } from '../args.js';
 
 /** Ключи-массивы: значение парсится как JSON-массив или список через запятую. */
 const ARRAY_KEYS = ['statuses', 'labels', 'priorities', 'types', 'definition_of_done'];
@@ -22,24 +23,23 @@ const BOOLEAN_KEYS = ['auto_open_browser', 'remote_operations', 'auto_commit', '
 /** Ключи-числа: значение парсится Number(). */
 const NUMBER_KEYS = ['default_port', 'active_branch_days', 'max_column_width'];
 
+/** Распарсенное значение конфига (по типу ключа). */
+type ParsedValue = string | number | boolean | string[];
+
 /**
  * Whitelist допустимых ключей — из defaultConfig.
- *
- * @returns {string[]}
  */
-function allowedKeys() {
+function allowedKeys(): string[] {
   return Object.keys(defaultConfig('x', 'x'));
 }
 
 /**
  * Парсит строковое значение по типу ключа.
  *
- * @param {string} key
- * @param {string} raw — строка из CLI
- * @returns {string|number|boolean|string[]}
- * @throws {Error} — при невалидном значении
+ * @param raw — строка из CLI
+ * @throws при невалидном значении
  */
-function parseValue(key, raw) {
+function parseValue(key: string, raw: string): ParsedValue {
   if (ARRAY_KEYS.includes(key)) {
     // JSON-массив ("[\"a\",\"b\"]") или список через запятую ("a,b")
     if (raw.startsWith('[')) {
@@ -65,23 +65,20 @@ function parseValue(key, raw) {
 
 /**
  * Форматирует значение для вывода.
- *
- * @param {unknown} value
- * @returns {string}
  */
-function formatValue(value) {
+function formatValue(value: unknown): string {
   return typeof value === 'object' ? JSON.stringify(value) : String(value);
 }
 
 /**
  * Выполняет команду config.
- *
- * @param {string} subcommand
- * @param {string[]} positional
- * @param {Record<string, unknown>} flags
- * @param {string} cwd
  */
-export async function runConfig(subcommand, positional, flags, cwd) {
+export async function runConfig(
+  subcommand: string,
+  positional: string[],
+  flags: FlagValues,
+  cwd: string
+): Promise<void> {
   switch (subcommand) {
     case 'get':
       return configGet(positional, cwd);
@@ -97,11 +94,8 @@ export async function runConfig(subcommand, positional, flags, cwd) {
 
 /**
  * Проверяет ключ по whitelist; при ошибке печатает подсказку.
- *
- * @param {string} key
- * @returns {boolean}
  */
-function checkKey(key) {
+function checkKey(key: string): boolean {
   if (!allowedKeys().includes(key)) {
     printError(`Неизвестный ключ конфига: ${key}`);
     printInfo(`Допустимые: ${allowedKeys().join(', ')}`);
@@ -110,7 +104,7 @@ function checkKey(key) {
   return true;
 }
 
-function configGet(positional, cwd) {
+function configGet(positional: string[], cwd: string): void {
   const key = positional[0];
   if (!key) {
     printError('Использование: vibelog config get <key>');
@@ -127,7 +121,7 @@ function configGet(positional, cwd) {
   console.log(formatValue(value));
 }
 
-function configSet(positional, cwd) {
+function configSet(positional: string[], cwd: string): void {
   const key = positional[0];
   // Значение — всё остальное (может содержать пробелы); пустая строка допустима (очистка)
   const raw = positional.slice(1).join(' ');
@@ -144,11 +138,11 @@ function configSet(positional, cwd) {
     saveConfig(cwd, config);
     printSuccess(`${key} = ${formatValue(parsed)}`);
   } catch (err) {
-    printError(err.message);
+    printError((err as Error).message);
   }
 }
 
-function configList(cwd) {
+function configList(cwd: string): void {
   const config = loadConfig(cwd);
   console.log('');
   for (const [k, v] of Object.entries(config)) {
