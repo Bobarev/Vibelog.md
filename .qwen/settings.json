@@ -7,6 +7,17 @@
       "command": "vibelog",
       "args": ["mcp", "start"],
       "trust": true
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@latest",
+        "--executablePath=/Applications/Yandex.app/Contents/MacOS/Yandex",
+        "--isolated",
+        "--headless=false"
+      ],
+      "trust": true
     }
   },
   "$version": 4

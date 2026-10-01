@@ -109,6 +109,15 @@ vibelog task complete <id>
 - Изучай `src/` для семантики, но реализуй на чистом Node.js.
 - Проверка совместимости — **статическая** (сравнение форматов файлов), а не через запуск оригинала (см. `plan/PLAN-08-COMPATIBILITY.md`).
 
+## Проверка в браузере (chrome-devtools MCP)
+
+В проекте подключён MCP-сервер **chrome-devtools** (см. `.qwen/settings.json`): npx chrome-devtools-mcp с Яндекс-браузером (не headless, изолированная сессия).
+
+**Используй для проверки веб-работы (VL-26+, веб-интерфейс):**
+- После запуска `vibelog browser` — открой страницу через `mcp__chrome-devtools__new_page`, сними скриншот (`take_snapshot`/`take_screenshot`), проверь консоль (`list_console_messages`) и сеть (`list_network_requests`).
+- Drag-and-drop kanban: `evaluate_script` или `drag` для симуляции перетаскивания; после — убедиться, что PATCH /api/tasks/:id ушёл и файл задачи обновлён.
+- Это НЕ заменяет автотесты — только ручная/визуальная верификация веб-слоя.
+
 ## Ссылки
 
 - Оригинал: https://github.com/MrLesk/Backlog.md
