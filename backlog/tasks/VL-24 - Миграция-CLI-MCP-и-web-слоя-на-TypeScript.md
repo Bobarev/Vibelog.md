@@ -1,11 +1,11 @@
 ---
 id: VL-24
 title: 'Миграция CLI, MCP и web-слоя на TypeScript'
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-01 02:23'
-updated_date: '2026-10-01 02:35'
+updated_date: '2026-10-01 03:29'
 due_date: ''
 labels:
   - typescript
@@ -29,9 +29,9 @@ modified_files: []
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Все модули src/cli (router, args, ui, 14 команд), src/mcp (server, tools), src/web переведены на TypeScript; pnpm build и pnpm typecheck зелёные, allowJs в tsconfig выключен (весь src — .ts)
-- [ ] #2 Интеграционная проверка: vibelog doctor --json показывает все проверки ok; vibelog mcp start отвечает на initialize/listTools — 21 инструмент, включая milestone_* и document_*
-- [ ] #3 pnpm test зелёный на всём наборе; README.md, CHANGELOG.md и AGENTS.md отражают TS-схему (импорты с .js-расширением, скрипты build/typecheck); версия поднята до 1.5.0
+- [x] #1 Все модули src/cli (router, args, ui, 14 команд), src/mcp (server, tools), src/web переведены на TypeScript; pnpm build и pnpm typecheck зелёные, allowJs в tsconfig выключен (весь src — .ts)
+- [x] #2 Интеграционная проверка: vibelog doctor --json показывает все проверки ok; vibelog mcp start отвечает на initialize/listTools — 21 инструмент, включая milestone_* и document_*
+- [x] #3 pnpm test зелёный на всём наборе; README.md, CHANGELOG.md и AGENTS.md отражают TS-схему (импорты с .js-расширением, скрипты build/typecheck); версия поднята до 1.5.0
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -65,3 +65,22 @@ pnpm typecheck && pnpm build && pnpm test — зелёные; find src -name '*.
 - .qwen/settings.json mcpServers указывает 'vibelog' — шим остаётся, PATH не меняется
 - dyld/SIGABRT Catalina — проверять содержимое, не exit code
 <!-- SECTION:PLAN:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author: @agent
+created: 2026-10-01 03:29
+---
+Фаза 3 (Code) VL-24 выполнена 2026-10-01. Весь src на TypeScript, allowJs выключен, версия 1.5.0.
+
+Мигрировано: src/cli (args, ui, router + 14 команд), src/mcp (tools — 21 схема дословно, server — гонка VL-4 сохранена: rl.on('close') → process.stdout.write('', () => process.exit(0))), src/web (api, server, assets — скопирован без изменений).
+
+Финализация: bin/vibelog.mjs → '../dist/cli/router.js'; tsconfig allowJs=false; package.json version 1.5.0; CHANGELOG.md — секция v1.5.0; README.md — pnpm build в установке; AGENTS.md — правило «только .mjs» заменено на схему «.ts → tsc → dist», JSDoc-правило уточнено.
+
+Типизация на границах: ToolArgs = Record<string, unknown> + касты по контрактам схем (JSON со stdio); FlagValues = Record<string, unknown>; createTaskFile body как CreateTaskFileInput (id опционален — Omit<TaskInput,'id'>); двойные касты unknown → интерфейсы там, где overlap недостаточен.
+
+Инциденты: guard слой-скрипта пропустил '../args.mjs'/'../../web/server.mjs' — решено универсальным sweep-скриптом (переписывает .mjs→.js, если цель существует как .ts в src или .js в dist); sweep нужно гонять ПОСЛЕ сборки (первый прогон до build дал 8 падений тестов — dist/mcp/tools.mjs).
+
+Проверки: pnpm typecheck — 0 ошибок; pnpm test — 306/306; doctor --json — все 10 проверок ok, mcp_tools_count=21; MCP round-trip — server 1.5.0, 21 инструмент; --version → vibelog.md 1.5.0; в src не-test .mjs нет, .mjs-импортов в .ts нет.
+---
+<!-- COMMENTS:END -->
