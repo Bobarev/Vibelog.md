@@ -19,6 +19,8 @@ export interface KanbanTask {
   description: string;
   /** Длина массива comments из Task — insights-счётчик на карточке. */
   commentsCount: number;
+  /** Последний комментарий (отчёт фазы) — показывается на карточке (VL-28). */
+  lastComment: { author: string; text: string } | null;
 }
 
 /** Доска: статус → задачи этого статуса. */

@@ -23,11 +23,18 @@ import { RefreshCw } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 
-import { fetchStatuses, fetchTasks, patchTaskStatus } from './api';
+import { fetchStatuses, fetchTasks, getTriggerStatus, patchTaskStatus, triggerPhase } from './api';
 import { KanbanColumn } from './kanban-column';
 import { TaskCard } from './task-card';
 import { buildBoard, findColumnId } from './utils';
 import type { BoardState, KanbanTask } from '../../types/kanban';
+
+/** Колонка-триггер → фаза оркестратора (VL-28): перенос сюда запускает qwen. */
+const PHASE_BY_STATUS: Record<string, string> = {
+  Spec: 'spec',
+  'In Progress': 'plan',
+  Review: 'code',
+};
 
 /** Drag-data карточки: проверяется перед использованием в DragOverlay. */
 type TaskDragData = {
@@ -52,6 +59,9 @@ export function Kanban() {
   const [columnOrder, setColumnOrder] = React.useState<string[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  // Задачи с запущенной фазой qwen + таймеры поллинга их завершения (VL-28)
+  const [runningPhases, setRunningPhases] = React.useState<Set<string>>(new Set());
+  const pollTimers = React.useRef(new Map<string, ReturnType<typeof setInterval>>());
   // Снапшот доски перед перетаскиванием — для отката при отмене/ошибке
   const boardBeforeDrag = React.useRef<BoardState>({});
   // Зеркало board в рефе: обработчики dnd-kit живут в замыкании раннего
@@ -83,6 +93,38 @@ export function Kanban() {
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  // Очистка поллинг-таймеров при размонтировании — иначе утечка setInterval
+  React.useEffect(() => {
+    const timers = pollTimers.current;
+    return () => {
+      for (const t of timers.values()) clearInterval(t);
+      timers.clear();
+    };
+  }, []);
+
+  /** Поллинг завершения фазы: running:false → перечитать доску (VL-28). */
+  function startPolling(taskId: string) {
+    setRunningPhases(prev => new Set(prev).add(taskId));
+    const timer = setInterval(async () => {
+      try {
+        const run = await getTriggerStatus(taskId);
+        if (!run.running) {
+          clearInterval(timer);
+          pollTimers.current.delete(taskId);
+          setRunningPhases(prev => {
+            const next = new Set(prev);
+            next.delete(taskId);
+            return next;
+          });
+          void load(); // доска подхватывает комментарий/статус из файлов
+        }
+      } catch {
+        // Сетевая ошибка поллинга — пробуем в следующий тик
+      }
+    }, 3000);
+    pollTimers.current.set(taskId, timer);
+  }
 
   function handleDragStart(event: DragStartEvent) {
     if (event.operation.source?.type === 'task') {
@@ -130,6 +172,18 @@ export function Kanban() {
           ])
         )
       );
+
+      // VL-28: перенос в колонку-триггер запускает фазу qwen
+      const phase = PHASE_BY_STATUS[newStatus];
+      if (phase) {
+        try {
+          await triggerPhase(task.id, phase);
+          startPolling(task.id);
+        } catch (err2) {
+          // Статус уже сохранён — доску не откатываем, только логируем
+          console.error('Не удалось запустить фазу:', err2);
+        }
+      }
     } catch (err) {
       // Откат: файл не обновился — доска не должна врать
       applyBoard(boardBeforeDrag.current);
@@ -166,7 +220,12 @@ export function Kanban() {
               style={{ gridTemplateColumns: `repeat(${Math.max(orderedColumns.length, 1)}, minmax(20rem, 1fr))` }}
             >
               {orderedColumns.map(status => (
-                <KanbanColumn key={status} status={status} tasks={board[status]} />
+                <KanbanColumn
+                  key={status}
+                  status={status}
+                  tasks={board[status]}
+                  runningPhases={runningPhases}
+                />
               ))}
             </div>
           </div>

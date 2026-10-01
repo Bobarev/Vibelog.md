@@ -16,10 +16,13 @@ export function SortableTaskCard({
   task,
   columnId,
   index,
+  isRunning = false,
 }: {
   task: KanbanTask;
   columnId: string;
   index: number;
+  /** Идёт ли фаза qwen для этой задачи (VL-28). */
+  isRunning?: boolean;
 }) {
   const { isDragging, ref } = useSortable({
     id: task.id,
@@ -32,7 +35,7 @@ export function SortableTaskCard({
 
   return (
     <div ref={ref} className={cn('touch-none', isDragging && 'opacity-30')}>
-      <TaskCard task={task} />
+      <TaskCard task={task} isRunning={isRunning} />
     </div>
   );
 }

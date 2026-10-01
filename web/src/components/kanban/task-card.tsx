@@ -13,6 +13,7 @@ import {
   CalendarDays,
   Flame,
   type LucideIcon,
+  Loader2,
   MessageSquare,
   Minus,
   Tag,
@@ -55,9 +56,12 @@ function priorityConfig(priority: string) {
 export function TaskCard({
   task,
   isOverlay = false,
+  isRunning = false,
 }: {
   task: KanbanTask;
   isOverlay?: boolean;
+  /** Идёт ли фаза qwen (VL-28) — показываем индикатор. */
+  isRunning?: boolean;
 }) {
   const priority = priorityConfig(task.priority);
   const PriorityIcon = priority.icon;
@@ -95,6 +99,14 @@ export function TaskCard({
             ))}
           </div>
         ) : null}
+        {task.lastComment ? (
+          <p
+            className="truncate text-muted-foreground text-xs"
+            title={`${task.lastComment.author}: ${task.lastComment.text}`}
+          >
+            💬 {task.lastComment.author}: {task.lastComment.text}
+          </p>
+        ) : null}
       </div>
 
       <Separator />
@@ -128,6 +140,12 @@ export function TaskCard({
           ) : null}
         </div>
       </div>
+      {isRunning ? (
+        <div className="flex items-center gap-1.5 text-muted-foreground text-xs">
+          <Loader2 className="size-3 animate-spin" />
+          фаза выполняется…
+        </div>
+      ) : null}
     </article>
   );
 }

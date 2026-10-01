@@ -19,9 +19,12 @@ import type { KanbanTask } from '../../types/kanban';
 export function KanbanColumn({
   status,
   tasks,
+  runningPhases,
 }: {
   status: string;
   tasks: KanbanTask[];
+  /** Задачи с запущенной фазой qwen (VL-28) — индикация на карточках. */
+  runningPhases: Set<string>;
 }) {
   // Контейнер задач: сюда перетаскиваются карточки (drop-цель колонки)
   const taskDropTarget = useDroppable({
@@ -57,7 +60,13 @@ export function KanbanColumn({
         className="scrollbar-thin flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 pb-3 [scrollbar-color:var(--border)_transparent] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1"
       >
         {tasks.map((task, taskIndex) => (
-          <SortableTaskCard key={task.id} task={task} columnId={status} index={taskIndex} />
+          <SortableTaskCard
+            key={task.id}
+            task={task}
+            columnId={status}
+            index={taskIndex}
+            isRunning={runningPhases.has(task.id)}
+          />
         ))}
       </div>
     </section>

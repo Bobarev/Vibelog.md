@@ -8,12 +8,15 @@
  * - PATCH /api/tasks/:id     — обновить задачу
  * - DELETE /api/tasks/:id    — архивировать задачу
  * - GET  /api/config         — конфиг проекта
+ * - POST /api/tasks/:id/trigger — запуск фазы оркестратора (VL-28)
+ * - GET  /api/tasks/:id/trigger — состояние запуска фазы
  */
 
 import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile } from '../core/store.js';
 import type { CreateTaskFileInput } from '../core/store.js';
 import type { Task } from '../core/task.js';
 import { loadConfig } from '../core/config.js';
+import { startPhase, getRun } from './orchestrator.js';
 
 /** HTTP-ответ API. */
 export interface ApiResponse {
@@ -52,6 +55,24 @@ export function handleApi(
     if (method === 'POST' && url === '/api/tasks') {
       const task = createTaskFile(cwd, (body || {}) as unknown as CreateTaskFileInput);
       return { status: 201, body: task };
+    }
+
+    // POST /api/tasks/:id/trigger — запуск фазы (VL-28).
+    // ВАЖНО: роут обязан стоять ДО общего getMatch ниже — иначе
+    // 'VL-28/trigger' матчится как id задачи.
+    const triggerMatch = url.match(/^\/api\/tasks\/([^/]+)\/trigger$/);
+    if (triggerMatch && method === 'POST') {
+      const task = getTask(cwd, triggerMatch[1]);
+      if (!task) return { status: 404, body: { error: 'Задача не найдена' } };
+      const phase = typeof body?.phase === 'string' ? body.phase : '';
+      const result = startPhase(cwd, triggerMatch[1], phase);
+      if ('error' in result) return { status: 409, body: { error: result.error } };
+      return { status: 202, body: result };
+    }
+
+    // GET /api/tasks/:id/trigger — состояние запуска фазы
+    if (triggerMatch && method === 'GET') {
+      return { status: 200, body: getRun(triggerMatch[1]) ?? { running: false } };
     }
 
     // GET /api/tasks/:id

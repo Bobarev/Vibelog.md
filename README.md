@@ -51,6 +51,8 @@ vibelog task view LB-1
 vibelog board
 
 # Веб-интерфейс (Kanban-доска, React UI из web/dist; сборка UI: pnpm web:build)
+# Перенос карточки в Spec/In Progress/Review запускает фазу qwen
+# (оркестратор VL-28; требуется qwen в PATH или VIBELOG_QWEN_BIN)
 vibelog browser
 
 # Поиск (флаги: --status/--type/--priority/--limit)

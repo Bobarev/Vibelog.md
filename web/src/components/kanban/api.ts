@@ -19,14 +19,16 @@ interface ApiTask {
   labels: string[];
   assignee: string[];
   description: string;
-  comments: unknown[];
+  comments: Array<{ author?: string; text?: string }>;
 }
 
 /** Дефолтные статусы — на случай, если конфиг не отдал statuses[]. */
 const FALLBACK_STATUSES = ['To Do', 'In Progress', 'Review', 'Done'];
 
-/** Задачи API → задачи доски (comments → commentsCount). */
+/** Задачи API → задачи доски (comments → lastComment/commentsCount). */
 function toKanbanTask(raw: ApiTask): KanbanTask {
+  const comments = Array.isArray(raw.comments) ? raw.comments : [];
+  const last = comments.at(-1);
   return {
     id: raw.id,
     title: raw.title,
@@ -36,7 +38,8 @@ function toKanbanTask(raw: ApiTask): KanbanTask {
     labels: raw.labels ?? [],
     assignee: raw.assignee ?? [],
     description: raw.description ?? '',
-    commentsCount: Array.isArray(raw.comments) ? raw.comments.length : 0,
+    commentsCount: comments.length,
+    lastComment: last?.text ? { author: last.author ?? '@agent', text: last.text } : null,
   };
 }
 
@@ -71,4 +74,24 @@ export async function patchTaskStatus(id: string, status: string): Promise<void>
     body: JSON.stringify({ status }),
   });
   if (!res.ok) throw new Error(`PATCH /api/tasks/${id}: ${res.status}`);
+}
+
+/** Запуск фазы оркестратора (VL-28). Бросает при ошибке — вызывающий логирует. */
+export async function triggerPhase(id: string, phase: string): Promise<void> {
+  const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/trigger`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phase }),
+  });
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(errBody.error || `POST trigger: ${res.status}`);
+  }
+}
+
+/** Состояние запуска фазы задачи (поллинг завершения, VL-28). */
+export async function getTriggerStatus(id: string): Promise<{ running: boolean }> {
+  const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/trigger`);
+  if (!res.ok) throw new Error(`GET trigger: ${res.status}`);
+  return (await res.json()) as { running: boolean };
 }

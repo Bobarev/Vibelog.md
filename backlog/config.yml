@@ -2,7 +2,10 @@ project_name: Vibelog.md
 task_prefix: VL
 default_status: To Do
 statuses:
+  - Backlog
   - To Do
+  - Spec
+  - Planned
   - In Progress
   - Review
   - Done
