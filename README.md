@@ -13,6 +13,16 @@ Markdown-нативный таск-менеджер для git-репозито�
 
 ## Установка
 
+Требуется [Node.js](https://nodejs.org) 20+.
+
+```bash
+npm install -g vibelog.md
+```
+
+В пакете уже собраны CLI (`dist/`) и веб-интерфейс (`web/dist`) — ничего компилировать не нужно. Одноразовый запуск без установки: `npx vibelog.md`.
+
+### Из исходников (для контрибьюторов)
+
 ```bash
 pnpm install
 pnpm build
