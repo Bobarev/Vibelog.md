@@ -57,6 +57,7 @@ docs(plan): уточнить формат AC по результатам ана�
 - **TypeScript-исходники** (`.ts`, strict) → `pnpm build` (`tsc`) → `dist/` (ES modules). TypeScript и `@types/node` — только devDependencies. Никаких нативных зависимостей, node-gyp, SQLite, Bun.
 - **pnpm** — менеджер пакетов, версия **10.7.1** (`packageManager: "pnpm@10.7.1"`).
 - **Сборка обязательна**: `bin/vibelog.mjs` импортирует `dist/` — после `pnpm install` и любых изменений src выполняйте `pnpm build`. `pnpm test` = build + `node --test src`. Тесты — `*.test.mjs` (импортируют `dist/`).
+- **Перед npm publish**: гонять `node scripts/npm-smoke.mjs` (VL-32) — проверка установки из tarball (CLI/init/browser/шаблоны).
 - **Zero runtime dependencies.** YAML и markdown — свои мини-парсеры.
 - **Совместимость с Backlog.md** — максимальная.
 - **Node.js 20+**, macOS 10.15 Catalina (проверять, что нет нативных модулей).

@@ -6,6 +6,7 @@
 
 ### Добавлено
 
+- **VL-32: smoke-тест npm-пакета** — `scripts/npm-smoke.mjs`: pack → установка в чистый /tmp-каталог → реальный прогон CLI (--help, init, task create/list, browser + React UI) + проверка содержимого пакета (шаблоны оркестратора, web/dist, отсутствие backlog/.qwen). Гонять перед npm publish.
 - **VL-28: Оркестратор фаз Qwen Code** — перенос карточки в Spec/In Progress/Review на Kanban-доске запускает фазу (spec/plan/code) через `POST /api/tasks/:id/trigger`: сервер спавнит `qwen <промпт> --approval-mode yolo` с headless-промптом из `templates/qwen-commands/phase-*.md`. Guard от двойного запуска (409), поллинг завершения → авто-refresh доски, отчёт фазы виден как последний комментарий карточки. Статусы проекта расширены: Backlog, Spec, Planned.
 - **VL-27: Kanban-доска в веб-интерфейсе** (портирована из шаблона arhamkhnz на @dnd-kit/react ^0.5). Колонки — статусы из `backlog.config.yml`; карточка показывает id, title, priority, description, labels, assignee, due_date, число комментариев. Drag-and-drop карточек между колонками выполняет `PATCH /api/tasks/:id` со сменой `status`; при ошибке доска откатывается. Компоненты без следов Next.js ('use client', next/*).
 - **VL-26: `vibelog browser` отдаёт React UI из `web/dist`** (Vite + React + Tailwind). Каталог `web/dist` коммитится в репозиторий — свежий clone сразу получает React UI; если сборки нет, сервер отдаёт прежний inline HTML из `assets.ts` (фолбэк). Dev-прокси `/api` → `127.0.0.1:3030` в `web/vite.config.ts`. Скрипт `pnpm web:build` — сборка UI из корня.
