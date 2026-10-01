@@ -6,6 +6,7 @@
 
 ### Добавлено
 
+- **VL-27: Kanban-доска в веб-интерфейсе** (портирована из шаблона arhamkhnz на @dnd-kit/react ^0.5). Колонки — статусы из `backlog.config.yml`; карточка показывает id, title, priority, description, labels, assignee, due_date, число комментариев. Drag-and-drop карточек между колонками выполняет `PATCH /api/tasks/:id` со сменой `status`; при ошибке доска откатывается. Компоненты без следов Next.js ('use client', next/*).
 - **VL-26: `vibelog browser` отдаёт React UI из `web/dist`** (Vite + React + Tailwind). Каталог `web/dist` коммитится в репозиторий — свежий clone сразу получает React UI; если сборки нет, сервер отдаёт прежний inline HTML из `assets.ts` (фолбэк). Dev-прокси `/api` → `127.0.0.1:3030` в `web/vite.config.ts`. Скрипт `pnpm web:build` — сборка UI из корня.
 
 ## [1.5.0] — 2026-10-01
