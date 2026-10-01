@@ -18,16 +18,15 @@
 /**
  * Рендерит Markdown-текст в HTML.
  *
- * @param {string} markdown — текст в формате Markdown
- * @returns {string} — HTML-строка
+ * @param markdown — текст в формате Markdown
  */
-export function renderMarkdown(markdown) {
+export function renderMarkdown(markdown: string): string {
   if (!markdown) return '';
 
   const lines = markdown.split('\n');
-  const html = [];
+  const html: string[] = [];
   let inCodeBlock = false;
-  let codeLines = [];
+  let codeLines: string[] = [];
   let codeLang = '';
 
   for (let i = 0; i < lines.length; i++) {
@@ -115,11 +114,8 @@ export function renderMarkdown(markdown) {
  * - *курсив*
  * - `код`
  * - [ссылка](url)
- *
- * @param {string} text — строка Markdown
- * @returns {string} — строка с HTML-тегами
  */
-function renderInline(text) {
+function renderInline(text: string): string {
   let result = text;
 
   // Ссылки: [text](url)
@@ -141,11 +137,8 @@ function renderInline(text) {
 
 /**
  * Экранирует HTML-спецсимволы.
- *
- * @param {string} text
- * @returns {string} — экранированный текст
  */
-function escapeHtml(text) {
+function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

@@ -7,8 +7,8 @@
 
 import { getFlag } from '../args.mjs';
 import { printBoard, printInfo, printError } from '../ui.mjs';
-import { listTasks } from '../../core/store.mjs';
-import { loadConfig } from '../../core/config.mjs';
+import { listTasks } from '../../core/store.js';
+import { loadConfig } from '../../core/config.js';
 
 /**
  * Выполняет команду board.

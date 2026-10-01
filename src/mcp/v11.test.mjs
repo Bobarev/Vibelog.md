@@ -20,10 +20,10 @@ import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-import { stringifyYaml } from '../core/yaml.mjs';
-import { markdownToTask, taskToMarkdown } from '../core/task.mjs';
-import { listTools, handleToolCall } from '../mcp/tools.mjs';
-import { createTaskFile, getTask } from '../core/store.mjs';
+import { stringifyYaml } from '../../dist/core/yaml.js';
+import { markdownToTask, taskToMarkdown } from '../../dist/core/task.js';
+import { listTools, handleToolCall } from '../../dist/mcp/tools.mjs';
+import { createTaskFile, getTask } from '../../dist/core/store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const testDir = join(__dirname, '..', '..', '.test-v11');

@@ -17,9 +17,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, getFlag } from '../args.mjs';
 import { printSuccess, printInfo, printError } from '../ui.mjs';
-import { defaultConfig } from '../../core/config.mjs';
-import { stringifyYaml } from '../../core/yaml.mjs';
-import { findBacklogDir } from '../../core/paths.mjs';
+import { defaultConfig } from '../../core/config.js';
+import { stringifyYaml } from '../../core/yaml.js';
+import { findBacklogDir } from '../../core/paths.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const templatesDir = join(__dirname, '..', '..', '..', 'templates', 'qwen-commands');

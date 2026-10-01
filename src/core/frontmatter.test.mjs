@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { parseFrontmatter, serializeFrontmatter } from './frontmatter.mjs';
+import { parseFrontmatter, serializeFrontmatter } from '../../dist/core/frontmatter.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Корень проекта Vibelog.md

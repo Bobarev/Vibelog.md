@@ -18,19 +18,19 @@
 import {
   listTasks, getTask, createTaskFile,
   updateTaskFile, completeTaskFile,
-} from '../core/store.mjs';
-import { searchTasks } from '../core/search.mjs';
-import { isReady, blockedBy, validateDeps } from '../core/deps.mjs';
-import { loadConfig, normalizeTaskType } from '../core/config.mjs';
+} from '../core/store.js';
+import { searchTasks } from '../core/search.js';
+import { isReady, blockedBy, validateDeps } from '../core/deps.js';
+import { loadConfig, normalizeTaskType } from '../core/config.js';
 import {
   writeMilestone, listMilestones, getMilestone,
   renameMilestone, deleteMilestone, archiveMilestone,
-} from '../core/milestone.mjs';
+} from '../core/milestone.js';
 import {
   writeDocument, listDocuments, getDocument,
   updateDocument, searchDocuments,
-} from '../core/document.mjs';
-import { findBacklogDir } from '../core/paths.mjs';
+} from '../core/document.js';
+import { findBacklogDir } from '../core/paths.js';
 
 /**
  * Возвращает список всех MCP-инструментов.

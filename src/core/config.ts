@@ -8,19 +8,19 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { parseYaml, stringifyYaml } from './yaml.mjs';
-import { configPath, findBacklogDir } from './paths.mjs';
+import { parseYaml, stringifyYaml } from './yaml.js';
+import { configPath, findBacklogDir } from './paths.js';
+
+/** Типы задач по умолчанию (совместимо с оригиналом Backlog.md). */
+export const DEFAULT_TASK_TYPES = ['bug', 'feature', 'enhancement', 'task', 'chore', 'docs', 'spike'];
 
 /**
  * Конфиг по умолчанию для нового проекта Vibelog.md.
  *
- * @param {string} projectName — имя проекта
- * @param {string} prefix — префикс ID задач (например, "LB")
- * @returns {Record<string, unknown>}
+ * @param projectName — имя проекта
+ * @param prefix — префикс ID задач (например, "LB")
  */
-export const DEFAULT_TASK_TYPES = ['bug', 'feature', 'enhancement', 'task', 'chore', 'docs', 'spike'];
-
-export function defaultConfig(projectName, prefix) {
+export function defaultConfig(projectName: string, prefix: string): Record<string, unknown> {
   return {
     project_name: projectName,
     task_prefix: prefix,
@@ -54,12 +54,12 @@ export function defaultConfig(projectName, prefix) {
  * возвращается каноническое написание из конфига.
  * Если types в конфиге отсутствует — используется DEFAULT_TASK_TYPES.
  *
- * @param {Record<string, unknown>} config — объект конфига
- * @param {string} type — тип задачи (например "Bug")
- * @returns {string} — канонический тип ("bug") или '' если type пустой
- * @throws {Error} — если тип не входит в список
+ * @param config — объект конфига
+ * @param type — тип задачи (например "Bug")
+ * @returns канонический тип ("bug") или '' если type пустой
+ * @throws если тип не входит в список
  */
-export function normalizeTaskType(config, type) {
+export function normalizeTaskType(config: Record<string, unknown>, type: string): string {
   if (!type) return '';
   const types = Array.isArray(config?.types) && config.types.length > 0
     ? config.types
@@ -77,11 +77,10 @@ export function normalizeTaskType(config, type) {
  *
  * Ищет файл конфига через findBacklogDir, затем читает и парсит YAML.
  *
- * @param {string} cwd — текущая рабочая директория
- * @returns {Record<string, unknown>} — объект конфига
- * @throws {Error} — если backlog-директория не найдена или конфиг не существует
+ * @param cwd — текущая рабочая директория
+ * @throws если backlog-директория не найдена или конфиг не существует
  */
-export function loadConfig(cwd) {
+export function loadConfig(cwd: string): Record<string, unknown> {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) {
     throw new Error('Backlog-директория не найдена. Выполните "vibelog init" для инициализации.');
@@ -99,11 +98,11 @@ export function loadConfig(cwd) {
 /**
  * Сохраняет конфиг проекта в YAML-файл.
  *
- * @param {string} cwd — текущая рабочая директория
- * @param {Record<string, unknown>} config — объект конфига
- * @throws {Error} — если backlog-директория не найдена
+ * @param cwd — текущая рабочая директория
+ * @param config — объект конфига
+ * @throws если backlog-директория не найдена
  */
-export function saveConfig(cwd, config) {
+export function saveConfig(cwd: string, config: Record<string, unknown>): void {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) {
     throw new Error('Backlog-директория не найдена. Выполните "vibelog init" для инициализации.');

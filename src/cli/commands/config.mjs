@@ -11,7 +11,7 @@
  */
 
 import { printSuccess, printError, printInfo } from '../ui.mjs';
-import { loadConfig, saveConfig, defaultConfig } from '../../core/config.mjs';
+import { loadConfig, saveConfig, defaultConfig } from '../../core/config.js';
 
 /** Ключи-массивы: значение парсится как JSON-массив или список через запятую. */
 const ARRAY_KEYS = ['statuses', 'labels', 'priorities', 'types', 'definition_of_done'];

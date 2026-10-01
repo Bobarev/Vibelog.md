@@ -6,7 +6,7 @@
 
 import { getFlag } from '../args.mjs';
 import { startWebServer } from '../../web/server.mjs';
-import { loadConfig } from '../../core/config.mjs';
+import { loadConfig } from '../../core/config.js';
 
 /**
  * Выполняет команду browser.

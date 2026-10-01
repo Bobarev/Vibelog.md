@@ -14,10 +14,10 @@ import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { stringifyYaml } from '../core/yaml.mjs';
-import { searchTasks } from '../core/search.mjs';
-import { handleToolCall } from '../mcp/tools.mjs';
-import { createTaskFile } from '../core/store.mjs';
+import { stringifyYaml } from '../../dist/core/yaml.js';
+import { searchTasks } from '../../dist/core/search.js';
+import { handleToolCall } from '../../dist/mcp/tools.mjs';
+import { createTaskFile } from '../../dist/core/store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const testDir = join(__dirname, '..', '..', '.test-search');

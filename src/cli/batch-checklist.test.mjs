@@ -18,9 +18,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
-import { stringifyYaml } from '../core/yaml.mjs';
-import { handleToolCall } from '../mcp/tools.mjs';
-import { createTaskFile, getTask } from '../core/store.mjs';
+import { stringifyYaml } from '../../dist/core/yaml.js';
+import { handleToolCall } from '../../dist/mcp/tools.mjs';
+import { createTaskFile, getTask } from '../../dist/core/store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

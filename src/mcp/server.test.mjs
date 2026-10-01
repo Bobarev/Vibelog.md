@@ -5,7 +5,7 @@ import { mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
-import { stringifyYaml } from '../core/yaml.mjs';
+import { stringifyYaml } from '../../dist/core/yaml.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const testDir = join(__dirname, '..', '..', '.test-mcp');

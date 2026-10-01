@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseYaml, stringifyYaml } from './yaml.mjs';
+import { parseYaml, stringifyYaml } from '../../dist/core/yaml.js';
 
 describe('parseYaml', () => {
   it('Пустая строка → пустой объект', () => {

@@ -8,7 +8,7 @@
  */
 
 import { readdirSync, existsSync } from 'node:fs';
-import { tasksDir, completedDir, findBacklogDir } from './paths.mjs';
+import { tasksDir, completedDir, findBacklogDir } from './paths.js';
 
 /**
  * Генерирует следующий ID задачи.
@@ -16,12 +16,11 @@ import { tasksDir, completedDir, findBacklogDir } from './paths.mjs';
  * Сканирует директории `tasks/` и `completed/`, находит максимальный номер
  * и возвращает следующий.
  *
- * @param {string} cwd — текущая рабочая директория
- * @param {string} prefix — префикс ID (например "back")
- * @returns {string} — новый ID в формате `<prefix>-<n>`
- * @throws {Error} — если backlog-директория не найдена
+ * @param cwd — текущая рабочая директория
+ * @param prefix — префикс ID (например "back")
+ * @throws если backlog-директория не найдена
  */
-export function nextTaskId(cwd, prefix) {
+export function nextTaskId(cwd: string, prefix: string): string {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) {
     throw new Error('Backlog-директория не найдена. Выполните "vibelog init".');
@@ -37,11 +36,9 @@ export function nextTaskId(cwd, prefix) {
  * Учитывает как основные задачи (`back-100`), так и подзадачи (`back-100.1`).
  * Подзадачи не влияют на основную нумерацию — берётся только целая часть.
  *
- * @param {string} backlogDir — путь к backlog-директории
- * @param {string} prefix — префикс ID
- * @returns {number} — максимальный найденный номер (0, если задач нет)
+ * @returns максимальный найденный номер (0, если задач нет)
  */
-function scanMaxNumber(backlogDir, prefix) {
+function scanMaxNumber(backlogDir: string, prefix: string): number {
   let max = 0;
   const dirs = [tasksDir(backlogDir), completedDir(backlogDir)];
 
@@ -65,10 +62,7 @@ function scanMaxNumber(backlogDir, prefix) {
 
 /**
  * Экранирует спецсимволы регулярного выражения.
- *
- * @param {string} str — строка для экранирования
- * @returns {string} — экранированная строка
  */
-function escapeRegex(str) {
+function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

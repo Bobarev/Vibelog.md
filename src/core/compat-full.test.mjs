@@ -19,10 +19,10 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 
-import { parseFrontmatter, serializeFrontmatter } from './frontmatter.mjs';
-import { markdownToTask, taskToMarkdown, taskFilename } from './task.mjs';
-import { parseYaml, stringifyYaml } from './yaml.mjs';
-import { listTools } from '../mcp/tools.mjs';
+import { parseFrontmatter, serializeFrontmatter } from '../../dist/core/frontmatter.js';
+import { markdownToTask, taskToMarkdown, taskFilename } from '../../dist/core/task.js';
+import { parseYaml, stringifyYaml } from '../../dist/core/yaml.js';
+import { listTools } from '../../dist/mcp/tools.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

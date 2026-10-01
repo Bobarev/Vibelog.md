@@ -13,11 +13,11 @@
 
 import { getFlag, getFlagArray } from '../args.mjs';
 import { printSuccess, printError, printInfo } from '../ui.mjs';
-import { findBacklogDir } from '../../core/paths.mjs';
+import { findBacklogDir } from '../../core/paths.js';
 import {
   writeDocument, listDocuments, getDocument,
   updateDocument, searchDocuments, DOCUMENT_TYPES,
-} from '../../core/document.mjs';
+} from '../../core/document.js';
 
 /**
  * Выполняет команду doc.

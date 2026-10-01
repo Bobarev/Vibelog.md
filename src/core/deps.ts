@@ -5,33 +5,32 @@
  * Если задача A зависит от B, то B "блокирует" A.
  */
 
-import { listTasks } from './store.mjs';
+import { listTasks } from './store.js';
+import type { Task } from './task.js';
 
 /**
  * Возвращает список задач, от которых зависит данная (blockedBy).
  *
- * @param {string} cwd — текущая рабочая директория
- * @param {object} task — объект задачи
- * @returns {object[]} — массив задач-зависимостей
+ * @param cwd — текущая рабочая директория
+ * @param task — объект задачи
  */
-export function blockedBy(cwd, task) {
+export function blockedBy(cwd: string, task: Task): Task[] {
   if (!task.dependencies || task.dependencies.length === 0) return [];
-  const allTasks = listTasks(cwd);
+  const allTasks = listTasks(cwd) as Task[];
   const allById = new Map(allTasks.map(t => [t.id.toLowerCase(), t]));
   return task.dependencies
     .map(depId => allById.get(depId.toLowerCase()))
-    .filter(Boolean);
+    .filter((t): t is Task => t !== undefined);
 }
 
 /**
  * Возвращает список задач, которые блокирует данная (blocks).
  *
- * @param {string} cwd — текущая рабочая директория
- * @param {object} task — объект задачи
- * @returns {object[]} — массив задач, которые зависят от данной
+ * @param cwd — текущая рабочая директория
+ * @param task — объект задачи
  */
-export function blocks(cwd, task) {
-  const allTasks = listTasks(cwd);
+export function blocks(cwd: string, task: Task): Task[] {
+  const allTasks = listTasks(cwd) as Task[];
   return allTasks.filter(t =>
     t.dependencies && t.dependencies.some(dep => dep.toLowerCase() === task.id.toLowerCase())
   );
@@ -44,11 +43,10 @@ export function blocks(cwd, task) {
  * - Все зависимости выполнены (статус "Done" или "Completed")
  * - Или зависимостей нет
  *
- * @param {string} cwd — текущая рабочая директория
- * @param {object} task — объект задачи
- * @returns {boolean}
+ * @param cwd — текущая рабочая директория
+ * @param task — объект задачи
  */
-export function isReady(cwd, task) {
+export function isReady(cwd: string, task: Task): boolean {
   const deps = blockedBy(cwd, task);
   if (deps.length === 0) return true;
   return deps.every(d => d.status === 'Done' || d.status === 'Completed');
@@ -59,21 +57,23 @@ export function isReady(cwd, task) {
  *
  * Использует DFS для обнаружения циклических зависимостей.
  *
- * @param {string} cwd — текущая рабочая директория
- * @param {object} task — объект задачи для проверки
- * @param {object[]} [allTasks] — массив всех задач (если уже загружены)
- * @returns {{ valid: boolean, cycle: string[] }} — результат проверки
- *   valid — true если циклов нет
- *   cycle — путь цикла, если найден
+ * @param cwd — текущая рабочая директория
+ * @param task — объект задачи для проверки
+ * @param allTasks — массив всех задач (если уже загружены)
+ * @returns valid — true если циклов нет; cycle — путь цикла, если найден
  */
-export function validateDeps(cwd, task, allTasks) {
-  const tasks = allTasks || listTasks(cwd);
+export function validateDeps(
+  cwd: string,
+  task: Task,
+  allTasks?: Task[]
+): { valid: boolean; cycle: string[] } {
+  const tasks = (allTasks || listTasks(cwd)) as Task[];
   const byId = new Map(tasks.map(t => [t.id.toLowerCase(), t]));
 
-  const visited = new Set();
-  const stack = new Set();
+  const visited = new Set<string>();
+  const stack = new Set<string>();
 
-  function dfs(currentId) {
+  function dfs(currentId: string): string[] | null {
     const id = currentId.toLowerCase();
     if (stack.has(id)) {
       // Нашли цикл — возвращаем путь

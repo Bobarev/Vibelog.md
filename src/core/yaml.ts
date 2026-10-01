@@ -12,14 +12,22 @@
  * расширим парсер.
  */
 
+/** Кадр стека контекста парсера: текущий объект и его отступ. */
+interface StackFrame {
+  indent: number;
+  obj: Record<string, unknown>;
+  /** Ключ массива, в который идут элементы `- value` (блочные массивы). */
+  parentKey?: string;
+}
+
 /**
  * Парсит YAML-текст в JS-объект.
  *
- * @param {string} text — YAML-текст без обрамляющих `---`
- * @returns {Record<string, unknown>} — распарсенный объект
- * @throws {Error} — если встречена неподдерживаемая конструкция
+ * @param text — YAML-текст без обрамляющих `---`
+ * @returns распарсенный объект
+ * @throws если встречена неподдерживаемая конструкция
  */
-export function parseYaml(text) {
+export function parseYaml(text: string): Record<string, unknown> {
   if (typeof text !== 'string') {
     throw new Error('parseYaml: ожидается строка');
   }
@@ -28,10 +36,10 @@ export function parseYaml(text) {
   if (trimmed === '') return {};
 
   const lines = trimmed.split('\n');
-  const root = {};
+  const root: Record<string, unknown> = {};
   // Стек контекстов: [{ indent, obj, parentKey? }]
   // parentKey указывает ключ массива, в который идут элементы `- value`
-  const stack = [{ indent: -1, obj: root }];
+  const stack: StackFrame[] = [{ indent: -1, obj: root }];
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -51,8 +59,10 @@ export function parseYaml(text) {
       if (parentKey !== null) {
         // Находим кадр стека, содержащий массив, и добавляем элемент
         for (let s = stack.length - 1; s >= 0; s--) {
-          if (stack[s].parentKey === parentKey && Array.isArray(stack[s].obj[parentKey])) {
-            stack[s].obj[parentKey].push(parseScalar(value));
+          const frame = stack[s];
+          const container = frame.obj[parentKey];
+          if (frame.parentKey === parentKey && Array.isArray(container)) {
+            container.push(parseScalar(value));
             break;
           }
         }
@@ -104,8 +114,9 @@ export function parseYaml(text) {
             stack.push({ indent: nextIndent, obj: current.obj, parentKey: key });
           } else if (nextIndent > indent) {
             // Вложенный объект: `key:\n  subkey: value`
-            current.obj[key] = {};
-            stack.push({ indent: nextIndent, obj: current.obj[key] });
+            const child: Record<string, unknown> = {};
+            current.obj[key] = child;
+            stack.push({ indent: nextIndent, obj: child });
           } else {
             // Значение на том же уровне — значит ключ ничего не содержит
             current.obj[key] = null;
@@ -128,11 +139,8 @@ export function parseYaml(text) {
 
 /**
  * Находит ключ массива в стеке, в который нужно добавлять элементы `- value`.
- *
- * @param {Array<{indent: number, obj: object, parentKey?: string}>} stack
- * @returns {string|null} — ключ массива или null
  */
-function findParentKey(stack) {
+function findParentKey(stack: StackFrame[]): string | null {
   for (let i = stack.length - 1; i >= 0; i--) {
     const frame = stack[i];
     if (frame.parentKey && Array.isArray(frame.obj[frame.parentKey])) {
@@ -145,11 +153,10 @@ function findParentKey(stack) {
 /**
  * Находит индекс следующей непустой строки в массиве.
  *
- * @param {string[]} lines
- * @param {number} start — индекс начала поиска
- * @returns {number|null} — индекс непустой строки или null
+ * @param start — индекс начала поиска
+ * @returns индекс непустой строки или null
  */
-function findNextNonEmpty(lines, start) {
+function findNextNonEmpty(lines: string[], start: number): number | null {
   for (let i = start; i < lines.length; i++) {
     if (lines[i].trim() !== '' && !lines[i].trim().startsWith('#')) {
       return i;
@@ -169,10 +176,9 @@ function findNextNonEmpty(lines, start) {
  * - Строки в одинарных кавычках: `'hello world'` (с экранированием `''`)
  * - Обычные строки: без кавычек
  *
- * @param {string} raw — сырое значение из YAML
- * @returns {unknown} — распарсенное значение
+ * @param raw — сырое значение из YAML
  */
-function parseScalar(raw) {
+function parseScalar(raw: string): unknown {
   if (raw === '') return '';
   if (raw === 'null' || raw === '~') return null;
   if (raw === 'true' || raw === 'yes' || raw === 'on') return true;
@@ -190,7 +196,7 @@ function parseScalar(raw) {
   }
 
   // Строка в одинарных кавычках: 'текст'
-  // В одинарных кавычках唯一的 escape — это '' → '
+  // В одинарных кавычках единственный escape — это '' → '
   if (raw.startsWith("'") && raw.endsWith("'")) {
     return raw.slice(1, -1).replace(/''/g, "'");
   }
@@ -209,10 +215,9 @@ function parseScalar(raw) {
  * Поскольку `\\\"` должно стать `\"` → `\"`, обработка идёт
  * побуквенно, а не через bulk-replace.
  *
- * @param {string} raw — содержимое между кавычками (без обрамляющих `"`)
- * @returns {string} — строка с обработанными escape-последовательностями
+ * @param raw — содержимое между кавычками (без обрамляющих `"`)
  */
-function unescapeDoubleQuoted(raw) {
+function unescapeDoubleQuoted(raw: string): string {
   let result = '';
   for (let i = 0; i < raw.length; i++) {
     if (raw[i] === '\\' && i + 1 < raw.length) {
@@ -236,12 +241,11 @@ function unescapeDoubleQuoted(raw) {
  * Поддерживает: строки, числа, boolean, null, массивы, вложенные объекты.
  * Строки, содержащие спецсимволы, оборачиваются в кавычки.
  *
- * @param {Record<string, unknown>} obj — объект для сериализации
- * @param {number} [indent=0] — текущий уровень отступа (для рекурсии)
- * @returns {string} — YAML-текст
+ * @param obj — объект для сериализации
+ * @param indent — текущий уровень отступа (для рекурсии)
  */
-export function stringifyYaml(obj, indent = 0) {
-  const lines = [];
+export function stringifyYaml(obj: Record<string, unknown>, indent: number = 0): string {
+  const lines: string[] = [];
   const prefix = '  '.repeat(indent);
 
   for (const [key, value] of Object.entries(obj)) {
@@ -258,7 +262,7 @@ export function stringifyYaml(obj, indent = 0) {
       }
     } else if (typeof value === 'object') {
       lines.push(`${prefix}${key}:`);
-      lines.push(stringifyYaml(value, indent + 1));
+      lines.push(stringifyYaml(value as Record<string, unknown>, indent + 1));
     } else {
       lines.push(`${prefix}${key}: ${escapeScalar(value)}`);
     }
@@ -272,11 +276,8 @@ export function stringifyYaml(obj, indent = 0) {
  *
  * - Строки с спецсимволами оборачиваются в одинарные кавычки.
  * - Прочие значения приводятся к строке через `${value}`.
- *
- * @param {unknown} value — значение
- * @returns {string} — экранированная строка
  */
-function escapeScalar(value) {
+function escapeScalar(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   if (typeof value === 'number') return String(value);

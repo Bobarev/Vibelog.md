@@ -10,8 +10,8 @@
  * - GET  /api/config         — конфиг проекта
  */
 
-import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile } from '../core/store.mjs';
-import { loadConfig } from '../core/config.mjs';
+import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile } from '../core/store.js';
+import { loadConfig } from '../core/config.js';
 
 /**
  * Обрабатывает REST-запрос.

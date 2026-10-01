@@ -15,10 +15,15 @@
  * AC и DoD — нумерованные чеклисты: `- [ ] #1 Текст`.
  */
 
-import { parseFrontmatter, serializeFrontmatter } from './frontmatter.mjs';
+import { parseFrontmatter, serializeFrontmatter } from './frontmatter.js';
 
 /** Маркеры секций тела задачи */
-const SECTION_MARKERS = {
+interface SectionMarkers {
+  begin: string;
+  end: string;
+}
+
+const SECTION_MARKERS: Record<string, SectionMarkers> = {
   description: { begin: '<!-- SECTION:DESCRIPTION:BEGIN -->', end: '<!-- SECTION:DESCRIPTION:END -->' },
   ac: { begin: '<!-- AC:BEGIN -->', end: '<!-- AC:END -->' },
   dod: { begin: '<!-- DOD:BEGIN -->', end: '<!-- DOD:END -->' },
@@ -28,32 +33,100 @@ const SECTION_MARKERS = {
   comments: { begin: '<!-- COMMENTS:BEGIN -->', end: '<!-- COMMENTS:END -->' },
 };
 
+/** Элемент чеклиста AC/DoD. */
+export interface ChecklistItem {
+  text: string;
+  checked: boolean;
+}
+
+/** Комментарий задачи (формат Backlog.md). */
+export interface TaskComment {
+  author: string;
+  created: string;
+  text: string;
+}
+
+/**
+ * Объект задачи: поля frontmatter + поля тела (секции).
+ * Полный контракт данных задачи для всех слоёв (core/CLI/MCP/web).
+ */
+export interface Task {
+  // Frontmatter
+  id: string;
+  title: string;
+  status: string;
+  priority: string;
+  assignee: string[];
+  reporter: string;
+  created_date: string;
+  updated_date: string;
+  due_date: string;
+  labels: string[];
+  dependencies: string[];
+  milestone: string;
+  type: string;
+  project: string;
+  parent_task_id: string;
+  ordinal: number;
+  references: string[];
+  documentation: string[];
+  modified_files: string[];
+  // Тело (секции)
+  description: string;
+  /** Строки — уже отформатированные `- [ ] #N ...`; объекты — сырые данные. */
+  acceptanceCriteria: (ChecklistItem | string)[];
+  definitionOfDone: (ChecklistItem | string)[];
+  implementationPlan: string;
+  implementationNotes: string;
+  finalSummary: string;
+  comments: TaskComment[];
+}
+
+/** Входные данные для createTask: обязательны только id и title. */
+export interface TaskInput {
+  id: string;
+  title: string;
+  description?: string;
+  status?: string;
+  priority?: string;
+  assignee?: string[];
+  reporter?: string;
+  created_date?: string;
+  updated_date?: string;
+  due_date?: string;
+  labels?: string[];
+  dependencies?: string[];
+  milestone?: string;
+  type?: string;
+  project?: string;
+  parent_task_id?: string;
+  ordinal?: number;
+  references?: string[];
+  documentation?: string[];
+  modified_files?: string[];
+  acceptanceCriteria?: (ChecklistItem | string)[];
+  definitionOfDone?: (ChecklistItem | string)[];
+  implementationPlan?: string;
+  implementationNotes?: string;
+  finalSummary?: string;
+  comments?: TaskComment[];
+}
+
 /**
  * Создаёт объект задачи из входных данных.
  *
  * Заполняет поля по умолчанию, генерирует ID если не задан.
  *
- * @param {object} input — входные данные задачи
- * @param {string} input.id — ID задачи (например "LB-1")
- * @param {string} input.title — заголовок
- * @param {string} [input.description] — описание
- * @param {string} [input.status] — статус (по умолчанию из конфига)
- * @param {string} [input.priority] — приоритет
- * @param {string[]} [input.assignee] — исполнители
- * @param {string[]} [input.labels] — метки
- * @param {string[]} [input.dependencies] — зависимости
- * @param {string[]} [input.acceptanceCriteria] — критерии приёмки
- * @param {string[]} [input.definitionOfDone] — критерии Done
- * @param {Record<string, unknown>} config — конфиг проекта
- * @returns {object} — объект задачи
+ * @param input — входные данные задачи
+ * @param config — конфиг проекта
  */
-export function createTask(input, config) {
+export function createTask(input: TaskInput, config: Record<string, unknown>): Task {
   const now = formatDateTime(new Date());
   return {
     // Frontmatter
     id: input.id,
     title: input.title,
-    status: input.status || config.default_status || 'To Do',
+    status: input.status || (config.default_status as string) || 'To Do',
     priority: normalizePriority(input.priority),
     assignee: input.assignee || [],
     reporter: input.reporter || '',
@@ -84,31 +157,11 @@ export function createTask(input, config) {
 /**
  * Сериализует объект задачи в markdown-строку.
  *
- * Формат:
- * ```
- * ---
- * id: BACK-1
- * title: Example
- * ...
- * ---
- * ## Description
- * <!-- SECTION:DESCRIPTION:BEGIN -->
- * Описание...
- * <!-- SECTION:DESCRIPTION:END -->
- * ## Acceptance Criteria
- * <!-- AC:BEGIN -->
- * - [ ] #1 Критерий
- * <!-- AC:END -->
- * ...
- * ```
- *
- * @param {object} task — объект задачи
- * @returns {string} — полное содержимое markdown-файла
+ * Фронтматтер — полный набор полей, как в оригинале Backlog.md.
+ * Пустые массивы пишутся как `[]`, priority — lowercase.
  */
-export function taskToMarkdown(task) {
-  // Фронтматтер — полный набор полей, как в оригинале Backlog.md.
-  // Пустые массивы пишутся как `[]`, priority — lowercase.
-  const frontmatter = {
+export function taskToMarkdown(task: Task): string {
+  const frontmatter: Record<string, unknown> = {
     id: task.id,
     title: task.title,
     status: task.status,
@@ -131,7 +184,7 @@ export function taskToMarkdown(task) {
   };
 
   // Тело — собираем секции
-  const sections = [];
+  const sections: string[] = [];
 
   sections.push('## Description');
   sections.push(SECTION_MARKERS.description.begin);
@@ -220,11 +273,8 @@ export function taskToMarkdown(task) {
 
 /**
  * Десериализует markdown-строку в объект задачи.
- *
- * @param {string} content — содержимое markdown-файла задачи
- * @returns {object} — объект задачи
  */
-export function markdownToTask(content) {
+export function markdownToTask(content: string): Task {
   const { data, body } = parseFrontmatter(content);
 
   // Извлекаем секции из тела
@@ -238,25 +288,25 @@ export function markdownToTask(content) {
 
   return {
     // Frontmatter
-    id: data.id || '',
-    title: data.title || '',
-    status: data.status || 'To Do',
+    id: (data.id as string) || '',
+    title: (data.title as string) || '',
+    status: (data.status as string) || 'To Do',
     priority: normalizePriority(data.priority),
-    assignee: Array.isArray(data.assignee) ? data.assignee : (data.assignee ? [data.assignee] : []),
-    reporter: data.reporter || '',
-    created_date: data.created_date || '',
-    updated_date: data.updated_date || '',
-    due_date: data.due_date || '',
-    labels: Array.isArray(data.labels) ? data.labels : (data.labels ? [data.labels] : []),
-    dependencies: Array.isArray(data.dependencies) ? data.dependencies : (data.dependencies ? [data.dependencies] : []),
-    milestone: data.milestone || '',
-    type: data.type || '',
-    project: data.project || '',
-    parent_task_id: data.parent_task_id || '',
-    ordinal: data.ordinal || 0,
-    references: Array.isArray(data.references) ? data.references : (data.references ? [data.references] : []),
-    documentation: Array.isArray(data.documentation) ? data.documentation : (data.documentation ? [data.documentation] : []),
-    modified_files: Array.isArray(data.modified_files) ? data.modified_files : (data.modified_files ? [data.modified_files] : []),
+    assignee: Array.isArray(data.assignee) ? (data.assignee as string[]) : (data.assignee ? [data.assignee as string] : []),
+    reporter: (data.reporter as string) || '',
+    created_date: (data.created_date as string) || '',
+    updated_date: (data.updated_date as string) || '',
+    due_date: (data.due_date as string) || '',
+    labels: Array.isArray(data.labels) ? (data.labels as string[]) : (data.labels ? [data.labels as string] : []),
+    dependencies: Array.isArray(data.dependencies) ? (data.dependencies as string[]) : (data.dependencies ? [data.dependencies as string] : []),
+    milestone: (data.milestone as string) || '',
+    type: (data.type as string) || '',
+    project: (data.project as string) || '',
+    parent_task_id: (data.parent_task_id as string) || '',
+    ordinal: (data.ordinal as number) || 0,
+    references: Array.isArray(data.references) ? (data.references as string[]) : (data.references ? [data.references as string] : []),
+    documentation: Array.isArray(data.documentation) ? (data.documentation as string[]) : (data.documentation ? [data.documentation as string] : []),
+    modified_files: Array.isArray(data.modified_files) ? (data.modified_files as string[]) : (data.modified_files ? [data.modified_files as string] : []),
     // Тело
     description,
     acceptanceCriteria: ac,
@@ -271,11 +321,9 @@ export function markdownToTask(content) {
 /**
  * Извлекает текст секции по маркерам BEGIN/END.
  *
- * @param {string} body — тело задачи (markdown)
- * @param {{ begin: string, end: string }} markers — маркеры секции
- * @returns {string} — содержимое секции ( trimmed ), или ''
+ * @returns содержимое секции (trimmed), или ''
  */
-function extractSection(body, markers) {
+function extractSection(body: string, markers: SectionMarkers): string {
   const beginIdx = body.indexOf(markers.begin);
   const endIdx = body.indexOf(markers.end);
   if (beginIdx === -1 || endIdx === -1) return '';
@@ -286,16 +334,12 @@ function extractSection(body, markers) {
  * Извлекает нумерованный чеклист из секции.
  *
  * Формат строк: `- [ ] #1 Текст` или `- [x] #1 Текст`
- *
- * @param {string} body — тело задачи
- * @param {{ begin: string, end: string }} markers — маркеры секции
- * @returns {Array<{text: string, checked: boolean}>} — массив элементов чеклиста
  */
-function extractChecklist(body, markers) {
+function extractChecklist(body: string, markers: SectionMarkers): ChecklistItem[] {
   const section = extractSection(body, markers);
   if (!section) return [];
 
-  const items = [];
+  const items: ChecklistItem[] = [];
   const lines = section.split('\n');
   for (const line of lines) {
     const match = line.match(/^- \[([ x])\] #\d+\s+(.*)/);
@@ -320,18 +364,14 @@ function extractChecklist(body, markers) {
  * Текст комментария
  * ---
  * ```
- *
- * @param {string} body — тело задачи
- * @param {{ begin: string, end: string }} markers — маркеры секции
- * @returns {Array<{author: string, created: string, text: string}>} — массив комментариев
  */
-function extractComments(body, markers) {
+function extractComments(body: string, markers: SectionMarkers): TaskComment[] {
   const section = extractSection(body, markers);
   if (!section) return [];
 
-  const comments = [];
+  const comments: TaskComment[] = [];
   const lines = section.split('\n');
-  let current = null;
+  let current: TaskComment | null = null;
 
   for (const line of lines) {
     // Новый комментарий: author: @username
@@ -368,22 +408,17 @@ function extractComments(body, markers) {
  * Нормализует приоритет к канонической форме (первая буква заглавная).
  *
  * В файле хранится lowercase (`high`), в API используется `High`.
- *
- * @param {string} raw — приоритет из frontmatter
- * @returns {string}
  */
-function normalizePriority(raw) {
+function normalizePriority(raw: unknown): string {
   if (!raw) return '';
-  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+  const s = String(raw);
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }
 
 /**
  * Форматирует дату в формате YYYY-MM-DD HH:MM.
- *
- * @param {Date} date
- * @returns {string}
  */
-function formatDateTime(date) {
+function formatDateTime(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
@@ -395,15 +430,14 @@ function formatDateTime(date) {
 /**
  * Генерирует имя файла задачи по формату Backlog.md.
  *
- * @param {object} task — объект задачи
- * @returns {string} — имя файла (например "back-100 - Add-web-server.md")
+ * @returns имя файла (например "back-100 - Add-web-server.md")
  */
-export function taskFilename(task) {
+export function taskFilename(task: Task): string {
   // Сохраняем буквы (включая кириллицу), цифры, пробелы и дефисы
   const slug = task.title
     .replace(/[^\p{L}\p{N}\s-]/gu, '') // убираем всё кроме букв, цифр, пробелов, дефисов
     .replace(/\s+/g, '-') // пробелы → дефисы
     .replace(/-+/g, '-') // множественные дефисы → один
-    .replace(/^-|-$/g, ''); // убираем дефисы в начале/конце
+    .replace(/^-|-$/g, ''); // убираем дефисы в начале/конец
   return `${task.id} - ${slug || 'task'}.md`;
 }

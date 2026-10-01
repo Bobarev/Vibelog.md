@@ -9,16 +9,34 @@
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseFrontmatter, serializeFrontmatter } from './frontmatter.mjs';
-import { milestonesDir } from './paths.mjs';
+import { parseFrontmatter, serializeFrontmatter } from './frontmatter.js';
+import { milestonesDir } from './paths.js';
+
+/** Объект milestone. */
+export interface Milestone {
+  name: string;
+  description: string;
+  due_date: string;
+  status: string;
+}
+
+/** Входные данные milestone. */
+export interface MilestoneInput {
+  name: string;
+  description?: string;
+  due_date?: string;
+  status?: string;
+}
+
+/** Опции listMilestones. */
+export interface ListMilestonesOpts {
+  includeArchived?: boolean;
+}
 
 /**
- * Генерирует имя файла milestone.
- *
- * @param {string} name — название вехи
- * @returns {string} — имя файла (пробелы → дефисы)
+ * Генерирует имя файла milestone (пробелы → дефисы).
  */
-export function milestoneFilename(name) {
+export function milestoneFilename(name: string): string {
   const slug = name
     .replace(/[^\p{L}\p{N}\s-]/gu, '')
     .replace(/\s+/g, '-')
@@ -29,14 +47,8 @@ export function milestoneFilename(name) {
 
 /**
  * Создаёт объект milestone.
- *
- * @param {object} input
- * @param {string} input.name
- * @param {string} [input.description]
- * @param {string} [input.due_date]
- * @returns {object}
  */
-export function createMilestone(input) {
+export function createMilestone(input: MilestoneInput): Milestone {
   return {
     name: input.name,
     description: input.description || '',
@@ -47,12 +59,9 @@ export function createMilestone(input) {
 
 /**
  * Сериализует milestone в markdown.
- *
- * @param {object} milestone
- * @returns {string}
  */
-export function milestoneToMarkdown(milestone) {
-  const frontmatter = {
+export function milestoneToMarkdown(milestone: Milestone): string {
+  const frontmatter: Record<string, unknown> = {
     name: milestone.name,
     description: milestone.description,
     due_date: milestone.due_date,
@@ -63,28 +72,23 @@ export function milestoneToMarkdown(milestone) {
 
 /**
  * Десериализует markdown в объект milestone.
- *
- * @param {string} content
- * @returns {object}
  */
-export function markdownToMilestone(content) {
+export function markdownToMilestone(content: string): Milestone {
   const { data } = parseFrontmatter(content);
   return {
-    name: data.name || '',
-    description: data.description || '',
-    due_date: data.due_date || '',
-    status: data.status || 'active',
+    name: (data.name as string) || '',
+    description: (data.description as string) || '',
+    due_date: (data.due_date as string) || '',
+    status: (data.status as string) || 'active',
   };
 }
 
 /**
  * Создаёт milestone-файл.
  *
- * @param {string} backlogDir — путь к backlog/
- * @param {object} input — { name, description, due_date }
- * @returns {object} — созданный milestone
+ * @returns созданный milestone
  */
-export function writeMilestone(backlogDir, input) {
+export function writeMilestone(backlogDir: string, input: MilestoneInput): Milestone {
   const dir = milestonesDir(backlogDir);
   mkdirSync(dir, { recursive: true });
 
@@ -98,13 +102,10 @@ export function writeMilestone(backlogDir, input) {
 /**
  * Читает все milestones из директории.
  *
- * @param {string} backlogDir — путь к backlog/
- * @param {object} [opts]
- * @param {boolean} [opts.includeArchived] — включить архивные вехи из backlog/completed/
- * @returns {object[]} — массив milestones
+ * @param opts — includeArchived: включить архивные вехи из backlog/completed/
  */
-export function listMilestones(backlogDir, opts = {}) {
-  const entries = [];
+export function listMilestones(backlogDir: string, opts: ListMilestonesOpts = {}): Milestone[] {
+  const entries: string[] = [];
   const dir = milestonesDir(backlogDir);
   if (existsSync(dir)) {
     for (const f of readdirSync(dir)) {
@@ -132,25 +133,18 @@ export function listMilestones(backlogDir, opts = {}) {
 }
 
 /**
- * Находит milestone по имени.
- *
- * @param {string} backlogDir
- * @param {string} name
- * @returns {object|null}
+ * Находит milestone по имени (case-insensitive).
  */
-export function getMilestone(backlogDir, name) {
+export function getMilestone(backlogDir: string, name: string): Milestone | null {
   return listMilestones(backlogDir).find(m => m.name.toLowerCase() === name.toLowerCase()) || null;
 }
 
 /**
  * Переименовывает milestone.
  *
- * @param {string} backlogDir
- * @param {string} from — старое имя
- * @param {string} to — новое имя
- * @returns {object|null} — обновлённый milestone
+ * @returns обновлённый milestone или null если не найден
  */
-export function renameMilestone(backlogDir, from, to) {
+export function renameMilestone(backlogDir: string, from: string, to: string): Milestone | null {
   const dir = milestonesDir(backlogDir);
   const oldMilestone = getMilestone(backlogDir, from);
   if (!oldMilestone) return null;
@@ -170,11 +164,9 @@ export function renameMilestone(backlogDir, from, to) {
 /**
  * Удаляет milestone-файл.
  *
- * @param {string} backlogDir
- * @param {string} name
- * @returns {boolean} — true если удалён
+ * @returns true если удалён
  */
-export function deleteMilestone(backlogDir, name) {
+export function deleteMilestone(backlogDir: string, name: string): boolean {
   const dir = milestonesDir(backlogDir);
   const file = join(dir, milestoneFilename(name));
   if (!existsSync(file)) return false;
@@ -187,13 +179,11 @@ export function deleteMilestone(backlogDir, name) {
 }
 
 /**
- * Архивирует milestone (переносит в completed/).
+ * Архивирует milestone (переносит в completed/ со статусом archived).
  *
- * @param {string} backlogDir
- * @param {string} name
- * @returns {boolean}
+ * @returns true если архивация удалась
  */
-export function archiveMilestone(backlogDir, name) {
+export function archiveMilestone(backlogDir: string, name: string): boolean {
   const dir = milestonesDir(backlogDir);
   const file = join(dir, milestoneFilename(name));
   if (!existsSync(file)) return false;
@@ -202,9 +192,9 @@ export function archiveMilestone(backlogDir, name) {
   const milestone = markdownToMilestone(content);
   milestone.status = 'archived';
 
-  const completedDir = join(backlogDir, 'completed');
-  mkdirSync(completedDir, { recursive: true });
-  writeFileSync(join(completedDir, milestoneFilename(name)), milestoneToMarkdown(milestone), 'utf-8');
+  const completed = join(backlogDir, 'completed');
+  mkdirSync(completed, { recursive: true });
+  writeFileSync(join(completed, milestoneFilename(name)), milestoneToMarkdown(milestone), 'utf-8');
 
   try { unlinkSync(file); } catch { /* ignore */ }
   return true;

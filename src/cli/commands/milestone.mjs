@@ -11,13 +11,13 @@
 
 import { getFlag } from '../args.mjs';
 import { printSuccess, printError, printInfo } from '../ui.mjs';
-import { findBacklogDir, tasksDir } from '../../core/paths.mjs';
-import { loadConfig } from '../../core/config.mjs';
+import { findBacklogDir, tasksDir } from '../../core/paths.js';
+import { loadConfig } from '../../core/config.js';
 import {
   writeMilestone, listMilestones, renameMilestone,
   deleteMilestone, archiveMilestone,
-} from '../../core/milestone.mjs';
-import { listTasks, updateTaskFile, getTask } from '../../core/store.mjs';
+} from '../../core/milestone.js';
+import { listTasks, updateTaskFile, getTask } from '../../core/store.js';
 
 /**
  * Выполняет команду milestone.

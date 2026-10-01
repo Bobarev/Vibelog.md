@@ -18,11 +18,11 @@ import {
 import {
   listTasks, getTask, createTaskFile,
   updateTaskFile, completeTaskFile, archiveTaskFile,
-} from '../../core/store.mjs';
-import { loadConfig, normalizeTaskType } from '../../core/config.mjs';
-import { isReady } from '../../core/deps.mjs';
-import { findBacklogDir } from '../../core/paths.mjs';
-import { writeDraft } from '../../core/draft.mjs';
+} from '../../core/store.js';
+import { loadConfig, normalizeTaskType } from '../../core/config.js';
+import { isReady } from '../../core/deps.js';
+import { findBacklogDir } from '../../core/paths.js';
+import { writeDraft } from '../../core/draft.js';
 
 /**
  * Выполняет команду task с подкомандой.

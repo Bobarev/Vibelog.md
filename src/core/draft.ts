@@ -11,19 +11,31 @@
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
-import { createTask, markdownToTask, taskToMarkdown, taskFilename } from './task.mjs';
-import { draftsDir, completedDir } from './paths.mjs';
+import { createTask, markdownToTask, taskToMarkdown, taskFilename } from './task.js';
+import type { Task } from './task.js';
+import { draftsDir, completedDir } from './paths.js';
 
 /** Статус черновика — свободный (как в оригинале; при promote заменяется). */
 export const DRAFT_STATUS = 'Draft';
 
+/** Запись черновика: объект задачи + путь к файлу. */
+export interface DraftEntry {
+  task: Task;
+  path: string;
+}
+
+/** Входные данные черновика (create/edit). */
+export interface DraftInput {
+  title: string;
+  description?: string;
+  labels?: string[];
+  priority?: string;
+}
+
 /**
  * Следующий id вида draft-N (max+1).
- *
- * @param {Array<{task: object}>} entries
- * @returns {string}
  */
-function nextDraftId(entries) {
+function nextDraftId(entries: DraftEntry[]): string {
   let max = 0;
   for (const e of entries) {
     const m = String(e.task.id).match(/^draft-(\d+)$/i);
@@ -34,11 +46,8 @@ function nextDraftId(entries) {
 
 /**
  * Читает все черновики из backlog/drafts/.
- *
- * @param {string} backlogDir
- * @returns {Array<{task: object, path: string}>}
  */
-export function listDrafts(backlogDir) {
+export function listDrafts(backlogDir: string): DraftEntry[] {
   const dir = draftsDir(backlogDir);
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
@@ -52,12 +61,8 @@ export function listDrafts(backlogDir) {
 
 /**
  * Находит черновик по id (case-insensitive).
- *
- * @param {string} backlogDir
- * @param {string} id
- * @returns {{task: object, path: string}|null}
  */
-export function getDraft(backlogDir, id) {
+export function getDraft(backlogDir: string, id: string): DraftEntry | null {
   const needle = String(id).toLowerCase();
   return listDrafts(backlogDir).find(e => e.task.id.toLowerCase() === needle) || null;
 }
@@ -65,12 +70,14 @@ export function getDraft(backlogDir, id) {
 /**
  * Создаёт черновик-файл (id draft-N, статус Draft).
  *
- * @param {string} backlogDir
- * @param {object} input — { title, description, labels, priority }
- * @param {object} config — конфиг проекта (loadConfig)
- * @returns {object} — созданный черновик (объект задачи)
+ * @param config — конфиг проекта (loadConfig)
+ * @returns созданный черновик (объект задачи)
  */
-export function writeDraft(backlogDir, input, config) {
+export function writeDraft(
+  backlogDir: string,
+  input: DraftInput,
+  config: Record<string, unknown>
+): Task {
   const dir = draftsDir(backlogDir);
   mkdirSync(dir, { recursive: true });
 
@@ -82,13 +89,12 @@ export function writeDraft(backlogDir, input, config) {
 
 /**
  * Обновляет черновик. При смене title файл переименовывается.
- *
- * @param {string} backlogDir
- * @param {string} id
- * @param {object} updates — { title, description, labels, priority }
- * @returns {{task: object, path: string}|null}
  */
-export function updateDraft(backlogDir, id, updates) {
+export function updateDraft(
+  backlogDir: string,
+  id: string,
+  updates: Partial<Task>
+): DraftEntry | null {
   const entry = getDraft(backlogDir, id);
   if (!entry) return null;
 
@@ -104,11 +110,9 @@ export function updateDraft(backlogDir, id, updates) {
 /**
  * Архивирует черновик — переносит файл в backlog/completed/.
  *
- * @param {string} backlogDir
- * @param {string} id
- * @returns {boolean}
+ * @returns true если архивация удалась
  */
-export function archiveDraft(backlogDir, id) {
+export function archiveDraft(backlogDir: string, id: string): boolean {
   const entry = getDraft(backlogDir, id);
   if (!entry) return false;
 
@@ -125,8 +129,8 @@ export function archiveDraft(backlogDir, id) {
 /**
  * Удаляет файл черновика (после promote).
  *
- * @param {string} path — путь к файлу черновика
+ * @param path — путь к файлу черновика
  */
-export function removeDraftFile(path) {
+export function removeDraftFile(path: string): void {
   try { unlinkSync(path); } catch { /* ignore */ }
 }

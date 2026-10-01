@@ -14,20 +14,42 @@
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseFrontmatter, serializeFrontmatter } from './frontmatter.mjs';
-import { decisionsDir } from './paths.mjs';
+import { parseFrontmatter, serializeFrontmatter } from './frontmatter.js';
+import { decisionsDir } from './paths.js';
 
 /** Статусы из интерфейса оригинала — справочно (CLI original: free-form). */
 export const DECISION_STATUSES = ['proposed', 'accepted', 'rejected', 'superseded'];
 
+/** Объект решения (метаданные ADR). */
+export interface Decision {
+  id: string;
+  title: string;
+  date: string;
+  status: string;
+}
+
+/** Входные данные решения (create). */
+export interface DecisionInput {
+  title: string;
+  status?: string;
+  date?: string;
+  context?: string;
+  decision?: string;
+  consequences?: string;
+  alternatives?: string;
+}
+
+/** Запись решения: метаданные + ADR-тело + путь к файлу. */
+export interface DecisionEntry {
+  decision: Decision;
+  body: string;
+  path: string;
+}
+
 /**
  * Генерирует имя файла решения: <id>-<slug>.md.
- *
- * @param {string} id
- * @param {string} title
- * @returns {string}
  */
-export function decisionFilename(id, title) {
+export function decisionFilename(id: string, title: string): string {
   const slug = String(title || '')
     .replace(/[^\p{L}\p{N}\s-]/gu, '')
     .replace(/\s+/g, '-')
@@ -37,7 +59,7 @@ export function decisionFilename(id, title) {
 }
 
 /** Текущая дата YYYY-MM-DD — для date по умолчанию. */
-function today() {
+function today(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
@@ -45,10 +67,9 @@ function today() {
 /**
  * Следующий id вида decision-N (max+1).
  *
- * @param {object[]} entries
- * @returns {string}
+ * @param entries — записи listDecisions
  */
-function nextDecisionId(entries) {
+function nextDecisionId(entries: DecisionEntry[]): string {
   let max = 0;
   for (const e of entries) {
     const m = String(e.decision.id).match(/^decision-(\d+)$/i);
@@ -59,12 +80,9 @@ function nextDecisionId(entries) {
 
 /**
  * Собирает ADR-тело из полей.
- *
- * @param {object} input — { context, decision, consequences, alternatives }
- * @returns {string}
  */
-function buildBody(input) {
-  const sections = [];
+function buildBody(input: DecisionInput): string {
+  const sections: string[] = [];
   if (input.context) sections.push('## Context', '', input.context);
   if (input.decision) sections.push('## Decision', '', input.decision);
   if (input.consequences) sections.push('## Consequences', '', input.consequences);
@@ -75,21 +93,19 @@ function buildBody(input) {
 /**
  * Создаёт решение-файл (id decision-N, date = сегодня).
  *
- * @param {string} backlogDir
- * @param {object} input — { title, status, context, decision, consequences, alternatives }
- * @returns {object} — созданный решение {id, title, date, status}
+ * @returns созданный решение {id, title, date, status}
  */
-export function writeDecision(backlogDir, input) {
+export function writeDecision(backlogDir: string, input: DecisionInput): Decision {
   const dir = decisionsDir(backlogDir);
   mkdirSync(dir, { recursive: true });
 
-  const decision = {
+  const decision: Decision = {
     id: nextDecisionId(listDecisions(backlogDir)),
     title: input.title,
     date: input.date || today(),
     status: input.status || 'proposed',
   };
-  const frontmatter = {
+  const frontmatter: Record<string, unknown> = {
     id: decision.id,
     title: decision.title,
     date: decision.date,
@@ -106,11 +122,12 @@ export function writeDecision(backlogDir, input) {
 /**
  * Читает все решения из backlog/decisions/.
  *
- * @param {string} backlogDir
- * @param {{status?: string}} [opts]
- * @returns {Array<{decision: object, body: string, path: string}>}
+ * @param opts — фильтр по статусу (case-insensitive)
  */
-export function listDecisions(backlogDir, opts = {}) {
+export function listDecisions(
+  backlogDir: string,
+  opts: { status?: string } = {}
+): DecisionEntry[] {
   const dir = decisionsDir(backlogDir);
   if (!existsSync(dir)) return [];
 
@@ -121,10 +138,10 @@ export function listDecisions(backlogDir, opts = {}) {
       const { data, body } = parseFrontmatter(readFileSync(path, 'utf-8'));
       return {
         decision: {
-          id: data.id || '',
-          title: data.title || '',
-          date: data.date || '',
-          status: data.status || 'proposed',
+          id: (data.id as string) || '',
+          title: (data.title as string) || '',
+          date: (data.date as string) || '',
+          status: (data.status as string) || 'proposed',
         },
         body: body || '',
         path,
@@ -141,12 +158,8 @@ export function listDecisions(backlogDir, opts = {}) {
 
 /**
  * Находит решение по id (case-insensitive).
- *
- * @param {string} backlogDir
- * @param {string} id
- * @returns {{decision: object, body: string, path: string}|null}
  */
-export function getDecision(backlogDir, id) {
+export function getDecision(backlogDir: string, id: string): DecisionEntry | null {
   const needle = String(id).toLowerCase();
   return listDecisions(backlogDir).find(e => e.decision.id.toLowerCase() === needle) || null;
 }

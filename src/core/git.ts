@@ -14,10 +14,10 @@ import { join, dirname } from 'node:path';
  *
  * Поднимается вверх по директориям, пока не найдёт `.git/`.
  *
- * @param {string} startDir — начальная директория
- * @returns {string|null} — абсолютный путь к корню репозитория, или null
+ * @param startDir — начальная директория
+ * @returns абсолютный путь к корню репозитория, или null
  */
-export function findGitRoot(startDir) {
+export function findGitRoot(startDir: string): string | null {
   let current = startDir;
   while (true) {
     if (existsSync(join(current, '.git')) && statSync(join(current, '.git')).isDirectory()) {

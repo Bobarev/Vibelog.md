@@ -13,20 +13,44 @@
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseFrontmatter, serializeFrontmatter } from './frontmatter.mjs';
-import { docsDir } from './paths.mjs';
+import { parseFrontmatter, serializeFrontmatter } from './frontmatter.js';
+import { docsDir } from './paths.js';
 
 /** Типы документов — строго как DOCUMENT_TYPE_VALUES оригинала Backlog.md. */
 export const DOCUMENT_TYPES = ['readme', 'guide', 'specification', 'other'];
 
+/** Объект документа (метаданные; тело — отдельно в DocumentEntry). */
+export interface Document {
+  id: string;
+  title: string;
+  type: string;
+  created_date: string;
+  tags: string[];
+}
+
+/** Входные данные документа. */
+export interface DocumentInput {
+  id?: string;
+  title: string;
+  type?: string;
+  created_date?: string;
+  tags?: string[];
+}
+
+/** Запись документа: метаданные + тело + путь к файлу. */
+export interface DocumentEntry {
+  document: Document;
+  body: string;
+  path: string;
+}
+
 /**
  * Нормализует тип документа (case-insensitive → каноническое написание).
  *
- * @param {string} type — тип из ввода
- * @returns {string} — канонический тип, 'other' если пусто
- * @throws {Error} — если тип не входит в DOCUMENT_TYPES
+ * @returns канонический тип, 'other' если пусто
+ * @throws если тип не входит в DOCUMENT_TYPES
  */
-export function normalizeDocumentType(type) {
+export function normalizeDocumentType(type: string): string {
   if (!type) return 'other';
   const candidate = String(type).toLowerCase();
   const canonical = DOCUMENT_TYPES.find(t => t === candidate);
@@ -39,11 +63,10 @@ export function normalizeDocumentType(type) {
 /**
  * Генерирует имя файла документа: <id>-<slug>.md.
  *
- * @param {string} id — id документа (doc-N)
- * @param {string} title — заголовок (источник slug)
- * @returns {string}
+ * @param id — id документа (doc-N)
+ * @param title — заголовок (источник slug)
  */
-export function documentFilename(id, title) {
+export function documentFilename(id: string, title: string): string {
   const slug = String(title || '')
     .replace(/[^\p{L}\p{N}\s-]/gu, '')
     .replace(/\s+/g, '-')
@@ -54,15 +77,12 @@ export function documentFilename(id, title) {
 
 /**
  * Создаёт объект документа.
- *
- * @param {object} input — { id, title, type, created_date, tags }
- * @returns {object}
  */
-export function createDocument(input) {
+export function createDocument(input: DocumentInput): Document {
   return {
-    id: input.id,
+    id: input.id || '',
     title: input.title,
-    type: normalizeDocumentType(input.type),
+    type: normalizeDocumentType(input.type || ''),
     created_date: input.created_date || '',
     tags: input.tags || [],
   };
@@ -71,12 +91,10 @@ export function createDocument(input) {
 /**
  * Сериализует документ + тело в markdown.
  *
- * @param {object} doc
- * @param {string} [body] — markdown-тело (rawContent)
- * @returns {string}
+ * @param body — markdown-тело (rawContent)
  */
-export function documentToMarkdown(doc, body) {
-  const frontmatter = {
+export function documentToMarkdown(doc: Document, body?: string): string {
+  const frontmatter: Record<string, unknown> = {
     id: doc.id,
     title: doc.title,
     type: doc.type,
@@ -88,37 +106,33 @@ export function documentToMarkdown(doc, body) {
 
 /**
  * Десериализует markdown в документ + тело.
- *
- * @param {string} content
- * @returns {{document: object, body: string}}
  */
-export function markdownToDocument(content) {
+export function markdownToDocument(content: string): { document: Document; body: string } {
   const { data, body } = parseFrontmatter(content);
   return {
     document: {
-      id: data.id || '',
-      title: data.title || '',
-      type: data.type || 'other',
-      created_date: data.created_date || '',
-      tags: Array.isArray(data.tags) ? data.tags : (data.tags ? [data.tags] : []),
+      id: (data.id as string) || '',
+      title: (data.title as string) || '',
+      type: (data.type as string) || 'other',
+      created_date: (data.created_date as string) || '',
+      tags: Array.isArray(data.tags) ? (data.tags as string[]) : (data.tags ? [data.tags as string] : []),
     },
     body: body || '',
   };
 }
 
-/**
- * Следующий id вида doc-N (max+1).
- *
- * @param {object[]} entries — записи listDocuments
- * @returns {string}
- */
 /** Текущая дата YYYY-MM-DD — для created_date по умолчанию. */
-function today() {
+function today(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function nextDocumentId(entries) {
+/**
+ * Следующий id вида doc-N (max+1).
+ *
+ * @param entries — записи listDocuments
+ */
+function nextDocumentId(entries: DocumentEntry[]): string {
   let max = 0;
   for (const e of entries) {
     const m = String(e.document.id).match(/^doc-(\d+)$/i);
@@ -129,11 +143,8 @@ function nextDocumentId(entries) {
 
 /**
  * Читает все документы из backlog/docs/.
- *
- * @param {string} backlogDir
- * @returns {Array<{document: object, body: string, path: string}>}
  */
-export function listDocuments(backlogDir) {
+export function listDocuments(backlogDir: string): DocumentEntry[] {
   const dir = docsDir(backlogDir);
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
@@ -149,24 +160,24 @@ export function listDocuments(backlogDir) {
 
 /**
  * Находит документ по id (case-insensitive).
- *
- * @param {string} backlogDir
- * @param {string} id
- * @returns {Array<{document: object, body: string, path: string}>|null}
  */
-export function getDocument(backlogDir, id) {
+export function getDocument(backlogDir: string, id: string): DocumentEntry | null {
   const needle = String(id).toLowerCase();
   return listDocuments(backlogDir).find(e => e.document.id.toLowerCase() === needle) || null;
 }
 
+/** Вход writeDocument: метаданные + markdown-содержимое. */
+export interface WriteDocumentInput extends DocumentInput {
+  content?: string;
+}
+
 /**
- * Создаёт документ-файл (id генерируется doc-N, если не задан).
+ * Создаёт документ-файл (id генерируется doc-N, если не задан;
+ * created_date — сегодня, если не задан).
  *
- * @param {string} backlogDir
- * @param {object} input — { title, type, tags, content, created_date }
- * @returns {object} — созданный документ
+ * @returns созданный документ
  */
-export function writeDocument(backlogDir, input) {
+export function writeDocument(backlogDir: string, input: WriteDocumentInput): Document {
   const dir = docsDir(backlogDir);
   mkdirSync(dir, { recursive: true });
 
@@ -184,15 +195,24 @@ export function writeDocument(backlogDir, input) {
   return doc;
 }
 
+/** Обновляемые поля документа. */
+export interface UpdateDocumentInput {
+  title?: string;
+  type?: string;
+  tags?: string[];
+  content?: string;
+}
+
 /**
  * Обновляет документ: поля и/или тело. При смене title файл переименовывается.
  *
- * @param {string} backlogDir
- * @param {string} id
- * @param {object} updates — { title, type, tags, content }
- * @returns {object|null} — обновлённый документ или null если не найден
+ * @returns обновлённая запись или null если не найден
  */
-export function updateDocument(backlogDir, id, updates) {
+export function updateDocument(
+  backlogDir: string,
+  id: string,
+  updates: UpdateDocumentInput
+): DocumentEntry | null {
   const entry = getDocument(backlogDir, id);
   if (!entry) return null;
 
@@ -216,12 +236,8 @@ export function updateDocument(backlogDir, id, updates) {
 
 /**
  * Поиск документов: substring по id/title/tags/телу (case-insensitive).
- *
- * @param {string} backlogDir
- * @param {string} query
- * @returns {Array<{document: object, body: string, path: string}>}
  */
-export function searchDocuments(backlogDir, query) {
+export function searchDocuments(backlogDir: string, query: string): DocumentEntry[] {
   const all = listDocuments(backlogDir);
   if (!query || !query.trim()) return all;
 

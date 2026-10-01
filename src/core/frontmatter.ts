@@ -14,17 +14,22 @@
  * Тело — всё, что идёт после второго `---`.
  */
 
-import { parseYaml, stringifyYaml } from './yaml.mjs';
+import { parseYaml, stringifyYaml } from './yaml.js';
+
+/** Результат разбора файла: данные frontmatter и markdown-тело. */
+export interface ParsedFrontmatter {
+  data: Record<string, unknown>;
+  body: string;
+}
 
 /**
  * Парсит файл задачи на frontmatter (данные) и тело (markdown).
  *
- * @param {string} content — полное содержимое файла
- * @returns {{ data: Record<string, unknown>, body: string }}
- *   data — распарсенный YAML-фронтматтер (пустой объект, если нет)
+ * @param content — полное содержимое файла
+ * @returns data — распарсенный YAML-фронтматтер (пустой объект, если нет);
  *   body — текст после второго `---` (может быть пустой строкой)
  */
-export function parseFrontmatter(content) {
+export function parseFrontmatter(content: string): ParsedFrontmatter {
   if (typeof content !== 'string') {
     throw new Error('parseFrontmatter: ожидается строка');
   }
@@ -74,10 +79,10 @@ export function parseFrontmatter(content) {
  * и стоит на собственной строке (не внутри YAML-значений).
  * Мы просто ищем `\n---\n` или `\n---` в конце.
  *
- * @param {string} text — текст после открывающего `---\n`
- * @returns {number} — позиция символа `\n` перед `---`, или -1
+ * @param text — текст после открывающего `---\n`
+ * @returns позиция символа `\n` перед `---`, или -1
  */
-function findClosingSeparator(text) {
+function findClosingSeparator(text: string): number {
   // Ищем строку, которая является только `---` (без отступа)
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
@@ -96,11 +101,10 @@ function findClosingSeparator(text) {
 /**
  * Сериализует данные и тело обратно в формат файла задачи.
  *
- * @param {Record<string, unknown>} data — объект frontmatter
- * @param {string} body — markdown-тело задачи
- * @returns {string} — полное содержимое файла
+ * @param data — объект frontmatter
+ * @param body — markdown-тело задачи
  */
-export function serializeFrontmatter(data, body) {
+export function serializeFrontmatter(data: Record<string, unknown>, body: string): string {
   const yamlBlock = stringifyYaml(data);
   return `---\n${yamlBlock}\n---\n${body}`;
 }

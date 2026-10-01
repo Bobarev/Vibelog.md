@@ -8,8 +8,8 @@
 
 import { getFlag } from '../args.mjs';
 import { printTaskTable, printInfo, printError } from '../ui.mjs';
-import { searchTasks } from '../../core/search.mjs';
-import { loadConfig } from '../../core/config.mjs';
+import { searchTasks } from '../../core/search.js';
+import { loadConfig } from '../../core/config.js';
 
 /**
  * Выполняет команду search.

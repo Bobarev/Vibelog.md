@@ -15,9 +15,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
-import { stringifyYaml } from '../core/yaml.mjs';
-import { listTools, handleToolCall } from '../mcp/tools.mjs';
-import { documentToMarkdown, markdownToDocument } from '../core/document.mjs';
+import { stringifyYaml } from '../../dist/core/yaml.js';
+import { listTools, handleToolCall } from '../../dist/mcp/tools.mjs';
+import { documentToMarkdown, markdownToDocument } from '../../dist/core/document.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const testDir = join(__dirname, '..', '..', '.test-documents');

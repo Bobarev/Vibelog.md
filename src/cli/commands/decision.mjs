@@ -12,10 +12,10 @@
 
 import { getFlag } from '../args.mjs';
 import { printSuccess, printError, printInfo } from '../ui.mjs';
-import { findBacklogDir } from '../../core/paths.mjs';
+import { findBacklogDir } from '../../core/paths.js';
 import {
   writeDecision, listDecisions, getDecision, DECISION_STATUSES,
-} from '../../core/decision.mjs';
+} from '../../core/decision.js';
 
 /**
  * Выполняет команду decision.

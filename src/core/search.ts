@@ -6,7 +6,19 @@
  * как в оригинале Backlog.md (task_search).
  */
 
-import { listTasks } from './store.mjs';
+import { listTasks } from './store.js';
+import type { Task } from './task.js';
+
+/** Фильтры поиска (все поля необязательны — как required: [] в оригинале). */
+export interface SearchFilters {
+  query?: string;
+  status?: string;
+  type?: string;
+  priority?: string;
+  project?: string;
+  modifiedFiles?: string[];
+  limit?: number;
+}
 
 /**
  * Ищет задачи по запросу и фильтрам.
@@ -14,19 +26,21 @@ import { listTasks } from './store.mjs';
  * Фильтры комбинируются по AND. Все поля необязательны (как required: []
  * в оригинальной схеме task_search): вызов без query, только с фильтрами, валиден.
  *
- * @param {string} cwd — текущая рабочая директория
- * @param {object|string} filters — {query, status, type, priority, project, modifiedFiles, limit}
+ * @param cwd — текущая рабочая директория
+ * @param filters — {query, status, type, priority, project, modifiedFiles, limit}
  *   или строка (= query, обратная совместимость со старой сигнатурой)
- * @returns {object[]} — массив совпавших задач
  */
-export function searchTasks(cwd, filters = {}) {
+export function searchTasks(cwd: string, filters: SearchFilters | string = {}): Task[] {
   // Обратная совместимость: строковый второй аргумент — это query
   // (CLI search.mjs передаёт строку)
+  let f: SearchFilters;
   if (typeof filters === 'string') {
-    filters = { query: filters };
+    f = { query: filters };
+  } else {
+    f = filters;
   }
 
-  const { query, status, type, priority, project, modifiedFiles, limit } = filters;
+  const { query, status, type, priority, project, modifiedFiles, limit } = f;
   let tasks = listTasks(cwd);
 
   // Текстовый запрос: substring по id/title/description/labels
@@ -64,7 +78,7 @@ export function searchTasks(cwd, filters = {}) {
       const files = Array.isArray(t.modified_files)
         ? t.modified_files
         : (t.modified_files ? [t.modified_files] : []);
-      return files.some(f => needles.some(n => String(f).toLowerCase().includes(n)));
+      return files.some(f2 => needles.some(n => String(f2).toLowerCase().includes(n)));
     });
   }
 

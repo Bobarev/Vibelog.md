@@ -13,9 +13,9 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { parseFrontmatter, serializeFrontmatter } from './frontmatter.mjs';
-import { markdownToTask, taskToMarkdown, taskFilename } from './task.mjs';
-import { parseYaml, stringifyYaml } from './yaml.mjs';
+import { parseFrontmatter, serializeFrontmatter } from '../../dist/core/frontmatter.js';
+import { markdownToTask, taskToMarkdown, taskFilename } from '../../dist/core/task.js';
+import { parseYaml, stringifyYaml } from '../../dist/core/yaml.js';
 
 const BACKLOG_ROOT = '../Backlog.md';
 const TASKS_DIR = join(BACKLOG_ROOT, 'backlog', 'tasks');

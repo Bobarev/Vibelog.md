@@ -14,13 +14,13 @@
 
 import { getFlag, getFlagArray } from '../args.mjs';
 import { printSuccess, printError, printInfo } from '../ui.mjs';
-import { findBacklogDir } from '../../core/paths.mjs';
-import { loadConfig } from '../../core/config.mjs';
-import { createTaskFile } from '../../core/store.mjs';
+import { findBacklogDir } from '../../core/paths.js';
+import { loadConfig } from '../../core/config.js';
+import { createTaskFile } from '../../core/store.js';
 import {
   writeDraft, listDrafts, getDraft, updateDraft,
   archiveDraft, removeDraftFile,
-} from '../../core/draft.mjs';
+} from '../../core/draft.js';
 
 /**
  * Выполняет команду draft.

@@ -14,11 +14,11 @@ import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 
 import { listTools } from '../../mcp/tools.mjs';
-import { findBacklogDir, tasksDir, configPath } from '../../core/paths.mjs';
-import { loadConfig } from '../../core/config.mjs';
-import { listTasks } from '../../core/store.mjs';
-import { markdownToTask, taskToMarkdown } from '../../core/task.mjs';
-import { parseYaml } from '../../core/yaml.mjs';
+import { findBacklogDir, tasksDir, configPath } from '../../core/paths.js';
+import { loadConfig } from '../../core/config.js';
+import { listTasks } from '../../core/store.js';
+import { markdownToTask, taskToMarkdown } from '../../core/task.js';
+import { parseYaml } from '../../core/yaml.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

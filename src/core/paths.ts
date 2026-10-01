@@ -13,7 +13,11 @@
 
 import { existsSync, statSync, readdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
-import { findGitRoot } from './git.mjs';
+import { findGitRoot } from './git.js';
+
+// findGitRoot импортирован для паритета с оригинальным модулем;
+// в текущей логике поиска не вызывается (оставлено без изменений при миграции на TS).
+void findGitRoot;
 
 /**
  * Ищет директорию backlog от заданного пути.
@@ -23,10 +27,10 @@ import { findGitRoot } from './git.mjs';
  * 2. `<cwd>/.backlog/`
  * 3. Рекурсивно вверх по родительским директориям
  *
- * @param {string} cwd — начальная директория (обычно process.cwd())
- * @returns {string|null} — абсолютный путь к backlog-директории, или null
+ * @param cwd — начальная директория (обычно process.cwd())
+ * @returns абсолютный путь к backlog-директории, или null
  */
-export function findBacklogDir(cwd) {
+export function findBacklogDir(cwd: string): string | null {
   const absCwd = resolve(cwd);
 
   // Проверяем локальные варианты
@@ -62,11 +66,8 @@ export function findBacklogDir(cwd) {
  *
  * Backlog-директория должна содержать подпапку `tasks/`
  * или файл конфига (`config.yml`).
- *
- * @param {string} dir — путь к директории
- * @returns {boolean}
  */
-function isBacklogDir(dir) {
+function isBacklogDir(dir: string): boolean {
   if (!existsSync(dir) || !statSync(dir).isDirectory()) return false;
   const entries = readdirSync(dir);
   return entries.includes('tasks') || entries.includes('config.yml');
@@ -74,61 +75,43 @@ function isBacklogDir(dir) {
 
 /**
  * Возвращает путь к директории задач.
- *
- * @param {string} backlogDir — путь к backlog-директории
- * @returns {string} — абсолютный путь к `tasks/`
  */
-export function tasksDir(backlogDir) {
+export function tasksDir(backlogDir: string): string {
   return join(backlogDir, 'tasks');
 }
 
 /**
  * Возвращает путь к директории завершённых задач.
- *
- * @param {string} backlogDir — путь к backlog-директории
- * @returns {string} — абсолютный путь к `completed/`
  */
-export function completedDir(backlogDir) {
+export function completedDir(backlogDir: string): string {
   return join(backlogDir, 'completed');
 }
 
 /**
  * Возвращает путь к директории черновиков.
- *
- * @param {string} backlogDir — путь к backlog-директории
- * @returns {string} — абсолютный путь к `drafts/`
  */
-export function draftsDir(backlogDir) {
+export function draftsDir(backlogDir: string): string {
   return join(backlogDir, 'drafts');
 }
 
 /**
  * Возвращает путь к директории документов.
- *
- * @param {string} backlogDir — путь к backlog-директории
- * @returns {string} — абсолютный путь к `docs/`
  */
-export function docsDir(backlogDir) {
+export function docsDir(backlogDir: string): string {
   return join(backlogDir, 'docs');
 }
 
 /**
  * Возвращает путь к директории решений.
- *
- * @param {string} backlogDir — путь к backlog-директории
- * @returns {string} — абсолютный путь к `decisions/`
  */
-export function decisionsDir(backlogDir) {
+export function decisionsDir(backlogDir: string): string {
   return join(backlogDir, 'decisions');
 }
 
 /**
  * Возвращает путь к директории вех (milestones).
- *
- * @param {string} backlogDir — путь к backlog-директории
- * @returns {string} — абсолютный путь к `milestones/`
  */
-export function milestonesDir(backlogDir) {
+export function milestonesDir(backlogDir: string): string {
   return join(backlogDir, 'milestones');
 }
 
@@ -138,11 +121,8 @@ export function milestonesDir(backlogDir) {
  * Приоритет:
  * 1. `backlog/config.yml` (внутри backlog-директории)
  * 2. `backlog.config.yml` (корень проекта — родитель backlog-директории)
- *
- * @param {string} backlogDir — путь к backlog-директории
- * @returns {string} — абсолютный путь к файлу конфига
  */
-export function configPath(backlogDir) {
+export function configPath(backlogDir: string): string {
   const inside = join(backlogDir, 'config.yml');
   if (existsSync(inside)) return inside;
 

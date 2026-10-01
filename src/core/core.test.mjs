@@ -5,12 +5,12 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 
-import { createTask, taskToMarkdown, markdownToTask, taskFilename } from './task.mjs';
-import { stringifyYaml, parseYaml } from './yaml.mjs';
-import { nextTaskId } from './id.mjs';
-import { renderMarkdown } from './markdown.mjs';
-import { searchTasks } from './search.mjs';
-import { blockedBy, blocks, isReady, validateDeps } from './deps.mjs';
+import { createTask, taskToMarkdown, markdownToTask, taskFilename } from '../../dist/core/task.js';
+import { stringifyYaml, parseYaml } from '../../dist/core/yaml.js';
+import { nextTaskId } from '../../dist/core/id.js';
+import { renderMarkdown } from '../../dist/core/markdown.js';
+import { searchTasks } from '../../dist/core/search.js';
+import { blockedBy, blocks, isReady, validateDeps } from '../../dist/core/deps.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

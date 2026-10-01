@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 
-import { stringifyYaml } from './yaml.mjs';
+import { stringifyYaml } from '../../dist/core/yaml.js';
 import {
   listTasks, getTask, createTaskFile,
   updateTaskFile, archiveTaskFile, completeTaskFile,
-} from './store.mjs';
+} from '../../dist/core/store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const testDir = join(__dirname, '..', '..', '.test-store');

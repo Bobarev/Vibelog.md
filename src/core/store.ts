@@ -7,20 +7,25 @@
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
-import { findBacklogDir, tasksDir, completedDir } from './paths.mjs';
-import { loadConfig } from './config.mjs';
-import { createTask, taskToMarkdown, markdownToTask, taskFilename } from './task.mjs';
-import { nextTaskId } from './id.mjs';
+import { findBacklogDir, tasksDir, completedDir } from './paths.js';
+import { loadConfig } from './config.js';
+import { createTask, taskToMarkdown, markdownToTask, taskFilename } from './task.js';
+import type { Task, TaskInput } from './task.js';
+import { nextTaskId } from './id.js';
+
+/** Вход createTaskFile: TaskInput + флаг отключения DoD-дефолтов. */
+export interface CreateTaskFileInput extends TaskInput {
+  noDodDefaults?: boolean;
+}
 
 /**
  * Получает список всех активных задач.
  *
  * Читает все .md файлы из `backlog/tasks/` и парсит их.
  *
- * @param {string} cwd — текущая рабочая директория
- * @returns {object[]} — массив объектов задач
+ * @param cwd — текущая рабочая директория
  */
-export function listTasks(cwd) {
+export function listTasks(cwd: string): Task[] {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) return [];
 
@@ -39,11 +44,11 @@ export function listTasks(cwd) {
  *
  * Ищет в `tasks/` и `completed/`.
  *
- * @param {string} cwd — текущая рабочая директория
- * @param {string} id — ID задачи (например "back-100")
- * @returns {object|null} — объект задачи или null
+ * @param cwd — текущая рабочая директория
+ * @param id — ID задачи (например "back-100")
+ * @returns объект задачи или null
  */
-export function getTask(cwd, id) {
+export function getTask(cwd: string, id: string): Task | null {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) return null;
 
@@ -69,12 +74,11 @@ export function getTask(cwd, id) {
  * Генерирует ID, создаёт объект задачи, записывает markdown-файл
  * в `backlog/tasks/`.
  *
- * @param {string} cwd — текущая рабочая директория
- * @param {object} input — входные данные задачи
- * @returns {object} — созданная задача
- * @throws {Error} — если backlog-директория не найдена
+ * @param cwd — текущая рабочая директория
+ * @param input — входные данные задачи
+ * @throws если backlog-директория не найдена
  */
-export function createTaskFile(cwd, input) {
+export function createTaskFile(cwd: string, input: CreateTaskFileInput): Task {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) {
     throw new Error('Backlog-директория не найдена. Выполните "vibelog init".');
@@ -86,13 +90,13 @@ export function createTaskFile(cwd, input) {
   // и не выставлен noDodDefaults, добавляем definition_of_done как unchecked
   let effectiveInput = input;
   if ((!input.definitionOfDone || input.definitionOfDone.length === 0) && input.noDodDefaults !== true) {
-    const defaults = config.definition_of_done || [];
+    const defaults = (config.definition_of_done as string[] | undefined) || [];
     if (defaults.length > 0) {
       effectiveInput = { ...input, definitionOfDone: defaults.map(text => ({ text, checked: false })) };
     }
   }
 
-  const id = input.id || nextTaskId(cwd, config.task_prefix);
+  const id = input.id || nextTaskId(cwd, config.task_prefix as string);
   const task = createTask({ ...effectiveInput, id }, config);
 
   const dir = tasksDir(backlogDir);
@@ -108,13 +112,12 @@ export function createTaskFile(cwd, input) {
  *
  * Находит задачу по ID, применяет обновления, перезаписывает файл.
  *
- * @param {string} cwd — текущая рабочая директория
- * @param {string} id — ID задачи
- * @param {object} updates — поля для обновления
- * @returns {object} — обновлённая задача
- * @throws {Error} — если задача не найдена
+ * @param cwd — текущая рабочая директория
+ * @param id — ID задачи
+ * @param updates — поля для обновления
+ * @throws если задача не найдена
  */
-export function updateTaskFile(cwd, id, updates) {
+export function updateTaskFile(cwd: string, id: string, updates: Partial<Task>): Task {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) {
     throw new Error('Backlog-директория не найдена.');
@@ -142,11 +145,11 @@ export function updateTaskFile(cwd, id, updates) {
 /**
  * Архивирует задачу (перемещает из tasks/ в completed/).
  *
- * @param {string} cwd — текущая рабочая директория
- * @param {string} id — ID задачи
- * @throws {Error} — если задача не найдена
+ * @param cwd — текущая рабочая директория
+ * @param id — ID задачи
+ * @throws если задача не найдена
  */
-export function archiveTaskFile(cwd, id) {
+export function archiveTaskFile(cwd: string, id: string): void {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) {
     throw new Error('Backlog-директория не найдена.');
@@ -157,7 +160,7 @@ export function archiveTaskFile(cwd, id) {
     throw new Error(`Задача ${id} не найдена в tasks/.`);
   }
 
-  const filename = filePath.split('/').pop();
+  const filename = filePath.split('/').pop() as string;
   const dest = join(completedDir(backlogDir), filename);
   renameSync(filePath, dest);
 }
@@ -165,11 +168,10 @@ export function archiveTaskFile(cwd, id) {
 /**
  * Помечает задачу как завершённую (меняет статус на "Done" и архивирует).
  *
- * @param {string} cwd — текущая рабочая директория
- * @param {string} id — ID задачи
- * @returns {object} — обновлённая задача
+ * @param cwd — текущая рабочая директория
+ * @param id — ID задачи
  */
-export function completeTaskFile(cwd, id) {
+export function completeTaskFile(cwd: string, id: string): Task {
   const task = updateTaskFile(cwd, id, { status: 'Done' });
   archiveTaskFile(cwd, id);
   return task;
@@ -178,11 +180,9 @@ export function completeTaskFile(cwd, id) {
 /**
  * Ищет файл задачи по ID и возвращает путь.
  *
- * @param {string} backlogDir — путь к backlog-директории
- * @param {string} id — ID задачи
- * @returns {string|null} — абсолютный путь к файлу или null
+ * @returns абсолютный путь к файлу или null
  */
-function findTaskFilePath(backlogDir, id) {
+function findTaskFilePath(backlogDir: string, id: string): string | null {
   const dir = tasksDir(backlogDir);
   if (!existsSync(dir)) return null;
 
@@ -198,11 +198,8 @@ function findTaskFilePath(backlogDir, id) {
 
 /**
  * Форматирует дату в формате YYYY-MM-DD HH:MM.
- *
- * @param {Date} date
- * @returns {string}
  */
-function formatDateTime(date) {
+function formatDateTime(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
