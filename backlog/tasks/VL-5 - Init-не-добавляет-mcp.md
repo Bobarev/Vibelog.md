@@ -1,11 +1,11 @@
 ---
 id: VL-5
 title: Init не добавляет mcp
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-09-30 21:56'
-updated_date: '2026-09-30 21:56'
+updated_date: '2026-10-01 13:38'
 due_date: ''
 labels: []
 dependencies: []
