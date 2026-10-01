@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
+    "web:build": "pnpm --dir web build",
     "typecheck": "tsc --noEmit",
     "test": "pnpm build && node --test src",
     "lint": "node --check bin/vibelog.mjs"

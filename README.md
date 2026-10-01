@@ -50,7 +50,7 @@ vibelog task view LB-1
 # Доска задач (терминал)
 vibelog board
 
-# Веб-интерфейс (kanban с drag-and-drop)
+# Веб-интерфейс (React UI из web/dist; сборка UI: pnpm web:build)
 vibelog browser
 
 # Поиск (флаги: --status/--type/--priority/--limit)

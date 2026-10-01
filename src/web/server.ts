@@ -3,8 +3,9 @@
  *
  * Слушает только на 127.0.0.1 (не 0.0.0.0) — безопасно по умолчанию.
  * Обслуживает:
- * - Статический HTML (index) на /
+ * - Статику React-приложения (web/dist) на / и /assets/*
  * - REST API на /api/*
+ * - Inline HTML (assets.ts) — фолбэк, если web/dist не собран
  *
  * Все ассеты inline — без CDN, без внешних зависимостей.
  */
@@ -12,8 +13,15 @@
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { exec } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { handleApi } from './api.js';
 import { getAssetsHtml } from './assets.js';
+import { serveStatic } from './static.js';
+
+// Путь к собранному React UI. Вычисляется от расположения этого модуля
+// (dist/web/server.js → ../../web/dist), а не от cwd: команда vibelog browser
+// запускается в репозитории пользователя, а не в корне пакета Vibelog.md.
+const webDistDir = fileURLToPath(new URL('../../web/dist', import.meta.url));
 
 /**
  * Запускает HTTP-сервер веб-интерфейса.
@@ -22,7 +30,7 @@ import { getAssetsHtml } from './assets.js';
  * @param port — порт для прослушивания
  * @param openBrowser — открывать ли браузер автоматически
  */
-export function startWebServer(cwd: string, port = 3030, openBrowser = true): Server {
+export function startWebServer(cwd: string, port = 3030, openBrowser = true, staticDir: string = webDistDir): Server {
   const server = createServer((req, res) => {
     const url = (req.url ?? '').split('?')[0];
     // '' не совпадает ни с одним эндпоинтом — тот же 404, что и у undefined
@@ -57,7 +65,13 @@ export function startWebServer(cwd: string, port = 3030, openBrowser = true): Se
       return;
     }
 
-    // Главная страница — inline HTML
+    // Статика React-приложения (web/dist): index.html на /, ассеты по путям
+    if ((method === 'GET' || method === 'HEAD') && serveStatic(res, staticDir, url)) {
+      return;
+    }
+
+    // Фолбэк: web/dist не собран (например, npm-установка без web/) —
+    // прежний inline HTML из assets.ts, чтобы доска осталась рабочей
     if (url === '/' || url === '/index.html') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(getAssetsHtml());

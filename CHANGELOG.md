@@ -2,6 +2,12 @@
 
 Все заметные изменения Vibelog.md. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Unreleased]
+
+### Добавлено
+
+- **VL-26: `vibelog browser` отдаёт React UI из `web/dist`** (Vite + React + Tailwind). Каталог `web/dist` коммитится в репозиторий — свежий clone сразу получает React UI; если сборки нет, сервер отдаёт прежний inline HTML из `assets.ts` (фолбэк). Dev-прокси `/api` → `127.0.0.1:3030` в `web/vite.config.ts`. Скрипт `pnpm web:build` — сборка UI из корня.
+
 ## [1.5.0] — 2026-10-01
 
 Миграция проекта на TypeScript. Поведение и форматы данных не изменились.
