@@ -1,11 +1,11 @@
 ---
 id: VL-42
 title: 'Telegram-бот: /spec — запуск Фазы 1 (Spec) через qwen'
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-02 22:34'
-updated_date: '2026-10-02 22:39'
+updated_date: '2026-10-02 22:57'
 due_date: ''
 labels:
   - telegram-bot
@@ -30,9 +30,9 @@ modified_files: []
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 /spec <описание> в привязанном чате создаёт задачу (заголовок — первая фраза описания, урезанная; полное описание в description) и запускает headless qwen с phase-1.md; ответ содержит ID задачи и PID
-- [ ] #2 Отсутствие бинаря qwen / ошибка startPhase — сообщение в чат, процесс бота не падает (child.on('error') уже обрабатывается в оркестраторе)
-- [ ] #3 Путь к templates/qwen-commands/ работает из dist/ бота; pnpm test без регрессий; код комментируется на русском
+- [x] #1 /spec <описание> в привязанном чате создаёт задачу (заголовок — первая фраза описания, урезанная; полное описание в description) и запускает headless qwen с phase-1.md; ответ содержит ID задачи и PID
+- [x] #2 Отсутствие бинаря qwen / ошибка startPhase — сообщение в чат, процесс бота не падает (child.on('error') уже обрабатывается в оркестраторе)
+- [x] #3 Путь к templates/qwen-commands/ работает из dist/ бота; pnpm test без регрессий; код комментируется на русском
 <!-- AC:END -->
 
 ## Definition of Done
@@ -69,3 +69,12 @@ modified_files: []
 - Средний: import из web/ в bot — связка слоёв; оправдано, т.к. оркестратор уже чистый модуль без web-зависимостей (только node:* и core).
 - startPhase спавнит qwen — если бинаря нет, activeRuns всё равно помечает запуск; getRun покажет ошибку через logTail (это нормально, VL-43 покажет статус).
 <!-- SECTION:PLAN:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author: @agent
+created: 2026-10-02 22:57
+---
+Фаза 3 (Code) выполнена. Обработчик bot.command('spec') добавлен в src/bot/handlers.ts: requireBind → parseSpecCommand → createTaskFile (заголовок — первая фраза ≤80 символов по границе слова) → startPhase(cwd, task.id, 'spec') из ../web/orchestrator.js (без дублирования spawn). Ответ в чат: «🚀 Фаза Spec запущена для VL-X, PID N» либо текст ошибки (escapeMarkdownV2). Проверки: pnpm build чистый, headless smoke 8/8 (temp-backlog + заглушка VIBELOG_QWEN_BIN=/bin/echo: создание задачи, урезание заголовка, PID в ответе, пустой ввод/непривязанный чат, graceful-ошибки), pnpm test 359/359.
+---
+<!-- COMMENTS:END -->
