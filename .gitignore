@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# Настройки Telegram-бота (токен!) — не коммитить
+.vibelog/
 # web/dist (собранный React UI) коммитится — см. VL-26
 !web/dist/
 .DS_Store

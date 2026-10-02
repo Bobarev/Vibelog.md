@@ -1,7 +1,7 @@
 # Руководство пользователя Vibelog.md
 
 Markdown-нативный таск-менеджер для git-репозиториев, совместимый с Backlog.md.
-Чистый Node.js 20+, zero runtime dependencies, macOS 10.15 Catalina + Qwen Code.
+Node.js 20+, macOS 10.15 Catalina + Qwen Code. Runtime-зависимость — grammy (Telegram-бот).
 
 ## Содержание
 

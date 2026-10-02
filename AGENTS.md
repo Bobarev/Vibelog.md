@@ -58,7 +58,6 @@ docs(plan): уточнить формат AC по результатам ана�
 - **pnpm** — менеджер пакетов, версия **10.7.1** (`packageManager: "pnpm@10.7.1"`).
 - **Сборка обязательна**: `bin/vibelog.mjs` импортирует `dist/` — после `pnpm install` и любых изменений src выполняйте `pnpm build`. `pnpm test` = build + `node --test src`. Тесты — `*.test.mjs` (импортируют `dist/`).
 - **Перед npm publish**: гонять `node scripts/npm-smoke.mjs` (VL-32) — проверка установки из tarball (CLI/init/browser/шаблоны).
-- **Zero runtime dependencies.** YAML и markdown — свои мини-парсеры.
 - **Совместимость с Backlog.md** — максимальная.
 - **Node.js 20+**, macOS 10.15 Catalina (проверять, что нет нативных модулей).
 - **Не использовать Claude Code / Codex / Opencode** — они не работают на Catalina. Целевой агент — Qwen Code.
@@ -82,7 +81,7 @@ docs(plan): уточнить формат AC по результатам ана�
 
 Все проверки, парсинг, валидация — только на Node.js (`node -e`, `node --input-type=module -e`, или отдельные скрипты в `scripts/`).
 
-Причина: пользователь работает на macOS 10.15 Catalina, где внешние рантаймы либо отсутствуют, либо нестабильны. Плюс проект позиционируется как zero-dependency Node.js.
+Причина: пользователь работает на macOS 10.15 Catalina, где внешние рантаймы либо отсутствуют, либо нестабильны.
 
 ## Работа через Vibelog
 

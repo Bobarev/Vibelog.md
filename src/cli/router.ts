@@ -29,6 +29,7 @@ import { runDoc } from './commands/doc.js';
 import { runConfig } from './commands/config.js';
 import { runDraft } from './commands/draft.js';
 import { runDecision } from './commands/decision.js';
+import { runBot } from './commands/bot.js';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -72,6 +73,8 @@ export async function route(args: string[]): Promise<void> {
       return runMcp(subcommand, positional, flags, cwd);
     case 'browser':
       return runBrowser(positional, flags, cwd);
+    case 'bot':
+      return runBot(positional, flags, cwd);
     case 'doctor':
       return runDoctor(positional, flags, cwd);
     case 'milestone':
@@ -103,6 +106,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('task', colors.cyan)} create|list|view|edit|...     Управление задачами
   ${colorize('board', colors.cyan)} [--export]                   Канбан-доска
   ${colorize('browser', colors.cyan)} [--port N] [--no-open]      Веб-интерфейс
+  ${colorize('bot', colors.cyan)}                             Telegram-бот (grammy)
   ${colorize('search', colors.cyan)} "query" [--status ...]      Поиск задач с фильтрами
   ${colorize('instructions', colors.cyan)} [topic]               Инструкции для агентов
   ${colorize('mcp', colors.cyan)} start                        MCP-сервер (JSON-RPC)
@@ -210,6 +214,15 @@ vibelog config <subcommand> [опции]
   get <key>           Показать значение ключа
   set <key> <value>   Изменить значение (массивы: JSON или через запятую)
   list                Все ключи конфига`,
+
+    bot: `
+vibelog bot
+
+Запускает Telegram-бота (long polling). Токен: TELEGRAM_BOT_TOKEN или
+telegram_token в .vibelog/bot.yml. При старте в консоль печатается пин-код —
+введите его в Telegram после /start для привязки чата.
+
+Команды: /tasks, /task <id>, /board`,
 
     draft: `
 vibelog draft <subcommand> [опции]

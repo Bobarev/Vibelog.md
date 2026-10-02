@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Добавлено
+
+- **VL-34: Telegram-бот `vibelog bot` (grammy)** — long-polling бот: /start с пин-кодом (код печатается в консоль запущенного бота), /tasks, /task <id>, /board. Токен: TELEGRAM_BOT_TOKEN или .vibelog/bot.yml (gitignored). Упоминания zero-deps удалены (AGENTS/README/user-guide) — runtime-зависимость теперь grammy.
+
 ## [1.5.0] — 2026-10-01
 
 Первая публикация в npm: пакет `vibelog.md` (Unlicense, zero runtime dependencies).
