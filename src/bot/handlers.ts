@@ -12,7 +12,13 @@ import { loadConfig } from '../core/config.js';
 import { escapeMarkdownV2, formatBoard, formatTaskDetail, formatTaskList } from './formatting.js';
 import { chunkRich, renderTaskRich } from './rich.js';
 import { loadBotSettings, saveBotSettings } from './settings.js';
-import { parseCommentCommand, parseCreateCommand, parseStatusCommand } from './commands.js';
+import { startPhase } from '../web/orchestrator.js';
+import {
+  parseCommentCommand,
+  parseCreateCommand,
+  parseSpecCommand,
+  parseStatusCommand,
+} from './commands.js';
 
 /** Зависимости обработчиков (пин — из замыкания runBot, cwd — проект). */
 export interface HandlerDeps {
@@ -172,6 +178,45 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       // единый автор для CLI и бота (однопользовательская система, VL-35)
       const task = addComment(deps.cwd, parsed.id, parsed.text);
       await sendMd(ctx, `💬 Комментарий добавлен к *${task.id}*`);
+    } catch (err) {
+      await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+  // ── /spec — Фаза 1 (Spec) через headless qwen (VL-42) ──
+  // По аналогии с web (startPhase): создаём родительскую задачу с описанием
+  // фичи и спавним qwen с шаблоном phase-1.md — агент сам разобьёт фичу на
+  // подзадачи через Vibelog MCP, оставит отчёт комментарием и сменит статус.
+  bot.command('spec', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const parsed = parseSpecCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    try {
+      // Заголовок — первая фраза описания (до . ! ? ; или переноса),
+      // ≤80 символов по границе слова; полное описание уходит в description
+      const firstPhrase =
+        parsed.description.split(/[.!?;\n]/)[0].trim() || parsed.description.trim();
+      let title = firstPhrase;
+      if (title.length > 80) {
+        title = title.slice(0, 80).replace(/\s+\S*$/, '') || firstPhrase.slice(0, 80);
+        title += '…';
+      }
+      const task = createTaskFile(deps.cwd, { title, description: parsed.description });
+      const result = startPhase(deps.cwd, task.id, 'spec');
+      if ('error' in result) {
+        await sendMd(
+          ctx,
+          '⚠️ Задача *' +
+            task.id +
+            '* создана, но запуск qwen не удался: ' +
+            escapeMarkdownV2(result.error)
+        );
+        return;
+      }
+      await sendMd(ctx, `🚀 Фаза Spec запущена для *${task.id}*, PID ${result.pid}`);
     } catch (err) {
       await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
     }
