@@ -10,6 +10,7 @@ import type { Bot, Context } from 'grammy';
 import { getTask, listTasks } from '../core/store.js';
 import { loadConfig } from '../core/config.js';
 import { escapeMarkdownV2, formatBoard, formatTaskDetail, formatTaskList } from './formatting.js';
+import { chunkRich, renderTaskRich } from './rich.js';
 import { loadBotSettings, saveBotSettings } from './settings.js';
 
 /** Зависимости обработчиков (пин — из замыкания runBot, cwd — проект). */
@@ -88,7 +89,20 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, `Задача ${escapeMarkdownV2(id)} не найдена.`);
       return;
     }
-    await sendMd(ctx, formatTaskDetail(task));
+    // VL-39: полное отображение файла задачи через Rich Messages (GFM).
+    // Фолбэк: старые клиенты Telegram могут не поддерживать rich —
+    // тогда уходим на прежний summary-путь (MarkdownV2), бот не молчит.
+    try {
+      const chatId = ctx.chat?.id;
+      if (chatId === undefined) return;
+      const rich = renderTaskRich(task);
+      for (const part of chunkRich(rich)) {
+        await ctx.api.sendRichMessage(chatId, { markdown: part });
+      }
+    } catch (err) {
+      console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
+      await sendMd(ctx, formatTaskDetail(task));
+    }
   });
 
   bot.command('board', async (ctx) => {
