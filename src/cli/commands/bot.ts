@@ -6,7 +6,9 @@
  */
 
 import { Bot } from 'grammy';
-import { resolveToken } from '../../bot/settings.js';
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import { resolveProxy, resolveToken } from '../../bot/settings.js';
+import { loadDotEnv } from '../../bot/env.js';
 import { generatePin } from '../../bot/pin.js';
 import { registerHandlers } from '../../bot/handlers.js';
 
@@ -22,6 +24,9 @@ export async function runBot(
   _flags: Record<string, unknown>,
   cwd: string
 ): Promise<void> {
+  // .env корня проекта загружается сам — запуск просто "vibelog bot",
+  // без node --env-file (VL-37, просьба Pavel)
+  loadDotEnv(cwd);
   const token = resolveToken(cwd);
   if (!token) {
     console.error(
@@ -34,7 +39,21 @@ export async function runBot(
   console.log(`Код привязки: ${pin}`);
   console.log('Введите его в Telegram командой /start. Ctrl+C — остановить бота.');
 
-  const bot = new Bot(token);
+  // Прокси нужен там, где api.telegram.org заблокирован напрямую
+  // (VL-37): Node fetch и grammy системный прокси macOS не читают.
+  const proxy = resolveProxy(cwd);
+  // Каст через any: типы Request/Headers у grammy (shim) и undici несовместимы
+  // на уровне итераторов, runtime-контракт fetch — полная совместимость
+  const bot = proxy
+    ? new Bot(token, {
+        client: {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          fetch: ((input: any, init?: any) =>
+            undiciFetch(input, { ...init, dispatcher: new ProxyAgent(proxy) })) as any,
+        },
+      })
+    : new Bot(token);
+  if (proxy) console.log('Прокси:', proxy);
   registerHandlers(bot, { cwd, getPin: () => pin });
 
   bot.catch((err) => {

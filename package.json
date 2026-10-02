@@ -30,6 +30,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "grammy": "^1.46.0"
+    "grammy": "^1.46.0",
+    "undici": "^6.29.0"
   }
 }

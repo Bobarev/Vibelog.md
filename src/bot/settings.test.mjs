@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { loadBotSettings, saveBotSettings, resolveToken, botSettingsPath } from '../../dist/bot/settings.js';
+import { loadBotSettings, saveBotSettings, resolveToken, resolveProxy, botSettingsPath } from '../../dist/bot/settings.js';
 
 describe('settings (VL-34)', () => {
   const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-test-'));
@@ -41,5 +41,22 @@ describe('settings (VL-34)', () => {
     assert.equal(resolveToken(testRoot), 'from-env');
     delete process.env.TELEGRAM_BOT_TOKEN;
     assert.equal(resolveToken(testRoot), 'tok-123');
+  });
+
+  it('resolveProxy: env → файл → null (VL-37)', () => {
+    const savedProxy = process.env.TELEGRAM_PROXY;
+    try {
+      process.env.TELEGRAM_PROXY = 'http://127.0.0.1:7070';
+      assert.equal(resolveProxy(testRoot), 'http://127.0.0.1:7070');
+      delete process.env.TELEGRAM_PROXY;
+      // Файл без telegram_proxy → null
+      assert.equal(resolveProxy(testRoot), null);
+      // С telegram_proxy в файле
+      saveBotSettings(testRoot, { telegram_token: 'tok-123', telegram_proxy: 'http://127.0.0.1:1080', chats: [] });
+      assert.equal(resolveProxy(testRoot), 'http://127.0.0.1:1080');
+    } finally {
+      if (savedProxy === undefined) delete process.env.TELEGRAM_PROXY;
+      else process.env.TELEGRAM_PROXY = savedProxy;
+    }
   });
 });
