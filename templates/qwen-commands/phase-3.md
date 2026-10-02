@@ -13,10 +13,14 @@
    - Тесты — *.test.mjs, импортируют dist/.
    - После изменений выполняй pnpm build и pnpm test.
 
-3. Оставь отчёт комментарием:
+3. Отметь реально выполненные AC/DoD (перенесено из Фазы Close):
+   списки: backlog_manage_ac / backlog_manage_dod c action "list"; отметка: action "check", index N.
+   Не отмечай «задним числом» — невыполненные пункты оставь незакрытыми и упомяни в отчёте.
+
+4. Оставь отчёт комментарием:
    backlog_add_comment {"id": "{{taskId}}", "comment": "Фаза 3 (Code) выполнена. Изменено: <файлы>. Проверки: pnpm build OK, pnpm test — N/N. Что осталось: ...", "author": "@agent"}
 
-4. Смени статус:
+5. Смени статус:
    backlog_update_status {"id": "{{taskId}}", "status": "Review"}
 
 ## Правила
