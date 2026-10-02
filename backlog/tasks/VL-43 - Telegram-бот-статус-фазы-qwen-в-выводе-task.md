@@ -1,11 +1,11 @@
 ---
 id: VL-43
 title: 'Telegram-бот: статус фазы qwen в выводе /task'
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-02 22:34'
-updated_date: '2026-10-02 22:39'
+updated_date: '2026-10-02 23:05'
 due_date: ''
 labels:
   - telegram-bot
@@ -29,9 +29,9 @@ modified_files: []
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Для /spec VL-42 (активный запуск) ответ /task показывает строку вида «Фаза spec: выполняется (PID N)»
-- [ ] #2 После завершения — «Фаза spec: завершена (код 0)» либо с кодом ошибки; задача без запусков — вывод как раньше (без строки о фазе)
-- [ ] #3 pnpm test без регрессий
+- [x] #1 Для /spec VL-42 (активный запуск) ответ /task показывает строку вида «Фаза spec: выполняется (PID N)»
+- [x] #2 После завершения — «Фаза spec: завершена (код 0)» либо с кодом ошибки; задача без запусков — вывод как раньше (без строки о фазе)
+- [x] #3 pnpm test без регрессий
 <!-- AC:END -->
 
 ## Definition of Done
@@ -68,3 +68,12 @@ formatting.ts → handlers.ts → тесты → pnpm test.
 - Низкий. Необязательный параметр не ломает существующие вызовы (formatTaskDetail(task) в тестах VL-34/38 остаётся валидным).
 - getRun — in-memory: после рестарта бота строка фазы не появится (как и в web — known limitation).
 <!-- SECTION:PLAN:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author: @agent
+created: 2026-10-02 23:05
+---
+Фаза 3 (Code) выполнена. formatting.ts: formatPhaseRun (MarkdownV2-строка статуса фазы: выполняется/завершена/ошибка, скобки экранируются) + formatTaskDetail получил необязательный phaseRun (строка после Статуса через splice). handlers.ts: getRun(id) передаётся в /task — после rich-сообщения статус фазы доп. сообщением (rich-рендер не трогаем), в MarkdownV2-фолбэке — внутрь formatTaskDetail. Тесты: +6 кейсов (formatPhaseRun ×4, вставка строки, отсутствие без run). Проверки: pnpm build чистый, formatting 14/14, headless smoke 6/6 (rich OK/падает/без запуска/после kill → «ошибка (код —)»), pnpm test 365/365.
+---
+<!-- COMMENTS:END -->
