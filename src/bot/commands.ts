@@ -37,6 +37,11 @@ export interface PlanCommand {
   id: string;
 }
 
+/** Результат разбора /code. */
+export interface CodeCommand {
+  id: string;
+}
+
 /** Снятие окружающих кавычек. */
 function unquote(value: string): string {
   const trimmed = value.trim();
@@ -161,6 +166,21 @@ export function parsePlanCommand(text: string): PlanCommand | { error: string } 
   const trimmed = text.trim();
   if (!trimmed) return { error: hint };
   // ID — первое слово; хвостовой текст игнорируется (lenient, как в /status)
+  const id = trimmed.split(/\s+/)[0];
+  if (!id) return { error: hint };
+  return { id };
+}
+
+/**
+ * Разбирает /code: «VL-1» — только ID задачи (первое слово).
+ *
+ * @param text — аргументы команды (без слова /code)
+ * @returns {id} или {error} с подсказкой
+ */
+export function parseCodeCommand(text: string): CodeCommand | { error: string } {
+  const hint = 'Синтаксис: /code VL-<id>';
+  const trimmed = text.trim();
+  if (!trimmed) return { error: hint };
   const id = trimmed.split(/\s+/)[0];
   if (!id) return { error: hint };
   return { id };

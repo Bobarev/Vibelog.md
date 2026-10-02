@@ -22,6 +22,7 @@ import { loadBotSettings, saveBotSettings } from './settings.js';
 import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
 import { getRun, startPhase } from '../web/orchestrator.js';
 import {
+  parseCodeCommand,
   parseCommentCommand,
   parseCreateCommand,
   parsePlanCommand,
@@ -120,7 +121,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return;
     if (loadBotSettings(deps.cwd).chats.includes(chatId)) {
-      await sendMd(ctx, 'Чат уже привязан. Команды: /tasks, /task <id>, /board, /create, /status, /comment, /spec, /plan');
+      await sendMd(ctx, 'Чат уже привязан. Команды: /tasks, /task <id>, /board, /create, /status, /comment, /spec, /plan, /code');
       return;
     }
     awaitingPin.add(chatId);
@@ -337,6 +338,50 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     }
     await sendMd(ctx, `🚀 Фаза Plan запущена для *${task.id}*, PID ${result.pid}`);
   });
+  // ── /code — Фаза 3 (Code) через headless qwen (VL-53) ──
+  // По аналогии с /plan (VL-51), но фаза — Code (шаблон phase-3.md).
+  // ID существующей задачи (обычно после /plan).
+  bot.command('code', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const parsed = parseCodeCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    const task = getTask(deps.cwd, parsed.id);
+    if (!task) {
+      await sendMd(ctx, `Задача ${escapeMarkdownV2(parsed.id)} не найдена.`);
+      return;
+    }
+    // Колбэк завершения — паттерн VL-48: статус фазы + лог qwen + карточка
+    const notifyChat = ctx.chat?.id;
+    const onExit: PhaseExitCallback = (run) => {
+      if (notifyChat === undefined) return;
+      void (async () => {
+        const head =
+          run.exitCode === 0
+            ? '✅ *Фаза Code завершена* для ' + task.id
+            : '⚠️ *Фаза Code завершена с ошибкой* для ' + task.id + ' — код ' + (run.exitCode ?? '—');
+        await sendText(bot, notifyChat, head);
+        const tail = (run.logTail ?? '').trim();
+        if (tail) {
+          const cut = tail.length > 3000 ? tail.slice(0, 3000) + '…' : tail;
+          await sendText(bot, notifyChat, '```\n' + cut + '\n```');
+        }
+        const fresh = getTask(deps.cwd, task.id) ?? task;
+        await sendTaskView(bot, notifyChat, fresh, run);
+      })().catch((err) => {
+        console.error('Уведомление о завершении фазы не отправлено:', err);
+      });
+    };
+    const result = startPhase(deps.cwd, task.id, 'code', onExit);
+    if ('error' in result) {
+      // Guard «уже выполняется» и прочие ошибки валидации startPhase
+      await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
+      return;
+    }
+    await sendMd(ctx, `🚀 Фаза Code запущена для *${task.id}*, PID ${result.pid}`);
+  });
   // Ввод пина — ОБЯЗАТЕЛЬНО ПОСЛЕ ВСЕХ bot.command: catch-all message:text
   // перехватывает любое текстовое сообщение и без next() останавливает
   // цепочку grammy — зарегистрированный раньше него /tasks не сработал бы
@@ -350,7 +395,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       if (!settings.chats.includes(chatId)) settings.chats.push(chatId);
       saveBotSettings(deps.cwd, settings);
       awaitingPin.delete(chatId);
-      await sendMd(ctx, 'Чат привязан ✅ Команды: /tasks, /task <id>, /board, /create, /status, /comment, /spec, /plan');
+      await sendMd(ctx, 'Чат привязан ✅ Команды: /tasks, /task <id>, /board, /create, /status, /comment, /spec, /plan, /code');
     } else {
       await sendMd(ctx, 'Неверный код. Проверьте консоль запущенного vibelog bot.');
     }

@@ -10,6 +10,7 @@
 - **VL-39: /task — Rich Messages (Telegram sendRichMessage, GFM)** — полное отображение файла задачи: заголовок, меты, Описание, AC/DoD-чек-листы с отметками, Implementation Plan/Notes/Final Summary, комментарии. Лимит 32768 символов. Фолбэк на MarkdownV2-summary для старых клиентов.
 - **VL-34: Telegram-бот `vibelog bot` (grammy)** — long-polling бот: /start с пин-кодом (код печатается в консоль запущенного бота), /tasks, /task <id>, /board. Токен: TELEGRAM_BOT_TOKEN или .vibelog/bot.yml (gitignored). Упоминания zero-deps удалены (AGENTS/README/user-guide) — runtime-зависимость теперь grammy.
 - **VL-51: /plan — запуск Фазы 2 (Plan) через headless qwen** — команда /plan <id> для существующей задачи (обычно после /spec, статус Planned). По завершении фазы бот шлёт в чат статус, лог qwen (pre-блок, ≤3000 символов) и карточку задачи. Парсер parsePlanCommand (VL-50), обработчик по аналогии с /spec (VL-42/48).
+- **VL-53: /code — запуск Фазы 3 (Code) через headless qwen** — команда /code <id> для существующей задачи; по завершении фазы бот шлёт статус, лог qwen и карточку задачи. По аналогии с /spec (VL-42/48) и /plan (VL-51).
 
 ## [1.5.0] — 2026-10-01
 
