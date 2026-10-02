@@ -11,6 +11,7 @@ import { resolveProxy, resolveToken } from '../../bot/settings.js';
 import { loadDotEnv } from '../../bot/env.js';
 import { generatePin } from '../../bot/pin.js';
 import { registerHandlers } from '../../bot/handlers.js';
+import { syncCommands } from '../../bot/registry.js';
 
 /**
  * Выполняет команду bot.
@@ -55,6 +56,8 @@ export async function runBot(
     : new Bot(token);
   if (proxy) console.log('Прокси:', proxy);
   registerHandlers(bot, { cwd, getPin: () => pin });
+  // Меню команд в Telegram: ошибки API логируются, polling продолжается (VL-54)
+  await syncCommands(bot);
 
   bot.catch((err) => {
     // grammy переживает сетевые сбои polling сам; логируем для диагностики
