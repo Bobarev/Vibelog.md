@@ -11,6 +11,8 @@
 - **VL-34: Telegram-бот `vibelog bot` (grammy)** — long-polling бот: /start с пин-кодом (код печатается в консоль запущенного бота), /tasks, /task <id>, /board. Токен: TELEGRAM_BOT_TOKEN или .vibelog/bot.yml (gitignored). Упоминания zero-deps удалены (AGENTS/README/user-guide) — runtime-зависимость теперь grammy.
 - **VL-51: /plan — запуск Фазы 2 (Plan) через headless qwen** — команда /plan <id> для существующей задачи (обычно после /spec, статус Planned). По завершении фазы бот шлёт в чат статус, лог qwen (pre-блок, ≤3000 символов) и карточку задачи. Парсер parsePlanCommand (VL-50), обработчик по аналогии с /spec (VL-42/48).
 - **VL-53: /code — запуск Фазы 3 (Code) через headless qwen** — команда /code <id> для существующей задачи; по завершении фазы бот шлёт статус, лог qwen и карточку задачи. По аналогии с /spec (VL-42/48) и /plan (VL-51).
+- **VL-54: синхронизация команд бота с Telegram** — при старте `vibelog bot` вызывается `setMyCommands` (меню команд в клиенте Telegram постоянно актуально). Единый источник правды — реестр `src/bot/registry.ts` (BOT_COMMANDS + commandsHelp): help-тексты /start в handlers.ts генерируются из него, хардкод удалён. Ошибки API логируются, бот продолжает polling.
+- **VL-55: /close — Фаза Close через headless qwen** — команда /close <id> закрывает задачу: статус завершения из конфига + git commit связанных файлов (файл задачи + modified_files, явные пути, без push) + отчёт комментарием; шаблон templates/qwen-commands/phase-close.md, фаза 'close' в PHASES оркестратора, ответ в чат по паттерну VL-48.
 
 ## [1.5.0] — 2026-10-01
 

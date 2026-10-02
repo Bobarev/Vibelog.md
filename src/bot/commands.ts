@@ -42,6 +42,11 @@ export interface CodeCommand {
   id: string;
 }
 
+/** Результат разбора /close. */
+export interface CloseCommand {
+  id: string;
+}
+
 /** Снятие окружающих кавычек. */
 function unquote(value: string): string {
   const trimmed = value.trim();
@@ -179,6 +184,22 @@ export function parsePlanCommand(text: string): PlanCommand | { error: string } 
  */
 export function parseCodeCommand(text: string): CodeCommand | { error: string } {
   const hint = 'Синтаксис: /code VL-<id>';
+  const trimmed = text.trim();
+  if (!trimmed) return { error: hint };
+  const id = trimmed.split(/\s+/)[0];
+  if (!id) return { error: hint };
+  return { id };
+}
+
+/**
+ * Разбирает /close: «VL-1» — только ID задачи (первое слово).
+ * Копия parseCodeCommand (VL-53) — фаза Close закрывает задачу.
+ *
+ * @param text — аргументы команды (без слова /close)
+ * @returns {id} или {error} с подсказкой
+ */
+export function parseCloseCommand(text: string): CloseCommand | { error: string } {
+  const hint = 'Синтаксис: /close VL-<id>';
   const trimmed = text.trim();
   if (!trimmed) return { error: hint };
   const id = trimmed.split(/\s+/)[0];

@@ -19,9 +19,11 @@ import {
 } from './formatting.js';
 import { chunkRich, renderTaskRich } from './rich.js';
 import { loadBotSettings, saveBotSettings } from './settings.js';
+import { commandsHelp } from './registry.js';
 import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
 import { getRun, startPhase } from '../web/orchestrator.js';
 import {
+  parseCloseCommand,
   parseCodeCommand,
   parseCommentCommand,
   parseCreateCommand,
@@ -100,7 +102,10 @@ async function sendTaskView(
 }
 
 /**
- * Регистрирует команды бота: /start, /tasks, /task, /board.
+ * Регистрирует обработчики команд бота.
+ *
+ * Список команд и их описания — в реестре `./registry.ts` (VL-54);
+ * help-тексты /start генерируются из него.
  *
  * @param bot — экземпляр grammy Bot
  * @param deps — cwd проекта и геттер пина
@@ -121,7 +126,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return;
     if (loadBotSettings(deps.cwd).chats.includes(chatId)) {
-      await sendMd(ctx, 'Чат уже привязан. Команды: /tasks, /task <id>, /board, /create, /status, /comment, /spec, /plan, /code');
+      await sendMd(ctx, `Чат уже привязан. Команды: ${commandsHelp()}`);
       return;
     }
     awaitingPin.add(chatId);
@@ -382,6 +387,51 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     }
     await sendMd(ctx, `🚀 Фаза Code запущена для *${task.id}*, PID ${result.pid}`);
   });
+  // ── /close — Фаза Close (закрытие задачи) через headless qwen (VL-55) ──
+  // По аналогии с /code (VL-53): закрывает задачу — статус завершения
+  // из конфига проекта + git commit файлов задачи + отчёт комментарием.
+  // Шаблон phase-close.md — единственная фаза, где git-операции разрешены.
+  bot.command('close', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const parsed = parseCloseCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    const task = getTask(deps.cwd, parsed.id);
+    if (!task) {
+      await sendMd(ctx, `Задача ${escapeMarkdownV2(parsed.id)} не найдена.`);
+      return;
+    }
+    // Колбэк завершения — паттерн VL-48: статус фазы + лог qwen + карточка
+    const notifyChat = ctx.chat?.id;
+    const onExit: PhaseExitCallback = (run) => {
+      if (notifyChat === undefined) return;
+      void (async () => {
+        const head =
+          run.exitCode === 0
+            ? '✅ *Фаза Close завершена* для ' + task.id
+            : '⚠️ *Фаза Close завершена с ошибкой* для ' + task.id + ' — код ' + (run.exitCode ?? '—');
+        await sendText(bot, notifyChat, head);
+        const tail = (run.logTail ?? '').trim();
+        if (tail) {
+          const cut = tail.length > 3000 ? tail.slice(0, 3000) + '…' : tail;
+          await sendText(bot, notifyChat, '```\n' + cut + '\n```');
+        }
+        const fresh = getTask(deps.cwd, task.id) ?? task;
+        await sendTaskView(bot, notifyChat, fresh, run);
+      })().catch((err) => {
+        console.error('Уведомление о завершении фазы не отправлено:', err);
+      });
+    };
+    const result = startPhase(deps.cwd, task.id, 'close', onExit);
+    if ('error' in result) {
+      // Guard «уже выполняется» и прочие ошибки валидации startPhase
+      await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
+      return;
+    }
+    await sendMd(ctx, `🚀 Фаза Close запущена для *${task.id}*, PID ${result.pid}`);
+  });
   // Ввод пина — ОБЯЗАТЕЛЬНО ПОСЛЕ ВСЕХ bot.command: catch-all message:text
   // перехватывает любое текстовое сообщение и без next() останавливает
   // цепочку grammy — зарегистрированный раньше него /tasks не сработал бы
@@ -395,7 +445,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       if (!settings.chats.includes(chatId)) settings.chats.push(chatId);
       saveBotSettings(deps.cwd, settings);
       awaitingPin.delete(chatId);
-      await sendMd(ctx, 'Чат привязан ✅ Команды: /tasks, /task <id>, /board, /create, /status, /comment, /spec, /plan, /code');
+      await sendMd(ctx, `Чат привязан ✅ Команды: ${commandsHelp()}`);
     } else {
       await sendMd(ctx, 'Неверный код. Проверьте консоль запущенного vibelog bot.');
     }

@@ -9,6 +9,7 @@ import {
   parseCreateCommand,
   parseStatusCommand,
   parseCommentCommand,
+  parseCloseCommand,
   parseCodeCommand,
   parsePlanCommand,
   parseSpecCommand,
@@ -134,5 +135,28 @@ describe('parseCodeCommand (VL-53)', () => {
     assert.ok('error' in e2);
     assert.match(e1.error, /Синтаксис/);
     assert.match(e1.error, /\/code/);
+  });
+});
+
+describe('parseCloseCommand (VL-55)', () => {
+  it('корректный ID → {id}', () => {
+    assert.deepEqual(parseCloseCommand('VL-55'), { id: 'VL-55' });
+  });
+
+  it('окружающие пробелы снимаются', () => {
+    assert.deepEqual(parseCloseCommand('  VL-55  '), { id: 'VL-55' });
+  });
+
+  it('хвостовой текст игнорируется (первое слово)', () => {
+    assert.deepEqual(parseCloseCommand('VL-55 ещё что-то'), { id: 'VL-55' });
+  });
+
+  it('пустая строка и пробелы → error с подсказкой', () => {
+    const e1 = parseCloseCommand('');
+    const e2 = parseCloseCommand('   ');
+    assert.ok('error' in e1);
+    assert.ok('error' in e2);
+    assert.match(e1.error, /Синтаксис/);
+    assert.match(e1.error, /\/close/);
   });
 });

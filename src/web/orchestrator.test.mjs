@@ -99,6 +99,13 @@ describe('orchestrator (VL-28)', () => {
     assert.throws(() => renderPrompt('deploy', 'VL-42'), /Неизвестная фаза/);
   });
 
+  it('renderPrompt фазы close подставляет {{taskId}} (VL-55)', () => {
+    const prompt = renderPrompt('close', 'VL-55');
+    assert.match(prompt, /VL-55/);
+    assert.doesNotMatch(prompt, /\{\{taskId\}\}/);
+    assert.match(prompt, /Фаза Close/);
+  });
+
   it('startPhase: спавн, double-trigger guard, getRun после завершения', async () => {
     const marker = join(testRoot, 'marker1.txt');
     process.env.VL28_STUB_MARKER = marker;

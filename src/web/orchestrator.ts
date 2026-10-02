@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { getTask } from '../core/store.js';
 
 /** Допустимые фазы. */
-const PHASES = ['spec', 'plan', 'code'] as const;
+const PHASES = ['spec', 'plan', 'code', 'close'] as const;
 export type Phase = (typeof PHASES)[number];
 
 /** Шаблон промпта для каждой фазы. */
@@ -27,6 +27,7 @@ const PHASE_FILES: Record<Phase, string> = {
   spec: 'phase-1.md',
   plan: 'phase-2.md',
   code: 'phase-3.md',
+  close: 'phase-close.md',
 };
 
 /**
@@ -73,13 +74,13 @@ const lastRuns = new Map<string, PhaseRun>();
 /**
  * Собирает промпт фазы: шаблон + подстановка {{taskId}}.
  *
- * @param phase — spec | plan | code
+ * @param phase — spec | plan | code | close
  * @param taskId — ID задачи, например VL-28
  * @throws Error при неизвестной фазе или отсутствующем шаблоне
  */
 export function renderPrompt(phase: string, taskId: string): string {
   if (!PHASES.includes(phase as Phase)) {
-    throw new Error(`Неизвестная фаза: ${phase} (ожидается spec|plan|code)`);
+    throw new Error(`Неизвестная фаза: ${phase} (ожидается spec|plan|code|close)`);
   }
   const templatePath = join(templatesDir, PHASE_FILES[phase as Phase]);
   let template: string;
@@ -96,7 +97,7 @@ export function renderPrompt(phase: string, taskId: string): string {
  *
  * @param cwd — рабочая директория проекта (там же лежит backlog/ и .qwen/)
  * @param taskId — ID задачи
- * @param phase — spec | plan | code
+ * @param phase — spec | plan | code | close
  */
 export function startPhase(
   cwd: string,
