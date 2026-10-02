@@ -27,6 +27,11 @@ export interface CommentCommand {
   text: string;
 }
 
+/** Результат разбора /spec. */
+export interface SpecCommand {
+  description: string;
+}
+
 /** Снятие окружающих кавычек. */
 function unquote(value: string): string {
   const trimmed = value.trim();
@@ -124,4 +129,18 @@ export function parseCommentCommand(text: string): CommentCommand | { error: str
   if (!commentText) return { error: hint };
 
   return { id, text: commentText };
+}
+
+/**
+ * Разбирает /spec: весь текст после команды — описание фичи.
+ * Окружающие кавычки снимаются; пустой ввод — {error} с подсказкой.
+ *
+ * @param text — аргументы команды (без слова /spec)
+ * @returns описание фичи или {error} с подсказкой
+ */
+export function parseSpecCommand(text: string): SpecCommand | { error: string } {
+  const hint = 'Синтаксис: /spec описание фичи';
+  const description = unquote(text.trim());
+  if (!description) return { error: hint };
+  return { description };
 }

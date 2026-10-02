@@ -5,7 +5,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseCreateCommand, parseStatusCommand, parseCommentCommand } from '../../dist/bot/commands.js';
+import {
+  parseCreateCommand,
+  parseStatusCommand,
+  parseCommentCommand,
+  parseSpecCommand,
+} from '../../dist/bot/commands.js';
 
 describe('parseCreateCommand (VL-35)', () => {
   it('заголовок без флагов', () => {
@@ -61,5 +66,25 @@ describe('parseCommentCommand (VL-35)', () => {
   it('только id → error', () => {
     assert.ok('error' in parseCommentCommand('VL-3'));
     assert.ok('error' in parseCommentCommand(''));
+  });
+});
+
+describe('parseSpecCommand (VL-41)', () => {
+  it('обычный текст → description', () => {
+    assert.deepEqual(parseSpecCommand('добавить экспорт в PDF'), {
+      description: 'добавить экспорт в PDF',
+    });
+  });
+
+  it('текст в кавычках — кавычки снимаются', () => {
+    assert.deepEqual(parseSpecCommand('"фича в кавычках"'), { description: 'фича в кавычках' });
+  });
+
+  it('пустая строка и пробелы → error с подсказкой', () => {
+    const e1 = parseSpecCommand('');
+    const e2 = parseSpecCommand('   ');
+    assert.ok('error' in e1);
+    assert.ok('error' in e2);
+    assert.match(e1.error, /Синтаксис/);
   });
 });
