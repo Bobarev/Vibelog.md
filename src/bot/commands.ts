@@ -32,6 +32,11 @@ export interface SpecCommand {
   description: string;
 }
 
+/** Результат разбора /plan. */
+export interface PlanCommand {
+  id: string;
+}
+
 /** Снятие окружающих кавычек. */
 function unquote(value: string): string {
   const trimmed = value.trim();
@@ -143,4 +148,20 @@ export function parseSpecCommand(text: string): SpecCommand | { error: string } 
   const description = unquote(text.trim());
   if (!description) return { error: hint };
   return { description };
+}
+
+/**
+ * Разбирает /plan: «VL-1» — только ID задачи (первое слово).
+ *
+ * @param text — аргументы команды (без слова /plan)
+ * @returns {id} или {error} с подсказкой
+ */
+export function parsePlanCommand(text: string): PlanCommand | { error: string } {
+  const hint = 'Синтаксис: /plan VL-<id>';
+  const trimmed = text.trim();
+  if (!trimmed) return { error: hint };
+  // ID — первое слово; хвостовой текст игнорируется (lenient, как в /status)
+  const id = trimmed.split(/\s+/)[0];
+  if (!id) return { error: hint };
+  return { id };
 }

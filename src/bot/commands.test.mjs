@@ -9,6 +9,7 @@ import {
   parseCreateCommand,
   parseStatusCommand,
   parseCommentCommand,
+  parsePlanCommand,
   parseSpecCommand,
 } from '../../dist/bot/commands.js';
 
@@ -86,5 +87,28 @@ describe('parseSpecCommand (VL-41)', () => {
     assert.ok('error' in e1);
     assert.ok('error' in e2);
     assert.match(e1.error, /Синтаксис/);
+  });
+});
+
+describe('parsePlanCommand (VL-50)', () => {
+  it('корректный ID → {id}', () => {
+    assert.deepEqual(parsePlanCommand('VL-49'), { id: 'VL-49' });
+  });
+
+  it('окружающие пробелы снимаются', () => {
+    assert.deepEqual(parsePlanCommand('  VL-49  '), { id: 'VL-49' });
+  });
+
+  it('хвостовой текст игнорируется (первое слово)', () => {
+    assert.deepEqual(parsePlanCommand('VL-49 ещё что-то'), { id: 'VL-49' });
+  });
+
+  it('пустая строка и пробелы → error с подсказкой', () => {
+    const e1 = parsePlanCommand('');
+    const e2 = parsePlanCommand('   ');
+    assert.ok('error' in e1);
+    assert.ok('error' in e2);
+    assert.match(e1.error, /Синтаксис/);
+    assert.match(e1.error, /\/plan/);
   });
 });
