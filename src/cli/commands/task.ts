@@ -21,6 +21,8 @@ import {
   updateTaskFile, completeTaskFile, archiveTaskFile,
 } from '../../core/store.js';
 import { loadConfig, normalizeTaskType } from '../../core/config.js';
+import { addComment } from '../../core/store.js';
+import { getGitUserName } from '../../core/git-user.js';
 import { isReady } from '../../core/deps.js';
 import { findBacklogDir } from '../../core/paths.js';
 import { writeDraft } from '../../core/draft.js';
@@ -459,19 +461,23 @@ function taskEdit(positional: string[], flags: FlagValues, cwd: string): void {
     }
   }
 
-  // Комментарий
+  // Комментарий — через addComment (VL-35); автор дефолтится из git config user.name
+  let commentAdded = false;
   if (flags.comment) {
-    const task = getTask(cwd, id);
-    if (task) {
-      const author = getFlag(flags, 'comment-author', '@agent');
-      const now = new Date();
-      const created = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-      const comment: TaskComment = { author, created, text: getFlag(flags, 'comment') };
-      updates.comments = [...(task.comments || []), comment];
+    const author = getFlag(flags, 'comment-author', '') || getGitUserName(cwd);
+    try {
+      addComment(cwd, id, getFlag(flags, 'comment'), author);
+      commentAdded = true;
+    } catch (err) {
+      printError(err instanceof Error ? err.message : String(err));
     }
   }
 
   if (Object.keys(updates).length === 0) {
+    if (commentAdded) {
+      printSuccess(`Комментарий добавлен к задаче ${id}.`);
+      return;
+    }
     printError('Не указаны поля для обновления. Используйте --title, --status, --ac и т.д.');
     return;
   }

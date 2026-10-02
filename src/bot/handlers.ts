@@ -7,11 +7,12 @@
  */
 
 import type { Bot, Context } from 'grammy';
-import { getTask, listTasks } from '../core/store.js';
+import { addComment, createTaskFile, getTask, listTasks, updateTaskFile } from '../core/store.js';
 import { loadConfig } from '../core/config.js';
 import { escapeMarkdownV2, formatBoard, formatTaskDetail, formatTaskList } from './formatting.js';
 import { chunkRich, renderTaskRich } from './rich.js';
 import { loadBotSettings, saveBotSettings } from './settings.js';
+import { parseCommentCommand, parseCreateCommand, parseStatusCommand } from './commands.js';
 
 /** Зависимости обработчиков (пин — из замыкания runBot, cwd — проект). */
 export interface HandlerDeps {
@@ -110,6 +111,70 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     const config = loadConfig(deps.cwd);
     const statuses = Array.isArray(config.statuses) ? config.statuses.map(String) : [];
     await sendMd(ctx, formatBoard(statuses, listTasks(deps.cwd)));
+  });
+
+  // ── Управление задачами (VL-35): ПОСЛЕ всех доска-команд, ДО catch-all ──
+
+  bot.command('create', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const parsed = parseCreateCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    try {
+      const task = createTaskFile(deps.cwd, {
+        title: parsed.title,
+        ...(parsed.description ? { description: parsed.description } : {}),
+        ...(parsed.priority ? { priority: parsed.priority } : {}),
+      });
+      await sendMd(ctx, `✅ Задача *${task.id}* создана: ${task.title}`);
+    } catch (err) {
+      await sendMd(ctx, `Ошибка создания: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+  bot.command('status', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const parsed = parseStatusCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    try {
+      const config = loadConfig(deps.cwd);
+      const statuses = Array.isArray(config.statuses) ? config.statuses.map(String) : [];
+      if (!statuses.includes(parsed.status)) {
+        await sendMd(ctx, `Неизвестный статус: ${parsed.status}. Доступные: ${statuses.join(', ')}`);
+        return;
+      }
+      const task = getTask(deps.cwd, parsed.id);
+      if (!task) {
+        await sendMd(ctx, `Задача ${parsed.id} не найдена.`);
+        return;
+      }
+      const updated = updateTaskFile(deps.cwd, parsed.id, { status: parsed.status });
+      await sendMd(ctx, `*${updated.id}*: ${task.status} → ${updated.status}`);
+    } catch (err) {
+      await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+  bot.command('comment', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const parsed = parseCommentCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    try {
+      // Автор НЕ передаётся: addComment дефолтит git config user.name —
+      // единый автор для CLI и бота (однопользовательская система, VL-35)
+      const task = addComment(deps.cwd, parsed.id, parsed.text);
+      await sendMd(ctx, `💬 Комментарий добавлен к *${task.id}*`);
+    } catch (err) {
+      await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
+    }
   });
 
   // Ввод пина — ОБЯЗАТЕЛЬНО ПОСЛЕ ВСЕХ bot.command: catch-all message:text

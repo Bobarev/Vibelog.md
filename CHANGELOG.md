@@ -6,6 +6,7 @@
 
 ### Добавлено
 
+- **VL-35: управление задачами из Telegram** — команды /create, /status, /comment (парсинг с подсказками, валидация статусов по конфигу). Новая core-функция `addComment(cwd, id, text, author?)` — автор по умолчанию из `git config user.name` проекта (единый автор для CLI и бота); CLI `task edit --comment` переведён на неё. Правило совместимости уточнено в AGENTS.md: строгая совместимость с Backlog.md — только для хранения данных.
 - **VL-39: /task — Rich Messages (Telegram sendRichMessage, GFM)** — полное отображение файла задачи: заголовок, меты, Описание, AC/DoD-чек-листы с отметками, Implementation Plan/Notes/Final Summary, комментарии. Лимит 32768 символов. Фолбэк на MarkdownV2-summary для старых клиентов.
 - **VL-34: Telegram-бот `vibelog bot` (grammy)** — long-polling бот: /start с пин-кодом (код печатается в консоль запущенного бота), /tasks, /task <id>, /board. Токен: TELEGRAM_BOT_TOKEN или .vibelog/bot.yml (gitignored). Упоминания zero-deps удалены (AGENTS/README/user-guide) — runtime-зависимость теперь grammy.
 

@@ -1,0 +1,65 @@
+/**
+ * Тесты VL-35 — парсеры Telegram-команд бота.
+ */
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { parseCreateCommand, parseStatusCommand, parseCommentCommand } from '../../dist/bot/commands.js';
+
+describe('parseCreateCommand (VL-35)', () => {
+  it('заголовок без флагов', () => {
+    const r = parseCreateCommand('Новая фича');
+    assert.deepEqual(r, { title: 'Новая фича' });
+  });
+
+  it('с -d и --priority', () => {
+    const r = parseCreateCommand('Заголовок -d Описание фичи --priority High');
+    assert.deepEqual(r, { title: 'Заголовок', description: 'Описание фичи', priority: 'High' });
+  });
+
+  it('описание в кавычках снимается', () => {
+    const r = parseCreateCommand('Тест -d "текст с пробелами" --priority Low');
+    assert.deepEqual(r, { title: 'Тест', description: 'текст с пробелами', priority: 'Low' });
+  });
+
+  it('без заголовка → error', () => {
+    assert.ok('error' in parseCreateCommand(''));
+    assert.ok('error' in parseCreateCommand('-d только описание'));
+  });
+
+  it('невалидный приоритет → error', () => {
+    const r = parseCreateCommand('Тест --priority Critical');
+    assert.ok('error' in r);
+    assert.match(r.error, /Невалидный приоритет/);
+  });
+});
+
+describe('parseStatusCommand (VL-35)', () => {
+  it('статус с пробелом: «VL-1 To Do»', () => {
+    assert.deepEqual(parseStatusCommand('VL-1 To Do'), { id: 'VL-1', status: 'To Do' });
+  });
+
+  it('статус одним словом', () => {
+    assert.deepEqual(parseStatusCommand('VL-2 Done'), { id: 'VL-2', status: 'Done' });
+  });
+
+  it('без статуса → error', () => {
+    assert.ok('error' in parseStatusCommand('VL-1'));
+    assert.ok('error' in parseStatusCommand(''));
+  });
+});
+
+describe('parseCommentCommand (VL-35)', () => {
+  it('id + текст с пробелами', () => {
+    assert.deepEqual(parseCommentCommand('VL-3 текст комментария'), {
+      id: 'VL-3',
+      text: 'текст комментария',
+    });
+  });
+
+  it('только id → error', () => {
+    assert.ok('error' in parseCommentCommand('VL-3'));
+    assert.ok('error' in parseCommentCommand(''));
+  });
+});
