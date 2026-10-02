@@ -9,6 +9,7 @@ import {
   escapeMarkdownV2,
   formatTaskList,
   formatTaskDetail,
+  formatPhaseRun,
   formatBoard,
 } from '../../dist/bot/formatting.js';
 
@@ -72,5 +73,47 @@ describe('formatting (VL-34/VL-38)', () => {
 
   it('formatBoard: пустые статусы', () => {
     assert.match(formatBoard([], [task]), /Статусы не настроены/);
+  });
+});
+
+describe('formatPhaseRun / formatTaskDetail (VL-43)', () => {
+  it('formatPhaseRun: выполняется с PID', () => {
+    assert.equal(
+      formatPhaseRun({ running: true, phase: 'spec', pid: 123 }),
+      '*Фаза spec: выполняется \\(PID 123\\)*'
+    );
+  });
+
+  it('formatPhaseRun: завершена с кодом 0', () => {
+    assert.equal(
+      formatPhaseRun({ running: false, phase: 'spec', exitCode: 0 }),
+      '*Фаза spec: завершена \\(код 0\\)*'
+    );
+  });
+
+  it('formatPhaseRun: ошибка с кодом и без кода (null)', () => {
+    assert.match(formatPhaseRun({ running: false, phase: 'code', exitCode: 1 }), /ошибка/);
+    assert.match(formatPhaseRun({ running: false, phase: 'code', exitCode: 1 }), /код 1/);
+    assert.match(formatPhaseRun({ running: false, phase: 'code', exitCode: null }), /ошибка/);
+  });
+
+  it('formatPhaseRun: нет запуска или фазы → пустая строка', () => {
+    assert.equal(formatPhaseRun(null), '');
+    assert.equal(formatPhaseRun(undefined), '');
+    assert.equal(formatPhaseRun({ running: false }), '');
+  });
+
+  it('formatTaskDetail: строка фазы между статусом и приоритетом', () => {
+    const text = formatTaskDetail(task, { running: true, phase: 'spec', pid: 42 });
+    const statusIdx = text.indexOf('*Статус:*');
+    const phaseIdx = text.indexOf('*Фаза spec: выполняется \\(PID 42\\)*');
+    const prioIdx = text.indexOf('*Приоритет:*');
+    assert.ok(phaseIdx > statusIdx, 'фаза после статуса');
+    assert.ok(phaseIdx < prioIdx, 'фаза до приоритета');
+  });
+
+  it('formatTaskDetail: без phaseRun — без строки фазы', () => {
+    assert.ok(!formatTaskDetail(task).includes('Фаза'));
+    assert.ok(!formatTaskDetail(task, undefined).includes('Фаза'));
   });
 });

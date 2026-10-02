@@ -131,6 +131,22 @@ describe('orchestrator (VL-28)', () => {
     assert.match(res.error, /Неизвестная фаза/);
   });
 
+  it('startPhase: onExit-колбэк — один раз, с exitCode и logTail (VL-48)', async () => {
+    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-vl48.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    const calls = [];
+    const res = startPhase(testRoot, task1.id, 'spec', (run) => calls.push(run));
+    assert.equal(res.started, true);
+    const run = await waitDone(task1.id);
+    // finish() зовёт колбэк синхронно; пауза — страховка от гонки
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].running, false);
+    assert.equal(calls[0].exitCode, run.exitCode);
+    assert.match(calls[0].logTail ?? '', /stub qwen/);
+  });
+
   it('handleApi: POST trigger 404/409/202 и GET trigger', async () => {
     // 404 — задачи нет
     const notFound = handleApi('POST', '/api/tasks/VL-999/trigger', { phase: 'spec' }, testRoot);

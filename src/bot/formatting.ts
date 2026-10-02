@@ -10,6 +10,7 @@
  */
 
 import type { Task } from '../core/task.js';
+import type { PhaseRun } from '../web/orchestrator.js';
 
 /**
  * Экранирует спецсимволы Telegram MarkdownV2.
@@ -39,16 +40,38 @@ export function formatTaskList(tasks: Task[]): string {
 }
 
 /**
- * Детали задачи для /task: жирный заголовок, жирные метки полей.
+ * Строка статуса фазы qwen для задачи (VL-43).
+ *
+ * @param run — запуск фазы из оркестратора (getRun)
+ * @returns MarkdownV2-строка либо '' если данных о запуске нет
+ */
+export function formatPhaseRun(run: PhaseRun | null | undefined): string {
+  if (!run || !run.phase) return '';
+  const phase = escapeMarkdownV2(run.phase);
+  if (run.running) {
+    return `*Фаза ${phase}: выполняется \\(PID ${run.pid ?? '—'}\\)*`;
+  }
+  if (run.exitCode === 0) {
+    return `*Фаза ${phase}: завершена \\(код 0\\)*`;
+  }
+  return `*Фаза ${phase}: ошибка \\(код ${run.exitCode ?? '—'}\\)*`;
+}
+
+/**
+ * Детали задачи для /task: жирный заголовок, метки полей, описание.
  *
  * @param task — задача
+ * @param phaseRun — запуск фазы qwen (VL-43); строка вставляется после статуса
  */
-export function formatTaskDetail(task: Task): string {
+export function formatTaskDetail(task: Task, phaseRun?: PhaseRun): string {
   const lines = [
     `*${escapeMarkdownV2(task.id)} — ${escapeMarkdownV2(task.title)}*`,
     `*Статус:* ${escapeMarkdownV2(task.status)}`,
     `*Приоритет:* ${escapeMarkdownV2(task.priority || '—')}`,
   ];
+  // VL-43: строка статуса фазы qwen — сразу после статуса задачи
+  const phaseLine = formatPhaseRun(phaseRun);
+  if (phaseLine) lines.splice(2, 0, phaseLine);
   if (task.assignee.length > 0) {
     lines.push(`*Исполнители:* ${escapeMarkdownV2(task.assignee.join(', '))}`);
   }

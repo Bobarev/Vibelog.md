@@ -52,10 +52,17 @@ export interface PhaseRun {
 /** Результат startPhase: успех или ошибка валидации/guard. */
 export type StartResult = { started: true; pid: number } | { error: string };
 
-/** Активный запуск: фаза + живой процесс. */
+/**
+ * Колбэк завершения фазы (VL-48): вызывается ровно один раз при close/error
+ * с готовым PhaseRun (exitCode, logTail). Ошибки колбэка не роняют polling.
+ */
+export type PhaseExitCallback = (run: PhaseRun) => void;
+
+/** Активный запуск: фаза + живой процесс + колбэк завершения. */
 interface ActiveRun {
   phase: Phase;
   child: ChildProcess;
+  onExit?: PhaseExitCallback;
 }
 
 /** Задача → активный запуск (guard от двойного запуска). */
@@ -91,7 +98,12 @@ export function renderPrompt(phase: string, taskId: string): string {
  * @param taskId — ID задачи
  * @param phase — spec | plan | code
  */
-export function startPhase(cwd: string, taskId: string, phase: string): StartResult {
+export function startPhase(
+  cwd: string,
+  taskId: string,
+  phase: string,
+  onExit?: PhaseExitCallback
+): StartResult {
   if (activeRuns.has(taskId)) {
     return { error: 'Фаза для этой задачи уже выполняется' };
   }
@@ -110,7 +122,7 @@ export function startPhase(cwd: string, taskId: string, phase: string): StartRes
     stdio: 'pipe',
   });
 
-  activeRuns.set(taskId, { phase: phase as Phase, child });
+  activeRuns.set(taskId, { phase: phase as Phase, child, onExit });
   lastRuns.delete(taskId);
 
   let log = '';
@@ -131,13 +143,21 @@ export function startPhase(cwd: string, taskId: string, phase: string): StartRes
     if (finished) return;
     finished = true;
     activeRuns.delete(taskId);
-    lastRuns.set(taskId, {
+    const record: PhaseRun = {
       running: false,
       phase,
       exitCode: code,
       finishedAt: new Date().toISOString(),
       logTail: log.trim(),
-    });
+    };
+    lastRuns.set(taskId, record);
+    // VL-48: уведомление о завершении (бот). Fire-and-forget в try/catch:
+    // сетевые ошибки Telegram не должны ронять polling оркестратора.
+    try {
+      onExit?.(record);
+    } catch (err) {
+      console.error('onExit-колбэк фазы упал:', err);
+    }
   };
 
   child.on('error', (err) => {

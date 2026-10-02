@@ -9,10 +9,18 @@
 import type { Bot, Context } from 'grammy';
 import { addComment, createTaskFile, getTask, listTasks, updateTaskFile } from '../core/store.js';
 import { loadConfig } from '../core/config.js';
-import { escapeMarkdownV2, formatBoard, formatTaskDetail, formatTaskList } from './formatting.js';
+import type { Task } from '../core/task.js';
+import {
+  escapeMarkdownV2,
+  formatBoard,
+  formatPhaseRun,
+  formatTaskDetail,
+  formatTaskList,
+} from './formatting.js';
 import { chunkRich, renderTaskRich } from './rich.js';
 import { loadBotSettings, saveBotSettings } from './settings.js';
-import { startPhase } from '../web/orchestrator.js';
+import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
+import { getRun, startPhase } from '../web/orchestrator.js';
 import {
   parseCommentCommand,
   parseCreateCommand,
@@ -42,6 +50,50 @@ async function sendMd(ctx: Context, text: string): Promise<void> {
     } catch {
       // Сеть недоступна — игнорируем, polling продолжится
     }
+  }
+}
+
+/**
+ * Отправка текста по chatId: MarkdownV2 с фолбэком на plain (VL-48).
+ * Отличие от sendMd: адресат — chatId (уведомления приходят без ctx).
+ */
+async function sendText(bot: Bot, chatId: number, text: string): Promise<void> {
+  try {
+    await bot.api.sendMessage(chatId, text, { parse_mode: 'MarkdownV2' });
+  } catch {
+    try {
+      await bot.api.sendMessage(chatId, text);
+    } catch {
+      // Сеть недоступна — сообщение теряется, polling продолжится
+    }
+  }
+}
+
+/**
+ * Карточка задачи по chatId: rich-рендер (VL-39) + строка фазы (VL-43),
+ * фолбэк — MarkdownV2-детали. Используется и в /task, и в уведомлениях
+ * о завершении фазы (VL-48) — контент идентичен ответу /task.
+ */
+async function sendTaskView(
+  bot: Bot,
+  chatId: number,
+  task: Task,
+  phaseRun?: PhaseRun
+): Promise<void> {
+  try {
+    const rich = renderTaskRich(task);
+    for (const part of chunkRich(rich)) {
+      await bot.api.sendRichMessage(chatId, { markdown: part });
+    }
+    // VL-43: статус фазы отдельным сообщением — rich-рендер не трогаем,
+    // данные фазы живут в памяти процесса, а не в файле задачи
+    if (phaseRun) {
+      const line = formatPhaseRun(phaseRun);
+      if (line) await sendText(bot, chatId, line);
+    }
+  } catch (err) {
+    console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
+    await sendText(bot, chatId, formatTaskDetail(task, phaseRun));
   }
 }
 
@@ -96,20 +148,12 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, `Задача ${escapeMarkdownV2(id)} не найдена.`);
       return;
     }
-    // VL-39: полное отображение файла задачи через Rich Messages (GFM).
-    // Фолбэк: старые клиенты Telegram могут не поддерживать rich —
-    // тогда уходим на прежний summary-путь (MarkdownV2), бот не молчит.
-    try {
-      const chatId = ctx.chat?.id;
-      if (chatId === undefined) return;
-      const rich = renderTaskRich(task);
-      for (const part of chunkRich(rich)) {
-        await ctx.api.sendRichMessage(chatId, { markdown: part });
-      }
-    } catch (err) {
-      console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
-      await sendMd(ctx, formatTaskDetail(task));
-    }
+    // VL-43: статус фазы qwen — in-memory состояние оркестратора;
+    // VL-48: карточка выделена в sendTaskView (общая с уведомлениями)
+    const phaseRun = getRun(id);
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    await sendTaskView(bot, chatId, task, phaseRun ?? undefined);
   });
 
   bot.command('board', async (ctx) => {
@@ -205,7 +249,32 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         title += '…';
       }
       const task = createTaskFile(deps.cwd, { title, description: parsed.description });
-      const result = startPhase(deps.cwd, task.id, 'spec');
+      // VL-48: по завершении фазы — в чат ответ qwen + карточка задачи.
+      // Колбэк синхронный (void async): ошибки сети не роняют polling.
+      const notifyChat = ctx.chat?.id;
+      const onExit: PhaseExitCallback = (run) => {
+        if (notifyChat === undefined) return;
+        void (async () => {
+          const head =
+            run.exitCode === 0
+              ? '✅ *Фаза Spec завершена* для ' + task.id
+              : '⚠️ *Фаза Spec завершена с ошибкой* для ' + task.id + ' — код ' + (run.exitCode ?? '—');
+          await sendText(bot, notifyChat, head);
+          const tail = (run.logTail ?? '').trim();
+          if (tail) {
+            // Ответ qwen: последние строки stdout/stderr; лимит Telegram —
+            // 4096 символов, режем с запасом. Pre-блок MarkdownV2 (```).
+            const cut = tail.length > 3000 ? tail.slice(0, 3000) + '…' : tail;
+            await sendText(bot, notifyChat, '```\n' + cut + '\n```');
+          }
+          // Карточка созданной задачи — как в /task; файл мог изменить qwen
+          const fresh = getTask(deps.cwd, task.id) ?? task;
+          await sendTaskView(bot, notifyChat, fresh, run);
+        })().catch((err) => {
+          console.error('Уведомление о завершении фазы не отправлено:', err);
+        });
+      };
+      const result = startPhase(deps.cwd, task.id, 'spec', onExit);
       if ('error' in result) {
         await sendMd(
           ctx,
