@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-02 23:09'
-updated_date: '2026-10-03 03:28'
+updated_date: '2026-10-03 12:45'
 due_date: ''
 labels: []
 dependencies: []
@@ -141,9 +141,52 @@ created: 2026-10-03 03:07
 Проверки: pnpm build OK (tsc strict); pnpm test — 394/394 (включая существующие VL-35 add-comment.test.mjs без правок — регрессий нет); точечно project-settings + init-mcp + add-comment — 19/19; ручная проверка: init в tmp → .vibelog/settings.yml содержит git_user_name, task edit --comment → автор из кэша в файле задачи.
 Что осталось: ничего по AC. Подзадачи VL-45/46/47 в backlog остались в To Do — их статусы/комментарии не менял (отчёт охватывает весь эпик). Коммит не делал (по правилам Фазы 3).
 ---
-author:  @agent
+author: @agent
 created: 2026-10-03 03:28
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: cff8b2e — кэш git_user_name в .vibelog/settings.yml (init/--force + resolveGitUserName). Файлы подзадач VL-45..47 уже закоммичены ранее (e5df3aa) — docs(task)-коммиты не требовались.
+---
+author: Pavel Bobarev
+created: 2026-10-03 12:37
+---
+Ты не закрыл связанные задачи
+---
+author: @agent
+created: 2026-10-03 12:39
+---
+Фаза Comment выполнена: закрыты связанные подзадачи эпика VL-44 — VL-45, VL-46, VL-47 переведены в статус Done, отмечены все AC и DoD, добавлены комментарии-отчёты в каждую подзадачу.
+Проверено перед закрытием:
+- src/core/project-settings.ts + project-settings.test.mjs — реализация VL-45 на месте;
+- src/cli/commands/init.ts:78,87 — запись/обновление кэша git_user_name (init и --force);
+- src/core/store.ts:12,170 и src/cli/commands/task.ts:25,468 — resolveGitUserName вместо getGitUserName;
+- docs/user-guide.md:47 — документация по .vibelog/settings.yml.
+Ранее Фазой 3 (коммиты e5df3aa, cff8b2e) реализация всего эпика была выполнена, тесты проходили (394/394), но статусы подзадач не обновились — теперь исправлено. Статус VL-44 не менялся (уже Done).
+---
+author: Pavel Bobarev
+created: 2026-10-03 12:43
+---
+Коммит надо было ещё сделать для всех этих задач
+---
+author:  @agent
+created: 2026-10-03 12:45
+---
+Фаза Comment выполнена: проверен запрос на коммит по задачам эпика VL-44.
+
+**Состояние git:** незакоммиченных изменений ровно 5 файлов — все это обновления backlog-документации после закрытия подзадач:
+- `backlog/tasks/VL-44 - ...getGitUserName.md` — updated_date, новые комментарии (12:37, 12:39, 12:43)
+- `backlog/tasks/VL-45 - ...resolveGitUserName.md` — статус To Do → Done, AC/DoD отмечены, комментарий-отчёт
+- `backlog/tasks/VL-46 - ...vibelogsettingsyml.md` — статус To Do → Done, AC/DoD отмечены, комментарий-отчёт
+- `backlog/tasks/VL-47 - ...resolveGitUserName-документация.md` — статус To Do → Done, AC/DoD отмечены, комментарий-отчёт
+- `templates/qwen-commands/phase-comment.md` — мелкая правка формулировки шага 3 шаблона
+
+Исходный код эпика был закоммичен ранее (коммиты e5df3aa и cff8b2e) — новых изменений src/ нет.
+
+**Коммит не выполнен:** правила Фазы Comment запрещают git-операции (commit/push) — только правки файлов и проверки. Поэтому запрос на автоматический коммит не выполнен намеренно.
+
+**Что сделать вручную** (или переоткрыть задачу для Фазы Close):
+```
+git add backlog/tasks templates/qwen-commands/phase-comment.md
+git commit -m "docs(task): VL-44,VL-45,VL-46,VL-47 — закрытие подзадач (статусы, AC/DoD, комментарии)"
+```
 ---
 <!-- COMMENTS:END -->

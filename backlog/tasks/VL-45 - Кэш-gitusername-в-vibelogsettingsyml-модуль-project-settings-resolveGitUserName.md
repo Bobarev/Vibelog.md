@@ -1,11 +1,11 @@
 ---
 id: VL-45
 title: Кэш git_user_name в .vibelog/settings.yml (модуль project-settings + resolveGitUserName)
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-02 23:13'
-updated_date: '2026-10-02 23:13'
+updated_date: '2026-10-03 12:38'
 due_date: ''
 labels: []
 dependencies: []
@@ -33,14 +33,23 @@ modified_files: []
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Модуль src/core/project-settings.ts: projectSettingsPath, loadProjectSettings, saveProjectSettings — YAML в .vibelog/settings.yml через существующие parseYaml/stringifyYaml, при записи создаёт .vibelog/; в интерфейсе поле git_user_name
-- [ ] #2 Функция resolveGitUserName(cwd): возвращает кэш git_user_name из .vibelog/settings.yml, если он задан; иначе fallback на getGitUserName(cwd) — текущее поведение без регрессий
-- [ ] #3 Юнит-тесты (*.test.mjs): кэш есть → значение из файла (git не вызывается, проверка env-изоляцией); кэш пуст/файла нет → fallback на git config; битый YAML → fallback без падения
+- [x] #1 Модуль src/core/project-settings.ts: projectSettingsPath, loadProjectSettings, saveProjectSettings — YAML в .vibelog/settings.yml через существующие parseYaml/stringifyYaml, при записи создаёт .vibelog/; в интерфейсе поле git_user_name
+- [x] #2 Функция resolveGitUserName(cwd): возвращает кэш git_user_name из .vibelog/settings.yml, если он задан; иначе fallback на getGitUserName(cwd) — текущее поведение без регрессий
+- [x] #3 Юнит-тесты (*.test.mjs): кэш есть → значение из файла (git не вызывается, проверка env-изоляцией); кэш пуст/файла нет → fallback на git config; битый YAML → fallback без падения
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author:  @agent
+created: 2026-10-03 12:38
+---
+Задача закрыта (Фаза Comment по VL-44): реализация выполнена в Фазе 3 эпика и закоммичена (e5df3aa/cff8b2e). Проверено: src/core/project-settings.ts существует (projectSettingsPath/loadProjectSettings/saveProjectSettings + resolveGitUserName с fallback на getGitUserName), src/core/project-settings.test.mjs — 8 тестов. AC/DoD отмечены. Статус: Done.
+---
+<!-- COMMENTS:END -->
