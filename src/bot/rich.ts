@@ -13,6 +13,7 @@
  */
 
 import type { ChecklistItem, Task } from '../core/task.js';
+import type { PhaseRun } from '../web/orchestrator.js';
 
 /** Лимит Rich Message по спецификации Telegram (символов UTF-8). */
 export const RICH_LIMIT = 32768;
@@ -101,6 +102,51 @@ export function renderTaskRich(task: Task): string {
   }
 
   return parts.join('\n').trim();
+}
+
+/**
+ * Rich-рендер информационного сообщения о завершении фазы (VL-71).
+ *
+ * GFM без MarkdownV2-экранирования: # заголовок, **жирный**, session_id
+ * в одинарных backticks; фолбэк-logTail — в тройных backticks (fenceSafe).
+ * Шаблон VL-63/65 сохранён: статус, результат, токены, время, session_id.
+ * MarkdownV2-версия (formatPhaseResult) остаётся фолбэком для старых
+ * Telegram-клиентов — паттерн sendTaskView → formatTaskDetail.
+ *
+ * @param run — завершённый запуск фазы из оркестратора (getRun)
+ */
+export function renderPhaseResultRich(run: PhaseRun): string {
+  const res = run.result;
+  const errFlag = res?.is_error === true;
+  const status =
+    run.exitCode === 0 && !errFlag
+      ? `# Фаза ${run.phase ?? '—'}: завершена (код 0)`
+      : `# Фаза ${run.phase ?? '—'}: ошибка (код ${run.exitCode ?? '—'})` +
+        (errFlag ? ' (ошибка qwen)' : '');
+  if (!res) {
+    // Фолбэк без данных результата: хвост лога в блоке кода — экранирование
+    // не нужно (GFM), fenceSafe гасит вложенные тройные backticks
+    const tail = (run.logTail ?? '').trim();
+    const cut = tail.length > 800 ? tail.slice(0, 800) + '…' : tail;
+    return [status, '', '**Данные результата недоступны**', '```', fenceSafe(cut), '```'].join('\n');
+  }
+  const body =
+    res.result.length > 1500 ? res.result.slice(0, 1500) + '…' : res.result;
+  const lines = [
+    status,
+    '',
+    body,
+    '',
+    `**Входные токены:** ${res.usage.input_tokens}`,
+    `**Сгенерированные токены:** ${res.usage.output_tokens}`,
+    `**Кэш-токены:** ${res.usage.cache_read_input_tokens}`,
+    `**Всего токенов:** ${res.usage.total_tokens}`,
+    '',
+    `**Общее время:** ${res.duration_ms} мс (api: ${res.duration_api_ms} мс)`,
+    `**Количество запросов:** ${res.num_turns}`,
+  ];
+  if (res.session_id) lines.push('', '`' + res.session_id + '`');
+  return lines.join('\n');
 }
 
 /**

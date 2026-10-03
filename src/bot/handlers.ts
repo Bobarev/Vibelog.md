@@ -18,7 +18,7 @@ import {
   formatTaskDetail,
   formatTaskList,
 } from './formatting.js';
-import { chunkRich, renderTaskRich } from './rich.js';
+import { chunkRich, renderPhaseResultRich, renderTaskRich } from './rich.js';
 import { loadBotSettings, saveBotSettings } from './settings.js';
 import { commandsHelp } from './registry.js';
 import { spawnReplacementBot } from './restart.js';
@@ -105,6 +105,24 @@ async function sendTaskView(
 }
 
 /**
+ * Информационное сообщение о завершении фазы по chatId: rich-рендер GFM
+ * (VL-71), фолбэк — MarkdownV2 (formatPhaseResult + sendText). Паттерн
+ * sendTaskView: лимит rich 32768 — разбивка нужна только для гигантских
+ * отчётов.
+ */
+async function sendPhaseResult(bot: Bot, chatId: number, run: PhaseRun): Promise<void> {
+  try {
+    const rich = renderPhaseResultRich(run);
+    for (const part of chunkRich(rich)) {
+      await bot.api.sendRichMessage(chatId, { markdown: part });
+    }
+  } catch (err) {
+    console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
+    await sendText(bot, chatId, formatPhaseResult(run));
+  }
+}
+
+/**
  * Регистрирует обработчики команд бота.
  *
  * Список команд и их описания — в реестре `./registry.ts` (VL-54);
@@ -129,14 +147,15 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
    * Уведомление о завершении фазы (VL-63): ровно 2 сообщения —
    * карточка задачи «как и была» (без строки фазы: статус теперь
    * в информационном сообщении, дублирование убрало VL-63) и
-   * информационное по шаблону formatPhaseResult (VL-65).
+   * информационное rich-рендером renderPhaseResultRich (VL-71; фолбэк —
+   * formatPhaseResult/MarkdownV2).
    */
   const notifyPhaseDone = (bot: Bot, chatId: number, task: Task, run: PhaseRun): void => {
     void (async () => {
       // Файл мог изменить qwen — перечитываем; rich-рендер без phaseRun
       const fresh = getTask(deps.cwd, task.id) ?? task;
       await sendTaskView(bot, chatId, fresh);
-      await sendText(bot, chatId, formatPhaseResult(run));
+      await sendPhaseResult(bot, chatId, run);
     })().catch((err) => {
       console.error('Уведомление о завершении фазы не отправлено:', err);
     });
@@ -427,11 +446,11 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       return;
     }
     // Задачи нет — карточка не шлётся, только информационное сообщение
-    // по шаблону formatPhaseResult (VL-63/65)
+    // по шаблону VL-63/65 (rich-рендер VL-71, фолбэк — formatPhaseResult)
     const notifyChat = ctx.chat?.id;
     const onExit: PhaseExitCallback = (run) => {
       if (notifyChat === undefined) return;
-      void sendText(bot, notifyChat, formatPhaseResult(run));
+      void sendPhaseResult(bot, notifyChat, run);
     };
     const result = startPrompt(deps.cwd, parsed.text, onExit);
     if ('error' in result) {
