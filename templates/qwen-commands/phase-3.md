@@ -17,7 +17,7 @@
    списки: backlog_manage_ac / backlog_manage_dod c action "list"; отметка: action "check", index N.
    Не отмечай «задним числом» — невыполненные пункты оставь незакрытыми и упомяни в отчёте.
 
-4. Оставь отчёт комментарием:
+4. Оставь отчёт комментарием в формате markdown:
    backlog_add_comment {"id": "{{taskId}}", "comment": "Фаза 3 (Code) выполнена. Изменено: <файлы>. Проверки: pnpm build OK, pnpm test — N/N. Что осталось: ...", "author": "@agent"}
 
 5. Смени статус:
