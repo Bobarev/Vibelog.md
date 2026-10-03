@@ -1,11 +1,11 @@
 ---
 id: VL-62
 title: 'Бот /comment: после комментария запуск фазы Comment через startPhase + ответ в чат VL-48'
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-03 03:43'
-updated_date: '2026-10-03 03:43'
+updated_date: '2026-10-03 13:52'
 due_date: ''
 labels: []
 dependencies:

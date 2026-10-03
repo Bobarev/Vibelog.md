@@ -1,11 +1,11 @@
 ---
 id: VL-61
 title: 'Фаза comment в orchestrator: шаблон phase-comment.md + поддержка в startPhase/renderPrompt'
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-03 03:42'
-updated_date: '2026-10-03 03:42'
+updated_date: '2026-10-03 13:52'
 due_date: ''
 labels: []
 dependencies: []
