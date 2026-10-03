@@ -1,11 +1,11 @@
 ---
 id: VL-57
 title: 'Telegram-бот: команда /close VL-N (парсер + обработчик + реестр + CHANGELOG)'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-03 01:16'
-updated_date: '2026-10-03 01:38'
+updated_date: '2026-10-03 02:34'
 due_date: ''
 labels: []
 dependencies:

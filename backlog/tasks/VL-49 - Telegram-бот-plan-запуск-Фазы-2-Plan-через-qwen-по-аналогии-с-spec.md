@@ -1,11 +1,11 @@
 ---
 id: VL-49
 title: 'Telegram-бот: /plan — запуск Фазы 2 (Plan) через qwen (по аналогии с /spec)'
-status: Planned
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-02 23:42'
-updated_date: '2026-10-02 23:46'
+updated_date: '2026-10-03 02:37'
 due_date: ''
 labels: []
 dependencies: []

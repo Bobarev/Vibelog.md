@@ -1,11 +1,11 @@
 ---
 id: VL-2
 title: 'VL-2: Milestones + Types для v1.3'
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-09-30 18:10'
-updated_date: '2026-09-30 18:10'
+updated_date: '2026-10-03 02:33'
 due_date: ''
 labels:
   - v1.3

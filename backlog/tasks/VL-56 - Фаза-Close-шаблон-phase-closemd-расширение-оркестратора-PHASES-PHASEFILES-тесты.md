@@ -1,11 +1,11 @@
 ---
 id: VL-56
 title: 'Фаза Close: шаблон phase-close.md + расширение оркестратора (PHASES, PHASE_FILES, тесты)'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-03 01:16'
-updated_date: '2026-10-03 01:38'
+updated_date: '2026-10-03 02:34'
 due_date: ''
 labels: []
 dependencies: []
