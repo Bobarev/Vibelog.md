@@ -74,6 +74,7 @@ export function listTools(): ToolDefinition[] {
           assignee: { type: 'array', items: { type: 'string' }, description: 'Исполнители' },
           milestone: { type: 'string', description: 'Веха (milestone)' },
           type: { type: 'string', description: 'Тип задачи (bug, feature, ...)' },
+          parentTaskId: { type: 'string', description: 'ID родительской задачи' },
           due_date: { type: 'string', description: 'Срок (YYYY-MM-DD)' },
           ordinal: { type: 'number', description: 'Порядковый номер для кастомной сортировки' },
           project: { type: 'string', description: 'Проект' },
@@ -92,6 +93,7 @@ export function listTools(): ToolDefinition[] {
           labels: { type: 'array', items: { type: 'string' }, description: 'Фильтр по меткам' },
           milestone: { type: 'string', description: 'Фильтр по вехе' },
           type: { type: 'string', description: 'Фильтр по типу' },
+          parentTaskId: { type: 'string', description: 'Фильтр по родительской задаче' },
           ready: { type: 'boolean', description: 'Только задачи без открытых блокеров' },
           sort: { type: 'string', enum: ['priority', 'created', 'updated'], description: 'Сортировка' },
           limit: { type: 'number', description: 'Максимальное количество задач' },
@@ -135,6 +137,7 @@ export function listTools(): ToolDefinition[] {
           labels: { type: 'array', items: { type: 'string' }, description: 'Метки (полная замена)' },
           milestone: { type: 'string', description: 'Веха' },
           type: { type: 'string', description: 'Тип задачи' },
+          parentTaskId: { type: 'string', description: 'Родительская задача; пустая строка — сброс' },
           status: { type: 'string', description: 'Статус' },
           plan: { type: 'string', description: 'План реализации (записывает в ## Implementation Plan)' },
           notes: { type: 'string', description: 'Заметки (полная замена ## Implementation Notes)' },
@@ -414,6 +417,13 @@ export async function handleToolCall(name: string, args: ToolArgs, cwd: string):
  * Создаёт задачу.
  */
 function toolCreateTask(args: ToolArgs, cwd: string): string {
+  // VL-69: parentTaskId валидируется до записи — задача-сирота с битой
+  // ссылкой ломает оркестрацию эпиков (list по parentTaskId вернёт пусто)
+  const parentTaskId = (args.parentTaskId as string) || '';
+  if (parentTaskId && !getTask(cwd, parentTaskId)) {
+    throw new Error(`Родительская задача ${parentTaskId} не найдена.`);
+  }
+
   const task = createTaskFile(cwd, {
     title: args.title as string,
     description: (args.description as string) || '',
@@ -425,6 +435,7 @@ function toolCreateTask(args: ToolArgs, cwd: string): string {
     assignee: (args.assignee as string[]) || [],
     milestone: (args.milestone as string) || '',
     type: args.type ? normalizeTaskType(loadConfig(cwd), args.type as string) : '',
+    parent_task_id: parentTaskId,
     due_date: (args.due_date as string) || '',
     ordinal: args.ordinal as number,
     project: (args.project as string) || '',
@@ -459,6 +470,11 @@ function toolListTasks(args: ToolArgs, cwd: string): string {
     const type = (args.type as string).toLowerCase();
     tasks = tasks.filter(t => t.type && t.type.toLowerCase() === type);
   }
+  // VL-69: фильтр по родителю — case-insensitive, как у type
+  if (args.parentTaskId) {
+    const parent = (args.parentTaskId as string).toLowerCase();
+    tasks = tasks.filter(t => (t.parent_task_id || '').toLowerCase() === parent);
+  }
   if (args.ready) {
     tasks = tasks.filter(t => isReady(cwd, t));
   }
@@ -486,6 +502,7 @@ function toolListTasks(args: ToolArgs, cwd: string): string {
     assignee: t.assignee,
     milestone: t.milestone,
     type: t.type,
+    parent_task_id: t.parent_task_id,
   }));
 
   return JSON.stringify(simplified, null, 2);
@@ -532,6 +549,14 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
   if (args.milestone !== undefined) updates.milestone = args.milestone as string;
   if (args.status !== undefined) updates.status = args.status as string;
   if (args.type !== undefined) updates.type = normalizeTaskType(loadConfig(cwd), args.type as string);
+  // VL-69: смена/сброс родителя; несуществующий parent — ошибка, поле не трогаем
+  if (args.parentTaskId !== undefined) {
+    const parent = args.parentTaskId as string;
+    if (parent && !getTask(cwd, parent)) {
+      throw new Error(`Родительская задача ${parent} не найдена.`);
+    }
+    updates.parent_task_id = parent;
+  }
 
   // Секции тела
   if (args.plan !== undefined) updates.implementationPlan = args.plan as string;

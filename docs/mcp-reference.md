@@ -38,6 +38,7 @@
 | `assignee` | string[] | | Исполнители |
 | `milestone` | string | | Веха |
 | `type` | string | | Тип (bug, feature, ...) — валидация по конфигу |
+| `parentTaskId` | string | | ID родительской задачи (валидируется существование) |
 | `due_date` | string | | Срок (YYYY-MM-DD) |
 | `ordinal` | number | | Порядковый номер |
 | `project` | string | | Проект |
@@ -51,6 +52,7 @@
 | `labels` | string[] | Фильтр по меткам |
 | `milestone` | string | Фильтр по вехе |
 | `type` | string | Фильтр по типу |
+| `parentTaskId` | string | Фильтр по родительской задаче |
 | `ready` | boolean | Только без невыполненных блокеров |
 | `sort` | string | priority / created / updated |
 | `limit` | number | Максимум задач |
@@ -76,6 +78,7 @@
 |---|---|---|
 | `id` | string | ✓ |
 | `title`, `description`, `priority`, `assignee`, `labels`, `milestone`, `type`, `status` | — | |
+| `parentTaskId` | string | | Родительская задача; пустая строка — сброс |
 | `plan` | string | Implementation Plan (полная замена) |
 | `notes` | string | Implementation Notes (полная замена) |
 | `append_notes` | string | Дописать в конец заметок |
@@ -206,6 +209,10 @@
 { "name": "backlog_create_task", "arguments": {
   "title": "Падение экспорта", "type": "bug", "priority": "High",
   "acceptanceCriteria": ["Экспорт CSV работает", "Тесты проходят"] } }
+
+// Создать дочернюю задачу эпика (VL-69)
+{ "name": "backlog_create_task", "arguments": {
+  "title": "Подзадача эпика", "parentTaskId": "api-1", "type": "task" } }
 
 // Пачка отметок AC
 { "name": "backlog_manage_ac", "arguments": {

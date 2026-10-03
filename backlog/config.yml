@@ -15,6 +15,15 @@ priorities:
   - High
   - Medium
   - Low
+types:
+  - bug
+  - feature
+  - enhancement
+  - task
+  - chore
+  - docs
+  - spike
+  - epic
 definition_of_done:
   - Тесты проходят
   - Документация обновлена

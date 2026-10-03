@@ -12,7 +12,9 @@ import { parseYaml, stringifyYaml } from './yaml.js';
 import { configPath, findBacklogDir } from './paths.js';
 
 /** Типы задач по умолчанию (совместимо с оригиналом Backlog.md). */
-export const DEFAULT_TASK_TYPES = ['bug', 'feature', 'enhancement', 'task', 'chore', 'docs', 'spike'];
+// 'epic' добавлен в VL-69: workflow-фазы ветвятся по type (task/epic),
+// без epic фаза Spec не сможет пометить крупную фичу.
+export const DEFAULT_TASK_TYPES = ['bug', 'feature', 'enhancement', 'task', 'chore', 'docs', 'spike', 'epic'];
 
 /**
  * Конфиг по умолчанию для нового проекта Vibelog.md.
@@ -25,7 +27,9 @@ export function defaultConfig(projectName: string, prefix: string): Record<strin
     project_name: projectName,
     task_prefix: prefix,
     default_status: 'To Do',
-    statuses: ['To Do', 'In Progress', 'Review', 'Done', 'Blocked'],
+    // Spec/Planned входят в workflow-фазы (VL-69): Spec — после уточнения,
+    // Planned — после декомпозиции эпика в Фазе Plan
+    statuses: ['To Do', 'Spec', 'Planned', 'In Progress', 'Review', 'Done', 'Blocked'],
     labels: [],
     priorities: ['High', 'Medium', 'Low'],
     types: [...DEFAULT_TASK_TYPES],

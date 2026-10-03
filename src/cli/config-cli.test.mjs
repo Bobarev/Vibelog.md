@@ -48,7 +48,7 @@ describe('VL-12 — CLI config', () => {
     fresh();
     assert.equal(runCli('config', 'get', 'project_name').trim(), 'Config CLI');
     const statuses = runCli('config', 'get', 'statuses').trim();
-    assert.equal(statuses, '["To Do","In Progress","Review","Done","Blocked"]');
+    assert.equal(statuses, '["To Do","Spec","Planned","In Progress","Review","Done","Blocked"]');
     assert.equal(runCli('config', 'get', 'default_port').trim(), '6420');
     assert.equal(runCli('config', 'get', 'auto_commit').trim(), 'false');
   });

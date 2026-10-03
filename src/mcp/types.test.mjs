@@ -68,8 +68,8 @@ function runCli(...args) {
 describe('VL-4 — конфиг и нормализация типов', () => {
   it('defaultConfig содержит types — как DEFAULT_TASK_TYPES оригинала', () => {
     const config = defaultConfig('Test', 'ty');
-    assert.deepEqual(config.types, ['bug', 'feature', 'enhancement', 'task', 'chore', 'docs', 'spike']);
-    assert.deepEqual(DEFAULT_TASK_TYPES, ['bug', 'feature', 'enhancement', 'task', 'chore', 'docs', 'spike']);
+    assert.deepEqual(config.types, ['bug', 'feature', 'enhancement', 'task', 'chore', 'docs', 'spike', 'epic']);
+    assert.deepEqual(DEFAULT_TASK_TYPES, ['bug', 'feature', 'enhancement', 'task', 'chore', 'docs', 'spike', 'epic']);
   });
 
   it('normalizeTaskType: case-insensitive → каноническое написание', () => {

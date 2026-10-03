@@ -121,6 +121,9 @@ describe('Совместимость: round-trip', () => {
       assert.deepStrictEqual(task.labels, task2.labels, 'labels');
       assert.deepStrictEqual(task.dependencies, task2.dependencies, 'dependencies');
       assert.equal(task.description, task2.description, 'description');
+      // VL-69 (AC #8): parent_task_id и type переживают round-trip
+      assert.equal(task.parent_task_id, task2.parent_task_id, 'parent_task_id');
+      assert.equal(task.type, task2.type, 'type');
 
       // AC и DoD
       assert.equal(task.acceptanceCriteria.length, task2.acceptanceCriteria.length, 'Длина AC');

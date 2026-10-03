@@ -176,6 +176,12 @@ function taskList(positional: string[], flags: FlagValues, cwd: string): void {
     tasks = tasks.filter(t => t.type && t.type.toLowerCase() === typeFilter.toLowerCase());
   }
 
+  // Фильтрация по родительской задаче (VL-69, case-insensitive как у type)
+  const parentFilter = getFlag(flags, 'parent');
+  if (parentFilter) {
+    tasks = tasks.filter(t => (t.parent_task_id || '').toLowerCase() === parentFilter.toLowerCase());
+  }
+
   // Фильтрация по метке
   const labelFilter = getFlag(flags, 'labels');
   if (labelFilter) {
@@ -312,6 +318,17 @@ function taskEdit(positional: string[], flags: FlagValues, cwd: string): void {
       printError((err as Error).message);
       return;
     }
+  }
+
+  // --parent: смена/сброс родителя (VL-69); пустая строка сбрасывает,
+  // несуществующая задача — ошибка без изменения поля
+  if (flags.parent !== undefined) {
+    const parent = getFlag(flags, 'parent', '');
+    if (parent && !getTask(cwd, parent)) {
+      printError(`Родительская задача ${parent} не найдена.`);
+      return;
+    }
+    updates.parent_task_id = parent;
   }
 
   // Финальные поля (P2 оригинала): final-summary / append / clear / ordinal

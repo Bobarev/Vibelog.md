@@ -149,3 +149,33 @@ describe('PLAN-10 — init --skills', () => {
     assert.equal(count, 1, 'Секция должна быть ровно одна');
   });
 });
+
+// ============================================================
+// VL-69 — промпты фаз под Epic/parentTaskId
+// ============================================================
+
+describe('VL-69 — промпты фаз поддержку Epic/parentTaskId', () => {
+  const phasesDir = join(__dirname, '..', '..', 'templates', 'qwen-commands');
+
+  it('phase-1.md (Spec) запрещает создание задач и упоминает epic', () => {
+    const content = readFileSync(join(phasesDir, 'phase-1.md'), 'utf-8');
+    assert.ok(content.includes('НЕ создавай'), 'запрет создания задач');
+    assert.ok(content.includes('type=epic'), 'определение масштаба');
+  });
+
+  it('phase-2.md (Plan) содержит parentTaskId', () => {
+    const content = readFileSync(join(phasesDir, 'phase-2.md'), 'utf-8');
+    assert.ok(content.includes('parentTaskId'), 'parentTaskId');
+  });
+
+  it('phase-3.md (Code) содержит parentTaskId и backlog_list_tasks', () => {
+    const content = readFileSync(join(phasesDir, 'phase-3.md'), 'utf-8');
+    assert.ok(content.includes('parentTaskId'), 'parentTaskId');
+    assert.ok(content.includes('backlog_list_tasks'), 'backlog_list_tasks');
+  });
+
+  it('phase-close.md (Close) содержит parentTaskId', () => {
+    const content = readFileSync(join(phasesDir, 'phase-close.md'), 'utf-8');
+    assert.ok(content.includes('parentTaskId'), 'parentTaskId');
+  });
+});

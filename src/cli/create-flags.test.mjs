@@ -162,3 +162,49 @@ describe('VL-18 — create --draft + edit --final-summary/--ordinal', () => {
     assert.ok(out.includes('--ordinal должен быть целым числом'), `out: ${out}`);
   });
 });
+
+// ============================================================
+// VL-69 — parent в edit/list
+// ============================================================
+
+describe('VL-69 — edit --parent и list --parent', () => {
+  after(() => rmSync(cliDir, { recursive: true, force: true }));
+
+  it('edit --parent: установка, ошибка на несуществующем, сброс пустой строкой', () => {
+    cliFresh();
+    runCli('task', 'create', 'Родитель');
+    const { id } = createAndRead(['Дитя']);
+
+    // Установка
+    let out = runCli('task', 'edit', id, '--parent', 'fl-1');
+    assert.ok(out.includes('обновлена'), `out: ${out}`);
+    let view = runCli('task', 'view', id, '--json');
+    assert.ok(view.includes('"parent_task_id": "fl-1"'), `parent: ${view.slice(0, 300)}`);
+
+    // Ошибка на несуществующем — поле не меняется
+    out = runCli('task', 'edit', id, '--parent', 'fl-99');
+    assert.ok(out.includes('Родительская задача fl-99 не найдена'), `out: ${out}`);
+    view = runCli('task', 'view', id, '--json');
+    assert.ok(view.includes('"parent_task_id": "fl-1"'), 'parent не должен измениться');
+
+    // Сброс пустой строкой
+    runCli('task', 'edit', id, '--parent', '');
+    view = runCli('task', 'view', id, '--json');
+    assert.ok(view.includes('"parent_task_id": ""'), `reset: ${view.slice(0, 300)}`);
+  });
+
+  it('list --parent: фильтр по родительской задаче', () => {
+    cliFresh();
+    runCli('task', 'create', 'Эпик');
+    runCli('task', 'create', 'Дитя 1', '--parent', 'fl-1');
+    runCli('task', 'create', 'Дитя 2', '--parent', 'fl-1');
+    runCli('task', 'create', 'Чужое');
+
+    const list = runCli('task', 'list', '--parent', 'fl-1', '--json');
+    const parsed = JSON.parse(list);
+    assert.equal(parsed.data.length, 2, `фильтр: ${list.slice(0, 400)}`);
+    for (const t of parsed.data) {
+      assert.equal(t.parent_task_id, 'fl-1');
+    }
+  });
+});

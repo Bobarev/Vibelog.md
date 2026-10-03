@@ -62,7 +62,7 @@ task create "Title" [-d desc] [--ac ...] [--dod ...] [--priority ...] [--labels 
 ### list
 
 ```
-task list [-s status] [-l labels] [--type type] [--ready] [--sort priority|created|updated] [--limit N] [--skip N] [--json]
+task list [-s status] [-l labels] [--type type] [--parent ID] [--ready] [--sort priority|created|updated] [--limit N] [--skip N] [--json]
 ```
 
 | Флаг | Описание |
@@ -70,6 +70,7 @@ task list [-s status] [-l labels] [--type type] [--ready] [--sort priority|creat
 | `-s, --status` | Фильтр по статусу |
 | `-l, --labels` | Фильтр по метке |
 | `--type` | Фильтр по типу |
+| `--parent` | Фильтр по родительской задаче |
 | `--ready` | Только задачи без невыполненных блокеров |
 | `--sort` | priority / created / updated |
 | `--limit`, `--skip` | Обрезка после фильтрации и сортировки |
@@ -80,7 +81,7 @@ task list [-s status] [-l labels] [--type type] [--ready] [--sort priority|creat
 ```
 task view <id> [--json]
 
-task edit <id> [--title ...] [--status ...] [--type ...] [--ac ...] [--check-ac N[,N]]
+task edit <id> [--title ...] [--status ...] [--type ...] [--parent ID] [--ac ...] [--check-ac N[,N]]
   [--dod ...] [--check-dod N[,N]] [--comment ...] [--assignee ...] [--remove-label ...]
   [--plan ...] [--notes ...] [--append-notes ...] [--final-summary ...]
   [--append-final-summary ...] [--clear-final-summary] [--ordinal N]
@@ -101,6 +102,7 @@ task archive <id>
 | `--append-notes` | Дописать в Implementation Notes |
 | `--final-summary` / `--append-final-summary` / `--clear-final-summary` | Резюме: замена / дописывание / очистка |
 | `--ordinal` | Кастомный порядок |
+| `--parent ID` | Смена родителя (пустая строка — сброс; валидация существования) |
 
 ---
 
