@@ -34,9 +34,20 @@ if (process.env.VL28_STUB_MARKER) {
   fs.writeFileSync(process.env.VL28_STUB_MARKER, JSON.stringify(process.argv.slice(2)));
 }
 fs.writeSync(1, 'stub qwen: ' + (process.argv[1] || '').slice(0, 40) + '\\n');
-// VL-64: если задан — печатаем JSON-строку type=result (как real qwen)
+// VL-64: если задан — печатаем JSON-строку type=result (как real qwen).
+// VL-63 (reopen): VL28_STUB_RACE=1 симулирует гонку потоков — JSON пишется
+// в два куска, между которыми stderr уходит Warning: строка stderr
+// вклинивается в середину JSON-строки stdout (старый общий буфер ломал парсер).
 if (process.env.VL28_STUB_RESULT) {
-  fs.writeSync(1, process.env.VL28_STUB_RESULT + '\\n');
+  const json = process.env.VL28_STUB_RESULT;
+  if (process.env.VL28_STUB_RACE) {
+    const half = Math.floor(json.length / 2);
+    fs.writeSync(1, json.slice(0, half));
+    fs.writeSync(2, 'Warning: interleaved stderr\\n');
+    fs.writeSync(1, json.slice(half) + '\\n');
+  } else {
+    fs.writeSync(1, json + '\\n');
+  }
 }
 const sleep = Number(process.env.VL28_STUB_SLEEP || 0);
 if (sleep > 0) {
@@ -77,7 +88,7 @@ describe('orchestrator (VL-28)', () => {
     task1 = createTaskFile(testRoot, { title: 'Задача для фазы 1', status: 'Spec', priority: 'High' });
     task2 = createTaskFile(testRoot, { title: 'Задача для API-тестов', status: 'Backlog', priority: 'Low' });
 
-    for (const key of ['VIBELOG_QWEN_BIN', 'VL28_STUB_MARKER', 'VL28_STUB_SLEEP', 'VL28_STUB_EXIT', 'VL28_STUB_RESULT']) {
+    for (const key of ['VIBELOG_QWEN_BIN', 'VL28_STUB_MARKER', 'VL28_STUB_SLEEP', 'VL28_STUB_EXIT', 'VL28_STUB_RESULT', 'VL28_STUB_RACE']) {
       savedEnv[key] = process.env[key];
       delete process.env[key];
     }
@@ -247,6 +258,33 @@ describe('orchestrator (VL-28)', () => {
     assert.equal(run.result?.result, 'понг-из-массива');
     assert.equal(run.result?.session_id, 'arr-1');
     assert.equal(run.result?.usage.total_tokens, 15);
+  });
+
+  it('startPhase: result парсится, хотя stderr вклинился в JSON-строку stdout (VL-63 reopen)', async () => {
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    process.env.VL28_STUB_RACE = '1';
+    process.env.VL28_STUB_RESULT = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      duration_ms: 1000,
+      duration_api_ms: 900,
+      num_turns: 1,
+      result: 'понг-сквозь-шум',
+      usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3, total_tokens: 15 },
+      session_id: 'race-1',
+    });
+    const res = startPhase(testRoot, task1.id, 'comment');
+    assert.equal(res.started, true);
+    const run = await waitDone(task1.id);
+    // Стаб пишет JSON в два куска, между которыми stderr уходит Warning —
+    // при раздельных буферах stdout/stderr парсер не видит этот шум
+    assert.equal(run.result?.result, 'понг-сквозь-шум');
+    assert.equal(run.result?.session_id, 'race-1');
+    // stderr попадает в logTail (фолбэк бота), но не ломает result
+    assert.match(run.logTail ?? '', /Warning: interleaved stderr/);
+    delete process.env.VL28_STUB_RACE;
   });
 
   // ── VL-66/67: startPrompt — произвольный запрос через qwen без задачи ──

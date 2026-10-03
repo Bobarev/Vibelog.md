@@ -13,7 +13,7 @@
 
 import { execFile, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTask } from '../core/store.js';
@@ -193,6 +193,14 @@ function spawnQwenRun(
   // --output-format json — для ВСЕХ фаз; --allowed-mcp-server-names vibelog —
   // только для spec/plan: чужие серверы (chrome-devtools и др.) для планирования не нужны.
   // Для prompt флагов нет (как у comment) — шаблон не требует Vibelog MCP.
+  //
+  // VL-63 (reopen): --json-file/--json-fd НЕ используем — в headless-режиме
+  // (позиционный промпт, без TUI) qwen 0.24.x эти флаги игнорирует: файл
+  // остаётся пустым/не создаётся, JSON идёт как раньше через --output-format
+  // в stdout (проверено scripts/qwen-json-probe.mjs). Надёжный путь — держать
+  // stdout и stderr раздельно (см. ниже): раньше stderr-строка (Warning, лог
+  // MCP-сервера), пришедшая между частями гигантской JSON-строки stdout,
+  // вклинивалась в её середину и result терялся «в половине случаев».
   const phaseFlags =
     phase === 'spec' || phase === 'plan'
       ? ['--allowed-mcp-server-names', 'vibelog']
@@ -205,17 +213,40 @@ function spawnQwenRun(
   activeRuns.set(runKey, { phase, child, onExit });
   lastRuns.delete(runKey);
 
+  // VL-63 (reopen): два независимых буфера. `log` — ТОЛЬКО stdout (источник
+  // для parseQwenResult), `stderrLog` — только stderr (диагностика/фолбэк).
+  // Разделение устраняет гонку вклинивания stderr в незавершённую
+  // JSON-строку stdout (см. комментарий про --json-file выше).
   let log = '';
+  let stderrLog = '';
   // VL-58 (диагностика): таймлайн фазы в консоль — когда qwen напечатал строку
   // (в т.ч. «Готово»), когда exit, когда close. Отвечает на вопрос «задержка
   // в выводе qwen или в завершении процесса?». Хвост незавершённой строки
-  // копим в tailBuf — печатаем только завершённые строки.
+  // копим в отдельный tailBuf на ПОТОК — печатаем только завершённые строки.
   const ts = () => new Date().toTimeString().slice(0, 8);
   let tailBuf = '';
+  let stderrTailBuf = '';
   let lastOutputAt = Date.now();
-  const appendLog = (chunk: Buffer | string) => {
+  /** Копит текст потока в его буфер и печатает завершённые строки в таймлайн. */
+  const appendTo = (which: 'stdout' | 'stderr') => (chunk: Buffer | string) => {
     lastOutputAt = Date.now();
     const text = chunk.toString();
+    if (which === 'stderr') {
+      stderrTailBuf += text;
+      const parts = stderrTailBuf.split('\n');
+      stderrTailBuf = parts.pop() ?? '';
+      for (const line of parts) {
+        if (line.trim()) {
+          console.log(`[phase ${runKey}] ${ts()} err| ${line.trim().slice(0, 120)}`);
+        }
+      }
+      stderrLog += text;
+      const lines = stderrLog.split('\n');
+      if (lines.length > LOG_TAIL_LINES) {
+        stderrLog = lines.slice(-LOG_TAIL_LINES).join('\n');
+      }
+      return;
+    }
     tailBuf += text;
     const parts = tailBuf.split('\n');
     tailBuf = parts.pop() ?? '';
@@ -230,8 +261,8 @@ function spawnQwenRun(
       log = lines.slice(-LOG_TAIL_LINES).join('\n');
     }
   };
-  child.stdout?.on('data', appendLog);
-  child.stderr?.on('data', appendLog);
+  child.stdout?.on('data', appendTo('stdout'));
+  child.stderr?.on('data', appendTo('stderr'));
 
   // VL-58 (диагностика): самописец тишины — если qwen молчит дольше 60с,
   // каждые 60с логируем ps-состояние процесса и его потомков (CPU/state/etime):
@@ -283,26 +314,60 @@ function spawnQwenRun(
     finished = true;
     clearInterval(probe);
     activeRuns.delete(runKey);
-    // Последняя строка stdout без завершающего \n живёт в tailBuf и не
-    // попадает в log через appendLog — дозаписываем перед парсингом
+    // Последние незавершённые строки (без \n) живут в tailBuf и не попадают
+    // в буферы через appendTo — дозаписываем оба потока перед парсингом
     if (tailBuf) {
       log += tailBuf;
       tailBuf = '';
     }
-    // VL-64/VL-63 (дебаг): результат сессии qwen из JSON type=result —
-    // как строка-объект (NDJSON), так и строка-массив `[{…}]` (json-адаптер
-    // qwen 0.24.x). Если result не распознан, но JSON в логе есть — печатаем
-    // сводку парсера, чтобы видеть, на каком формате падает обработка.
+    if (stderrTailBuf) {
+      stderrLog += stderrTailBuf;
+      stderrTailBuf = '';
+    }
+    // VL-64/VL-63: результат сессии qwen из JSON type=result — как
+    // строка-объект (NDJSON), так и строка-массив `[{…}]` (json-адаптер
+    // qwen 0.24.x). Парсим ТОЛЬКО stdout: stderr (Warning, логи MCP) в
+    // JSON-разбор не подмешивается (reopen VL-63 — гонка вклинивания).
+    // Если result не распознан — печатаем расширенную диагностику: сводку
+    // парсера по stdout, размеры обоих потоков, хвосты и ПОЛНЫЙ stdout
+    // (первая/последняя строка, ≥300 символов каждого края) — чтобы видеть,
+    // на каком формате падает обработка без перезапуска фазы.
     const result = parseQwenResult(log) ?? undefined;
-    if (!result && /[{[]/.test(log)) {
-      console.log(`[phase ${runKey}] ${ts()} parseQwenResult: ${explainQwenParse(log)}`);
+    if (!result) {
+      const outLines = log.split('\n').filter((l) => l.trim());
+      const diag =
+        `stdout: ${log.length} б, строк: ${outLines.length}; stderr: ${stderrLog.length} б; ` +
+        explainQwenParse(log);
+      console.log(`[phase ${runKey}] ${ts()} parseQwenResult: ${diag}`);
+      if (outLines.length > 0) {
+        console.log(`[phase ${runKey}] ${ts()} stdout-хвост: …${log.slice(-400)}`);
+      }
+      if (stderrLog.trim()) {
+        console.log(`[phase ${runKey}] ${ts()} stderr-хвост: …${stderrLog.slice(-300)}`);
+      }
+      // Дебаг-дамп полного stdout на диск (запрос Pavel, VL-63 reopen):
+      // --json-file у qwen в headless не работает (флаг игнорируется), поэтому
+      // сырой JSON сохраняем сами — в .vibelog/qwen-debug/ (gitignored),
+      // чтобы видеть точный формат вывода без перезапуска фазы.
+      if (log.trim()) {
+        try {
+          const dumpDir = join(cwd, '.vibelog', 'qwen-debug');
+          mkdirSync(dumpDir, { recursive: true });
+          const dumpPath = join(dumpDir, `${runKey}-${Date.now()}.log`);
+          writeFileSync(dumpPath, log, 'utf-8');
+          console.log(`[phase ${runKey}] ${ts()} дамп stdout: ${dumpPath}`);
+        } catch (err) {
+          console.log(`[phase ${runKey}] ${ts()} дамп stdout не удался: ${(err as Error).message}`);
+        }
+      }
     }
     const record: PhaseRun = {
       running: false,
       phase,
       exitCode: code,
       finishedAt: new Date().toISOString(),
-      logTail: log.trim(),
+      // Фолбэк-хвост для бота/доски: оба потока, stdout первым
+      logTail: [log.trim(), stderrLog.trim()].filter(Boolean).join('\n'),
       result,
     };
     lastRuns.set(runKey, record);
