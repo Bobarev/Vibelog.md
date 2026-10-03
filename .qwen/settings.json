@@ -21,7 +21,7 @@
     }
   },
   "memory": {
-    "enableManagedAutoMemory": false,
+    "enableManagedAutoMemory": true,
     "enableManagedAutoDream": false
   },
   "skills": {
