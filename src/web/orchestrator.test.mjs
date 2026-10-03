@@ -34,6 +34,10 @@ if (process.env.VL28_STUB_MARKER) {
   fs.writeFileSync(process.env.VL28_STUB_MARKER, JSON.stringify(process.argv.slice(2)));
 }
 fs.writeSync(1, 'stub qwen: ' + (process.argv[1] || '').slice(0, 40) + '\\n');
+// VL-64: если задан — печатаем JSON-строку type=result (как real qwen)
+if (process.env.VL28_STUB_RESULT) {
+  fs.writeSync(1, process.env.VL28_STUB_RESULT + '\\n');
+}
 const sleep = Number(process.env.VL28_STUB_SLEEP || 0);
 if (sleep > 0) {
   setTimeout(() => process.exit(Number(process.env.VL28_STUB_EXIT || 0)), sleep);
@@ -73,7 +77,7 @@ describe('orchestrator (VL-28)', () => {
     task1 = createTaskFile(testRoot, { title: 'Задача для фазы 1', status: 'Spec', priority: 'High' });
     task2 = createTaskFile(testRoot, { title: 'Задача для API-тестов', status: 'Backlog', priority: 'Low' });
 
-    for (const key of ['VIBELOG_QWEN_BIN', 'VL28_STUB_MARKER', 'VL28_STUB_SLEEP', 'VL28_STUB_EXIT']) {
+    for (const key of ['VIBELOG_QWEN_BIN', 'VL28_STUB_MARKER', 'VL28_STUB_SLEEP', 'VL28_STUB_EXIT', 'VL28_STUB_RESULT']) {
       savedEnv[key] = process.env[key];
       delete process.env[key];
     }
@@ -183,6 +187,68 @@ describe('orchestrator (VL-28)', () => {
     assert.ok(argv.some((a) => a.includes('тест-запрос-vl60')));
     assert.ok(argv.some((a) => !a.includes('{{comment}}')));
   });
+
+  it('startPhase: run.result заполнен из JSON type=result (VL-64)', async () => {
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    process.env.VL28_STUB_RESULT = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      duration_ms: 42411,
+      duration_api_ms: 42369,
+      num_turns: 1,
+      result: 'понг',
+      usage: {
+        input_tokens: 10956,
+        output_tokens: 19,
+        cache_read_input_tokens: 10944,
+        total_tokens: 10975,
+      },
+      session_id: 'a470c7dd-2ca8-4510-9d81-b184f932af76',
+    });
+    const calls = [];
+    const res = startPhase(testRoot, task1.id, 'spec', (run) => calls.push(run));
+    assert.equal(res.started, true);
+    const run = await waitDone(task1.id);
+    await new Promise((r) => setTimeout(r, 50));
+    // Основной контракт: парсер нашёл result-строку в логе
+    assert.equal(run.result?.result, 'понг');
+    assert.equal(run.result?.session_id, 'a470c7dd-2ca8-4510-9d81-b184f932af76');
+    assert.equal(run.result?.usage.total_tokens, 10975);
+    assert.equal(run.result?.num_turns, 1);
+    // onExit-колбэк получает тот же run с result (VL-65 — бот читает его)
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].result?.result, 'понг');
+  });
+  it('startPhase: run.result из строки-массива [{…}] (json-адаптер qwen 0.24.x)', async () => {
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    // Реальный stdout qwen 0.24.x при --output-format json: одна строка —
+    // JSON-массив всех сообщений сессии, result последним элементом
+    process.env.VL28_STUB_RESULT = JSON.stringify([
+      { type: 'system', subtype: 'init', session_id: 'arr-1' },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'понг' }] } },
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        duration_ms: 1000,
+        duration_api_ms: 900,
+        num_turns: 1,
+        result: 'понг-из-массива',
+        usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3, total_tokens: 15 },
+        session_id: 'arr-1',
+      },
+    ]);
+    const res = startPhase(testRoot, task1.id, 'comment');
+    assert.equal(res.started, true);
+    const run = await waitDone(task1.id);
+    assert.equal(run.result?.result, 'понг-из-массива');
+    assert.equal(run.result?.session_id, 'arr-1');
+    assert.equal(run.result?.usage.total_tokens, 15);
+  });
+
 
   it('handleApi: POST trigger 404/409/202 и GET trigger', async () => {
     // 404 — задачи нет

@@ -13,6 +13,7 @@ import type { Task } from '../core/task.js';
 import {
   escapeMarkdownV2,
   formatBoard,
+  formatPhaseResult,
   formatPhaseRun,
   formatTaskDetail,
   formatTaskList,
@@ -121,6 +122,23 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     void sendMd(ctx, 'Бот не привязан к чату — выполните /start');
     return false;
   }
+
+  /**
+   * Уведомление о завершении фазы (VL-63): ровно 2 сообщения —
+   * карточка задачи «как и была» (без строки фазы: статус теперь
+   * в информационном сообщении, дублирование убрало VL-63) и
+   * информационное по шаблону formatPhaseResult (VL-65).
+   */
+  const notifyPhaseDone = (bot: Bot, chatId: number, task: Task, run: PhaseRun): void => {
+    void (async () => {
+      // Файл мог изменить qwen — перечитываем; rich-рендер без phaseRun
+      const fresh = getTask(deps.cwd, task.id) ?? task;
+      await sendTaskView(bot, chatId, fresh);
+      await sendText(bot, chatId, formatPhaseResult(run));
+    })().catch((err) => {
+      console.error('Уведомление о завершении фазы не отправлено:', err);
+    });
+  };
 
   bot.command('start', async (ctx) => {
     const chatId = ctx.chat?.id;
@@ -233,26 +251,11 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       // сразу после addComment запускаем Фазу Comment — headless qwen
       // выполняет запрос из комментария и оставляет отчёт комментарием.
       // Статус НЕ меняется (фаза вне жизненного цикла spec/plan/code/close).
-      // Уведомление — паттерн VL-48: статус ✅/⚠️ + лог qwen + карточка.
+      // Уведомление — паттерн VL-63: карточка + информационное сообщение.
       const notifyChat = ctx.chat?.id;
       const onExit: PhaseExitCallback = (run) => {
         if (notifyChat === undefined) return;
-        void (async () => {
-          const head =
-            run.exitCode === 0
-              ? '✅ *Фаза Comment завершена* для ' + task.id
-              : '⚠️ *Фаза Comment завершена с ошибкой* для ' + task.id + ' — код ' + (run.exitCode ?? '—');
-          await sendText(bot, notifyChat, head);
-          const tail = (run.logTail ?? '').trim();
-          if (tail) {
-            const cut = tail.length > 3000 ? tail.slice(0, 3000) + '…' : tail;
-            await sendText(bot, notifyChat, '``\n' + cut + '\n``');
-          }
-          const fresh = getTask(deps.cwd, task.id) ?? task;
-          await sendTaskView(bot, notifyChat, fresh, run);
-        })().catch((err) => {
-          console.error('Уведомление о завершении фазы не отправлено:', err);
-        });
+        notifyPhaseDone(bot, notifyChat, task, run);
       };
       const result = startPhase(deps.cwd, task.id, 'comment', onExit, {
         comment: parsed.text,
@@ -300,25 +303,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       const notifyChat = ctx.chat?.id;
       const onExit: PhaseExitCallback = (run) => {
         if (notifyChat === undefined) return;
-        void (async () => {
-          const head =
-            run.exitCode === 0
-              ? '✅ *Фаза Spec завершена* для ' + task.id
-              : '⚠️ *Фаза Spec завершена с ошибкой* для ' + task.id + ' — код ' + (run.exitCode ?? '—');
-          await sendText(bot, notifyChat, head);
-          const tail = (run.logTail ?? '').trim();
-          if (tail) {
-            // Ответ qwen: последние строки stdout/stderr; лимит Telegram —
-            // 4096 символов, режем с запасом. Pre-блок MarkdownV2 (```).
-            const cut = tail.length > 3000 ? tail.slice(0, 3000) + '…' : tail;
-            await sendText(bot, notifyChat, '```\n' + cut + '\n```');
-          }
-          // Карточка созданной задачи — как в /task; файл мог изменить qwen
-          const fresh = getTask(deps.cwd, task.id) ?? task;
-          await sendTaskView(bot, notifyChat, fresh, run);
-        })().catch((err) => {
-          console.error('Уведомление о завершении фазы не отправлено:', err);
-        });
+        notifyPhaseDone(bot, notifyChat, task, run);
       };
       const result = startPhase(deps.cwd, task.id, 'spec', onExit);
       if ('error' in result) {
@@ -353,26 +338,11 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, `Задача ${escapeMarkdownV2(parsed.id)} не найдена.`);
       return;
     }
-    // Колбэк завершения — паттерн VL-48: статус фазы + лог qwen + карточка
+    // Колбэк завершения — паттерн VL-63: карточка + информационное сообщение
     const notifyChat = ctx.chat?.id;
     const onExit: PhaseExitCallback = (run) => {
       if (notifyChat === undefined) return;
-      void (async () => {
-        const head =
-          run.exitCode === 0
-            ? '✅ *Фаза Plan завершена* для ' + task.id
-            : '⚠️ *Фаза Plan завершена с ошибкой* для ' + task.id + ' — код ' + (run.exitCode ?? '—');
-        await sendText(bot, notifyChat, head);
-        const tail = (run.logTail ?? '').trim();
-        if (tail) {
-          const cut = tail.length > 3000 ? tail.slice(0, 3000) + '…' : tail;
-          await sendText(bot, notifyChat, '```\n' + cut + '\n```');
-        }
-        const fresh = getTask(deps.cwd, task.id) ?? task;
-        await sendTaskView(bot, notifyChat, fresh, run);
-      })().catch((err) => {
-        console.error('Уведомление о завершении фазы не отправлено:', err);
-      });
+      notifyPhaseDone(bot, notifyChat, task, run);
     };
     const result = startPhase(deps.cwd, task.id, 'plan', onExit);
     if ('error' in result) {
@@ -397,26 +367,11 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, `Задача ${escapeMarkdownV2(parsed.id)} не найдена.`);
       return;
     }
-    // Колбэк завершения — паттерн VL-48: статус фазы + лог qwen + карточка
+    // Колбэк завершения — паттерн VL-63: карточка + информационное сообщение
     const notifyChat = ctx.chat?.id;
     const onExit: PhaseExitCallback = (run) => {
       if (notifyChat === undefined) return;
-      void (async () => {
-        const head =
-          run.exitCode === 0
-            ? '✅ *Фаза Code завершена* для ' + task.id
-            : '⚠️ *Фаза Code завершена с ошибкой* для ' + task.id + ' — код ' + (run.exitCode ?? '—');
-        await sendText(bot, notifyChat, head);
-        const tail = (run.logTail ?? '').trim();
-        if (tail) {
-          const cut = tail.length > 3000 ? tail.slice(0, 3000) + '…' : tail;
-          await sendText(bot, notifyChat, '```\n' + cut + '\n```');
-        }
-        const fresh = getTask(deps.cwd, task.id) ?? task;
-        await sendTaskView(bot, notifyChat, fresh, run);
-      })().catch((err) => {
-        console.error('Уведомление о завершении фазы не отправлено:', err);
-      });
+      notifyPhaseDone(bot, notifyChat, task, run);
     };
     const result = startPhase(deps.cwd, task.id, 'code', onExit);
     if ('error' in result) {
@@ -442,26 +397,11 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, `Задача ${escapeMarkdownV2(parsed.id)} не найдена.`);
       return;
     }
-    // Колбэк завершения — паттерн VL-48: статус фазы + лог qwen + карточка
+    // Колбэк завершения — паттерн VL-63: карточка + информационное сообщение
     const notifyChat = ctx.chat?.id;
     const onExit: PhaseExitCallback = (run) => {
       if (notifyChat === undefined) return;
-      void (async () => {
-        const head =
-          run.exitCode === 0
-            ? '✅ *Фаза Close завершена* для ' + task.id
-            : '⚠️ *Фаза Close завершена с ошибкой* для ' + task.id + ' — код ' + (run.exitCode ?? '—');
-        await sendText(bot, notifyChat, head);
-        const tail = (run.logTail ?? '').trim();
-        if (tail) {
-          const cut = tail.length > 3000 ? tail.slice(0, 3000) + '…' : tail;
-          await sendText(bot, notifyChat, '```\n' + cut + '\n```');
-        }
-        const fresh = getTask(deps.cwd, task.id) ?? task;
-        await sendTaskView(bot, notifyChat, fresh, run);
-      })().catch((err) => {
-        console.error('Уведомление о завершении фазы не отправлено:', err);
-      });
+      notifyPhaseDone(bot, notifyChat, task, run);
     };
     const result = startPhase(deps.cwd, task.id, 'close', onExit);
     if ('error' in result) {

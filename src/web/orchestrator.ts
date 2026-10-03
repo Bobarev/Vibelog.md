@@ -17,6 +17,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTask } from '../core/store.js';
+import { explainQwenParse, parseQwenResult } from './qwen-result.js';
+import type { QwenResult } from './qwen-result.js';
 
 /** Допустимые фазы. */
 const PHASES = ['spec', 'plan', 'code', 'close', 'comment'] as const;
@@ -49,6 +51,8 @@ export interface PhaseRun {
   exitCode?: number | null;
   finishedAt?: string;
   logTail?: string;
+  /** Разобранный JSON-результат qwen (type=result); null-фолбэк — без данных. */
+  result?: QwenResult;
 }
 
 /** Результат startPhase: успех или ошибка валидации/guard. */
@@ -228,12 +232,27 @@ export function startPhase(
     finished = true;
     clearInterval(probe);
     activeRuns.delete(taskId);
+    // Последняя строка stdout без завершающего \n живёт в tailBuf и не
+    // попадает в log через appendLog — дозаписываем перед парсингом
+    if (tailBuf) {
+      log += tailBuf;
+      tailBuf = '';
+    }
+    // VL-64/VL-63 (дебаг): результат сессии qwen из JSON type=result —
+    // как строка-объект (NDJSON), так и строка-массив `[{…}]` (json-адаптер
+    // qwen 0.24.x). Если result не распознан, но JSON в логе есть — печатаем
+    // сводку парсера, чтобы видеть, на каком формате падает обработка.
+    const result = parseQwenResult(log) ?? undefined;
+    if (!result && /[{[]/.test(log)) {
+      console.log(`[phase ${taskId}] ${ts()} parseQwenResult: ${explainQwenParse(log)}`);
+    }
     const record: PhaseRun = {
       running: false,
       phase,
       exitCode: code,
       finishedAt: new Date().toISOString(),
       logTail: log.trim(),
+      result,
     };
     lastRuns.set(taskId, record);
     // VL-48: уведомление о завершении (бот). Fire-and-forget в try/catch:

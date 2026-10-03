@@ -58,6 +58,63 @@ export function formatPhaseRun(run: PhaseRun | null | undefined): string {
 }
 
 /**
+ * Информационное сообщение о завершении фазы по шаблону VL-63 (VL-65).
+ *
+ * Статус + финальный ответ qwen + токены + время + session_id — данные
+ * берутся из PhaseRun.result (последняя JSON-строка type=result, VL-64).
+ * Сырой JSON-лог в чат не шлётся — цель VL-63 убрать нечитаемый вывод.
+ *
+ * Фолбэк (result отсутствует: ENOENT, обрыв, битый JSON): статус +
+ * «Данные результата недоступны» + logTail обрезан до 800 символов.
+ *
+ * @param run — завершённый запуск фазы из оркестратора (getRun)
+ */
+export function formatPhaseResult(run: PhaseRun): string {
+  const phase = escapeMarkdownV2(run.phase ?? '—');
+  const res = run.result;
+  const errFlag = res?.is_error === true;
+  // Статусная строка формируется заново (не formatPhaseRun): шаблон VL-63
+  // задаёт свой вид, а is_error при exit 0 — тоже «ошибка qwen»
+  const status =
+    run.exitCode === 0 && !errFlag
+      ? `*Фаза ${phase}: завершена \\(код 0\\)*`
+      : `*Фаза ${phase}: ошибка \\(код ${run.exitCode ?? '—'}\\)` +
+        (errFlag ? ' \\(ошибка qwen\\)' : '');
+  if (!res) {
+    // Фолбэк: данных результата нет — показываем статус и хвост лога.
+    // Хвост ОБЯЗАН экранироваться (escapeMarkdownV2): сырой JSON содержит
+    // [ ] ( ) - . ! и прочие спецсимволы MarkdownV2 — без экранирования
+    // Telegram отклоняет разметку, сообщение уходит plain и юзер видит
+    // литеральные звёздочки и слэши (жалоба Pavel, VL-63).
+    const tail = (run.logTail ?? '').trim();
+    const cut = tail.length > 800 ? tail.slice(0, 800) + '…' : tail;
+    return [status, '', 'Данные результата недоступны', escapeMarkdownV2(cut)]
+      .filter((l) => l !== '')
+      .join('\n');
+  }
+  // Обрезка результата: Telegram-лимит 4096 символов, экранирование
+  // удваивает длину — режем с большим запасом
+  const body =
+    res.result.length > 1500 ? res.result.slice(0, 1500) + '…' : res.result;
+  const lines = [
+    status,
+    escapeMarkdownV2(body),
+    '',
+    `*Входные токены:* ${res.usage.input_tokens}`,
+    `*Сгенерированные токены:* ${res.usage.output_tokens}`,
+    `*Кэш-токены:* ${res.usage.cache_read_input_tokens}`,
+    `*Всего токенов:* ${res.usage.total_tokens}`,
+    '',
+    `*Общее время:* ${res.duration_ms} мс \\(api: ${res.duration_api_ms} мс\\)`,
+    `*Количество запросов:* ${res.num_turns}`,
+  ];
+  // session_id — только hex/дефис (UUID), внутри pre-блока экранирование
+  // запрещено MarkdownV2 — вставляем как есть; пустой — строку не шлём
+  if (res.session_id) lines.push('', '`' + res.session_id + '`');
+  return lines.join('\n');
+}
+
+/**
  * Детали задачи для /task: жирный заголовок, метки полей, описание.
  *
  * @param task — задача

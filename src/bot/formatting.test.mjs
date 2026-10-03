@@ -10,6 +10,7 @@ import {
   formatTaskList,
   formatTaskDetail,
   formatPhaseRun,
+  formatPhaseResult,
   formatBoard,
 } from '../../dist/bot/formatting.js';
 
@@ -115,5 +116,98 @@ describe('formatPhaseRun / formatTaskDetail (VL-43)', () => {
   it('formatTaskDetail: без phaseRun — без строки фазы', () => {
     assert.ok(!formatTaskDetail(task).includes('Фаза'));
     assert.ok(!formatTaskDetail(task, undefined).includes('Фаза'));
+  });
+});
+
+describe('formatPhaseResult (VL-63/VL-65)', () => {
+  /** Полный успешный run с result — эталон шаблона VL-63. */
+  const okRun = {
+    running: false,
+    phase: 'comment',
+    exitCode: 0,
+    finishedAt: '2026-10-03T14:30:00.000Z',
+    logTail: 'stub qwen',
+    result: {
+      result: 'понг',
+      is_error: false,
+      num_turns: 1,
+      duration_ms: 42411,
+      duration_api_ms: 42369,
+      session_id: 'a470c7dd-2ca8-4510-9d81-b184f932af76',
+      usage: {
+        input_tokens: 10956,
+        output_tokens: 19,
+        cache_read_input_tokens: 10944,
+        total_tokens: 10975,
+      },
+    },
+  };
+
+  it('успех: все поля шаблона на месте, result и session_id в тексте', () => {
+    const text = formatPhaseResult(okRun);
+    // includes вместо regex — экранированные скобки MarkdownV2 не мешают
+    assert.ok(text.includes('*Фаза comment: завершена \\(код 0\\)*'), 'статус');
+    assert.ok(text.includes('понг'), 'result');
+    assert.ok(text.includes('*Входные токены:* 10956'), 'input_tokens');
+    assert.ok(text.includes('*Сгенерированные токены:* 19'), 'output_tokens');
+    assert.ok(text.includes('*Кэш-токены:* 10944'), 'cache');
+    assert.ok(text.includes('*Всего токенов:* 10975'), 'total');
+    assert.ok(text.includes('*Общее время:* 42411 мс \\(api: 42369 мс\\)'), 'время');
+    assert.ok(text.includes('*Количество запросов:* 1'), 'num_turns');
+    assert.ok(text.includes('a470c7dd-2ca8-4510-9d81-b184f932af76'), 'session_id');
+  });
+
+  it('спецсимволы в result экранированы', () => {
+    const run = { ...okRun, result: { ...okRun.result, result: 'Фича _x_ и (скобки)!' } };
+    const text = formatPhaseResult(run);
+    assert.ok(text.includes('Фича \\_x\\_ и \\(скобки\\)\\!'), 'escapeMarkdownV2 применён');
+  });
+
+  it('длинный result обрезан до 1500 символов', () => {
+    const run = { ...okRun, result: { ...okRun.result, result: 'x'.repeat(2000) } };
+    const text = formatPhaseResult(run);
+    const bodyLine = text.split('\n')[1];
+    // 'x' не экранируется — длина строки = 1500 + '…'
+    assert.equal(bodyLine.length, 1501);
+    assert.ok(bodyLine.endsWith('…'));
+  });
+
+  it('фолбэк: logTail экранирован для MarkdownV2 (VL-63 фикс)', () => {
+    // Сырой JSON в хвосте ломал разметку Telegram: сообщение уходило plain
+    // с литеральными \( и звёздочками — юзер видел нечитаемый вывод
+    const run = {
+      running: false,
+      phase: 'comment',
+      exitCode: 0,
+      logTail: '[{"type":"system"}] Warning: running headless --yolo',
+    };
+    const text = formatPhaseResult(run);
+    assert.ok(text.includes('Данные результата недоступны'), 'фолбэк-строка');
+    assert.ok(text.includes('\\[\\{'), 'спецсимволы экранированы');
+    assert.ok(!text.includes('[{'), 'нет неэкранированного JSON-начала');
+  });
+
+  it('фолбэк без result: статус + logTail, без сырого JSON', () => {
+    const run = {
+      running: false,
+      phase: 'code',
+      exitCode: null,
+      logTail: 'Ошибка запуска: spawn ENOENT',
+    };
+    const text = formatPhaseResult(run);
+    assert.ok(text.includes('ошибка'), 'статус ошибки');
+    assert.ok(text.includes('Данные результата недоступны'), 'фолбэк-строка');
+    assert.ok(!text.includes('"type":"result"'), 'сырой JSON не показывается');
+  });
+
+  it('ошибка с кодом N и is_error', () => {
+    const run = {
+      ...okRun,
+      exitCode: 1,
+      result: { ...okRun.result, is_error: true, result: 'упс' },
+    };
+    const text = formatPhaseResult(run);
+    assert.ok(text.includes('ошибка \\(код 1\\)'), 'код ошибки');
+    assert.ok(text.includes('ошибка qwen'), 'is_error-метка');
   });
 });
