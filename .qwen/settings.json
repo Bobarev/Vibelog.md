@@ -20,5 +20,16 @@
       "trust": true
     }
   },
+  "memory": {
+    "enableManagedAutoMemory": false,
+    "enableManagedAutoDream": false
+  },
+  "skills": {
+    "disabledLevels": ["bundled"]
+  },
+  "tools": {
+    "eager": ["read_file", "grep_search", "write_file", "edit", "run_shell_command"],
+    "disabled": ["enter_plan_mode", "exit_plan_mode", "cron_create", "cron_list", "cron_delete", "loop_wakeup", "task_stop", "zoom_image", "report_findings", "record_artifact"]
+  },
   "$version": 4
 }
