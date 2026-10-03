@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { getTask } from '../core/store.js';
 
 /** Допустимые фазы. */
-const PHASES = ['spec', 'plan', 'code', 'close'] as const;
+const PHASES = ['spec', 'plan', 'code', 'close', 'comment'] as const;
 export type Phase = (typeof PHASES)[number];
 
 /** Шаблон промпта для каждой фазы. */
@@ -28,6 +28,7 @@ const PHASE_FILES: Record<Phase, string> = {
   plan: 'phase-2.md',
   code: 'phase-3.md',
   close: 'phase-close.md',
+  comment: 'phase-comment.md',
 };
 
 /**
@@ -74,13 +75,18 @@ const lastRuns = new Map<string, PhaseRun>();
 /**
  * Собирает промпт фазы: шаблон + подстановка {{taskId}}.
  *
- * @param phase — spec | plan | code | close
+ * @param phase — spec | plan | code | close | comment
  * @param taskId — ID задачи, например VL-28
+ * @param extraVars — доп. подстановки {{key}} -> value ({{comment}} для фазы comment)
  * @throws Error при неизвестной фазе или отсутствующем шаблоне
  */
-export function renderPrompt(phase: string, taskId: string): string {
+export function renderPrompt(
+  phase: string,
+  taskId: string,
+  extraVars?: Record<string, string>
+): string {
   if (!PHASES.includes(phase as Phase)) {
-    throw new Error(`Неизвестная фаза: ${phase} (ожидается spec|plan|code|close)`);
+    throw new Error(`Неизвестная фаза: ${phase} (ожидается spec|plan|code|close|comment)`);
   }
   const templatePath = join(templatesDir, PHASE_FILES[phase as Phase]);
   let template: string;
@@ -89,7 +95,13 @@ export function renderPrompt(phase: string, taskId: string): string {
   } catch {
     throw new Error(`Шаблон промпта не найден: ${templatePath}`);
   }
-  return template.replaceAll('{{taskId}}', taskId);
+  let prompt = template.replaceAll('{{taskId}}', taskId);
+  if (extraVars) {
+    for (const [key, value] of Object.entries(extraVars)) {
+      prompt = prompt.replaceAll('{{' + key + '}}', value);
+    }
+  }
+  return prompt;
 }
 
 /**
@@ -97,20 +109,23 @@ export function renderPrompt(phase: string, taskId: string): string {
  *
  * @param cwd — рабочая директория проекта (там же лежит backlog/ и .qwen/)
  * @param taskId — ID задачи
- * @param phase — spec | plan | code | close
+ * @param phase — spec | plan | code | close | comment
+ * @param onExit — колбэк завершения фазы (VL-48)
+ * @param extraVars — доп. подстановки промпта ({{comment}} для фазы comment)
  */
 export function startPhase(
   cwd: string,
   taskId: string,
   phase: string,
-  onExit?: PhaseExitCallback
+  onExit?: PhaseExitCallback,
+  extraVars?: Record<string, string>
 ): StartResult {
   if (activeRuns.has(taskId)) {
     return { error: 'Фаза для этой задачи уже выполняется' };
   }
   let prompt: string;
   try {
-    prompt = renderPrompt(phase, taskId);
+    prompt = renderPrompt(phase, taskId, extraVars);
   } catch (err) {
     return { error: (err as Error).message };
   }

@@ -229,6 +229,45 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       // единый автор для CLI и бота (однопользовательская система, VL-35)
       const task = addComment(deps.cwd, parsed.id, parsed.text);
       await sendMd(ctx, `💬 Комментарий добавлен к *${task.id}*`);
+      // VL-60: комментарий — не только запись, но и команда для qwen:
+      // сразу после addComment запускаем Фазу Comment — headless qwen
+      // выполняет запрос из комментария и оставляет отчёт комментарием.
+      // Статус НЕ меняется (фаза вне жизненного цикла spec/plan/code/close).
+      // Уведомление — паттерн VL-48: статус ✅/⚠️ + лог qwen + карточка.
+      const notifyChat = ctx.chat?.id;
+      const onExit: PhaseExitCallback = (run) => {
+        if (notifyChat === undefined) return;
+        void (async () => {
+          const head =
+            run.exitCode === 0
+              ? '✅ *Фаза Comment завершена* для ' + task.id
+              : '⚠️ *Фаза Comment завершена с ошибкой* для ' + task.id + ' — код ' + (run.exitCode ?? '—');
+          await sendText(bot, notifyChat, head);
+          const tail = (run.logTail ?? '').trim();
+          if (tail) {
+            const cut = tail.length > 3000 ? tail.slice(0, 3000) + '…' : tail;
+            await sendText(bot, notifyChat, '``\n' + cut + '\n``');
+          }
+          const fresh = getTask(deps.cwd, task.id) ?? task;
+          await sendTaskView(bot, notifyChat, fresh, run);
+        })().catch((err) => {
+          console.error('Уведомление о завершении фазы не отправлено:', err);
+        });
+      };
+      const result = startPhase(deps.cwd, task.id, 'comment', onExit, {
+        comment: parsed.text,
+      });
+      if ('error' in result) {
+        // Guard «уже выполняется» и прочие ошибки валидации startPhase:
+        // комментарий уже сохранён — не откатываем, сообщаем явно (VL-60)
+        await sendMd(
+          ctx,
+          '⚠️ Комментарий добавлен, но запуск qwen не удался: ' +
+            escapeMarkdownV2(result.error)
+        );
+        return;
+      }
+      await sendMd(ctx, `🚀 Фаза Comment запущена для *${task.id}*, PID ${result.pid}`);
     } catch (err) {
       await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
     }

@@ -30,7 +30,7 @@ export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'board', description: 'Канбан-доска задач' },
   { command: 'create', description: 'Создать задачу' },
   { command: 'status', description: 'Сменить статус задачи' },
-  { command: 'comment', description: 'Добавить комментарий к задаче' },
+  { command: 'comment', description: 'Добавить комментарий и выполнить его через Фазу Comment (qwen)' },
   { command: 'spec', description: 'Запустить Фазу 1 (Spec) через qwen' },
   { command: 'plan', description: 'Запустить Фазу 2 (Plan) через qwen' },
   { command: 'code', description: 'Запустить Фазу 3 (Code) через qwen' },

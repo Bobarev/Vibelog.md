@@ -106,6 +106,20 @@ describe('orchestrator (VL-28)', () => {
     assert.match(prompt, /Фаза Close/);
   });
 
+  it('renderPrompt фазы comment подставляет {{taskId}} и {{comment}} (VL-60)', () => {
+    // Без extraVars {{comment}} остаётся — web-trigger без текста запроса
+    // закрыт фолбэком шаблона (последний комментарий задачи через MCP)
+    const prompt = renderPrompt('comment', 'VL-60');
+    assert.match(prompt, /VL-60/);
+    assert.doesNotMatch(prompt, /\{\{taskId\}\}/);
+    assert.match(prompt, /Фаза Comment/);
+    assert.match(prompt, /\{\{comment\}\}/);
+
+    const withComment = renderPrompt('comment', 'VL-60', { comment: 'тест-запрос' });
+    assert.match(withComment, /тест-запрос/);
+    assert.doesNotMatch(withComment, /\{\{comment\}\}/);
+  });
+
   it('startPhase: спавн, double-trigger guard, getRun после завершения', async () => {
     const marker = join(testRoot, 'marker1.txt');
     process.env.VL28_STUB_MARKER = marker;
@@ -152,6 +166,22 @@ describe('orchestrator (VL-28)', () => {
     assert.equal(calls[0].running, false);
     assert.equal(calls[0].exitCode, run.exitCode);
     assert.match(calls[0].logTail ?? '', /stub qwen/);
+  });
+
+  it('startPhase: extraVars попадают в промпт (VL-60)', async () => {
+    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-vl60.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    const res = startPhase(testRoot, task1.id, 'comment', undefined, {
+      comment: 'тест-запрос-vl60',
+    });
+    assert.equal(res.started, true);
+    const run = await waitDone(task1.id);
+    assert.equal(run.exitCode, 0);
+    const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+    // argv[0] — позиционный промпт: содержит текст комментария, {{comment}} подставлен
+    assert.ok(argv.some((a) => a.includes('тест-запрос-vl60')));
+    assert.ok(argv.some((a) => !a.includes('{{comment}}')));
   });
 
   it('handleApi: POST trigger 404/409/202 и GET trigger', async () => {
