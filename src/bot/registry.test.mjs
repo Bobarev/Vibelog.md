@@ -10,7 +10,7 @@ import { BOT_COMMANDS, commandsHelp, syncCommands } from '../../dist/bot/registr
 
 describe('BOT_COMMANDS (VL-54)', () => {
   it('реестр валиден по лимитам Telegram', () => {
-    assert.equal(BOT_COMMANDS.length, 11, `ожидалось 11 команд, получено: ${BOT_COMMANDS.length}`);
+    assert.equal(BOT_COMMANDS.length, 12, `ожидалось 12 команд, получено: ${BOT_COMMANDS.length}`);
     assert.ok(BOT_COMMANDS.length <= 100, 'лимит Telegram: не более 100 команд');
     const seen = new Set();
     for (const c of BOT_COMMANDS) {
@@ -20,6 +20,13 @@ describe('BOT_COMMANDS (VL-54)', () => {
       assert.ok(!seen.has(c.command), `дубликат имени "${c.command}"`);
       seen.add(c.command);
     }
+  });
+
+  it('команда prompt в реестре с usage /prompt <текст> (VL-66)', () => {
+    const prompt = BOT_COMMANDS.find((c) => c.command === 'prompt');
+    assert.ok(prompt, 'команда prompt отсутствует в реестре');
+    assert.equal(prompt.usage, '/prompt <текст>');
+    assert.match(prompt.description, /qwen/);
   });
 
   it('реестр покрывает все bot.command из handlers.ts (имена и порядок)', async () => {
@@ -36,7 +43,7 @@ describe('BOT_COMMANDS (VL-54)', () => {
   it('commandsHelp() повторяет прежний хардкод help-строки /start', () => {
     assert.equal(
       commandsHelp(),
-      '/tasks, /task <id>, /board, /create, /status, /comment, /spec, /plan, /code, /close'
+      '/tasks, /task <id>, /board, /create, /status, /comment, /spec, /plan, /code, /close, /prompt <текст>'
     );
   });
 });

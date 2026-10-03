@@ -22,13 +22,14 @@ import { chunkRich, renderTaskRich } from './rich.js';
 import { loadBotSettings, saveBotSettings } from './settings.js';
 import { commandsHelp } from './registry.js';
 import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
-import { getRun, startPhase } from '../web/orchestrator.js';
+import { getRun, startPhase, startPrompt } from '../web/orchestrator.js';
 import {
   parseCloseCommand,
   parseCodeCommand,
   parseCommentCommand,
   parseCreateCommand,
   parsePlanCommand,
+  parsePromptCommand,
   parseSpecCommand,
   parseStatusCommand,
 } from './commands.js';
@@ -410,6 +411,34 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       return;
     }
     await sendMd(ctx, `🚀 Фаза Close запущена для *${task.id}*, PID ${result.pid}`);
+  });
+  // ── /prompt — произвольный запрос через qwen без задачи (VL-66) ──
+  // Запросы, слишком мелкие для задачи (коммит незакоммиченных файлов,
+  // правка настроек и т.п.): бот спавнит qwen с шаблоном prompt.md.
+  // Задача НЕ создаётся, backlog/ не трогается; git-операции разрешены
+  // (шаблон запрещает только push без явной просьбы). Активен только
+  // один /prompt (guard в spawnQwenRun).
+  bot.command('prompt', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const parsed = parsePromptCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    // Задачи нет — карточка не шлётся, только информационное сообщение
+    // по шаблону formatPhaseResult (VL-63/65)
+    const notifyChat = ctx.chat?.id;
+    const onExit: PhaseExitCallback = (run) => {
+      if (notifyChat === undefined) return;
+      void sendText(bot, notifyChat, formatPhaseResult(run));
+    };
+    const result = startPrompt(deps.cwd, parsed.text, onExit);
+    if ('error' in result) {
+      // Guard «уже выполняется» и прочие ошибки валидации startPrompt
+      await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
+      return;
+    }
+    await sendMd(ctx, `🚀 Запрос отправлен в qwen, PID ${result.pid}`);
   });
   // Ввод пина — ОБЯЗАТЕЛЬНО ПОСЛЕ ВСЕХ bot.command: catch-all message:text
   // перехватывает любое текстовое сообщение и без next() останавливает

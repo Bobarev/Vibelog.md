@@ -47,6 +47,11 @@ export interface CloseCommand {
   id: string;
 }
 
+/** Результат разбора /prompt (VL-66): произвольный запрос без задачи. */
+export interface PromptCommand {
+  text: string;
+}
+
 /** Снятие окружающих кавычек. */
 function unquote(value: string): string {
   const trimmed = value.trim();
@@ -205,4 +210,18 @@ export function parseCloseCommand(text: string): CloseCommand | { error: string 
   const id = trimmed.split(/\s+/)[0];
   if (!id) return { error: hint };
   return { id };
+}
+
+/**
+ * Разбирает /prompt: весь текст после команды — запрос пользователя.
+ * Без unquote — запрос естественный, кавычки значимы (VL-66).
+ *
+ * @param text — аргументы команды (без слова /prompt)
+ * @returns {text} или {error} с подсказкой
+ */
+export function parsePromptCommand(text: string): PromptCommand | { error: string } {
+  const hint = 'Синтаксис: /prompt <запрос>';
+  const trimmed = text.trim();
+  if (!trimmed) return { error: hint };
+  return { text: trimmed };
 }

@@ -35,6 +35,7 @@ export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'plan', description: 'Запустить Фазу 2 (Plan) через qwen' },
   { command: 'code', description: 'Запустить Фазу 3 (Code) через qwen' },
   { command: 'close', description: 'Закрыть задачу (Фаза Close) через qwen' },
+  { command: 'prompt', description: 'Выполнить запрос через qwen без задачи', usage: '/prompt <текст>' },
 ];
 
 /**

@@ -17,7 +17,7 @@ import { mkdirSync, writeFileSync, rmSync, mkdtempSync, chmodSync, readFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { renderPrompt, startPhase, getRun } from '../../dist/web/orchestrator.js';
+import { renderPrompt, startPhase, startPrompt, getRun } from '../../dist/web/orchestrator.js';
 import { handleApi } from '../../dist/web/api.js';
 import { createTaskFile } from '../../dist/core/store.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
@@ -249,6 +249,62 @@ describe('orchestrator (VL-28)', () => {
     assert.equal(run.result?.usage.total_tokens, 15);
   });
 
+  // ── VL-66/67: startPrompt — произвольный запрос через qwen без задачи ──
+
+  it('renderPrompt фазы prompt подставляет {{prompt}}, {{taskId}} отсутствует (VL-67)', () => {
+    const prompt = renderPrompt('prompt', '', { prompt: 'сделай коммиты' });
+    assert.match(prompt, /сделай коммиты/);
+    assert.doesNotMatch(prompt, /\{\{prompt\}\}/);
+    assert.doesNotMatch(prompt, /\{\{taskId\}\}/);
+    assert.match(prompt, /команда prompt/);
+  });
+
+  it('startPrompt: спавн, getRun("prompt"), result из JSON type=result (VL-67)', async () => {
+    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-prompt.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    process.env.VL28_STUB_RESULT = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      duration_ms: 1000,
+      duration_api_ms: 900,
+      num_turns: 1,
+      result: 'коммиты сделаны',
+      usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3, total_tokens: 15 },
+      session_id: 'prompt-1',
+    });
+    const res = startPrompt(testRoot, 'сделай коммиты для файлов');
+    assert.equal(res.started, true);
+    const run = await waitDone('prompt');
+    assert.equal(run.exitCode, 0);
+    assert.equal(run.result?.result, 'коммиты сделаны');
+    assert.equal(run.phase, 'prompt');
+    // Маркер: промпт — позиционный аргумент, запрос подставлен
+    const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+    assert.ok(argv.some((a) => a.includes('сделай коммиты для файлов')));
+    assert.ok(argv.every((a) => !a.includes('{{prompt}}')));
+    // Для prompt флагов нет (как у comment) — не spec/plan
+    assert.ok(!argv.includes('--allowed-mcp-server-names'));
+  });
+
+  it('startPrompt: double-trigger guard по ключу "prompt" (VL-67)', async () => {
+    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-prompt2.txt');
+    process.env.VL28_STUB_SLEEP = '1200';
+    process.env.VL28_STUB_EXIT = '0';
+    const first = startPrompt(testRoot, 'первый запрос');
+    assert.equal(first.started, true);
+    const second = startPrompt(testRoot, 'второй запрос');
+    assert.match(second.error, /уже выполняется/);
+    assert.equal(getRun('prompt').running, true);
+    const run = await waitDone('prompt');
+    assert.equal(run.exitCode, 0);
+  });
+
+  it('startPhase отклоняет phase=prompt — только через startPrompt (VL-67)', () => {
+    const res = startPhase(testRoot, task1.id, 'prompt');
+    assert.match(res.error, /startPrompt/);
+  });
 
   it('handleApi: POST trigger 404/409/202 и GET trigger', async () => {
     // 404 — задачи нет

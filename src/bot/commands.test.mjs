@@ -12,6 +12,7 @@ import {
   parseCloseCommand,
   parseCodeCommand,
   parsePlanCommand,
+  parsePromptCommand,
   parseSpecCommand,
 } from '../../dist/bot/commands.js';
 
@@ -158,5 +159,28 @@ describe('parseCloseCommand (VL-55)', () => {
     assert.ok('error' in e2);
     assert.match(e1.error, /Синтаксис/);
     assert.match(e1.error, /\/close/);
+  });
+});
+
+describe('parsePromptCommand (VL-66)', () => {
+  it('текст с пробелами → {text}', () => {
+    assert.deepEqual(parsePromptCommand('сделай коммиты для всех файлов'), {
+      text: 'сделай коммиты для всех файлов',
+    });
+  });
+
+  it('кавычки значимы — не снимаются (запрос естественный)', () => {
+    assert.deepEqual(parsePromptCommand('внеси "странный" текст'), {
+      text: 'внеси "странный" текст',
+    });
+  });
+
+  it('пустая строка и пробелы → error с подсказкой', () => {
+    const e1 = parsePromptCommand('');
+    const e2 = parsePromptCommand('   ');
+    assert.ok('error' in e1);
+    assert.ok('error' in e2);
+    assert.match(e1.error, /Синтаксис/);
+    assert.match(e1.error, /\/prompt/);
   });
 });

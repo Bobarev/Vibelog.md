@@ -21,7 +21,7 @@ import { explainQwenParse, parseQwenResult } from './qwen-result.js';
 import type { QwenResult } from './qwen-result.js';
 
 /** Допустимые фазы. */
-const PHASES = ['spec', 'plan', 'code', 'close', 'comment'] as const;
+const PHASES = ['spec', 'plan', 'code', 'close', 'comment', 'prompt'] as const;
 export type Phase = (typeof PHASES)[number];
 
 /** Шаблон промпта для каждой фазы. */
@@ -31,6 +31,7 @@ const PHASE_FILES: Record<Phase, string> = {
   code: 'phase-3.md',
   close: 'phase-close.md',
   comment: 'phase-comment.md',
+  prompt: 'prompt.md',
 };
 
 /**
@@ -79,9 +80,9 @@ const lastRuns = new Map<string, PhaseRun>();
 /**
  * Собирает промпт фазы: шаблон + подстановка {{taskId}}.
  *
- * @param phase — spec | plan | code | close | comment
+ * @param phase — spec | plan | code | close | comment | prompt
  * @param taskId — ID задачи, например VL-28
- * @param extraVars — доп. подстановки {{key}} -> value ({{comment}} для фазы comment)
+ * @param extraVars — доп. подстановки {{key}} -> value ({{comment}} для comment, {{prompt}} для prompt)
  * @throws Error при неизвестной фазе или отсутствующем шаблоне
  */
 export function renderPrompt(
@@ -90,7 +91,7 @@ export function renderPrompt(
   extraVars?: Record<string, string>
 ): string {
   if (!PHASES.includes(phase as Phase)) {
-    throw new Error(`Неизвестная фаза: ${phase} (ожидается spec|plan|code|close|comment)`);
+    throw new Error(`Неизвестная фаза: ${phase} (ожидается spec|plan|code|close|comment|prompt)`);
   }
   const templatePath = join(templatesDir, PHASE_FILES[phase as Phase]);
   let template: string;
@@ -124,14 +125,63 @@ export function startPhase(
   onExit?: PhaseExitCallback,
   extraVars?: Record<string, string>
 ): StartResult {
-  if (activeRuns.has(taskId)) {
-    return { error: 'Фаза для этой задачи уже выполняется' };
+  // Защита HTTP-границы (VL-66): api.ts пропускает произвольный phase из
+  // POST-body — без guard'а qwen получил бы шаблон prompt.md с неподставленным
+  // {{prompt}}. Фаза prompt не привязана к задаче и живёт в startPrompt.
+  if (phase === 'prompt') {
+    return { error: 'Фаза prompt запускается через startPrompt' };
   }
   let prompt: string;
   try {
     prompt = renderPrompt(phase, taskId, extraVars);
   } catch (err) {
     return { error: (err as Error).message };
+  }
+  return spawnQwenRun(cwd, taskId, phase as Phase, prompt, onExit);
+}
+
+/**
+ * Запускает произвольный промпт через qwen без задачи (VL-66/67, /prompt).
+ *
+ * Ключ запуска — строка 'prompt' в общих activeRuns/lastRuns: guard от
+ * двойного запуска и getRun('prompt') достаются без новых map.
+ *
+ * @param cwd — рабочая директория проекта
+ * @param promptText — текст запроса пользователя (подставляется в {{prompt}})
+ * @param onExit — колбэк завершения (бот шлёт информационное сообщение без карточки)
+ */
+export function startPrompt(
+  cwd: string,
+  promptText: string,
+  onExit?: PhaseExitCallback
+): StartResult {
+  let prompt: string;
+  try {
+    // Шаблон prompt.md не содержит {{taskId}} — taskId пустой, важен только {{prompt}}
+    prompt = renderPrompt('prompt', '', { prompt: promptText });
+  } catch (err) {
+    return { error: (err as Error).message };
+  }
+  return spawnQwenRun(cwd, 'prompt', 'prompt', prompt, onExit);
+}
+
+/**
+ * Спавнит процесс qwen с готовым промптом и ведёт его жизненный цикл.
+ *
+ * Общий хелпер startPhase/startPrompt (VL-66): guard от двойного запуска,
+ * лог, probe тишины, парсер JSON-результата, onExit. runKey — ID задачи
+ * либо 'prompt' (ключи общих activeRuns/lastRuns).
+ */
+function spawnQwenRun(
+  cwd: string,
+  runKey: string,
+  phase: Phase,
+  prompt: string,
+  onExit?: PhaseExitCallback
+): StartResult {
+  if (activeRuns.has(runKey)) {
+    // Сообщение генерализовано (VL-66): подходит и фазе задачи, и /prompt
+    return { error: 'Запуск уже выполняется' };
   }
 
   const bin = process.env.VIBELOG_QWEN_BIN || 'qwen';
@@ -142,6 +192,7 @@ export function startPhase(
   // stream-json и VIBELOG_QWEN_EXTRA_ARGS откачены. Дебаг: vibelog qwen-debug.
   // --output-format json — для ВСЕХ фаз; --allowed-mcp-server-names vibelog —
   // только для spec/plan: чужие серверы (chrome-devtools и др.) для планирования не нужны.
+  // Для prompt флагов нет (как у comment) — шаблон не требует Vibelog MCP.
   const phaseFlags =
     phase === 'spec' || phase === 'plan'
       ? ['--allowed-mcp-server-names', 'vibelog']
@@ -151,8 +202,8 @@ export function startPhase(
     stdio: 'pipe',
   });
 
-  activeRuns.set(taskId, { phase: phase as Phase, child, onExit });
-  lastRuns.delete(taskId);
+  activeRuns.set(runKey, { phase, child, onExit });
+  lastRuns.delete(runKey);
 
   let log = '';
   // VL-58 (диагностика): таймлайн фазы в консоль — когда qwen напечатал строку
@@ -170,7 +221,7 @@ export function startPhase(
     tailBuf = parts.pop() ?? '';
     for (const line of parts) {
       if (line.trim()) {
-        console.log(`[phase ${taskId}] ${ts()} | ${line.trim().slice(0, 120)}`);
+        console.log(`[phase ${runKey}] ${ts()} | ${line.trim().slice(0, 120)}`);
       }
     }
     log += text;
@@ -220,7 +271,7 @@ export function startPhase(
         .filter((t): t is string => Boolean(t))
         .map((t) => '    ' + t.trim().slice(0, 110));
       console.log(
-        `[phase ${taskId}] ${ts()} probe(тишина ${quietSec}с):\n` + (lines.join('\n') || '    (процесс уже завершился)')
+        `[phase ${runKey}] ${ts()} probe(тишина ${quietSec}с):\n` + (lines.join('\n') || '    (процесс уже завершился)')
       );
     });
   }, 60_000);
@@ -231,7 +282,7 @@ export function startPhase(
     if (finished) return;
     finished = true;
     clearInterval(probe);
-    activeRuns.delete(taskId);
+    activeRuns.delete(runKey);
     // Последняя строка stdout без завершающего \n живёт в tailBuf и не
     // попадает в log через appendLog — дозаписываем перед парсингом
     if (tailBuf) {
@@ -244,7 +295,7 @@ export function startPhase(
     // сводку парсера, чтобы видеть, на каком формате падает обработка.
     const result = parseQwenResult(log) ?? undefined;
     if (!result && /[{[]/.test(log)) {
-      console.log(`[phase ${taskId}] ${ts()} parseQwenResult: ${explainQwenParse(log)}`);
+      console.log(`[phase ${runKey}] ${ts()} parseQwenResult: ${explainQwenParse(log)}`);
     }
     const record: PhaseRun = {
       running: false,
@@ -254,7 +305,7 @@ export function startPhase(
       logTail: log.trim(),
       result,
     };
-    lastRuns.set(taskId, record);
+    lastRuns.set(runKey, record);
     // VL-48: уведомление о завершении (бот). Fire-and-forget в try/catch:
     // сетевые ошибки Telegram не должны ронять polling оркестратора.
     try {
@@ -265,15 +316,15 @@ export function startPhase(
   };
 
   child.on('exit', (code, signal) => {
-    console.log(`[phase ${taskId}] ${ts()} exit: code=${code} signal=${signal}`);
+    console.log(`[phase ${runKey}] ${ts()} exit: code=${code} signal=${signal}`);
   });
   child.on('error', (err) => {
     log += `${log ? '\n' : ''}Ошибка запуска: ${err.message}`;
-    console.log(`[phase ${taskId}] ${ts()} error: ${err.message}`);
+    console.log(`[phase ${runKey}] ${ts()} error: ${err.message}`);
     finish(null);
   });
   child.on('close', (code) => {
-    console.log(`[phase ${taskId}] ${ts()} close: code=${code}`);
+    console.log(`[phase ${runKey}] ${ts()} close: code=${code}`);
     finish(code);
   });
 
