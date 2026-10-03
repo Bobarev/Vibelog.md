@@ -21,6 +21,7 @@ import {
 import { chunkRich, renderTaskRich } from './rich.js';
 import { loadBotSettings, saveBotSettings } from './settings.js';
 import { commandsHelp } from './registry.js';
+import { spawnReplacementBot } from './restart.js';
 import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
 import { getRun, startPhase, startPrompt } from '../web/orchestrator.js';
 import {
@@ -439,6 +440,41 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       return;
     }
     await sendMd(ctx, `🚀 Запрос отправлен в qwen, PID ${result.pid}`);
+  });
+  // ── /restart — самоперезапуск бота (VL-70) ──
+  // Сценарий разработки: после pnpm build старый процесс исполняет старый
+  // dist/. Бот рестартует САМ СЕБЯ по команде из чата: гасит polling и
+  // поднимает новый vibelog bot в том же терминале — пин нового запуска
+  // печатается там же, новый процесс исполняет свежий dist/. CLI
+  // `vibelog restart` с pid-файлом отменён: он заменял только Ctrl+C.
+  bot.command('restart', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const chatId = ctx.chat?.id;
+    await sendMd(ctx, '🔄 Перезапуск бота…');
+    // Порядок обязателен: два параллельных long-polling с одним токеном —
+    // Telegram отвечает 409 Conflict; сначала гасим старый, потом спавним новый
+    try {
+      await bot.stop();
+    } catch {
+      // polling ещё не стартовал или уже остановлен — не критично
+    }
+    const child = spawnReplacementBot(deps.cwd);
+    await new Promise<void>((resolve) => {
+      child.once('spawn', () => resolve());
+      child.once('error', (err) => {
+        console.error('Не удалось перезапустить бота:', err.message);
+        if (chatId !== undefined) {
+          void sendText(
+            bot,
+            chatId,
+            '⚠️ Не удалось перезапустить бота — запустите вручную: vibelog bot'
+          );
+        }
+        process.exit(1);
+      });
+    });
+    // Новый процесс создан — выходим; detached+unref: он переживает нас
+    process.exit(0);
   });
   // Ввод пина — ОБЯЗАТЕЛЬНО ПОСЛЕ ВСЕХ bot.command: catch-all message:text
   // перехватывает любое текстовое сообщение и без next() останавливает
