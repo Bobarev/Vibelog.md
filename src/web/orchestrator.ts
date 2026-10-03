@@ -11,7 +11,7 @@
  * обновится сама, но qwen доработает и запишет файл) — known limitation.
  */
 
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -133,6 +133,9 @@ export function startPhase(
   const bin = process.env.VIBELOG_QWEN_BIN || 'qwen';
   // Промпт — позиционный аргумент: флаг -p/--prompt у qwen deprecated
   // («Use the positional prompt instead»).
+  // Диагностика VL-58 (таймлайн, probe тишины) остаётся; сам вызов — исходный.
+  // Корневая причина задержки устранена настройками памяти qwen (VL-58);
+  // stream-json и VIBELOG_QWEN_EXTRA_ARGS откачены. Дебаг: vibelog qwen-debug.
   const child = spawn(bin, [prompt, '--approval-mode', 'yolo'], {
     cwd,
     stdio: 'pipe',
@@ -142,8 +145,25 @@ export function startPhase(
   lastRuns.delete(taskId);
 
   let log = '';
+  // VL-58 (диагностика): таймлайн фазы в консоль — когда qwen напечатал строку
+  // (в т.ч. «Готово»), когда exit, когда close. Отвечает на вопрос «задержка
+  // в выводе qwen или в завершении процесса?». Хвост незавершённой строки
+  // копим в tailBuf — печатаем только завершённые строки.
+  const ts = () => new Date().toTimeString().slice(0, 8);
+  let tailBuf = '';
+  let lastOutputAt = Date.now();
   const appendLog = (chunk: Buffer | string) => {
-    log += chunk.toString();
+    lastOutputAt = Date.now();
+    const text = chunk.toString();
+    tailBuf += text;
+    const parts = tailBuf.split('\n');
+    tailBuf = parts.pop() ?? '';
+    for (const line of parts) {
+      if (line.trim()) {
+        console.log(`[phase ${taskId}] ${ts()} | ${line.trim().slice(0, 120)}`);
+      }
+    }
+    log += text;
     const lines = log.split('\n');
     if (lines.length > LOG_TAIL_LINES) {
       log = lines.slice(-LOG_TAIL_LINES).join('\n');
@@ -152,12 +172,55 @@ export function startPhase(
   child.stdout?.on('data', appendLog);
   child.stderr?.on('data', appendLog);
 
+  // VL-58 (диагностика): самописец тишины — если qwen молчит дольше 10с,
+  // каждые 10с логируем ps-состояние процесса и его потомков (CPU/state/etime):
+  // видно, чем занят хвост — генерация (100% CPU), teardown MCP или ожидание.
+  const probe = setInterval(() => {
+    const quietSec = Math.round((Date.now() - lastOutputAt) / 1000);
+    if (quietSec < 10) return;
+    execFile('ps', ['-axo', 'pid,ppid,%cpu,state,etime,command'], (err, out) => {
+      if (err) return;
+      const own = String(child.pid);
+      // Все потомки рекурсивно: MCP-сервер qwen — ВНУК (ребёнок движка),
+      // прямая фильтрация по ppid обёртки его не показывала
+      const rows = new Map<string, string>();
+      const byParent = new Map<string, string[]>();
+      for (const l of out.split('\n')) {
+        const t = l.trim();
+        if (!t) continue;
+        const cols = t.split(/\s+/);
+        rows.set(cols[0], t);
+        const siblings = byParent.get(cols[1]) ?? [];
+        siblings.push(cols[0]);
+        byParent.set(cols[1], siblings);
+      }
+      const all = new Set<string>([own]);
+      const queue = [own];
+      while (queue.length > 0) {
+        const pid = queue.pop() as string;
+        for (const desc of byParent.get(pid) ?? []) {
+          if (!all.has(desc)) {
+            all.add(desc);
+            queue.push(desc);
+          }
+        }
+      }
+      const lines = [...all]
+        .map((pid) => rows.get(pid))
+        .filter((t): t is string => Boolean(t))
+        .map((t) => '    ' + t.trim().slice(0, 110));
+      console.log(
+        `[phase ${taskId}] ${ts()} probe(тишина ${quietSec}с):\n` + (lines.join('\n') || '    (процесс уже завершился)')
+      );
+    });
+  }, 10_000);
   // Завершение запуска. Node НЕ гарантирует close после error (ENOENT при
   // отсутствии бинаря) — cleanup выполняется из обоих событий, один раз.
   let finished = false;
   const finish = (code: number | null) => {
     if (finished) return;
     finished = true;
+    clearInterval(probe);
     activeRuns.delete(taskId);
     const record: PhaseRun = {
       running: false,
@@ -176,11 +239,18 @@ export function startPhase(
     }
   };
 
+  child.on('exit', (code, signal) => {
+    console.log(`[phase ${taskId}] ${ts()} exit: code=${code} signal=${signal}`);
+  });
   child.on('error', (err) => {
     log += `${log ? '\n' : ''}Ошибка запуска: ${err.message}`;
+    console.log(`[phase ${taskId}] ${ts()} error: ${err.message}`);
     finish(null);
   });
-  child.on('close', (code) => finish(code));
+  child.on('close', (code) => {
+    console.log(`[phase ${taskId}] ${ts()} close: code=${code}`);
+    finish(code);
+  });
 
   return { started: true, pid: child.pid ?? -1 };
 }

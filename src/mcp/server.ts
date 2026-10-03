@@ -14,7 +14,8 @@
  */
 
 import { createInterface } from 'node:readline';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { handleToolCall, listTools } from './tools.js';
@@ -24,6 +25,17 @@ import type { ToolArgs } from './tools.js';
 const packageJson = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf-8'),
 ) as { version: string };
+
+/** Журнал RPC (диагностика задержек VL-58): таймлайн in/out сообщений. */
+const rpcLogPath = join(tmpdir(), 'vibelog-mcp-rpc.log');
+function logRpc(dir: 'in' | 'out', payload: unknown): void {
+  try {
+    const ts = new Date().toTimeString().slice(0, 8);
+    appendFileSync(rpcLogPath, `${ts} ${dir} ${JSON.stringify(payload).slice(0, 200)}\n`);
+  } catch {
+    // Журнал — диагностика; его ошибки не должны ломать сервер
+  }
+}
 
 /** JSON-RPC id: число, строка или null (ошибки парсинга). */
 type RpcId = number | string | null | undefined;
@@ -61,6 +73,7 @@ export function startMcpServer(cwd: string): void {
       id,
       result,
     };
+    logRpc('out', response);
     process.stdout.write(JSON.stringify(response) + '\n');
   }
 
@@ -75,6 +88,7 @@ export function startMcpServer(cwd: string): void {
         ...(data ? { data } : {}),
       },
     };
+    logRpc('out', response);
     process.stdout.write(JSON.stringify(response) + '\n');
   }
 
@@ -87,9 +101,11 @@ export function startMcpServer(cwd: string): void {
     try {
       msg = JSON.parse(trimmed);
     } catch {
+      logRpc('in', { raw: trimmed.slice(0, 200) });
       sendError(null, -32700, 'Parse error');
       return;
     }
+    logRpc('in', msg);
 
     // JSON-RPC 2.0 требует id для запросов
     // Уведомления (без id) не требуют ответа

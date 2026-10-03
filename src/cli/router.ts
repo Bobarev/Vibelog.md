@@ -30,6 +30,7 @@ import { runConfig } from './commands/config.js';
 import { runDraft } from './commands/draft.js';
 import { runDecision } from './commands/decision.js';
 import { runBot } from './commands/bot.js';
+import { runQwenDebug } from './commands/qwen-debug.js';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -75,6 +76,8 @@ export async function route(args: string[]): Promise<void> {
       return runBrowser(positional, flags, cwd);
     case 'bot':
       return runBot(positional, flags, cwd);
+    case 'qwen-debug':
+      return runQwenDebug(cwd);
     case 'doctor':
       return runDoctor(positional, flags, cwd);
     case 'milestone':
@@ -107,6 +110,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('board', colors.cyan)} [--export]                   Канбан-доска
   ${colorize('browser', colors.cyan)} [--port N] [--no-open]      Веб-интерфейс
   ${colorize('bot', colors.cyan)}                             Telegram-бот (grammy)
+  ${colorize('qwen-debug', colors.cyan)}                  Дебаг-прогон qwen (ping, stream-json)
   ${colorize('search', colors.cyan)} "query" [--status ...]      Поиск задач с фильтрами
   ${colorize('instructions', colors.cyan)} [topic]               Инструкции для агентов
   ${colorize('mcp', colors.cyan)} start                        MCP-сервер (JSON-RPC)
@@ -146,6 +150,13 @@ vibelog init [name] [--prefix LB] [--skills[=qwen]] [--no-skills] [--no-mcp] [--
   --no-skills — не создавать команды
   --no-mcp    — не настраивать MCP-сервер (.qwen/settings.json)
   --force     — перезаписать существующие команды`,
+
+    'qwen-debug': `
+vibelog qwen-debug
+
+Дебаг-прогон qwen: «Пинг, просто ответь понг.» + --output-format stream-json
++ --allowed-mcp-server-names vibelog + --debug. stdio наследуется —
+события видны в терминале. VIBELOG_QWEN_BIN переопределяет бинарь.`,
 
     task: `
 vibelog task <subcommand> [опции]
