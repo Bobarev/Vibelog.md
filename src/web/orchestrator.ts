@@ -133,10 +133,16 @@ export function startPhase(
   const bin = process.env.VIBELOG_QWEN_BIN || 'qwen';
   // Промпт — позиционный аргумент: флаг -p/--prompt у qwen deprecated
   // («Use the positional prompt instead»).
-  // Диагностика VL-58 (таймлайн, probe тишины) остаётся; сам вызов — исходный.
+  // Диагностика VL-58 (таймлайн, probe тишины) остаётся.
   // Корневая причина задержки устранена настройками памяти qwen (VL-58);
   // stream-json и VIBELOG_QWEN_EXTRA_ARGS откачены. Дебаг: vibelog qwen-debug.
-  const child = spawn(bin, [prompt, '--approval-mode', 'yolo'], {
+  // --output-format json — для ВСЕХ фаз; --allowed-mcp-server-names vibelog —
+  // только для spec/plan: чужие серверы (chrome-devtools и др.) для планирования не нужны.
+  const phaseFlags =
+    phase === 'spec' || phase === 'plan'
+      ? ['--allowed-mcp-server-names', 'vibelog']
+      : [];
+  const child = spawn(bin, [prompt, '--approval-mode', 'yolo', '--output-format', 'json', ...phaseFlags], {
     cwd,
     stdio: 'pipe',
   });
@@ -172,12 +178,12 @@ export function startPhase(
   child.stdout?.on('data', appendLog);
   child.stderr?.on('data', appendLog);
 
-  // VL-58 (диагностика): самописец тишины — если qwen молчит дольше 10с,
-  // каждые 10с логируем ps-состояние процесса и его потомков (CPU/state/etime):
+  // VL-58 (диагностика): самописец тишины — если qwen молчит дольше 60с,
+  // каждые 60с логируем ps-состояние процесса и его потомков (CPU/state/etime):
   // видно, чем занят хвост — генерация (100% CPU), teardown MCP или ожидание.
   const probe = setInterval(() => {
     const quietSec = Math.round((Date.now() - lastOutputAt) / 1000);
-    if (quietSec < 10) return;
+    if (quietSec < 60) return;
     execFile('ps', ['-axo', 'pid,ppid,%cpu,state,etime,command'], (err, out) => {
       if (err) return;
       const own = String(child.pid);
@@ -213,7 +219,7 @@ export function startPhase(
         `[phase ${taskId}] ${ts()} probe(тишина ${quietSec}с):\n` + (lines.join('\n') || '    (процесс уже завершился)')
       );
     });
-  }, 10_000);
+  }, 60_000);
   // Завершение запуска. Node НЕ гарантирует close после error (ENOENT при
   // отсутствии бинаря) — cleanup выполняется из обоих событий, один раз.
   let finished = false;
