@@ -21,6 +21,8 @@ import { printSuccess, printInfo, printError } from '../ui.js';
 import { defaultConfig } from '../../core/config.js';
 import { stringifyYaml } from '../../core/yaml.js';
 import { findBacklogDir } from '../../core/paths.js';
+import { getGitUserName } from '../../core/git-user.js';
+import { saveProjectSettings } from '../../core/project-settings.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const templatesDir = join(__dirname, '..', '..', '..', 'templates', 'qwen-commands');
@@ -70,7 +72,20 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
 
     printSuccess(`Создана директория backlog/ с подпапками: ${dirs.join(', ')}`);
     printSuccess(`Создан конфиг: backlog/config.yml`);
+
+    // Кэш git user.name (VL-44): чтобы addComment не спавнил git-процесс
+    // на каждый комментарий. .vibelog/ в .gitignore — кэш машинный.
+    saveProjectSettings(cwd, { git_user_name: getGitUserName(cwd) });
+    printSuccess('Кэш git user.name записан: .vibelog/settings.yml');
     printInfo('Теперь вы можете создавать задачи: vibelog task create "Название"');
+  }
+
+  // --force при уже инициализированном проекте: обновляем только кэш
+  // git_user_name. backlog/config.yml не перезаписывается (существующее
+  // поведение), но имя пользователя могло смениться — свежий git config.
+  if (existing && force) {
+    saveProjectSettings(cwd, { git_user_name: getGitUserName(cwd) });
+    printSuccess('Кэш git user.name обновлён: .vibelog/settings.yml');
   }
 
   // --- Команды Qwen Code (--skills) ---

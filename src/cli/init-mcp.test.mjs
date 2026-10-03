@@ -113,4 +113,37 @@ describe('VL-6 — init MCP-настройка', () => {
     const out = runCli('init', '--help');
     assert.ok(out.includes('--no-mcp'), `help должен содержать --no-mcp: ${out}`);
   });
+
+  // --- VL-44: кэш git_user_name в .vibelog/settings.yml ---
+
+  /** Читает git_user_name из settings.yml (undefined, если файла/поля нет). */
+  function readCachedGitUser() {
+    const p = join(testDir, '.vibelog', 'settings.yml');
+    if (!existsSync(p)) return undefined;
+    const m = readFileSync(p, 'utf-8').match(/^git_user_name:\s*(.+)$/m);
+    return m ? m[1].trim() : undefined;
+  }
+
+  it('init создаёт .vibelog/settings.yml с git_user_name (VL-44)', () => {
+    fresh();
+    spawnSync('git', ['init'], { cwd: testDir, stdio: 'pipe' });
+    spawnSync('git', ['config', 'user.name', 'Test User'], { cwd: testDir, stdio: 'pipe' });
+
+    runCli('init', 'Cache Test', '--prefix', 'cch');
+
+    assert.equal(readCachedGitUser(), 'Test User', 'git_user_name должен быть из git config');
+  });
+
+  it('init --force перезаписывает git_user_name (VL-44)', () => {
+    fresh();
+    spawnSync('git', ['init'], { cwd: testDir, stdio: 'pipe' });
+    spawnSync('git', ['config', 'user.name', 'Old User'], { cwd: testDir, stdio: 'pipe' });
+    runCli('init', 'Force Cache', '--prefix', 'fcc');
+
+    // Смена имени в git config и повторный init --force
+    spawnSync('git', ['config', 'user.name', 'New User'], { cwd: testDir, stdio: 'pipe' });
+    runCli('init', 'Force Cache', '--prefix', 'fcc', '--force');
+
+    assert.equal(readCachedGitUser(), 'New User', 'кэш должен обновиться через --force');
+  });
 });

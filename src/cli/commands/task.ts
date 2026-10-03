@@ -22,7 +22,7 @@ import {
 } from '../../core/store.js';
 import { loadConfig, normalizeTaskType } from '../../core/config.js';
 import { addComment } from '../../core/store.js';
-import { getGitUserName } from '../../core/git-user.js';
+import { resolveGitUserName } from '../../core/project-settings.js';
 import { isReady } from '../../core/deps.js';
 import { findBacklogDir } from '../../core/paths.js';
 import { writeDraft } from '../../core/draft.js';
@@ -461,10 +461,11 @@ function taskEdit(positional: string[], flags: FlagValues, cwd: string): void {
     }
   }
 
-  // Комментарий — через addComment (VL-35); автор дефолтится из git config user.name
+  // Комментарий — через addComment (VL-35); автор дефолтится из кэша
+  // settings.yml (VL-44), затем git config
   let commentAdded = false;
   if (flags.comment) {
-    const author = getFlag(flags, 'comment-author', '') || getGitUserName(cwd);
+    const author = getFlag(flags, 'comment-author', '') || resolveGitUserName(cwd);
     try {
       addComment(cwd, id, getFlag(flags, 'comment'), author);
       commentAdded = true;

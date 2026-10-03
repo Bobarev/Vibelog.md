@@ -44,6 +44,7 @@ vibelog init "X" --no-mcp            # без автонастройки MCP-с�
 - `backlog/config.yml` — конфигурация проекта
 - `.qwen/settings.json` — секция `mcpServers.vibelog` (автонастройка MCP для Qwen Code; отключение `--no-mcp`)
 - с `--skills` — команды `/vibelog:spec|plan|code` в `.qwen/commands/vibelog/`
+- `.vibelog/settings.yml` — кэш `git_user_name` (VL-44): имя автора комментариев берётся отсюда, без спавна `git config` на каждый комментарий. При `--force` кэш перечитывается из git config. Файл в `.gitignore` (как `bot.yml`) — машинная настройка, не коммитится. Если кэша нет или он пуст — используется текущий каскад `git config user.name` → `@agent`
 
 Повторный `init` на инициализированном проекте отклоняется; перезапись — `--force`.
 

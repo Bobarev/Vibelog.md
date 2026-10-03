@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, renameSync } from
 import { join } from 'node:path';
 import { findBacklogDir, tasksDir, completedDir } from './paths.js';
 import { loadConfig } from './config.js';
-import { getGitUserName } from './git-user.js';
+import { resolveGitUserName } from './project-settings.js';
 import { createTask, taskToMarkdown, markdownToTask, taskFilename } from './task.js';
 import type { Task, TaskComment, TaskInput } from './task.js';
 import { nextTaskId } from './id.js';
@@ -150,14 +150,15 @@ export function updateTaskFile(cwd: string, id: string, updates: Partial<Task>):
 /**
  * Добавляет комментарий к задаче через штатное сохранение (VL-35).
  *
- * Автор по умолчанию — user.name из git config проекта: однопользовательская
+ * Автор по умолчанию — user.name из кэша .vibelog/settings.yml (заполняется
+ * при init) или git config проекта: однопользовательская
  * система, привязанный чат бота и CLI принадлежат одному пользователю.
  * Формат файла не меняется — совместимость с Backlog.md сохраняется.
  *
  * @param cwd — рабочая директория проекта
  * @param id — ID задачи
  * @param text — текст комментария
- * @param author — автор; по умолчанию git config user.name (затем '@agent')
+ * @param author — автор; по умолчанию кэш settings.yml → git config → '@agent'
  * @returns обновлённая задача
  * @throws если задача не найдена
  */
@@ -166,7 +167,7 @@ export function addComment(cwd: string, id: string, text: string, author?: strin
   if (!task) {
     throw new Error(`Задача не найдена: ${id}`);
   }
-  const resolvedAuthor = author || getGitUserName(cwd);
+  const resolvedAuthor = author || resolveGitUserName(cwd);
   const now = new Date();
   const created = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   const comment: TaskComment = { author: resolvedAuthor, created, text };
