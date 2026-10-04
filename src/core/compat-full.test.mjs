@@ -26,7 +26,7 @@ import { listTools } from '../../dist/mcp/tools.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const BACKLOG = '../Backlog.md';
+const BACKLOG = 'refs/Backlog.md';
 const AVAILABLE = existsSync(join(BACKLOG, 'backlog', 'tasks'));
 
 function skipIfUnavailable() {

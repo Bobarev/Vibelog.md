@@ -1,7 +1,7 @@
 /**
  * Тесты совместимости с реальными файлами Backlog.md.
  *
- * Читает задачи из ../Backlog.md/backlog/
+ * Читает задачи из refs/Backlog.md/backlog/
  * и проверяет, что我们的 парсер корректно их обрабатывает.
  *
  * Статический тест — оригинал Backlog.md не запускается (Catalina).
@@ -17,7 +17,7 @@ import { parseFrontmatter, serializeFrontmatter } from '../../dist/core/frontmat
 import { markdownToTask, taskToMarkdown, taskFilename } from '../../dist/core/task.js';
 import { parseYaml, stringifyYaml } from '../../dist/core/yaml.js';
 
-const BACKLOG_ROOT = '../Backlog.md';
+const BACKLOG_ROOT = 'refs/Backlog.md';
 const TASKS_DIR = join(BACKLOG_ROOT, 'backlog', 'tasks');
 const COMPLETED_DIR = join(BACKLOG_ROOT, 'backlog', 'completed');
 

@@ -31,7 +31,7 @@
 **Порядок работы:**
 
 1. **Прочитай `plan/PLAN-00-OVERVIEW.md`** — общая архитектура и контекст.
-2. **Изучи оригинал Backlog.md** по пути `../Backlog.md` — исходники, формат задач, CLI-команды, MCP-инструменты, конфиг. Особое внимание: `src/`, `backlog/tasks/`, `backlog.config.yml`, `CLI-INSTRUCTIONS.md`, `ADVANCED-CONFIG.md`.
+2. **Изучи оригинал Backlog.md** по пути `refs/Backlog.md` — исходники, формат задач, CLI-команды, MCP-инструменты, конфиг. Особое внимание: `src/`, `backlog/tasks/`, `backlog.config.yml`, `CLI-INSTRUCTIONS.md`, `ADVANCED-CONFIG.md`.
 3. **Начни с `plan/PLAN-01-SCAFFOLD.md`** — структура проекта, `package.json`, pnpm.
 4. **Далее последовательно:** `PLAN-02`, `PLAN-03`, ..., `PLAN-08`.
 
@@ -107,7 +107,7 @@ vibelog task complete <id>
 
 ## Контекст: оригинал Backlog.md
 
-- Путь: `../Backlog.md`
+- Путь: `refs/Backlog.md`
 - Исходники на TypeScript/Bun — **читать можно**, запускать нельзя (Catalina).
 - Изучай `src/` для семантики, но реализуй на чистом Node.js.
 - Проверка совместимости — **статическая** (сравнение форматов файлов), а не через запуск оригинала (см. `plan/PLAN-08-COMPATIBILITY.md`).
@@ -124,7 +124,7 @@ vibelog task complete <id>
 ## Ссылки
 
 - Оригинал: https://github.com/MrLesk/Backlog.md
-- Локально: `../Backlog.md`
+- Локально: `refs/Backlog.md`
 
 <!-- VIBELOG:SKILLS:BEGIN -->
 ## Команды Vibelog

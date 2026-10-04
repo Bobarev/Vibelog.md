@@ -9,7 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Корень проекта Vibelog.md
 const root = join(__dirname, '..', '..');
 // Путь к оригиналу Backlog.md
-const backlogRoot = '../Backlog.md';
+const backlogRoot = 'refs/Backlog.md';
 
 describe('parseFrontmatter', () => {
   it('Файл с frontmatter и телом', () => {
