@@ -1,11 +1,11 @@
 ---
 id: VL-73
 title: Сделать релиз  релиз версии Telegram bot (milestone кажется уже был создан)
-status: Spec
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-04 17:36'
-updated_date: '2026-10-04 18:42'
+updated_date: '2026-10-04 18:46'
 due_date: ''
 labels: []
 dependencies: []
@@ -60,16 +60,16 @@ modified_files: []
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Веха v1.6 назначена всем 39 задачам бот-цикла (VL-34…VL-57, VL-58/59, VL-60…VL-68, VL-70…VL-73); VL-36 и VL-69 веху v1.6 не имеют
-- [ ] #2 package.json version=1.6.0; CHANGELOG: [Unreleased] → [1.6.0] — дата релиза; pnpm build && pnpm test проходят; создан аннотированный git-тег v1.6.0
-- [ ] #3 Выполнен npm publish vibelog.md@1.6.0 и пуш на gitverse без дополнительного согласия (разрешены для релизной задачи; токен npm без 2FA)
+- [x] #1 Веха v1.6 назначена всем 39 задачам бот-цикла (VL-34…VL-57, VL-58/59, VL-60…VL-68, VL-70…VL-73); VL-36 и VL-69 веху v1.6 не имеют
+- [x] #2 package.json version=1.6.0; CHANGELOG: [Unreleased] → [1.6.0] — дата релиза; pnpm build && pnpm test проходят; создан аннотированный git-тег v1.6.0
+- [x] #3 Выполнен npm publish vibelog.md@1.6.0 и пуш на gitverse без дополнительного согласия (разрешены для релизной задачи; токен npm без 2FA)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -185,5 +185,21 @@ created: 2026-10-04 18:20
 - Перед publish — обязательный `node scripts/npm-smoke.mjs` (AGENTS.md, VL-32).
 - Publish и пуш — без согласия (правило в задаче и AGENTS.md).
 **Статус VL-73 не менялся** — план ждёт одобрения; переход к Фазе 3 (Code) сделает пользователь (/vibelog:code VL-73 или /code VL-73).
+---
+author: @agent
+created: 2026-10-04 18:46
+---
+Фаза 3 (Code) выполнена. Релиз v1.6.0 «Telegram Bot» выпущен.
+**Изменено:**
+- 38 задач — веха `milestone: v1.6` (VL-34/35/37…57, VL-60…68, VL-70…73 через MCP; VL-58/59 — патч-скриптом, лежат в backlog/completed/ и MCP их не нашёл — резервный вариант плана).
+- VL-64, VL-65, VL-67, VL-68 — статус To Do → Done (код реализован, сверено в Фазе 2).
+- CHANGELOG.md — `## [Unreleased]` → пустой Unreleased + `## [1.6.0] — 2026-10-04` (весь контент бота под секцией релиза).
+- package.json — version 1.5.0 → 1.6.0.
+- Коммит релиза `4d7535e chore(release): v1.6.0 — Telegram Bot` (41 файл), аннотированный тег `v1.6.0`.
+**Проверки:** pnpm build OK; pnpm test — 449/449; node scripts/npm-smoke.mjs — 16/16; `npm view vibelog.md version` → 1.6.0.
+**Выполнено (решение Pavel 2026-10-04 — без дополнительного согласия):** `npm publish` → vibelog.md@1.6.0 опубликован; пуш на gitverse (master 4d7535e + тег v1.6.0).
+**Расхождение AC1:** в AC указано «39 задач» — счётчик не учитывает исключение VL-36; фактически в вехе 38 задач (VL-34…VL-57 = 24 минус VL-36 = 23; +VL-58/59 +VL-60…68 +VL-70…73). Список в описании задачи корректен, AC не редактировался.
+**Не включено в релиз:** VL-36 (fs.watch, не реализован), VL-69 (веха v1.7), VL-74/75 (вне цикла), backlog/milestones/workflow.md и удалённый v17.md (другая линия вех) — остались незакоммиченными.
+Что осталось: ничего — релиз выпущен, задача закрывается (Done).
 ---
 <!-- COMMENTS:END -->
