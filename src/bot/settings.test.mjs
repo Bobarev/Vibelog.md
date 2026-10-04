@@ -6,7 +6,7 @@
 
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -58,5 +58,56 @@ describe('settings (VL-34)', () => {
       if (savedProxy === undefined) delete process.env.TELEGRAM_PROXY;
       else process.env.TELEGRAM_PROXY = savedProxy;
     }
+  });
+});
+
+describe('task_type_styles (VL-82)', () => {
+  const stylesRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-styles-'));
+
+  after(() => {
+    rmSync(stylesRoot, { recursive: true, force: true });
+  });
+
+  it('отсутствующий bot.yml → дефолты (4 записи)', () => {
+    const loaded = loadBotSettings(join(stylesRoot, 'nonexistent'));
+    assert.deepEqual(loaded.task_type_styles, {
+      bug: 'danger',
+      feature: 'success',
+      enhancement: 'primary',
+      epic: 'primary',
+    });
+  });
+
+  it('пользовательское переопределение перекрывает дефолты', () => {
+    const root = join(stylesRoot, 'override');
+    saveBotSettings(root, { chats: [], task_type_styles: { bug: 'success', docs: 'link' } });
+    const loaded = loadBotSettings(root);
+    assert.deepEqual(loaded.task_type_styles, {
+      bug: 'success', // переопределён пользователем
+      docs: 'link', // новый тип
+      feature: 'success', // дефолт сохранён
+      enhancement: 'primary',
+      epic: 'primary',
+    });
+  });
+
+  it('невалидный стиль отброшен → остаётся дефолт danger', () => {
+    const root = join(stylesRoot, 'invalid');
+    saveBotSettings(root, { chats: [], task_type_styles: { bug: 'green' } });
+    const loaded = loadBotSettings(root);
+    assert.equal(loaded.task_type_styles.bug, 'danger');
+  });
+
+  it('round-trip: в файл попадают только пользовательские стили', () => {
+    const root = join(stylesRoot, 'roundtrip');
+    saveBotSettings(root, { chats: [111], task_type_styles: { bug: 'success' } });
+    const raw = readFileSync(botSettingsPath(root), 'utf-8');
+    // Дефолты в файл не записываем — только пользовательское переопределение
+    assert.ok(raw.includes('bug'));
+    assert.ok(!raw.includes('feature'));
+    assert.ok(!raw.includes('enhancement'));
+    assert.ok(!raw.includes('epic'));
+    const loaded = loadBotSettings(root);
+    assert.equal(loaded.task_type_styles.bug, 'success');
   });
 });

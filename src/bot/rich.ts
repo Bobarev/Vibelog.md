@@ -7,16 +7,27 @@
  *
  * Markdown-файлы задач уже GFM-совместимы — контент вставляется как есть;
  * служебные строки (меты, авторы) собираются здесь. ``` внутри контента
- * экранируются, чтобы не ломать структуру сообщения.
+ * экранируются, чтобы не ломать структуру сообщения; сырые rich-теги
+ * контента оборачиваются в code-разметку (VL-81).
  *
  * Чистые функции без I/O — юнит-тестируемые.
  */
 
 import type { ChecklistItem, Task } from '../core/task.js';
 import type { PhaseRun } from '../web/orchestrator.js';
+import { VALID_TASK_STYLES } from './settings.js';
 
 /** Лимит Rich Message по спецификации Telegram (символов UTF-8). */
 export const RICH_LIMIT = 32768;
+
+/**
+ * Максимум кнопок в одном <tg-button-row> (VL-82 fix).
+ *
+ * InputRichBlockButtons (@grammyjs/types rich.d.ts): «List of 1-8 buttons
+ * to send». Больше 8 кнопок в ряду → сервер отвечает 400
+ * RICH_MESSAGE_BUTTONS_TOO_MANY и rich-сообщение уходит в фолбэк.
+ */
+export const BUTTONS_PER_ROW = 8;
 
 /**
  * Экранирует последовательности ``` внутри пользовательского контента.
@@ -26,6 +37,104 @@ export const RICH_LIMIT = 32768;
  */
 function fenceSafe(text: string): string {
   return text.replace(/```/g, '` ` `');
+}
+/** Имена rich-тегов, которые парсер Telegram интерпретирует как элементы (VL-81). */
+const RICH_TAG = 'tg-button-row|tg-button|details|summary';
+
+/** Тег rich-разметки (с атрибутами) — версия без /g для безопасного .test. */
+const RICH_TAG_RE = new RegExp(`</?(?:${RICH_TAG})[^<>]*>`);
+
+/** Тот же паттерн с флагом /g — для replace по всем вхождениям. */
+const RICH_TAG_G_RE = new RegExp(`</?(?:${RICH_TAG})[^<>]*>`, 'g');
+
+/**
+ * Внутренняя пара одинаковых rich-тегов с содержимым без вложенных тегов.
+ *
+ * Нужна для распознавания «строк целиком из тегов»: вырезая пары изнутри
+ * наружу, получаем только обычный текст, если он есть (иначе строка
+ * считается теговой и уходит в fenced-блок).
+ */
+const INNER_PAIR_G_RE = new RegExp(`<(${RICH_TAG})[^<>]*>[^<>]*<\\/\\1>`, 'g');
+
+/**
+ * Оборачивает сырые rich-теги пользовательского контента в code-разметку (VL-81).
+ *
+ * Сырые <tg-button>/<details>/<summary> в теле задачи парсер Telegram
+ * интерпретирует как настоящие элементы: дублируют кнопки карточки и ломают
+ * вложенные <details> секций. Строки целиком из тегов складываются в
+ * fenced-блок, теги вперемешку с текстом — в inline-бэкитики. Содержимое
+ * существующих fenced-блоков пропускается — там теги уже в коде.
+ */
+function richTagsSafe(text: string): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let inFence = false;
+  let group: string[] = [];
+
+  // Сброс накопленных теговых строк одним fenced-блоком
+  const flush = (): void => {
+    if (group.length === 0) return;
+    out.push('```', ...group, '```');
+    group = [];
+  };
+
+  for (const line of lines) {
+    // Фенс-гарантия: маркер ``` или уже экранированный fenceSafe ` ` `
+    // (contentSafe = richTagsSafe ∘ fenceSafe) — переключаем флаг, строку
+    // не трогаем: внутри фенса теги уже в коде, двойная обёртка ломает рендер
+    if (/^\s*(?:```|` ` `)\s*$/.test(line)) {
+      flush();
+      inFence = !inFence;
+      out.push(line);
+      continue;
+    }
+    if (inFence) {
+      out.push(line);
+      continue;
+    }
+    if (richTagOnlyLine(line)) {
+      group.push(line);
+      continue;
+    }
+    flush();
+    out.push(richTagInlineSafe(line));
+  }
+  flush();
+  return out.join('\n');
+}
+
+/** Строка целиком из rich-тегов (и их содержимого), без обычного текста. */
+function richTagOnlyLine(line: string): boolean {
+  if (!RICH_TAG_RE.test(line)) return false;
+  // Вырезаем внутренние пары вместе с содержимым (снаружи внутрь), затем
+  // одиночные теги; остаток с обычным текстом делает строку «смешанной»
+  let s = line;
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(INNER_PAIR_G_RE, '');
+  } while (s !== prev);
+  s = s.replace(RICH_TAG_G_RE, '');
+  return s.trim().length === 0;
+}
+
+/** Оборачивает каждый rich-тег строки в inline-код (VL-81). */
+function richTagInlineSafe(line: string): string {
+  return line.replace(RICH_TAG_G_RE, (tag) => {
+    // Бэктик внутри атрибутов ломает одинарный inline-код — берём двойной
+    const wrap = tag.includes('`') ? '``' : '`';
+    return `${wrap}${tag}${wrap}`;
+  });
+}
+
+/**
+ * Защита контента задачи перед вставкой в rich-разметку (VL-81).
+ *
+ * Композит: сначала fenceSafe (гасит ``` — richTagsSafe вставляет бэктики,
+ * которые не должны попасть под замену), затем richTagsSafe.
+ */
+function contentSafe(text: string): string {
+  return richTagsSafe(fenceSafe(text));
 }
 
 /** Нормализует элемент чеклиста: строка → {text, unchecked}. */
@@ -41,9 +150,18 @@ function filled(value: string | (ChecklistItem | string)[] | undefined): boolean
   return value.trim().length > 0;
 }
 
-/** Блок «## Заголовок» + контент, либо пустая строка, если секции нет. */
-function section(title: string, content: string): string {
-  return content.trim() ? `## ${title}\n\n${content.trim()}\n` : '';
+/**
+ * Блок секции карточки в expand-детали <details> (VL-78).
+ *
+ * Описание открывается по умолчанию (open=true) — суть задачи видна сразу;
+ * остальные секции свёрнуты, шапка с метой остаётся вне details.
+ * Поддерживается rich-сообщениями Telegram; фолбэк MarkdownV2 details
+ * не содержит (formatTaskDetail не трогаем — по спеке VL-78).
+ */
+function section(title: string, content: string, open = false): string {
+  if (!content.trim()) return '';
+  const attr = open ? ' open' : '';
+  return `<details${attr}><summary>${title}</summary>\n\n${content.trim()}\n\n</details>\n`;
 }
 
 /** Чеклист AC/DoD → task list GFM: - [x] / - [ ]. */
@@ -51,7 +169,7 @@ function checklist(items: (ChecklistItem | string)[]): string {
   return items
     .map((raw) => {
       const { text, checked } = checklistItem(raw);
-      return `- [${checked ? 'x' : ' '}] ${fenceSafe(text)}`;
+      return `- [${checked ? 'x' : ' '}] ${contentSafe(text)}`;
     })
     .join('\n');
 }
@@ -82,6 +200,19 @@ export function nextPhaseForStatus(status: string): NextPhase | null {
 }
 
 /**
+ * Эмодзи фазы для label кнопки следующего этапа (VL-78).
+ *
+ * Карта — ТОЛЬКО для кнопки rich-рендера: nextPhaseForStatus() не меняется,
+ * иначе сломаются тексты уведомлений («Фаза Plan запускается…») и тесты.
+ */
+export const PHASE_EMOJI: Record<NextPhase['phase'], string> = {
+  spec: '▶',
+  plan: '📋',
+  code: '💻',
+  close: '✅',
+};
+
+/**
  * Собирает полный Rich Markdown карточки задачи.
  *
  * @param task — задача (поля frontmatter + секции тела)
@@ -93,15 +224,23 @@ export function renderTaskRich(task: Task): string {
   // Шапка: жирный заголовок + строка меты
   parts.push(`# ${task.id} — ${task.title}\n`);
 
-  // VL-72: callback-кнопка следующего этапа — сразу после заголовка.
-  // Формат tg-button — по @grammyjs/types rich.d.ts; callback_data
-  // next:<id> обрабатывает bot.on('callback_query') в handlers.ts.
+  // VL-72/VL-78: callback-кнопки сразу после заголовка, в центрированном
+  // row: primary — следующий этап (label с эмодзи PHASE_EMOJI), success —
+  // «Комментарий» (показывается всегда: комментарий уместен к любой задаче,
+  // включая Done/Blocked). Формат tg-button-row — по @grammyjs/types
+  // rich.d.ts; callback-данные next:<id>/comment:<id> обрабатывает
+  // bot.on('callback_query') в handlers.ts.
   const next = nextPhaseForStatus(task.status);
+  const buttons: string[] = [];
   if (next) {
-    parts.push(
-      `<tg-button type="callback_data" data="next:${task.id}">${next.label}</tg-button>\n`
+    buttons.push(
+      `<tg-button type="callback_data" style="primary" data="next:${task.id}">${PHASE_EMOJI[next.phase]} ${next.label}</tg-button>`
     );
   }
+  buttons.push(
+    `<tg-button type="callback_data" style="success" data="comment:${task.id}">💬 Комментарий</tg-button>`
+  );
+  parts.push(`<tg-button-row align="center">\n${buttons.join('\n')}\n</tg-button-row>\n`);
 
   const meta: string[] = [];
   if (task.status) meta.push(`**Статус:** ${task.status}`);
@@ -112,7 +251,8 @@ export function renderTaskRich(task: Task): string {
   if (meta.length > 0) parts.push(meta.join('  \n') + '\n');
 
   if (filled(task.description)) {
-    parts.push(section('Описание', fenceSafe(task.description)));
+    // Описание — единственная секция, открытая по умолчанию (VL-78)
+    parts.push(section('Описание', contentSafe(task.description), true));
   }
   if (filled(task.acceptanceCriteria)) {
     parts.push(section('Acceptance Criteria', checklist(task.acceptanceCriteria)));
@@ -121,22 +261,87 @@ export function renderTaskRich(task: Task): string {
     parts.push(section('Definition of Done', checklist(task.definitionOfDone)));
   }
   if (filled(task.implementationPlan)) {
-    parts.push(section('Implementation Plan', fenceSafe(task.implementationPlan)));
+    parts.push(section('Implementation Plan', contentSafe(task.implementationPlan)));
   }
   if (filled(task.implementationNotes)) {
-    parts.push(section('Implementation Notes', fenceSafe(task.implementationNotes)));
+    parts.push(section('Implementation Notes', contentSafe(task.implementationNotes)));
   }
   if (filled(task.finalSummary)) {
-    parts.push(section('Final Summary', fenceSafe(task.finalSummary)));
+    parts.push(section('Final Summary', contentSafe(task.finalSummary)));
   }
   if (task.comments.length > 0) {
     const comments = task.comments
-      .map((c) => `**${c.author}** · ${c.created}\n\n${fenceSafe(c.text)}`)
+      .map((c) => `**${c.author}** · ${c.created}\n\n${contentSafe(c.text)}`)
       .join('\n\n---\n\n');
     parts.push(section('Комментарии', comments));
   }
 
   return parts.join('\n').trim();
+}
+
+/** Ячейка HTML-таблицы: экранирует `&`, `<`, `>` сущностями, переводы строк → пробел (VL-82). */
+function cellSafe(text: string): string {
+  // `&` экранируется первым — иначе подстановка &#38; сама превратится в &amp;38;
+  return text
+    .replace(/&/g, '&#38;')
+    .replace(/</g, '&#60;')
+    .replace(/>/g, '&#62;')
+    .replace(/\r?\n/g, ' ');
+}
+
+/**
+ * Rich-рендер списка задач: таблица + callback-кнопки (VL-82).
+ *
+ * Структура: HTML-таблица <table bordered striped compact> с колонками
+ * ID/Заголовок/Статус/Тип/Приоритет (ID жирный — <b>) и <tg-button-row> с кнопками
+ * task:<id> под таблицей (кнопки дробятся по BUTTONS_PER_ROW=8 на ряд —
+ * лимит Telegram, RICH_MESSAGE_BUTTONS_TOO_MANY). Telegram не принимает
+ * кнопки внутри ячеек таблицы
+ * (rich-таблицы — только inline-форматирование), поэтому колонка «кнопка»
+ * реализована отдельным блоком кнопок; связь — по тексту VL-N в первом столбце.
+ *
+ * Ячейки — HTML (<tr>/<th>/<td>), а НЕ GFM-строки | ... |: по спецификации
+ * rich.d.ts <table> парсится как Rich HTML и принимает только HTML-структуру;
+ * GFM внутри <table> Telegram показывает сырым текстом (жалоба Pavel
+ * 2026-10-04: форматирование таблицы не рендерилось).
+ * Фильтр Done и порядок строк — на стороне вызывающего (handlers /tasks):
+ * рендер ничего не сортирует и не фильтрует. Пустой список → ''.
+ *
+ * @param tasks — невыполненные задачи в порядке вывода
+ * @param styles — маппинг тип→стиль кнопки (task_type_styles из bot.yml)
+ */
+export function renderTasksRich(tasks: Task[], styles: Record<string, string>): string {
+  if (tasks.length === 0) return '';
+  // HTML-таблица по Rich HTML (rich.d.ts): <th> — шапка, <td> — строки.
+  // GFM pipe-строки внутри <table> Telegram не парсит и показывает сырым
+  // текстом (fix VL-82): markdown-режим парсит <table> как HTML-элемент,
+  // его содержимое обязано быть в структуре <tr>/<td>
+  const header =
+    '<tr><th>ID</th><th>Заголовок</th><th>Статус</th><th>Тип</th><th>Приоритет</th></tr>';
+  const rows = tasks.map(
+    (t) =>
+      `<tr><td><b>${cellSafe(t.id)}</b></td><td>${cellSafe(t.title)}</td><td>${cellSafe(t.status)}</td><td>${cellSafe(t.type)}</td><td>${cellSafe(t.priority)}</td></tr>`
+  );
+  const table = ['<table bordered striped compact>', header, ...rows, '</table>'].join('\n');
+  const buttons = tasks.map((t) => {
+    const style = styles[t.type];
+    // Неизвестный тип или невалидный стиль → атрибут style опускается:
+    // Telegram покажет кнопку в дефолтном стиле
+    const styleAttr =
+      style !== undefined && VALID_TASK_STYLES.includes(style) ? ` style="${style}"` : '';
+    return `<tg-button type="callback_data"${styleAttr} data="task:${t.id}">${t.id}</tg-button>`;
+  });
+  // Telegram принимает максимум 8 кнопок в одном ряду (BUTTONS_PER_ROW):
+  // при большем числе сервер отвечает 400 RICH_MESSAGE_BUTTONS_TOO_MANY
+  // и весь rich-вывод /tasks уходит в MarkdownV2-фолбэк. Дробим длинный
+  // список на несколько рядов; порядок кнопок сохраняется.
+  const buttonRows: string[] = [];
+  for (let i = 0; i < buttons.length; i += BUTTONS_PER_ROW) {
+    buttonRows.push(
+      `<tg-button-row>\n${buttons.slice(i, i + BUTTONS_PER_ROW).join('\n')}\n</tg-button-row>`
+    );
+  }
+  return `${table}\n\n${buttonRows.join('\n')}`;
 }
 
 /**

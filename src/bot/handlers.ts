@@ -18,7 +18,13 @@ import {
   formatTaskDetail,
   formatTaskList,
 } from './formatting.js';
-import { chunkRich, nextPhaseForStatus, renderPhaseResultRich, renderTaskRich } from './rich.js';
+import {
+  chunkRich,
+  nextPhaseForStatus,
+  renderPhaseResultRich,
+  renderTaskRich,
+  renderTasksRich,
+} from './rich.js';
 import { loadBotSettings, saveBotSettings } from './settings.js';
 import { commandsHelp } from './registry.js';
 import { spawnReplacementBot } from './restart.js';
@@ -105,6 +111,28 @@ async function sendTaskView(
 }
 
 /**
+ * Список задач по chatId: rich-таблица + кнопки (VL-82), фолбэк —
+ * MarkdownV2-список (formatTaskList). Паттерн sendTaskView/sendPhaseResult:
+ * try sendRichMessage → catch фолбэк для старых Telegram-клиентов.
+ */
+async function sendTasksView(
+  bot: Bot,
+  chatId: number,
+  tasks: Task[],
+  styles: Record<string, string>
+): Promise<void> {
+  try {
+    const rich = renderTasksRich(tasks, styles);
+    for (const part of chunkRich(rich)) {
+      await bot.api.sendRichMessage(chatId, { markdown: part });
+    }
+  } catch (err) {
+    console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
+    await sendText(bot, chatId, formatTaskList(tasks));
+  }
+}
+
+/**
  * Информационное сообщение о завершении фазы по chatId: rich-рендер GFM
  * (VL-71), фолбэк — MarkdownV2 (formatPhaseResult + sendText). Паттерн
  * sendTaskView: лимит rich 32768 — разбивка нужна только для гигантских
@@ -134,6 +162,10 @@ async function sendPhaseResult(bot: Bot, chatId: number, run: PhaseRun): Promise
 export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   // Чаты, ожидающие ввода пина (в памяти процесса, не в файле)
   const awaitingPin = new Set<number>();
+  // Чаты, ожидающие ввода комментария после кнопки «Комментарий» (VL-78):
+  // chatId → id задачи; паттерн awaitingPin — память процесса, рестарт
+  // бота теряет режим ожидания (допустимо — пользователь нажмёт заново)
+  const awaitingComment = new Map<number, string>();
 
   /** Проверка привязки чата; при отсутствии — ответ-подсказка. */
   function requireBind(ctx: Context): boolean {
@@ -161,6 +193,42 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     });
   };
 
+  /**
+   * Общая логика комментария (VL-60 / VL-78): addComment → сообщение →
+   * запуск Фазы Comment с notifyPhaseDone. Используется командой /comment
+   * и callback-кнопкой «Комментарий» — поведение /comment не меняется.
+   * Ошибки пробрасываются вызывающему (обработчик шлёт «Ошибка: …»).
+   */
+  async function commitComment(taskId: string, text: string, chatId: number): Promise<void> {
+    // Автор НЕ передаётся: addComment дефолтит git config user.name —
+    // единый автор для CLI и бота (однопользовательская система, VL-35)
+    const task = addComment(deps.cwd, taskId, text);
+    await sendText(bot, chatId, `💬 Комментарий добавлен к *${task.id}*`);
+    // VL-60: комментарий — не только запись, но и команда для qwen:
+    // сразу после addComment запускаем Фазу Comment — headless qwen
+    // выполняет запрос из комментария и оставляет отчёт комментарием.
+    // Статус НЕ меняется (фаза вне жизненного цикла spec/plan/code/close).
+    // Уведомление — паттерн VL-63: карточка + информационное сообщение.
+    const onExit: PhaseExitCallback = (run) => {
+      notifyPhaseDone(bot, chatId, task, run);
+    };
+    const result = startPhase(deps.cwd, task.id, 'comment', onExit, {
+      comment: text,
+    });
+    if ('error' in result) {
+      // Guard «уже выполняется» и прочие ошибки валидации startPhase:
+      // комментарий уже сохранён — не откатываем, сообщаем явно (VL-60)
+      await sendText(
+        bot,
+        chatId,
+        '⚠️ Комментарий добавлен, но запуск qwen не удался: ' +
+          escapeMarkdownV2(result.error)
+      );
+      return;
+    }
+    await sendText(bot, chatId, `🚀 Фаза Comment запущена для *${task.id}*, PID ${result.pid}`);
+  }
+
   bot.command('start', async (ctx) => {
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return;
@@ -178,7 +246,15 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   bot.command('tasks', async (ctx) => {
     if (!requireBind(ctx)) return;
     const tasks = listTasks(deps.cwd).filter((t) => t.status !== 'Done');
-    await sendMd(ctx, formatTaskList(tasks));
+    // Пустой список — короткий текст «Задач нет» (rich-таблица не строится)
+    if (tasks.length === 0) {
+      await sendMd(ctx, formatTaskList(tasks));
+      return;
+    }
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    // Стили кнопок по типу задачи — task_type_styles из .vibelog/bot.yml (VL-82)
+    await sendTasksView(bot, chatId, tasks, loadBotSettings(deps.cwd).task_type_styles ?? {});
   });
 
   bot.command('task', async (ctx) => {
@@ -263,35 +339,11 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, parsed.error);
       return;
     }
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    // Логика комментария общая с callback-кнопкой «Комментарий» (VL-78)
     try {
-      // Автор НЕ передаётся: addComment дефолтит git config user.name —
-      // единый автор для CLI и бота (однопользовательская система, VL-35)
-      const task = addComment(deps.cwd, parsed.id, parsed.text);
-      await sendMd(ctx, `💬 Комментарий добавлен к *${task.id}*`);
-      // VL-60: комментарий — не только запись, но и команда для qwen:
-      // сразу после addComment запускаем Фазу Comment — headless qwen
-      // выполняет запрос из комментария и оставляет отчёт комментарием.
-      // Статус НЕ меняется (фаза вне жизненного цикла spec/plan/code/close).
-      // Уведомление — паттерн VL-63: карточка + информационное сообщение.
-      const notifyChat = ctx.chat?.id;
-      const onExit: PhaseExitCallback = (run) => {
-        if (notifyChat === undefined) return;
-        notifyPhaseDone(bot, notifyChat, task, run);
-      };
-      const result = startPhase(deps.cwd, task.id, 'comment', onExit, {
-        comment: parsed.text,
-      });
-      if ('error' in result) {
-        // Guard «уже выполняется» и прочие ошибки валидации startPhase:
-        // комментарий уже сохранён — не откатываем, сообщаем явно (VL-60)
-        await sendMd(
-          ctx,
-          '⚠️ Комментарий добавлен, но запуск qwen не удался: ' +
-            escapeMarkdownV2(result.error)
-        );
-        return;
-      }
-      await sendMd(ctx, `🚀 Фаза Comment запущена для *${task.id}*, PID ${result.pid}`);
+      await commitComment(parsed.id, parsed.text, chatId);
     } catch (err) {
       await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -359,13 +411,20 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, `Задача ${escapeMarkdownV2(parsed.id)} не найдена.`);
       return;
     }
+    // Опциональный комментарий (VL-80): сначала в задачу, затем в промпт фазы
+    try {
+      if (parsed.comment) addComment(deps.cwd, task.id, parsed.comment);
+    } catch (err) {
+      await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
     // Колбэк завершения — паттерн VL-63: карточка + информационное сообщение
     const notifyChat = ctx.chat?.id;
     const onExit: PhaseExitCallback = (run) => {
       if (notifyChat === undefined) return;
       notifyPhaseDone(bot, notifyChat, task, run);
     };
-    const result = startPhase(deps.cwd, task.id, 'plan', onExit);
+    const result = startPhase(deps.cwd, task.id, 'plan', onExit, { comment: parsed.comment ?? '' });
     if ('error' in result) {
       // Guard «уже выполняется» и прочие ошибки валидации startPhase
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
@@ -388,13 +447,20 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, `Задача ${escapeMarkdownV2(parsed.id)} не найдена.`);
       return;
     }
+    // Опциональный комментарий (VL-80): как в /plan
+    try {
+      if (parsed.comment) addComment(deps.cwd, task.id, parsed.comment);
+    } catch (err) {
+      await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
     // Колбэк завершения — паттерн VL-63: карточка + информационное сообщение
     const notifyChat = ctx.chat?.id;
     const onExit: PhaseExitCallback = (run) => {
       if (notifyChat === undefined) return;
       notifyPhaseDone(bot, notifyChat, task, run);
     };
-    const result = startPhase(deps.cwd, task.id, 'code', onExit);
+    const result = startPhase(deps.cwd, task.id, 'code', onExit, { comment: parsed.comment ?? '' });
     if ('error' in result) {
       // Guard «уже выполняется» и прочие ошибки валидации startPhase
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
@@ -501,6 +567,54 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   // включая notifyPhaseDone. Регистрируется ДО catch-all message:text.
   bot.on('callback_query', async (ctx) => {
     const data = ctx.callbackQuery?.data ?? '';
+    // ── Кнопка «Комментарий» (VL-78): режим ожидания текста ──
+    // data = comment:<id>. Бот просит ввести комментарий; текст будет
+    // принят обработчиком message:text (awaitingComment) ДО catch-all пина.
+    if (data.startsWith('comment:')) {
+      const id = data.slice('comment:'.length).trim();
+      // answerCallbackQuery обязателен в любом исходе — иначе «часики»
+      if (!requireBind(ctx)) {
+        await ctx
+          .answerCallbackQuery({ text: 'Бот не привязан к чату — выполните /start' })
+          .catch(() => {});
+        return;
+      }
+      const chatId = ctx.chat?.id;
+      const task = getTask(deps.cwd, id);
+      if (chatId === undefined || !task) {
+        await ctx.answerCallbackQuery({ text: `Задача ${id} не найдена.` }).catch(() => {});
+        return;
+      }
+      awaitingComment.set(chatId, task.id);
+      await ctx
+        .answerCallbackQuery({ text: `💬 Введите комментарий для ${task.id}` })
+        .catch(() => {});
+      await sendMd(ctx, `Введите комментарий для *${task.id}*. /cancel — отмена.`);
+      return;
+    }
+    // ── Кнопка задачи в списке /tasks (VL-82): data = task:<id> ──
+    // Полный аналог команды /task VL-N: карточка через sendTaskView
+    // (включая строку фазы VL-43). Регистрируется ДО ветки next: —
+    // префиксы не конфликтуют, порядок по аналогии с comment:.
+    if (data.startsWith('task:')) {
+      const id = data.slice('task:'.length).trim();
+      // answerCallbackQuery обязателен в любом исходе — иначе «часики»
+      if (!requireBind(ctx)) {
+        await ctx
+          .answerCallbackQuery({ text: 'Бот не привязан к чату — выполните /start' })
+          .catch(() => {});
+        return;
+      }
+      const chatId = ctx.chat?.id;
+      const task = getTask(deps.cwd, id);
+      if (chatId === undefined || !task) {
+        await ctx.answerCallbackQuery({ text: `Задача ${id} не найдена.` }).catch(() => {});
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: `📋 ${task.id}` }).catch(() => {});
+      await sendTaskView(bot, chatId, task, getRun(id) ?? undefined);
+      return;
+    }
     if (!data.startsWith('next:')) return; // чужие callback не трогаем
     const id = data.slice('next:'.length).trim();
     // answerCallbackQuery обязателен в любом исходе — иначе «часики» на кнопке
@@ -531,12 +645,43 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       if (notifyChat === undefined) return;
       notifyPhaseDone(bot, notifyChat, task, run);
     };
-    const result = startPhase(deps.cwd, task.id, next.phase, onExit);
+    const result = startPhase(deps.cwd, task.id, next.phase, onExit, { comment: '' });
     if ('error' in result) {
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
       return;
     }
     await sendMd(ctx, `🚀 Фаза ${next.label} запущена для *${task.id}*, PID ${result.pid}`);
+  });
+  // ── Ввод комментария (VL-78): ОБЯЗАТЕЛЬНО ДО catch-all пина ──
+  // Режим ожидания после кнопки «Комментарий»: текст сохраняется через
+  // commitComment (addComment + Фаза Comment). При отсутствии режима —
+  // next() к catch-all пина: message:text-обработчик без next() останавливает
+  // цепочку grammy (ловушка порядка VL-37).
+  bot.on('message:text', async (ctx, next) => {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined || !awaitingComment.has(chatId)) {
+      await next(); // не наш режим — дальше, к catch-all пина
+      return;
+    }
+    const text = ctx.message.text.trim();
+    if (text === '/cancel') {
+      awaitingComment.delete(chatId);
+      await sendMd(ctx, 'Отменено.');
+      return;
+    }
+    if (!text) {
+      // Пустой ввод — повторный промпт, режим ожидания сохраняется
+      await sendMd(ctx, 'Комментарий пуст — введите текст или /cancel.');
+      return;
+    }
+    const taskId = awaitingComment.get(chatId) ?? '';
+    // Удаляем ДО async-работы — защита от двойного ввода, пока идёт addComment
+    awaitingComment.delete(chatId);
+    try {
+      await commitComment(taskId, text, chatId);
+    } catch (err) {
+      await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
+    }
   });
   // Ввод пина — ОБЯЗАТЕЛЬНО ПОСЛЕ ВСЕХ bot.command: catch-all message:text
   // перехватывает любое текстовое сообщение и без next() останавливает

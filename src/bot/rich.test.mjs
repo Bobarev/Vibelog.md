@@ -7,10 +7,12 @@ import assert from 'node:assert/strict';
 
 import {
   renderTaskRich,
+  renderTasksRich,
   renderPhaseResultRich,
   chunkRich,
   RICH_LIMIT,
   nextPhaseForStatus,
+  PHASE_EMOJI,
 } from '../../dist/bot/rich.js';
 
 const fullTask = {
@@ -59,22 +61,25 @@ describe('renderTaskRich (VL-39)', () => {
     assert.match(md, /\*\*Срок:\*\* 2026-10-05/);
   });
 
-  it('AC/DoD — task list с отметками', () => {
+  it('AC/DoD — task list с отметками в details-блоках (VL-78)', () => {
     const md = renderTaskRich(fullTask);
-    assert.match(md, /## Acceptance Criteria\n\n- \[x\] Каркас работает\n- \[ \] Пин-код генерируется/);
-    assert.match(md, /## Definition of Done\n\n- \[x\] Тесты проходят/);
+    assert.match(
+      md,
+      /<details><summary>Acceptance Criteria<\/summary>\n\n- \[x\] Каркас работает\n- \[ \] Пин-код генерируется/
+    );
+    assert.match(md, /<details><summary>Definition of Done<\/summary>\n\n- \[x\] Тесты проходят/);
   });
 
-  it('секции plan/summary присутствуют, пустые notes опущены', () => {
+  it('секции plan/summary присутствуют, пустые notes опущены (VL-78)', () => {
     const md = renderTaskRich(fullTask);
-    assert.match(md, /## Implementation Plan\n\n1\. Создать модули/);
-    assert.match(md, /## Final Summary\n\nГотово/);
+    assert.match(md, /<details><summary>Implementation Plan<\/summary>\n\n1\. Создать модули/);
+    assert.match(md, /<details><summary>Final Summary<\/summary>\n\nГотово/);
     assert.doesNotMatch(md, /Implementation Notes/);
   });
 
-  it('комментарии: автор, дата, разделитель', () => {
+  it('комментарии: автор, дата, разделитель (в details, VL-78)', () => {
     const md = renderTaskRich(fullTask);
-    assert.match(md, /## Комментарии/);
+    assert.match(md, /<details><summary>Комментарии<\/summary>/);
     assert.match(md, /\*\*@agent\*\* · 2026-10-02 12:00\n\nФаза выполнена/);
     assert.match(md, /\n\n---\n\n\*\*Pavel\*\*/);
   });
@@ -100,15 +105,18 @@ describe('renderTaskRich (VL-39)', () => {
     const md = renderTaskRich(minimal);
     assert.match(md, /^# VL-34/);
     assert.doesNotMatch(md, /## /);
+    // секций нет — details тоже нет; comment-кнопка есть (безусловная)
+    assert.doesNotMatch(md, /<details/);
+    assert.match(md, /data="comment:VL-34"/);
   });
 });
 
 describe('Кнопка следующего этапа (VL-72)', () => {
-  it('кнопка сразу после заголовка, data next:<id>', () => {
+  it('кнопки в центрированном row: next primary + comment success (VL-78)', () => {
     const md = renderTaskRich({ ...fullTask, status: 'To Do' });
     assert.match(
       md,
-      /^# VL-34 — Telegram-бот: каркас\n\n<tg-button type="callback_data" data="next:VL-34">Spec<\/tg-button>/
+      /^# VL-34 — Telegram-бот: каркас\n\n<tg-button-row align="center">\n<tg-button type="callback_data" style="primary" data="next:VL-34">▶ Spec<\/tg-button>\n<tg-button type="callback_data" style="success" data="comment:VL-34">💬 Комментарий<\/tg-button>\n<\/tg-button-row>/
     );
   });
 
@@ -123,10 +131,174 @@ describe('Кнопка следующего этапа (VL-72)', () => {
     assert.equal(nextPhaseForStatus('QA'), null);
   });
 
-  it('кнопки нет для Done, Blocked и неизвестного статуса', () => {
-    assert.doesNotMatch(renderTaskRich(fullTask), /tg-button/); // Done
-    assert.doesNotMatch(renderTaskRich({ ...fullTask, status: 'Blocked' }), /tg-button/);
-    assert.doesNotMatch(renderTaskRich({ ...fullTask, status: 'QA' }), /tg-button/);
+  it('next-кнопки нет для Done/Blocked/неизвестного; comment-кнопка всегда (VL-78)', () => {
+    for (const status of ['Done', 'Blocked', 'QA']) {
+      const md = renderTaskRich({ ...fullTask, status });
+      assert.doesNotMatch(md, /next:/, `next-кнопка не должна быть для ${status}`);
+      assert.doesNotMatch(
+        md,
+        /<tg-button-row align="center">\n<tg-button[^>]*primary/,
+        `primary-row без next не должен быть для ${status}`
+      );
+      assert.match(
+        md,
+        /<tg-button type="callback_data" style="success" data="comment:VL-34">💬 Комментарий<\/tg-button>/,
+        `comment-кнопка обязательна для ${status}`
+      );
+    }
+  });
+});
+
+describe('Карточка VL-78 (expand-блоки + кнопки)', () => {
+  it('Описание открыта по умолчанию, остальные секции свёрнуты', () => {
+    const md = renderTaskRich(fullTask);
+    assert.match(md, /<details open><summary>Описание<\/summary>/);
+    assert.match(md, /<details><summary>Acceptance Criteria<\/summary>/);
+    assert.match(md, /<details><summary>Definition of Done<\/summary>/);
+    assert.match(md, /<details><summary>Implementation Plan<\/summary>/);
+    assert.match(md, /<details><summary>Final Summary<\/summary>/);
+    assert.match(md, /<details><summary>Комментарии<\/summary>/);
+  });
+
+  it('шапка с метой — вне details, видна всегда', () => {
+    const md = renderTaskRich(fullTask);
+    // Меты идут после кнопок, но до первого details — свёрнутые секции не прячут шапку
+    const header = md.slice(0, md.indexOf('<details'));
+    assert.match(header, /^# VL-34 — Telegram-бот: каркас/);
+    assert.match(header, /\*\*Статус:\*\* Done/);
+    assert.match(header, /\*\*Срок:\*\* 2026-10-05/);
+  });
+
+  it('обе кнопки в одном row: primary + success', () => {
+    const md = renderTaskRich({ ...fullTask, status: 'To Do' });
+    const row = md.slice(md.indexOf('<tg-button-row'), md.indexOf('</tg-button-row>'));
+    assert.match(row, /style="primary" data="next:VL-34"/);
+    assert.match(row, /style="success" data="comment:VL-34"/);
+  });
+
+  it('PHASE_EMOJI: соответствие фаз → эмодзи и label в кнопке', () => {
+    assert.equal(PHASE_EMOJI.spec, '▶');
+    assert.equal(PHASE_EMOJI.plan, '📋');
+    assert.equal(PHASE_EMOJI.code, '💻');
+    assert.equal(PHASE_EMOJI.close, '✅');
+    const cases = [
+      ['To Do', '▶ Spec'],
+      ['Spec', '📋 Plan'],
+      ['Planned', '💻 Code'],
+      ['In Progress', '💻 Code'],
+      ['Review', '✅ Close'],
+    ];
+    for (const [status, label] of cases) {
+      const md = renderTaskRich({ ...fullTask, status });
+      assert.ok(md.includes(`>${label}</tg-button>`), `label «${label}» для ${status}`);
+    }
+  });
+});
+
+describe('Сырые rich-теги в контенте (VL-81)', () => {
+  // Удаляет fenced-блоки и inline-код — остаётся «сырой» текст сообщения
+  const stripCode = (md) => md.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '');
+
+  const taggedTask = (over) => ({
+    ...fullTask,
+    status: 'Planned',
+    priority: '',
+    assignee: [],
+    labels: [],
+    due_date: '',
+    description: '',
+    acceptanceCriteria: [],
+    definitionOfDone: [],
+    implementationPlan: '',
+    finalSummary: '',
+    comments: [],
+    ...over,
+  });
+
+  it('теги целиком строками → fenced-блок, сырых тегов вне кода нет', () => {
+    const md = renderTaskRich(
+      taggedTask({
+        description:
+          '<tg-button type="callback_data" data="next:VL-1">X</tg-button>\n<details><summary>Заголовок</summary>...</details>',
+      })
+    );
+    // Обе теговые строки складываются в один fenced-блок (указание Pavel 21:19)
+    assert.match(
+      md,
+      /```\n<tg-button type="callback_data" data="next:VL-1">X<\/tg-button>\n<details><summary>Заголовок<\/summary>\.\.\.<\/details>\n```/
+    );
+    const raw = stripCode(md);
+    // Сырых тегов контента вне code-разметки не остаётся
+    assert.doesNotMatch(raw, /next:VL-1/);
+    assert.doesNotMatch(raw, /<details><summary>Заголовок/);
+    // Служебный ряд кнопок рендера — единственный
+    assert.equal((md.match(/<tg-button-row/g) || []).length, 1);
+    // Секция «Описание» не сломана
+    assert.match(md, /<details open><summary>Описание<\/summary>/);
+  });
+
+  it('тег вперемешку с текстом → inline-бэкитики, текст сохранён', () => {
+    const md = renderTaskRich(
+      taggedTask({
+        description:
+          'используй <tg-button type="callback_data" data="next:VL-1">X</tg-button> для кнопки',
+      })
+    );
+    assert.match(
+      md,
+      /используй `<tg-button type="callback_data" data="next:VL-1">`X`<\/tg-button>` для кнопки/
+    );
+  });
+
+  it('теги внутри ```-блока не удваиваются (fence-guard)', () => {
+    const md = renderTaskRich(
+      taggedTask({
+        description: '```\n<tg-button type="callback_data" data="next:VL-1">X</tg-button>\n```',
+      })
+    );
+    // Ровно один оборачивающий слой: экранированный fenceSafe-фенс, без
+    // дополнительных бэктиков от richTagsSafe
+    assert.match(
+      md,
+      /` ` `\n<tg-button type="callback_data" data="next:VL-1">X<\/tg-button>\n` ` `/
+    );
+    assert.equal((md.match(/next:VL-1/g) || []).length, 1);
+  });
+
+  it('AC/DoD: тег в элементе checklist — в code-разметке', () => {
+    const md = renderTaskRich(
+      taggedTask({
+        acceptanceCriteria: [
+          {
+            text: 'Кнопка <tg-button type="callback_data" data="next:VL-1">X</tg-button> добавлена',
+            checked: false,
+          },
+        ],
+        definitionOfDone: [{ text: 'Проверить <details> в описании', checked: true }],
+      })
+    );
+    assert.match(
+      md,
+      /- \[ \] Кнопка `<tg-button type="callback_data" data="next:VL-1">`X`<\/tg-button>` добавлена/
+    );
+    assert.match(md, /- \[x\] Проверить `<details>` в описании/);
+  });
+
+  it('служебная разметка карточки не затронута (VL-72/78)', () => {
+    const md = renderTaskRich(
+      taggedTask({
+        description: '<details><summary>Заголовок</summary>...</details>',
+        acceptanceCriteria: [{ text: 'Критерий <tg-button>x</tg-button>', checked: false }],
+      })
+    );
+    // Кнопки рендера: next (статус Planned → Code) + comment, один row
+    assert.match(md, /data="next:VL-34">💻 Code<\/tg-button>/);
+    assert.match(md, /data="comment:VL-34">💬 Комментарий<\/tg-button>/);
+    assert.equal((md.match(/<tg-button-row/g) || []).length, 1);
+    // Обёртки секций сохраняют служебные details/summary; теги контента — в коде
+    const raw = stripCode(md);
+    assert.match(raw, /<details><summary>Acceptance Criteria<\/summary>/);
+    assert.doesNotMatch(raw, /<details><summary>Заголовок/);
   });
 });
 
@@ -219,5 +391,100 @@ describe('chunkRich (VL-39)', () => {
 
   it('лимит по умолчанию — RICH_LIMIT', () => {
     assert.equal(RICH_LIMIT, 32768);
+  });
+});
+
+describe('renderTasksRich (VL-82)', () => {
+  const task = (over) => ({
+    ...fullTask,
+    id: 'VL-1',
+    title: 'Заголовок',
+    status: 'To Do',
+    type: 'bug',
+    priority: 'High',
+    ...over,
+  });
+
+  it('шапка таблицы: HTML <tr>/<th>, все 5 колонок, ID жирный', () => {
+    const md = renderTasksRich([task()], {});
+    assert.ok(md.includes('<table bordered striped compact>'));
+    assert.ok(
+      md.includes(
+        '<tr><th>ID</th><th>Заголовок</th><th>Статус</th><th>Тип</th><th>Приоритет</th></tr>'
+      )
+    );
+    assert.ok(md.includes('<b>VL-1</b>'));
+    // GFM-строки | ... | внутри <table> Telegram показывает сырым текстом —
+    // в рендере их быть не должно (fix VL-82)
+    assert.ok(!md.includes('| --- |'));
+  });
+
+  it('порядок строк — как во входном массиве (фильтрация не в рендере)', () => {
+    const md = renderTasksRich([task({ id: 'VL-2', status: 'Done' }), task({ id: 'VL-1' })], {});
+    assert.ok(md.indexOf('<b>VL-2</b>') < md.indexOf('<b>VL-1</b>'));
+  });
+
+  it('tg-button-row: data="task:VL-N", текст кнопки = ID', () => {
+    const md = renderTasksRich([task(), task({ id: 'VL-7' })], {});
+    assert.ok(md.includes('<tg-button-row>'));
+    assert.ok(md.includes('<tg-button type="callback_data" data="task:VL-1">VL-1</tg-button>'));
+    assert.ok(md.includes('<tg-button type="callback_data" data="task:VL-7">VL-7</tg-button>'));
+  });
+
+  it('стили по типу: bug→danger, feature→success, enhancement→primary, epic→primary', () => {
+    const styles = { bug: 'danger', feature: 'success', enhancement: 'primary', epic: 'primary' };
+    const md = renderTasksRich(
+      [
+        task({ id: 'VL-1', type: 'bug' }),
+        task({ id: 'VL-2', type: 'feature' }),
+        task({ id: 'VL-3', type: 'enhancement' }),
+        task({ id: 'VL-4', type: 'epic' }),
+      ],
+      styles
+    );
+    assert.ok(md.includes('style="danger" data="task:VL-1"'));
+    assert.ok(md.includes('style="success" data="task:VL-2"'));
+    assert.ok(md.includes('style="primary" data="task:VL-3"'));
+    assert.ok(md.includes('style="primary" data="task:VL-4"'));
+  });
+
+  it('неизвестный тип и пустой styles → кнопка без атрибута style', () => {
+    const mdUnknown = renderTasksRich([task({ type: 'docs' })], { bug: 'danger' });
+    assert.ok(mdUnknown.includes('<tg-button type="callback_data" data="task:VL-1">'));
+    const mdEmpty = renderTasksRich([task()], {});
+    assert.ok(mdEmpty.includes('<tg-button type="callback_data" data="task:VL-1">'));
+    assert.ok(!mdEmpty.includes('style='));
+  });
+
+  it('спецсимволы HTML экранируются в ячейках — таблица не ломается', () => {
+    const md = renderTasksRich([task({ title: 'A < B & C > D' })], {});
+    assert.ok(md.includes('A &#60; B &#38; C &#62; D'));
+    // `|` в HTML-ячейке безопасен как есть — обратный слэш не добавляется
+    const mdPipe = renderTasksRich([task({ title: 'A | B' })], {});
+    assert.ok(mdPipe.includes('<td>A | B</td>'));
+  });
+
+  it('пустой массив → пустая строка', () => {
+    assert.equal(renderTasksRich([], {}), '');
+  });
+
+  it('больше 8 кнопок → несколько tg-button-row по ≤8 кнопок (fix RICH_MESSAGE_BUTTONS_TOO_MANY)', () => {
+    const tasks = Array.from({ length: 10 }, (_, i) => task({ id: `VL-${i + 1}` }));
+    const md = renderTasksRich(tasks, {});
+    const rowBlocks = md.split('<tg-button-row>').slice(1);
+    assert.equal(rowBlocks.length, 2, '10 кнопок → 2 ряда (8 + 2)');
+    for (const block of rowBlocks) {
+      const count = (block.match(/<tg-button /g) || []).length;
+      assert.ok(count >= 1 && count <= 8, `в ряду ${count} кнопок (допустимо 1-8)`);
+    }
+    for (let i = 1; i <= 10; i++) {
+      assert.ok(md.includes(`data="task:VL-${i}"`), `кнопка VL-${i} на месте`);
+    }
+  });
+
+  it('ровно 8 кнопок → один ряд', () => {
+    const tasks = Array.from({ length: 8 }, (_, i) => task({ id: `VL-${i + 1}` }));
+    const md = renderTasksRich(tasks, {});
+    assert.equal((md.match(/<tg-button-row>/g) || []).length, 1);
   });
 });
