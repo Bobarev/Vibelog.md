@@ -32,14 +32,16 @@ export interface SpecCommand {
   description: string;
 }
 
-/** Результат разбора /plan. */
+/** Результат разбора /plan. Опциональный комментарий — хвост после ID (VL-80). */
 export interface PlanCommand {
   id: string;
+  comment?: string;
 }
 
-/** Результат разбора /code. */
+/** Результат разбора /code. Опциональный комментарий — хвост после ID (VL-80). */
 export interface CodeCommand {
   id: string;
+  comment?: string;
 }
 
 /** Результат разбора /close. */
@@ -166,34 +168,42 @@ export function parseSpecCommand(text: string): SpecCommand | { error: string } 
 }
 
 /**
- * Разбирает /plan: «VL-1» — только ID задачи (первое слово).
+ * Разбирает /plan: «VL-1» или «VL-1 комментарий» (VL-80).
+ * Комментарий — хвост после ID, как в /comment; но опционален:
+ * /plan VL-1 без хвоста обязан работать (регрессия VL-50).
  *
  * @param text — аргументы команды (без слова /plan)
- * @returns {id} или {error} с подсказкой
+ * @returns {id, comment?} или {error} с подсказкой
  */
 export function parsePlanCommand(text: string): PlanCommand | { error: string } {
-  const hint = 'Синтаксис: /plan VL-<id>';
+  const hint = 'Синтаксис: /plan VL-<id> [комментарий]';
   const trimmed = text.trim();
   if (!trimmed) return { error: hint };
-  // ID — первое слово; хвостовой текст игнорируется (lenient, как в /status)
-  const id = trimmed.split(/\s+/)[0];
+  const spaceIdx = trimmed.indexOf(' ');
+  if (spaceIdx === -1) return { id: trimmed };
+  const id = trimmed.slice(0, spaceIdx).trim();
+  const comment = trimmed.slice(spaceIdx + 1).trim();
   if (!id) return { error: hint };
-  return { id };
+  // Ключ comment добавляем ТОЛЬКО при наличии — иначе сломаются deepEqual-тесты
+  return comment ? { id, comment } : { id };
 }
 
 /**
- * Разбирает /code: «VL-1» — только ID задачи (первое слово).
+ * Разбирает /code: «VL-1» или «VL-1 комментарий» (VL-80), как /plan.
  *
  * @param text — аргументы команды (без слова /code)
- * @returns {id} или {error} с подсказкой
+ * @returns {id, comment?} или {error} с подсказкой
  */
 export function parseCodeCommand(text: string): CodeCommand | { error: string } {
-  const hint = 'Синтаксис: /code VL-<id>';
+  const hint = 'Синтаксис: /code VL-<id> [комментарий]';
   const trimmed = text.trim();
   if (!trimmed) return { error: hint };
-  const id = trimmed.split(/\s+/)[0];
+  const spaceIdx = trimmed.indexOf(' ');
+  if (spaceIdx === -1) return { id: trimmed };
+  const id = trimmed.slice(0, spaceIdx).trim();
+  const comment = trimmed.slice(spaceIdx + 1).trim();
   if (!id) return { error: hint };
-  return { id };
+  return comment ? { id, comment } : { id };
 }
 
 /**

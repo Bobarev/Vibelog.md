@@ -135,6 +135,25 @@ describe('orchestrator (VL-28)', () => {
     assert.doesNotMatch(withComment, /\{\{comment\}\}/);
   });
 
+  it('renderPrompt plan/code подставляет {{comment}} из extraVars (VL-80)', () => {
+    const plan = renderPrompt('plan', 'VL-80', { comment: 'учти риски' });
+    assert.match(plan, /учти риски/);
+    assert.doesNotMatch(plan, /\{\{comment\}\}/);
+
+    const code = renderPrompt('code', 'VL-80', { comment: 'делай по плану' });
+    assert.match(code, /делай по плану/);
+    assert.doesNotMatch(code, /\{\{comment\}\}/);
+  });
+
+  it('renderPrompt plan/code без extraVars сохраняет литеральный {{comment}} (VL-80)', () => {
+    // Контракт фолбэка шаблона (web-trigger без extraVars, как у comment-фазы):
+    // строка-заглушка просит агента продолжать без комментария
+    const plan = renderPrompt('plan', 'VL-80');
+    assert.match(plan, /\{\{comment\}\}/);
+    const code = renderPrompt('code', 'VL-80');
+    assert.match(code, /\{\{comment\}\}/);
+  });
+
   it('startPhase: спавн, double-trigger guard, getRun после завершения', async () => {
     const marker = join(testRoot, 'marker1.txt');
     process.env.VL28_STUB_MARKER = marker;

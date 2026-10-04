@@ -102,8 +102,19 @@ describe('parsePlanCommand (VL-50)', () => {
     assert.deepEqual(parsePlanCommand('  VL-49  '), { id: 'VL-49' });
   });
 
-  it('хвостовой текст игнорируется (первое слово)', () => {
-    assert.deepEqual(parsePlanCommand('VL-49 ещё что-то'), { id: 'VL-49' });
+  it('хвостовой текст становится комментарием (VL-80)', () => {
+    assert.deepEqual(parsePlanCommand('VL-49 ещё что-то'), { id: 'VL-49', comment: 'ещё что-то' });
+  });
+
+  it('комментарий из нескольких слов целиком (VL-80)', () => {
+    assert.deepEqual(parsePlanCommand('VL-49 учти риски и тесты'), {
+      id: 'VL-49',
+      comment: 'учти риски и тесты',
+    });
+  });
+
+  it('хвост только из пробелов → без ключа comment (VL-80)', () => {
+    assert.deepEqual(parsePlanCommand('VL-49   '), { id: 'VL-49' });
   });
 
   it('пустая строка и пробелы → error с подсказкой', () => {
@@ -113,6 +124,7 @@ describe('parsePlanCommand (VL-50)', () => {
     assert.ok('error' in e2);
     assert.match(e1.error, /Синтаксис/);
     assert.match(e1.error, /\/plan/);
+    assert.match(e1.error, /\[комментарий\]/);
   });
 });
 
@@ -125,8 +137,19 @@ describe('parseCodeCommand (VL-53)', () => {
     assert.deepEqual(parseCodeCommand('  VL-50  '), { id: 'VL-50' });
   });
 
-  it('хвостовой текст игнорируется (первое слово)', () => {
-    assert.deepEqual(parseCodeCommand('VL-50 ещё что-то'), { id: 'VL-50' });
+  it('хвостовой текст становится комментарием (VL-80)', () => {
+    assert.deepEqual(parseCodeCommand('VL-50 ещё что-то'), { id: 'VL-50', comment: 'ещё что-то' });
+  });
+
+  it('комментарий из нескольких слов целиком (VL-80)', () => {
+    assert.deepEqual(parseCodeCommand('VL-50 делай по плану без рефакторинга'), {
+      id: 'VL-50',
+      comment: 'делай по плану без рефакторинга',
+    });
+  });
+
+  it('хвост только из пробелов → без ключа comment (VL-80)', () => {
+    assert.deepEqual(parseCodeCommand('VL-50   '), { id: 'VL-50' });
   });
 
   it('пустая строка и пробелы → error с подсказкой', () => {
@@ -136,6 +159,7 @@ describe('parseCodeCommand (VL-53)', () => {
     assert.ok('error' in e2);
     assert.match(e1.error, /Синтаксис/);
     assert.match(e1.error, /\/code/);
+    assert.match(e1.error, /\[комментарий\]/);
   });
 });
 

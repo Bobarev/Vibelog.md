@@ -43,7 +43,7 @@ describe('BOT_COMMANDS (VL-54)', () => {
   it('commandsHelp() повторяет прежний хардкод help-строки /start', () => {
     assert.equal(
       commandsHelp(),
-      '/tasks, /task <id>, /board, /create, /status, /comment, /spec, /plan, /code, /close, /prompt <текст>, /restart'
+      '/tasks, /task <id>, /board, /create, /status, /comment, /spec, /plan VL-<id> [комментарий], /code VL-<id> [комментарий], /close, /prompt <текст>, /restart'
     );
   });
 });
