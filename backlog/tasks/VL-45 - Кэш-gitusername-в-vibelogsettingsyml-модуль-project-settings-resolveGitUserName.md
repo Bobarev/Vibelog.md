@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-02 23:13'
-updated_date: '2026-10-03 12:38'
+updated_date: '2026-10-04 18:42'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.6
 references: []
 priority: high
 type: ''
@@ -47,7 +47,7 @@ modified_files: []
 
 ## Comments
 <!-- COMMENTS:BEGIN -->
-author:  @agent
+author: @agent
 created: 2026-10-03 12:38
 ---
 Задача закрыта (Фаза Comment по VL-44): реализация выполнена в Фазе 3 эпика и закоммичена (e5df3aa/cff8b2e). Проверено: src/core/project-settings.ts существует (projectSettingsPath/loadProjectSettings/saveProjectSettings + resolveGitUserName с fallback на getGitUserName), src/core/project-settings.test.mjs — 8 тестов. AC/DoD отмечены. Статус: Done.

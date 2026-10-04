@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-03 15:18'
-updated_date: '2026-10-03 15:52'
+updated_date: '2026-10-04 18:42'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.6
 references: []
 priority: ''
 type: ''
@@ -186,7 +186,7 @@ created: 2026-10-03 15:45
 **Проверки:** pnpm typecheck OK; pnpm test — 425/425 (все существующие + 11 новых); smoke renderPrompt('prompt', '', {prompt:'сделай коммиты'}) — запрос подставлен.
 Что осталось: ручной smoke бота с реальным TELEGRAM_BOT_TOKEN (опционально, требует сети); остановка активного /prompt из бота — вне scope (задокументировано в user-guide).
 ---
-author:  @agent
+author: @agent
 created: 2026-10-03 15:52
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: 9064964 — команда /prompt: произвольный запрос через qwen без задачи (VL-67, VL-68).

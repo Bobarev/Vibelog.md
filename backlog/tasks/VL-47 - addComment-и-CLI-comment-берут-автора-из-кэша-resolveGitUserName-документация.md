@@ -5,13 +5,13 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-02 23:13'
-updated_date: '2026-10-03 12:38'
+updated_date: '2026-10-04 18:42'
 due_date: ''
 labels: []
 dependencies:
   - VL-45
   - VL-46
-milestone: ''
+milestone: v1.6
 references: []
 priority: high
 type: ''
@@ -50,7 +50,7 @@ MCP toolAddComment (src/mcp/tools.ts:650) НЕ трогать — он дефо�
 
 ## Comments
 <!-- COMMENTS:BEGIN -->
-author:  @agent
+author: @agent
 created: 2026-10-03 12:38
 ---
 Задача закрыта (Фаза Comment по VL-44): реализация выполнена в Фазе 3 эпика и закоммичена (e5df3aa/cff8b2e). Проверено: src/core/store.ts:12,170 и src/cli/commands/task.ts:25,468 используют resolveGitUserName; docs/user-guide.md:47 описывает .vibelog/settings.yml; регрессий нет — pnpm test 394/394. AC/DoD отмечены. Статус: Done.

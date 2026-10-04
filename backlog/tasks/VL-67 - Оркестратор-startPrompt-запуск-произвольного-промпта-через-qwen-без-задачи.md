@@ -1,15 +1,15 @@
 ---
 id: VL-67
 title: 'Оркестратор: startPrompt — запуск произвольного промпта через qwen без задачи'
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-03 15:21'
-updated_date: '2026-10-03 15:21'
+updated_date: '2026-10-04 18:42'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.6
 references: []
 priority: high
 type: ''

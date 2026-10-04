@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-02 23:27'
-updated_date: '2026-10-02 23:36'
+updated_date: '2026-10-04 18:42'
 due_date: ''
 labels:
   - telegram-bot
@@ -14,7 +14,7 @@ labels:
 dependencies:
   - VL-42
   - VL-43
-milestone: ''
+milestone: v1.6
 references: []
 priority: high
 type: feature

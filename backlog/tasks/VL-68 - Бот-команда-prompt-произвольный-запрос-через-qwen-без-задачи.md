@@ -1,16 +1,16 @@
 ---
 id: VL-68
 title: 'Бот: команда /prompt — произвольный запрос через qwen без задачи'
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-03 15:21'
-updated_date: '2026-10-03 15:21'
+updated_date: '2026-10-04 18:42'
 due_date: ''
 labels: []
 dependencies:
   - VL-67
-milestone: ''
+milestone: v1.6
 references: []
 priority: high
 type: ''

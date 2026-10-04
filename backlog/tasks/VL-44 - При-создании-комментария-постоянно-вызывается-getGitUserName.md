@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-02 23:09'
-updated_date: '2026-10-03 12:45'
+updated_date: '2026-10-04 18:42'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.6
 references: []
 priority: ''
 type: ''
@@ -167,22 +167,18 @@ created: 2026-10-03 12:43
 ---
 Коммит надо было ещё сделать для всех этих задач
 ---
-author:  @agent
+author: @agent
 created: 2026-10-03 12:45
 ---
 Фаза Comment выполнена: проверен запрос на коммит по задачам эпика VL-44.
-
 **Состояние git:** незакоммиченных изменений ровно 5 файлов — все это обновления backlog-документации после закрытия подзадач:
 - `backlog/tasks/VL-44 - ...getGitUserName.md` — updated_date, новые комментарии (12:37, 12:39, 12:43)
 - `backlog/tasks/VL-45 - ...resolveGitUserName.md` — статус To Do → Done, AC/DoD отмечены, комментарий-отчёт
 - `backlog/tasks/VL-46 - ...vibelogsettingsyml.md` — статус To Do → Done, AC/DoD отмечены, комментарий-отчёт
 - `backlog/tasks/VL-47 - ...resolveGitUserName-документация.md` — статус To Do → Done, AC/DoD отмечены, комментарий-отчёт
 - `templates/qwen-commands/phase-comment.md` — мелкая правка формулировки шага 3 шаблона
-
 Исходный код эпика был закоммичен ранее (коммиты e5df3aa и cff8b2e) — новых изменений src/ нет.
-
 **Коммит не выполнен:** правила Фазы Comment запрещают git-операции (commit/push) — только правки файлов и проверки. Поэтому запрос на автоматический коммит не выполнен намеренно.
-
 **Что сделать вручную** (или переоткрыть задачу для Фазы Close):
 ```
 git add backlog/tasks templates/qwen-commands/phase-comment.md

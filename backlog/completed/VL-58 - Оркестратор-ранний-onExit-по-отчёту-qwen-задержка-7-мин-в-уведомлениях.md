@@ -12,7 +12,7 @@ labels:
   - qwen
   - latency
 dependencies: []
-milestone: ''
+milestone: v1.6
 references: []
 priority: high
 type: ''

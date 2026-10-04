@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-02 23:42'
-updated_date: '2026-10-03 02:37'
+updated_date: '2026-10-04 18:42'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.6
 references: []
 priority: ''
 type: ''

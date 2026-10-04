@@ -13,7 +13,7 @@ labels:
   - refactor
 dependencies:
   - VL-58
-milestone: ''
+milestone: v1.6
 references: []
 priority: high
 type: ''

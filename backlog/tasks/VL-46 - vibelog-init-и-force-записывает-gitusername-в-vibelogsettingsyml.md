@@ -5,12 +5,12 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-02 23:13'
-updated_date: '2026-10-03 12:38'
+updated_date: '2026-10-04 18:42'
 due_date: ''
 labels: []
 dependencies:
   - VL-45
-milestone: ''
+milestone: v1.6
 references: []
 priority: high
 type: ''
@@ -47,7 +47,7 @@ modified_files: []
 
 ## Comments
 <!-- COMMENTS:BEGIN -->
-author:  @agent
+author: @agent
 created: 2026-10-03 12:38
 ---
 Задача закрыта (Фаза Comment по VL-44): реализация выполнена в Фазе 3 эпика и закоммичена (e5df3aa/cff8b2e). Проверено: src/cli/commands/init.ts — saveProjectSettings вызывается и в ветке !existing (строка 78), и в ветке existing && force (строка 87); тесты в src/cli/init-mcp.test.mjs (+2 теста VL-44). AC/DoD отмечены. Статус: Done.

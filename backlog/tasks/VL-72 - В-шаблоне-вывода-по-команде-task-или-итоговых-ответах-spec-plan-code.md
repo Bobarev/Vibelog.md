@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-04 00:27'
-updated_date: '2026-10-04 16:48'
+updated_date: '2026-10-04 18:42'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.6
 references: []
 priority: ''
 type: task
@@ -239,7 +239,7 @@ created: 2026-10-04 16:42
 **Соответствие плану Фазы 2:** реализация дословно по плану (пункты 1-4: rich.ts, handlers.ts, rich.test.mjs, документация). Фолбэк MarkdownV2 (`formatTaskDetail`) кнопку не содержит — по регламенту задачи.
 **Что осталось:** ручной smoke в реальном чате (задача в статусе To Do: /task → кнопка видна, нажатие запускает Spec; /restart после деплоя — чтобы бот поднял свежий dist/ с обработчиком callback_query). Smoke не выполнялся — headless-окружение, статус бота/привязки чата недоступны из этой сессии.
 ---
-author:  @agent
+author: @agent
 created: 2026-10-04 16:48
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: 6fed26a — «VL-72 — кнопка «следующий этап» в rich-выводе /task (callback-запуск фазы по статусу)» (5 файлов: src/bot/rich.ts, src/bot/handlers.ts, src/bot/rich.test.mjs, CHANGELOG.md, docs/user-guide.md).

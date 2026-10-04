@@ -1,15 +1,15 @@
 ---
 id: VL-64
 title: Оркестратор — парсинг JSON-результата qwen (result-строка) в PhaseRun
-status: To Do
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-03 13:52'
-updated_date: '2026-10-03 13:52'
+updated_date: '2026-10-04 18:42'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.6
 references: []
 priority: high
 type: ''

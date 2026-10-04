@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-03 23:40'
-updated_date: '2026-10-04 00:17'
+updated_date: '2026-10-04 18:42'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.6
 references: []
 priority: ''
 type: task
@@ -153,7 +153,7 @@ created: 2026-10-04 00:05
 ---
 Фаза 3 (Code) выполнена. Изменено: src/bot/rich.ts (новый экспорт renderPhaseResultRich — GFM-рендер отчёта фазы по шаблону VL-63/65 без MarkdownV2-экранирования: # заголовок, **жирный**, session_id в backticks, фолбэк-logTail в ```-блоке через fenceSafe; импорт PhaseRun), src/bot/handlers.ts (хелпер sendPhaseResult: sendRichMessage + chunkRich, фолбэк → formatPhaseResult + sendText — паттерн sendTaskView; notifyPhaseDone и onExit /prompt переведены на него; formatPhaseResult остался ТОЛЬКО фолбэком — проверено grep'ом), src/bot/rich.test.mjs (describe renderPhaseResultRich: 5 кейсов — успех без экранирования скобок, фолбэк без result, ошибка код≠0 / is_error при коде 0, пустой session_id, обрезка >1500; после первого прогона исправлен regex-фикс assertions фолбэк-кейса — ``` в logTail на своей строке, между ` ` ` и текстом \n), CHANGELOG.md (секция ### Изменено в Unreleased), docs/user-guide.md (раздел «Ответ по завершении фазы»: rich-отправка + GFM-пример). Проверки: pnpm build OK (tsc strict), pnpm test 446/446. Что осталось: смока в реальном Telegram-чате (отправка rich-отчёта + фолбэк-путь) — юнит-тесты рендера и grep-контроль пройдены, поведение API проверяется только в проде.
 ---
-author:  @agent
+author: @agent
 created: 2026-10-04 00:17
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: 3b2ae1b «feat: VL-71 — отчёт фазы через sendRichMessage (GFM) вместо MarkdownV2» (5 файлов: rich.ts, handlers.ts, rich.test.mjs, CHANGELOG.md, docs/user-guide.md).

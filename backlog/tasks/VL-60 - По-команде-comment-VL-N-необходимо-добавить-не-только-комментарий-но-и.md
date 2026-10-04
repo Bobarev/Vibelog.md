@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-03 03:40'
-updated_date: '2026-10-03 13:31'
+updated_date: '2026-10-04 18:42'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.6
 references: []
 priority: ''
 type: ''
@@ -177,7 +177,7 @@ created: 2026-10-03 13:30
 ---
 Тестовый комментарий. Нужно просто ответить Тест прошёл.
 ---
-author:  @agent
+author: @agent
 created: 2026-10-03 13:31
 ---
 Фаза Comment выполнена: Тест прошёл
