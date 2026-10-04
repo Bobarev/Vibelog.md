@@ -39,7 +39,7 @@
 
    - Разбей эпик на 2-5 задач через MCP:
      backlog_create_task {"title": "...", "description": "...", "acceptanceCriteria": ["...", "..."], "parentTaskId": "{{taskId}}", "priority": "..."}
-   - Для каждой дочерней задачи составь план и запиши через backlog_update_task.
+   - Для каждой дочерней задачи составь план и запиши через backlog_update_task и установи статус Planned.
    - План в эпик НЕ пиши — только в дочерних задачах.
    - Смени статус эпика на Planned:
      backlog_update_status {"id": "{{taskId}}", "status": "Planned"}
@@ -47,7 +47,8 @@
 5. Оставь отчёт комментарием в формате markdown:
    backlog_add_comment {"id": "{{taskId}}", "comment": "Фаза 2 (Plan) выполнена. ...", "author": "@agent"}
 
-Статус задачи type=task без блокера НЕ меняй — план ждёт одобрения; следующий перенос пользователь сделает сам.
+6. Смени статус исходной задачи, если она не оказалась Blocked:
+   backlog_update_status {"id": "{{taskId}}", "status": "Planned"}
 
 ## Правила
 
