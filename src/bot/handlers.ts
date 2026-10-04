@@ -18,7 +18,7 @@ import {
   formatTaskDetail,
   formatTaskList,
 } from './formatting.js';
-import { chunkRich, renderPhaseResultRich, renderTaskRich } from './rich.js';
+import { chunkRich, nextPhaseForStatus, renderPhaseResultRich, renderTaskRich } from './rich.js';
 import { loadBotSettings, saveBotSettings } from './settings.js';
 import { commandsHelp } from './registry.js';
 import { spawnReplacementBot } from './restart.js';
@@ -494,6 +494,49 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     });
     // Новый процесс создан — выходим; detached+unref: он переживает нас
     process.exit(0);
+  });
+  // ── Кнопка «следующий этап» (VL-72) ──
+  // callback-кнопка из rich-рендера карточки задачи: data = next:<id>.
+  // Запускает фазу по маппингу статус→фаза (как /plan,/code,/close),
+  // включая notifyPhaseDone. Регистрируется ДО catch-all message:text.
+  bot.on('callback_query', async (ctx) => {
+    const data = ctx.callbackQuery?.data ?? '';
+    if (!data.startsWith('next:')) return; // чужие callback не трогаем
+    const id = data.slice('next:'.length).trim();
+    // answerCallbackQuery обязателен в любом исходе — иначе «часики» на кнопке
+    if (!requireBind(ctx)) {
+      await ctx
+        .answerCallbackQuery({ text: 'Бот не привязан к чату — выполните /start' })
+        .catch(() => {});
+      return;
+    }
+    const task = getTask(deps.cwd, id);
+    const next = task ? nextPhaseForStatus(task.status) : null;
+    if (!task || !next) {
+      await ctx
+        .answerCallbackQuery({
+          text: !task
+            ? `Задача ${id} не найдена.`
+            : `Для статуса «${task.status}» нет следующего этапа.`,
+        })
+        .catch(() => {});
+      return;
+    }
+    await ctx
+      .answerCallbackQuery({ text: `🚀 Фаза ${next.label} запускается для ${task.id}` })
+      .catch(() => {});
+    // Колбэк завершения — паттерн /plan,/code,/close (VL-63): notifyPhaseDone
+    const notifyChat = ctx.chat?.id;
+    const onExit: PhaseExitCallback = (run) => {
+      if (notifyChat === undefined) return;
+      notifyPhaseDone(bot, notifyChat, task, run);
+    };
+    const result = startPhase(deps.cwd, task.id, next.phase, onExit);
+    if ('error' in result) {
+      await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
+      return;
+    }
+    await sendMd(ctx, `🚀 Фаза ${next.label} запущена для *${task.id}*, PID ${result.pid}`);
   });
   // Ввод пина — ОБЯЗАТЕЛЬНО ПОСЛЕ ВСЕХ bot.command: catch-all message:text
   // перехватывает любое текстовое сообщение и без next() останавливает

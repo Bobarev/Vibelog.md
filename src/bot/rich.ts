@@ -56,6 +56,31 @@ function checklist(items: (ChecklistItem | string)[]): string {
     .join('\n');
 }
 
+/** Следующая фаза workflow для статуса задачи (VL-72). */
+export type NextPhase = { phase: 'spec' | 'plan' | 'code' | 'close'; label: string };
+
+/**
+ * Маппинг статус → следующая фаза workflow (VL-72).
+ *
+ * Статусы по умолчанию из config.ts; Done/Blocked/неизвестные → null —
+ * фаза не запускается, кнопка в карточке не показывается.
+ */
+export function nextPhaseForStatus(status: string): NextPhase | null {
+  switch (status) {
+    case 'To Do':
+      return { phase: 'spec', label: 'Spec' };
+    case 'Spec':
+      return { phase: 'plan', label: 'Plan' };
+    case 'Planned':
+    case 'In Progress':
+      return { phase: 'code', label: 'Code' };
+    case 'Review':
+      return { phase: 'close', label: 'Close' };
+    default:
+      return null;
+  }
+}
+
 /**
  * Собирает полный Rich Markdown карточки задачи.
  *
@@ -67,6 +92,16 @@ export function renderTaskRich(task: Task): string {
 
   // Шапка: жирный заголовок + строка меты
   parts.push(`# ${task.id} — ${task.title}\n`);
+
+  // VL-72: callback-кнопка следующего этапа — сразу после заголовка.
+  // Формат tg-button — по @grammyjs/types rich.d.ts; callback_data
+  // next:<id> обрабатывает bot.on('callback_query') в handlers.ts.
+  const next = nextPhaseForStatus(task.status);
+  if (next) {
+    parts.push(
+      `<tg-button type="callback_data" data="next:${task.id}">${next.label}</tg-button>\n`
+    );
+  }
 
   const meta: string[] = [];
   if (task.status) meta.push(`**Статус:** ${task.status}`);

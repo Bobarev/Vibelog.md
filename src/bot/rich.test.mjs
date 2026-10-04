@@ -5,7 +5,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { renderTaskRich, renderPhaseResultRich, chunkRich, RICH_LIMIT } from '../../dist/bot/rich.js';
+import {
+  renderTaskRich,
+  renderPhaseResultRich,
+  chunkRich,
+  RICH_LIMIT,
+  nextPhaseForStatus,
+} from '../../dist/bot/rich.js';
 
 const fullTask = {
   id: 'VL-34',
@@ -94,6 +100,33 @@ describe('renderTaskRich (VL-39)', () => {
     const md = renderTaskRich(minimal);
     assert.match(md, /^# VL-34/);
     assert.doesNotMatch(md, /## /);
+  });
+});
+
+describe('Кнопка следующего этапа (VL-72)', () => {
+  it('кнопка сразу после заголовка, data next:<id>', () => {
+    const md = renderTaskRich({ ...fullTask, status: 'To Do' });
+    assert.match(
+      md,
+      /^# VL-34 — Telegram-бот: каркас\n\n<tg-button type="callback_data" data="next:VL-34">Spec<\/tg-button>/
+    );
+  });
+
+  it('nextPhaseForStatus: маппинг статус → фаза', () => {
+    assert.deepEqual(nextPhaseForStatus('To Do'), { phase: 'spec', label: 'Spec' });
+    assert.deepEqual(nextPhaseForStatus('Spec'), { phase: 'plan', label: 'Plan' });
+    assert.deepEqual(nextPhaseForStatus('Planned'), { phase: 'code', label: 'Code' });
+    assert.deepEqual(nextPhaseForStatus('In Progress'), { phase: 'code', label: 'Code' });
+    assert.deepEqual(nextPhaseForStatus('Review'), { phase: 'close', label: 'Close' });
+    assert.equal(nextPhaseForStatus('Done'), null);
+    assert.equal(nextPhaseForStatus('Blocked'), null);
+    assert.equal(nextPhaseForStatus('QA'), null);
+  });
+
+  it('кнопки нет для Done, Blocked и неизвестного статуса', () => {
+    assert.doesNotMatch(renderTaskRich(fullTask), /tg-button/); // Done
+    assert.doesNotMatch(renderTaskRich({ ...fullTask, status: 'Blocked' }), /tg-button/);
+    assert.doesNotMatch(renderTaskRich({ ...fullTask, status: 'QA' }), /tg-button/);
   });
 });
 
