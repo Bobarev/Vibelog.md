@@ -10,6 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseYaml, stringifyYaml } from '../core/yaml.js';
+import type { AgentName } from './commands.js';
 
 /** Настройки бота: токен, прокси (приоритет у env) и привязанные чаты. */
 export interface BotSettings {
@@ -18,6 +19,8 @@ export interface BotSettings {
   chats: number[];
   /** Маппинг «тип задачи → стиль кнопки» rich-вывода /tasks (VL-82). */
   task_type_styles?: Record<string, string>;
+  /** Агент по умолчанию для команд фаз и кнопок действий (VL-94, /set). */
+  default_agent?: AgentName;
 }
 
 /**
@@ -67,10 +70,15 @@ export function loadBotSettings(cwd: string): BotSettings {
   }
   const raw = parseYaml(readFileSync(path, 'utf-8'));
   const chats = Array.isArray(raw.chats) ? raw.chats : [];
+  // Валидация при чтении (VL-94): битое значение в bot.yml не должно
+  // попадать в запуски — неизвестный агент игнорируется (дефолт qwen)
+  const defaultAgent =
+    raw.default_agent === 'vb' || raw.default_agent === 'qwen' ? raw.default_agent : undefined;
   return {
     telegram_token: typeof raw.telegram_token === 'string' ? raw.telegram_token : undefined,
     telegram_proxy: typeof raw.telegram_proxy === 'string' ? raw.telegram_proxy : undefined,
     chats: chats.map(Number).filter((n) => Number.isFinite(n)),
+    ...(defaultAgent ? { default_agent: defaultAgent } : {}),
     // Пользовательские записи перекрывают дефолты; поле всегда объект —
     // handlers не пишет ?? {} (VL-82)
     task_type_styles: { ...DEFAULT_TASK_TYPE_STYLES, ...extractTaskTypeStyles(raw.task_type_styles) },
@@ -90,6 +98,7 @@ export function saveBotSettings(cwd: string, settings: BotSettings): void {
     ...(settings.telegram_token ? { telegram_token: settings.telegram_token } : {}),
     ...(settings.telegram_proxy ? { telegram_proxy: settings.telegram_proxy } : {}),
     chats: settings.chats,
+    ...(settings.default_agent ? { default_agent: settings.default_agent } : {}),
     ...(Object.keys(userStyles).length > 0 ? { task_type_styles: userStyles } : {}),
   };
   writeFileSync(path, stringifyYaml(payload), 'utf-8');
@@ -119,4 +128,12 @@ export function resolveProxy(cwd: string): string | null {
   const envProxy = process.env.TELEGRAM_PROXY;
   if (envProxy) return envProxy;
   return loadBotSettings(cwd).telegram_proxy ?? null;
+}
+
+/**
+ * Агент по умолчанию для запусков фаз (VL-94): bot.yml → 'qwen'.
+ * Используется командами фаз и кнопками действий без суффикса :<agent>.
+ */
+export function resolveDefaultAgent(cwd: string): AgentName {
+  return loadBotSettings(cwd).default_agent ?? 'qwen';
 }

@@ -6,11 +6,11 @@
 
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { loadBotSettings, saveBotSettings, resolveToken, resolveProxy, botSettingsPath } from '../../dist/bot/settings.js';
+import { loadBotSettings, saveBotSettings, resolveToken, resolveProxy, resolveDefaultAgent, botSettingsPath } from '../../dist/bot/settings.js';
 
 describe('settings (VL-34)', () => {
   const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-test-'));
@@ -109,5 +109,35 @@ describe('task_type_styles (VL-82)', () => {
     assert.ok(!raw.includes('epic'));
     const loaded = loadBotSettings(root);
     assert.equal(loaded.task_type_styles.bug, 'success');
+  });
+});
+
+describe('default_agent (VL-94)', () => {
+  const agentRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-agent-'));
+
+  after(() => {
+    rmSync(agentRoot, { recursive: true, force: true });
+  });
+
+  it('roundtrip save/load: default_agent vb', () => {
+    saveBotSettings(agentRoot, { chats: [111], default_agent: 'vb' });
+    assert.equal(loadBotSettings(agentRoot).default_agent, 'vb');
+  });
+
+  it('resolveDefaultAgent: без файла → qwen; с файлом → значение', () => {
+    assert.equal(resolveDefaultAgent(join(agentRoot, 'nonexistent')), 'qwen');
+    saveBotSettings(agentRoot, { chats: [], default_agent: 'vb' });
+    assert.equal(resolveDefaultAgent(agentRoot), 'vb');
+    saveBotSettings(agentRoot, { chats: [], default_agent: 'qwen' });
+    assert.equal(resolveDefaultAgent(agentRoot), 'qwen');
+  });
+
+  it('невалидное default_agent в файле отброшено → qwen', () => {
+    const root = join(agentRoot, 'invalid');
+    // botSettingsPath указывает внутрь .vibelog/ — каталог создаём явно
+    mkdirSync(join(root, '.vibelog'), { recursive: true });
+    writeFileSync(botSettingsPath(root), 'chats: []\ndefault_agent: foo\n', 'utf-8');
+    assert.equal(loadBotSettings(root).default_agent, undefined);
+    assert.equal(resolveDefaultAgent(root), 'qwen');
   });
 });
