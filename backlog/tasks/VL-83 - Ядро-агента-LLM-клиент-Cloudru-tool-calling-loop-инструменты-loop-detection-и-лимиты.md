@@ -1,11 +1,11 @@
 ---
 id: VL-83
 title: 'Ядро агента: LLM-клиент Cloud.ru, tool-calling loop, инструменты, loop detection и лимиты'
-status: Planned
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-04 21:29'
-updated_date: '2026-10-05 00:28'
+updated_date: '2026-10-05 20:13'
 due_date: ''
 labels: []
 dependencies: []
@@ -41,19 +41,19 @@ Loop detection (в loop.ts): сигнатура вызова = name+JSON.stringi
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 src/agent/llm.ts — OpenAI-совместимый клиент Cloud.ru: chat/completions с tool calling и SSE-стримингом; настройки через env VIBELOG_LLM_BASE_URL/VIBELOG_LLM_API_KEY/VIBELOG_LLM_MODEL; fetch внедряется параметром для тестируемости
-- [ ] #2 src/agent/tools.ts — инструменты read_file, write_file, edit, run_shell_command, grep_search, glob на чистом TS: валидация JSON-схем параметров, запуск shell только через execFile без shell:true, пути ограничиваются пределами проекта (cwd)
-- [ ] #3 src/agent/loop.ts — tool-calling loop: пока в ответе модели есть tool_calls — выполняем и возвращаем результат; финальный текст = результат фазы
-- [ ] #4 Loop detection: 3 одинаковых подряд tool call (одинаковые name+args) → прерывание фазы с is_error=true и понятным текстом ошибки на русском
-- [ ] #5 Лимиты: --max-tool-calls N (по умолчанию 100) и --max-wall-time <сек> (по умолчанию 900); превышение → is_error=true, без зависания
-- [ ] #6 Тесты src/agent/*.test.mjs на dist/: мок-модель и мок-fetch; кейсы: happy path, loop detection, оба лимита, ошибка API; pnpm build и pnpm test проходят
+- [x] #1 src/agent/llm.ts — OpenAI-совместимый клиент Cloud.ru: chat/completions с tool calling и SSE-стримингом; настройки через env VIBELOG_LLM_BASE_URL/VIBELOG_LLM_API_KEY/VIBELOG_LLM_MODEL; fetch внедряется параметром для тестируемости
+- [x] #2 src/agent/tools.ts — инструменты read_file, write_file, edit, run_shell_command, grep_search, glob на чистом TS: валидация JSON-схем параметров, запуск shell только через execFile без shell:true, пути ограничиваются пределами проекта (cwd)
+- [x] #3 src/agent/loop.ts — tool-calling loop: пока в ответе модели есть tool_calls — выполняем и возвращаем результат; финальный текст = результат фазы
+- [x] #4 Loop detection: 3 одинаковых подряд tool call (одинаковые name+args) → прерывание фазы с is_error=true и понятным текстом ошибки на русском
+- [x] #5 Лимиты: --max-tool-calls N (по умолчанию 100) и --max-wall-time <сек> (по умолчанию 900); превышение → is_error=true, без зависания
+- [x] #6 Тесты src/agent/*.test.mjs на dist/: мок-модель и мок-fetch; кейсы: happy path, loop detection, оба лимита, ошибка API; pnpm build и pnpm test проходят
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
+- [x] #1 Тесты проходят
 - [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -126,3 +126,28 @@ pnpm build && node --test src/agent && pnpm test.
 5. **Дефолты лимитов** остаются: max-tool-calls=100, max-wall-time=900с (решение Фазы 2 VL-75; decision-4 приводит «например 50» как иллюстрацию, не норматив).
 6. **Loop detection** — без изменений: N≥3 идентичных (name+JSON.stringify(args)) подряд → прерывание с диагностикой (согласовано с decision-4, п.2).
 <!-- SECTION:PLAN:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author: @agent
+created: 2026-10-05 13:42
+---
+Фаза 3 (Code) выполнена. Реализовано по плану из задачи (включая уточнение по VL-77 от 2026-10-05).
+**Изменено (создано):**
+- `src/agent/llm.ts` — клиент Cloud.ru: chat/completions с tool calling + SSE-стримингом; env VIBELOG_LLM_BASE_URL (дефолт `https://foundation-models.api.cloud.ru/v1`)/VIBELOG_LLM_API_KEY/VIBELOG_LLM_MODEL; fetch внедряется параметром; ретраи ≤3 на 429/5xx/сетевые ошибки (Retry-After приоритетнее экспоненты); фолбэк non-stream при 4xx/5xx стрим-ответа; AbortSignal во всех I/O; маппинг usage OpenAI/Cloud.ru-полей (cache_read отсутствует → 0).
+- `src/agent/tools.ts` — 6 инструментов (read_file, write_file, edit, run_shell_command, grep_search, glob) на чистом TS: валидация JSON-схем (текстом модели), execFile('/bin/bash', ['-lc', …]) без shell:true, таймаут 120с + abort-kill, обрезка вывода 64КБ; пути резолвятся от cwd и отклоняются за его пределами; grep/glob — рекурсивный обход без node_modules/.git, лимиты 200/500, мини-glob (**/, *, ?).
+- `src/agent/loop.ts` — tool-calling loop: {result, is_error, num_turns, duration_ms, usage} по образцу QwenResult; loop detection — 3 одинаковые подряд сигнатуры (name+JSON args) → is_error, 3-й вызов не выполняется; лимиты --max-tool-calls (100) и --max-wall-time (900с) проверяются на каждой итерации; при превышении — partial-результат + текст ошибки на русском; ошибки handler не фатальны (текст → модели), ошибки llm → is_error без исключения наружу.
+- Тесты: `src/agent/llm.test.mjs`, `src/agent/tools.test.mjs`, `src/agent/loop.test.mjs` — мок-fetch (SSE) и мок-llm, без сети: happy path, loop detection, оба лимита, ошибка API/сети, фолбэк non-stream, ретраи, abort, /tmp-изоляция для tools.
+**Проверки:** pnpm build OK (tsc strict); node --test src/agent — 50/50; pnpm test — 529/529 (регрессий нет).
+**Заметки:**
+- DoD «Документация обновлена» не отмечен — документация агента вынесена в VL-87.
+- У модели нет дефолта: VIBELOG_LLM_MODEL обязателен (base URL — дефолт Cloud.ru). Probe SSE Cloud.ru — до интеграции TUI (VL-86), фолбэк non-stream уже в коде.
+- Сетевые ошибки стрим-фазы не уходят в non-stream фолбэк (он для 4xx/5xx-ответов) — ретраи ≤3 и ошибка по decision-4, п.3.
+- package.json без изменений (по плану): новых runtime-зависимостей нет.
+---
+author:  @agent
+created: 2026-10-05 20:13
+---
+Фаза Close выполнена. Статус: Done. Коммит feat: 5491a1a — ядро агента: LLM-клиент Cloud.ru, tool-calling loop, инструменты, loop detection и лимиты (src/agent/llm.ts, tools.ts, loop.ts + тесты). Файлы других задач в src/agent/ (cli, mcp-client, tui) не коммитились — их закрытие идёт отдельно.
+---
+<!-- COMMENTS:END -->
