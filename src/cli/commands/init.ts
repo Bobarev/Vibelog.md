@@ -21,7 +21,7 @@ import { printSuccess, printInfo, printError } from '../ui.js';
 import { defaultConfig } from '../../core/config.js';
 import { stringifyYaml } from '../../core/yaml.js';
 import { findBacklogDir } from '../../core/paths.js';
-import { getGitUserName } from '../../core/git-user.js';
+import { getGitUserName } from '../../core/git.js';
 import { saveProjectSettings } from '../../core/project-settings.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

@@ -31,6 +31,7 @@ export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'doc', description: 'Документ: /doc doc-1', usage: '/doc <id>' },
   { command: 'board', description: 'Канбан-доска задач' },
   { command: 'diff', description: 'Незакоммиченные файлы (git status)' },
+  { command: 'commits', description: 'Последние коммиты git (log)', usage: '/commits [N]' },
   { command: 'create', description: 'Создать задачу' },
   { command: 'status', description: 'Сменить статус задачи' },
   { command: 'comment', description: 'Добавить комментарий и выполнить его через Фазу Comment (qwen)' },

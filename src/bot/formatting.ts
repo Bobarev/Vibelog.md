@@ -10,7 +10,7 @@
  */
 
 import type { Task } from '../core/task.js';
-import type { DiffFile } from '../core/git-status.js';
+import type { DiffFile, GitCommit } from '../core/git.js';
 import type { DocumentEntry } from '../core/document.js';
 import type { PhaseRun } from '../web/orchestrator.js';
 
@@ -30,14 +30,20 @@ export function escapeMarkdownV2(text: string): string {
  * Список задач для /tasks: жирный ID, статус в скобках.
  *
  * @param tasks — задачи для отображения
+ * @param active — маппинг taskId → активная фаза агента (VL-91): строка
+ *   задачи получает префикс 🔄 и фазу в скобках; пустой — без пометок
  */
-export function formatTaskList(tasks: Task[]): string {
+export function formatTaskList(tasks: Task[], active: Record<string, string> = {}): string {
   if (tasks.length === 0) return 'Задач нет';
   return tasks
-    .map(
-      (t) =>
-        `*${escapeMarkdownV2(t.id)}* — ${escapeMarkdownV2(t.title)} \\[${escapeMarkdownV2(t.status)}\\]`
-    )
+    .map((t) => {
+      const base = `*${escapeMarkdownV2(t.id)}* — ${escapeMarkdownV2(t.title)} \\[${escapeMarkdownV2(t.status)}\\]`;
+      // VL-91: фазу экранируем escapeMarkdownV2 — Telegram отклоняет сообщение
+      // с неэкранированными спецсимволами MarkdownV2 (в т.ч. скобками фазы)
+      return active[t.id] !== undefined
+        ? `🔄 ${base} \\(${escapeMarkdownV2(active[t.id])}\\)`
+        : base;
+    })
     .join('\n');
 }
 
@@ -105,6 +111,23 @@ export function formatDiffList(files: DiffFile[], branch: string): string {
     );
   }
   return lines.join('\n');
+}
+
+/**
+ * MarkdownV2-фолбэк /commits: список коммитов (VL-90).
+ *
+ * Паттерн formatDiffList: тема, дата в скобках, автор, жирный хеш.
+ * Пустой вход не вызывается (обработчик шлёт короткий текст до рендера).
+ *
+ * @param commits — коммиты из getGitLog (последние первыми)
+ */
+export function formatCommitsList(commits: GitCommit[]): string {
+  return commits
+    .map(
+      (c) =>
+        `${escapeMarkdownV2(c.subject)} \\(${escapeMarkdownV2(c.date)}\\) — ${escapeMarkdownV2(c.author)} *${escapeMarkdownV2(c.hash)}*`
+    )
+    .join('\n');
 }
 
 /**

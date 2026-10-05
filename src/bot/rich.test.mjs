@@ -11,6 +11,7 @@ import {
   renderDocsRich,
   renderDocumentRich,
   renderDiffRich,
+  renderCommitsRich,
   renderPhaseResultRich,
   chunkRich,
   RICH_LIMIT,
@@ -525,6 +526,24 @@ describe('renderTasksRich (VL-82)', () => {
     const md = renderTasksRich(tasks, {});
     assert.equal((md.match(/<tg-button-row>/g) || []).length, 1);
   });
+
+  it('VL-91: активная задача — 🔄 + фаза в ячейке ID', () => {
+    const md = renderTasksRich([task(), task({ id: 'VL-7' })], {}, { 'VL-1': 'code' });
+    assert.ok(md.includes('<td><b>VL-1</b> 🔄 code</td>'));
+    assert.ok(md.includes('<td><b>VL-7</b></td>'));
+  });
+
+  it('VL-91: неактивная задача / вызов без 3-го аргумента — без 🔄', () => {
+    const md = renderTasksRich([task()], {}, {});
+    assert.ok(!md.includes('🔄'));
+    const mdDefault = renderTasksRich([task()], {});
+    assert.ok(!mdDefault.includes('🔄'));
+  });
+
+  it('VL-91: фаза с HTML-спецсимволами экранируется cellSafe', () => {
+    const md = renderTasksRich([task()], {}, { 'VL-1': 'a<b>&c' });
+    assert.ok(md.includes('<td><b>VL-1</b> 🔄 a&#60;b&#62;&#38;c</td>'));
+  });
 });
 
 describe('renderDiffRich (VL-88)', () => {
@@ -672,5 +691,37 @@ describe('renderDocumentRich (VL-89)', () => {
     assert.ok(!md.includes('<tg-button>сырой</tg-button>'), 'сырой тег не должен пройти');
     assert.ok(!md.includes('<details>x</details>'), 'сырой details не должен пройти');
     assert.ok(md.includes('`<tg-button>`'), 'тег обёрнут в inline-код');
+  });
+});
+
+describe('renderCommitsRich (VL-90)', () => {
+  const commits = [
+    { hash: 'abc123', author: 'Pavel', date: '2026-10-05 18:00', subject: 'Добавить фичу' },
+    { hash: 'def456', author: 'Алексей', date: '2026-10-04 12:30', subject: 'Исправить баг' },
+  ];
+
+  it('заголовок и колонки таблицы: Тема | Дата | Автор | Хеш', () => {
+    const md = renderCommitsRich(commits);
+    assert.match(md, /# 📜 Последние коммиты/);
+    assert.ok(
+      md.includes('<tr><th>Тема</th><th>Дата</th><th>Автор</th><th>Хеш</th></tr>'),
+      'порядок колонок: Тема | Дата | Автор | Хеш'
+    );
+    assert.ok(
+      md.includes('<tr><td>Добавить фичу</td><td>2026-10-05 18:00</td><td>Pavel</td><td><code>abc123</code></td></tr>'),
+      'порядок ячеек: Тема, Дата, Автор, Хеш'
+    );
+  });
+
+  it('спецсимволы в теме экранируются через cellSafe', () => {
+    const md = renderCommitsRich([
+      { hash: 'x', author: 'a', date: 'd', subject: 'Текст <b>жирный</b> и <tg-button>сырой</tg-button>' },
+    ]);
+    assert.ok(!md.includes('<b>жирный</b>'), 'сырой тег не должен пройти');
+    assert.ok(md.includes('&#60;'), 'спецсимволы экранированы (&#60; — cellSafe)');
+  });
+
+  it('пустой массив → ""', () => {
+    assert.equal(renderCommitsRich([]), '');
   });
 });

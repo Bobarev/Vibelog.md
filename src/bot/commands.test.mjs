@@ -11,6 +11,7 @@ import {
   parseCommentCommand,
   parseCloseCommand,
   parseCodeCommand,
+  parseCommitsCommand,
   parsePlanCommand,
   parsePromptCommand,
   parseSpecCommand,
@@ -206,5 +207,26 @@ describe('parsePromptCommand (VL-66)', () => {
     assert.ok('error' in e2);
     assert.match(e1.error, /Синтаксис/);
     assert.match(e1.error, /\/prompt/);
+  });
+});
+
+describe('parseCommitsCommand (VL-90)', () => {
+  it('пусто и пробелы → count=10 (дефолт)', () => {
+    assert.deepEqual(parseCommitsCommand(''), { count: 10 });
+    assert.deepEqual(parseCommitsCommand('   '), { count: 10 });
+  });
+
+  it('число → count=N', () => {
+    assert.deepEqual(parseCommitsCommand('5'), { count: 5 });
+    assert.deepEqual(parseCommitsCommand(' 7 '), { count: 7 });
+  });
+
+  it('мусор → error с подсказкой', () => {
+    for (const bad of ['0', '-3', '3.5', 'abc']) {
+      const r = parseCommitsCommand(bad);
+      assert.ok('error' in r, '"' + bad + '" → error');
+      assert.match(r.error, /Синтаксис/);
+      assert.match(r.error, /\/commits/);
+    }
   });
 });

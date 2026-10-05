@@ -10,14 +10,15 @@ import type { Bot, Context } from 'grammy';
 import { addComment, createTaskFile, getTask, listTasks, updateTaskFile } from '../core/store.js';
 import { loadConfig } from '../core/config.js';
 import type { Task } from '../core/task.js';
-import { getGitStatus } from '../core/git-status.js';
-import type { DiffFile, GitStatus } from '../core/git-status.js';
+import { getGitLog, getGitStatus } from '../core/git.js';
+import type { DiffFile, GitStatus, GitCommit } from '../core/git.js';
 import { getDocument, listDocuments, searchDocuments } from '../core/document.js';
 import type { DocumentEntry } from '../core/document.js';
 import { findBacklogDir } from '../core/paths.js';
 import {
   escapeMarkdownV2,
   formatBoard,
+  formatCommitsList,
   formatDiffList,
   formatDocsList,
   formatDocumentDetail,
@@ -29,6 +30,7 @@ import {
 import {
   chunkRich,
   nextPhaseForStatus,
+  renderCommitsRich,
   renderDiffRich,
   renderDocsRich,
   renderDocumentRich,
@@ -44,6 +46,7 @@ import { getRun, startPhase, startPrompt } from '../web/orchestrator.js';
 import {
   parseCloseCommand,
   parseCodeCommand,
+  parseCommitsCommand,
   parseCommentCommand,
   parseCreateCommand,
   parsePlanCommand,
@@ -125,21 +128,25 @@ async function sendTaskView(
  * Список задач по chatId: rich-таблица + кнопки (VL-82), фолбэк —
  * MarkdownV2-список (formatTaskList). Паттерн sendTaskView/sendPhaseResult:
  * try sendRichMessage → catch фолбэк для старых Telegram-клиентов.
+ *
+ * active (VL-91) — маппинг taskId → активная фаза агента: пометка 🔄
+ * и в rich-таблице, и в MarkdownV2-фолбэке; дефолт {} — без пометок.
  */
 async function sendTasksView(
   bot: Bot,
   chatId: number,
   tasks: Task[],
-  styles: Record<string, string>
+  styles: Record<string, string>,
+  active: Record<string, string> = {}
 ): Promise<void> {
   try {
-    const rich = renderTasksRich(tasks, styles);
+    const rich = renderTasksRich(tasks, styles, active);
     for (const part of chunkRich(rich)) {
       await bot.api.sendRichMessage(chatId, { markdown: part });
     }
   } catch (err) {
     console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
-    await sendText(bot, chatId, formatTaskList(tasks));
+    await sendText(bot, chatId, formatTaskList(tasks, active));
   }
 }
 
@@ -198,6 +205,25 @@ async function sendDiffView(
 }
 
 
+
+/**
+ * Таблица коммитов по chatId: rich-таблица /commits (VL-90), фолбэк —
+ * MarkdownV2 (formatCommitsList). Паттерн sendDiffView (VL-88).
+ */
+async function sendCommitsView(
+  bot: Bot,
+  chatId: number,
+  commits: GitCommit[]
+): Promise<void> {
+  try {
+    for (const part of chunkRich(renderCommitsRich(commits))) {
+      await bot.api.sendRichMessage(chatId, { markdown: part });
+    }
+  } catch (err) {
+    console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
+    await sendText(bot, chatId, formatCommitsList(commits));
+  }
+}
 
 /**
  * Информационное сообщение о завершении фазы по chatId: rich-рендер GFM
@@ -320,8 +346,22 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     }
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return;
+    // Пометка активных фаз агента (VL-91): getRun — in-memory оркестратора
+    // (бот и оркестратор — один процесс); running === true — только у активных
+    // запусков, lastRuns (завершённые/ошибочные) не помечаются
+    const active: Record<string, string> = {};
+    for (const t of tasks) {
+      const run = getRun(t.id);
+      if (run?.running === true && run.phase) active[t.id] = run.phase;
+    }
     // Стили кнопок по типу задачи — task_type_styles из .vibelog/bot.yml (VL-82)
-    await sendTasksView(bot, chatId, tasks, loadBotSettings(deps.cwd).task_type_styles ?? {});
+    await sendTasksView(
+      bot,
+      chatId,
+      tasks,
+      loadBotSettings(deps.cwd).task_type_styles ?? {},
+      active
+    );
   });
 
   bot.command('task', async (ctx) => {
@@ -412,6 +452,31 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       return;
     }
     await sendDiffView(bot, chatId, status.files, status.branch);
+  });
+
+  bot.command('commits', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const parsed = parseCommitsCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    let commits: GitCommit[];
+    try {
+      commits = getGitLog(deps.cwd, parsed.count);
+    } catch (err) {
+      // git-сбой / не git-репозиторий — ошибка в чат, бот не падает (паттерн /diff)
+      await sendMd(ctx, err instanceof Error ? err.message : 'Не удалось получить git log');
+      return;
+    }
+    if (commits.length === 0) {
+      // Пустой лог — короткое сообщение, таблица не строится (как пустой /tasks)
+      await sendMd(ctx, 'Коммитов нет');
+      return;
+    }
+    await sendCommitsView(bot, chatId, commits);
   });
 
   // ── Управление задачами (VL-35): ПОСЛЕ всех доска-команд, ДО catch-all ──

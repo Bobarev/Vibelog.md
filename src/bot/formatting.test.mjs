@@ -15,6 +15,7 @@ import {
   formatPhaseResult,
   formatBoard,
   formatDiffList,
+  formatCommitsList,
 } from '../../dist/bot/formatting.js';
 
 const task = {
@@ -50,6 +51,24 @@ describe('formatting (VL-34/VL-38)', () => {
 
   it('formatTaskList: пустой список', () => {
     assert.match(formatTaskList([]), /Задач нет/);
+  });
+
+  it('formatTaskList (VL-91): активная задача — префикс 🔄 и фаза в скобках', () => {
+    const text = formatTaskList([task], { 'VL-1': 'plan' });
+    assert.match(text, /🔄 \*VL\\-1\*/);
+    assert.ok(text.includes('\\(plan\\)'));
+  });
+
+  it('formatTaskList (VL-91): дефолт — без 🔄 (регресс)', () => {
+    const text = formatTaskList([task]);
+    assert.ok(!text.includes('🔄'));
+  });
+
+  it('formatTaskList (VL-91): неактивная задача из смешанного списка — без пометки', () => {
+    const text = formatTaskList([task, { ...task, id: 'VL-2' }], { 'VL-1': 'plan' });
+    const lines = text.split('\n');
+    assert.ok(lines[0].includes('🔄'));
+    assert.ok(!lines[1].includes('🔄'));
   });
 
   it('formatTaskDetail: жирный заголовок и метки полей', () => {
@@ -299,5 +318,28 @@ describe('formatDocumentDetail (VL-89)', () => {
   it('длинное тело усекается до 1500 символов с многоточием', () => {
     const text = formatDocumentDetail({ ...entry, body: 'а'.repeat(1600) });
     assert.match(text, /а{1500}…/);
+  });
+});
+
+describe('formatCommitsList (VL-90)', () => {
+  const commits = [
+    { hash: 'abc123', author: 'Pavel', date: '2026-10-05 18:00', subject: 'Добавить фичу' },
+    { hash: 'def456', author: 'Алексей', date: '2026-10-04', subject: 'Тема _с подчёркиванием_' },
+  ];
+
+  it('формат строки: subject (date) — author *hash*', () => {
+    const text = formatCommitsList(commits);
+    assert.match(text, /Добавить фичу \\\(2026\\-10\\-05 18:00\\\) — Pavel \*abc123\*/);
+  });
+
+  it('спецсимволы экранированы escapeMarkdownV2', () => {
+    const text = formatCommitsList(commits);
+    assert.ok(text.includes('\\(2026\\-10\\-04\\)'), 'дата в экранированных скобках');
+    assert.ok(text.includes('Тема \\_с подчёркиванием\\_'), 'underscore экранирован');
+  });
+
+  it('строки соединяются через \n', () => {
+    const text = formatCommitsList(commits);
+    assert.equal(text.split('\n').length, 2);
   });
 });

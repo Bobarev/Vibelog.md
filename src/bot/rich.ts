@@ -14,7 +14,7 @@
  */
 
 import type { ChecklistItem, Task } from '../core/task.js';
-import type { DiffFile } from '../core/git-status.js';
+import type { DiffFile, GitCommit } from '../core/git.js';
 import type { DocumentEntry } from '../core/document.js';
 import type { PhaseRun } from '../web/orchestrator.js';
 import { VALID_TASK_STYLES } from './settings.js';
@@ -396,8 +396,13 @@ function cellSafe(text: string): string {
  *
  * @param tasks — невыполненные задачи в порядке вывода
  * @param styles — маппинг тип→стиль кнопки (task_type_styles из bot.yml)
+ * @param active — маппинг taskId → активная фаза агента (VL-91); пустой — без пометок
  */
-export function renderTasksRich(tasks: Task[], styles: Record<string, string>): string {
+export function renderTasksRich(
+  tasks: Task[],
+  styles: Record<string, string>,
+  active: Record<string, string> = {}
+): string {
   if (tasks.length === 0) return '';
   // HTML-таблица по Rich HTML (rich.d.ts): <th> — шапка, <td> — строки.
   // GFM pipe-строки внутри <table> Telegram не парсит и показывает сырым
@@ -405,10 +410,15 @@ export function renderTasksRich(tasks: Task[], styles: Record<string, string>): 
   // его содержимое обязано быть в структуре <tr>/<td>
   const header =
     '<tr><th>ID</th><th>Заголовок</th><th>Статус</th><th>Тип</th><th>Приоритет</th></tr>';
-  const rows = tasks.map(
-    (t) =>
-      `<tr><td><b>${cellSafe(t.id)}</b></td><td>${cellSafe(t.title)}</td><td>${cellSafe(t.status)}</td><td>${cellSafe(t.type)}</td><td>${cellSafe(t.priority)}</td></tr>`
-  );
+  const rows = tasks.map((t) => {
+    // VL-91: строка задачи с активной фазой агента помечается 🔄 + фаза
+    // в ячейке ID; фазу прогоняем через cellSafe (спецсимволы HTML)
+    const idCell =
+      active[t.id] !== undefined
+        ? `<b>${cellSafe(t.id)}</b> 🔄 ${cellSafe(active[t.id])}`
+        : `<b>${cellSafe(t.id)}</b>`;
+    return `<tr><td>${idCell}</td><td>${cellSafe(t.title)}</td><td>${cellSafe(t.status)}</td><td>${cellSafe(t.type)}</td><td>${cellSafe(t.priority)}</td></tr>`;
+  });
   const table = ['<table bordered striped compact>', header, ...rows, '</table>'].join('\n');
   const buttons = tasks.map((t) => {
     const style = styles[t.type];
@@ -511,6 +521,27 @@ export function renderDiffRich(files: DiffFile[], branch: string): string {
   });
   const table = ['<table bordered striped compact>', header, ...rows, '</table>'].join('\n');
   return `# 📝 Незакоммиченные изменения — \`${branch}\`\n\n${table}`;
+}
+
+/**
+ * Rich-рендер таблицы коммитов для команды /commits (VL-90).
+ *
+ * Паттерн renderDiffRich (VL-88): HTML-<table bordered striped compact>,
+ * колонки «Тема | Дата | Автор | Хеш»; все поля через cellSafe (защита
+ * от сырых HTML-тегов в темах/именах). Возврат без кнопок — git-коммиты
+ * не имеют callback-действий. Пустой вход → ''.
+ *
+ * @param commits — коммиты из getGitLog (последние первыми)
+ */
+export function renderCommitsRich(commits: GitCommit[]): string {
+  if (commits.length === 0) return '';
+  const header = '<tr><th>Тема</th><th>Дата</th><th>Автор</th><th>Хеш</th></tr>';
+  const rows = commits.map(
+    (c) =>
+      `<tr><td>${cellSafe(c.subject)}</td><td>${cellSafe(c.date)}</td><td>${cellSafe(c.author)}</td><td><code>${cellSafe(c.hash)}</code></td></tr>`
+  );
+  const table = ['<table bordered striped compact>', header, ...rows, '</table>'].join('\n');
+  return `# 📜 Последние коммиты\n\n${table}`;
 }
 
 /**

@@ -1,5 +1,5 @@
 /**
- * Тесты VL-88 — сбор git-данных для /diff (porcelain/numstat).
+ * Тесты VL-88 (git-данные для /diff) и VL-90 (git log для /commits).
  *
  * Парсеры — чистые (без git); интеграция — реальный git в mkdtemp /tmp
  * (паттерн add-comment.test.mjs), изоляция GIT_CONFIG_GLOBAL.
@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { getGitStatus, parsePorcelain, parseNumstat } from '../../dist/core/git-status.js';
+import { getGitStatus, parsePorcelain, parseNumstat, getGitLog, parseGitLog } from '../../dist/core/git.js';
 
 // GIT_CONFIG_GLOBAL=/dev/null изолирует тест от глобального git-конфига
 const ISO_ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
@@ -154,6 +154,87 @@ describe('getGitStatus — интеграция с реальным git (VL-88)'
       assert.throws(() => getGitStatus(plain, ISO_ENV), /Git недоступен или это не git-репозиторий/);
     } finally {
       rmSync(plain, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('parseGitLog (VL-90)', () => {
+  it('парсит \x1f-поля: hash, author, date, subject', () => {
+    const out =
+      'abc123\x1fАлексей\x1f2026-10-05 18:00\x1fДобавить парсер\n' +
+      'def456\x1fPavel\x1f2026-10-04 12:30\x1fИсправить баг\n';
+    const commits = parseGitLog(out);
+    assert.equal(commits.length, 2);
+    assert.deepEqual(commits[0], {
+      hash: 'abc123',
+      author: 'Алексей',
+      date: '2026-10-05 18:00',
+      subject: 'Добавить парсер',
+    });
+    assert.equal(commits[1].hash, 'def456');
+    assert.equal(commits[1].subject, 'Исправить баг');
+  });
+
+  it('пустой stdout → []', () => {
+    assert.deepEqual(parseGitLog(''), []);
+  });
+
+  it('subject с \x1f → join остатка (защита от разрыва)', () => {
+    const out = 'abc\x1fАвтор\x1f2026-10-05\x1fТема\x1fс разделителем\n';
+    const commits = parseGitLog(out);
+    assert.equal(commits.length, 1);
+    assert.equal(commits[0].subject, 'Тема\x1fс разделителем');
+  });
+});
+
+describe('getGitLog — интеграция с реальным git (VL-90)', () => {
+  const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-gitlog-test-'));
+
+  after(() => {
+    rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  const git = (...args) =>
+    spawnSync('git', args, { cwd: testRoot, encoding: 'utf-8', env: ISO_ENV });
+
+  it('3 коммита → count=2 возвращает ровно 2, [0] — последний', () => {
+    git('init', '-b', 'vl90-test');
+    git('config', 'user.email', 't@t');
+    git('config', 'user.name', 't');
+    writeFileSync(join(testRoot, 'a.txt'), '1\n', 'utf-8');
+    git('add', '-A');
+    git('commit', '-m', 'первый');
+    writeFileSync(join(testRoot, 'b.txt'), '2\n', 'utf-8');
+    git('add', '-A');
+    git('commit', '-m', 'второй');
+    writeFileSync(join(testRoot, 'c.txt'), '3\n', 'utf-8');
+    git('add', '-A');
+    git('commit', '-m', 'третий');
+
+    const commits = getGitLog(testRoot, 2, ISO_ENV);
+    assert.equal(commits.length, 2, 'count=2 → ровно 2 коммита');
+    assert.equal(commits[0].subject, 'третий', '[0] — последний коммит');
+    assert.ok(commits[0].hash.length > 0, 'hash непустой');
+    assert.ok(commits[0].author.length > 0, 'author непустой');
+  });
+
+  it('пустой репозиторий (только git init) → []', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'vibelog-gitlog-empty-'));
+    try {
+      const res = spawnSync('git', ['init'], { cwd: empty, encoding: 'utf-8', env: ISO_ENV });
+      assert.equal(res.status, 0);
+      assert.deepEqual(getGitLog(empty, 10, ISO_ENV), []);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  it('не-git-директория → throw /Git недоступен/', () => {
+    const notGit = mkdtempSync(join(tmpdir(), 'vibelog-gitlog-nogit-'));
+    try {
+      assert.throws(() => getGitLog(notGit, 10, ISO_ENV), /Git недоступен/);
+    } finally {
+      rmSync(notGit, { recursive: true, force: true });
     }
   });
 });

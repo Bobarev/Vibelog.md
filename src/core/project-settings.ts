@@ -13,7 +13,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseYaml, stringifyYaml } from './yaml.js';
-import { getGitUserName } from './git-user.js';
+import { getGitUserName } from './git.js';
 
 /** Настройки проекта: сейчас — только кэш git user.name. */
 export interface ProjectSettings {

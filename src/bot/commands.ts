@@ -235,3 +235,26 @@ export function parsePromptCommand(text: string): PromptCommand | { error: strin
   if (!trimmed) return { error: hint };
   return { text: trimmed };
 }
+
+/** Результат разбора /commits (VL-90): сколько коммитов показать. */
+export interface CommitsCommand {
+  count: number;
+}
+
+/**
+ * Разбирает /commits: пусто → 10; положительное целое → N;
+ * иначе {error} с подсказкой синтаксиса.
+ *
+ * @param text — аргументы команды (без слова /commits)
+ * @returns {count} или {error} с подсказкой
+ */
+export function parseCommitsCommand(text: string): CommitsCommand | { error: string } {
+  const hint = 'Синтаксис: /commits [N]';
+  const trimmed = text.trim();
+  if (!trimmed) return { count: 10 };
+  if (/^\d+$/.test(trimmed)) {
+    const n = Number(trimmed);
+    if (n > 0) return { count: n };
+  }
+  return { error: hint };
+}
