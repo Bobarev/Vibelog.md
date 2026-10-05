@@ -4,7 +4,8 @@
   "description": "Markdown-нативный таск-менеджер для git-репозиториев, совместимый с Backlog.md. Чистый Node.js, без нативных зависимостей.",
   "type": "module",
   "bin": {
-    "vibelog": "./bin/vibelog.mjs"
+    "vibelog": "./bin/vibelog.mjs",
+    "vibelog-agent": "./bin/vibelog-agent.mjs"
   },
   "files": [
     "bin",
@@ -17,7 +18,7 @@
     "web:build": "pnpm --dir web build",
     "typecheck": "tsc --noEmit",
     "test": "pnpm build && node --test src",
-    "lint": "node --check bin/vibelog.mjs",
+    "lint": "node --check bin/vibelog.mjs && node --check bin/vibelog-agent.mjs",
     "prepublishOnly": "pnpm build"
   },
   "engines": {
@@ -27,10 +28,13 @@
   "license": "Unlicense",
   "devDependencies": {
     "@types/node": "^26.6.3",
+    "@types/react": "^19.1.8",
     "typescript": "^7.0.2"
   },
   "dependencies": {
     "grammy": "^1.46.0",
+    "ink": "7.0.3",
+    "react": "^19.2.4",
     "undici": "^6.29.0"
   }
 }
