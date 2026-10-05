@@ -136,6 +136,70 @@ describe('createLlmClient / streamChat (VL-83)', () => {
     });
   });
 
+  it('VL-96: кэш из prompt_tokens_details.cached_tokens (OpenAI-стиль Cloud.ru)', async () => {
+    const { impl } = fakeFetch([
+      sseResponse([
+        JSON.stringify({
+          choices: [{ delta: { content: 'ok' } }],
+          usage: { prompt_tokens: 100, completion_tokens: 5, total_tokens: 105, prompt_tokens_details: { cached_tokens: 80 } },
+        }),
+      ]),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const res = await client.streamChat([{ role: 'user', content: 'x' }], []);
+    assert.equal(res.usage.cache_read_input_tokens, 80);
+  });
+
+  it('VL-96: кэш из prompt_cache_hit_tokens (DeepSeek-стиль)', async () => {
+    const { impl } = fakeFetch([
+      sseResponse([
+        JSON.stringify({
+          choices: [{ delta: { content: 'ok' } }],
+          usage: { prompt_tokens: 50, completion_tokens: 3, total_tokens: 53, prompt_cache_hit_tokens: 40 },
+        }),
+      ]),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const res = await client.streamChat([{ role: 'user', content: 'x' }], []);
+    assert.equal(res.usage.cache_read_input_tokens, 40);
+  });
+
+  it('VL-96: прямое cache_read важнее вложенного prompt_tokens_details', async () => {
+    const { impl } = fakeFetch([
+      sseResponse([
+        JSON.stringify({
+          choices: [{ delta: { content: 'ok' } }],
+          usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11, cache_read_input_tokens: 60, prompt_tokens_details: { cached_tokens: 1 } },
+        }),
+      ]),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const res = await client.streamChat([{ role: 'user', content: 'x' }], []);
+    assert.equal(res.usage.cache_read_input_tokens, 60);
+  });
+
+  it('VL-96: VIBELOG_LLM_DEBUG_USAGE=1 печатает сырой usage в stderr', async () => {
+    const prev = process.env.VIBELOG_LLM_DEBUG_USAGE;
+    const origError = console.error;
+    const captured = [];
+    process.env.VIBELOG_LLM_DEBUG_USAGE = '1';
+    console.error = (...args) => captured.push(args.join(' '));
+    try {
+      const { impl } = fakeFetch([
+        sseResponse([
+          JSON.stringify({ choices: [{ delta: { content: 'ok' } }], usage: { prompt_tokens: 7, completion_tokens: 2, total_tokens: 9 } }),
+        ]),
+      ]);
+      const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+      await client.streamChat([{ role: 'user', content: 'x' }], []);
+    } finally {
+      console.error = origError;
+      if (prev === undefined) delete process.env.VIBELOG_LLM_DEBUG_USAGE;
+      else process.env.VIBELOG_LLM_DEBUG_USAGE = prev;
+    }
+    assert.ok(captured.some((l) => l.includes('usage raw:') && l.includes('prompt_tokens')), 'debug-дамп usage в stderr');
+  });
+
   it('не-retryable 4xx: стрим 400 + фолбэк non-stream 400 → ошибка со статусом', async () => {
     const { impl, state } = fakeFetch([
       sseResponse([], { status: 400, statusText: 'Bad Request' }),

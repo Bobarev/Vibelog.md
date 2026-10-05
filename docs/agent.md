@@ -51,6 +51,7 @@ pnpm build
 | `VIBELOG_LLM_API_KEY` | да | API-ключ (без него агент отказывается стартовать) |
 | `VIBELOG_LLM_MODEL` | да | Имя модели (без неё агент отказывается стартовать) |
 | `VIBELOG_LLM_BASE_URL` | нет | Endpoint; дефолт — `https://foundation-models.api.cloud.ru/v1` (decision-3) |
+| `VIBELOG_LLM_DEBUG_USAGE` | нет | `=1` — сырой `usage` каждого ответа LLM в stderr (диагностика кэш-токенов, VL-96) |
 
 Пример в shell:
 
@@ -121,6 +122,18 @@ vibelog-agent --help
 - Сохранение — после завершения loop; при SIGINT транскрипт теряется (v1).
 - Ошибка записи сессии — предупреждение в stderr, фаза не роняется.
 - Сессии qwen (UUID в `~/.qwen/projects/`) резюмируются штатным `--resume <UUID>` самого qwen — механизм агента к ним не относится.
+
+## 3.2. Системный промпт и кэш-токены (VL-96)
+
+**Системный промпт.** Каждый запрос к LLM начинается с system-сообщения: встроенная базовая часть (роль Vibelog-agent, русский язык, границы рабочего каталога, запрет необратимых действий) + содержимое `AGENTS.md` проекта из cwd, если файл есть. Лимит вставки — 8000 символов (обрезка с пометкой); ошибка чтения — предупреждение в stderr, фаза продолжается без AGENTS.md. При `--resume` сохранённый system заменяется свежесобранным (файл мог измениться). Лог: `[vibelog-agent] Системный промпт: N символов (AGENTS.md: да/нет)`.
+
+**Кэш-токены.** Поле `usage.cache_read_input_tokens` в JSON-результате суммирует кэш по итерациям. Провайдеры отдают кэш под разными именами — `mapUsage` читает все известные варианты: прямые `cache_read_input_tokens` / `cache_read_tokens` / `prompt_cache_hit_tokens` и вложенное `prompt_tokens_details.cached_tokens` (OpenAI-стиль Cloud.ru). Tools сортируются по имени перед отправкой — стабильный префикс запроса повышает шанс prefix-caching.
+
+**Отладка usage.** `VIBELOG_LLM_DEBUG_USAGE=1` — в stderr печатается сырой `usage` каждого ответа (JSON) — по нему видно, под каким именем приходят кэш-токены:
+
+```bash
+VIBELOG_LLM_DEBUG_USAGE=1 node bin/vibelog-agent.mjs "промпт" --no-mcp --headless
+```
 
 ## 4. Интеграция с оркестратором
 

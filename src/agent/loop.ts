@@ -103,7 +103,11 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   }
   const allTools = [...options.tools, ...externalTools];
   const byName = new Map<string, ToolSpec>(allTools.map((t) => [t.name, t]));
-  const toolDefs: ToolDef[] = allTools.map((t) => ({
+  // Сортировка по имени (VL-96): стабильный порядок tools между итерациями
+  // и сессиями — одинаковый префикс запроса повышает шанс prefix-caching
+  // у провайдера (гипотеза №3 плана VL-96)
+  const sortedTools = [...allTools].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const toolDefs: ToolDef[] = sortedTools.map((t) => ({
     name: t.name,
     description: t.description,
     inputSchema: t.inputSchema,

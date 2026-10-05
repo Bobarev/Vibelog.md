@@ -121,6 +121,9 @@ describe('vibelog-agent CLI (VL-85)', () => {
     assert.notEqual(stderr.trim(), '');
     // Промпт собран из шаблона: taskId и {{comment}} подставлены
     assert.ok(llmRequests.length >= 1, 'LLM должен был получить запрос');
+    // Системный промпт (VL-96): первое сообщение к LLM — role=system
+    assert.equal(llmRequests[0].messages[0]?.role, 'system');
+    assert.match(llmRequests[0].messages[0]?.content ?? '', /Vibelog-agent/);
     const userMsg = llmRequests[0].messages?.find((m) => m.role === 'user');
     assert.ok(userMsg, 'в запросе к LLM должно быть user-сообщение');
     assert.match(userMsg.content, /VL-1/);
@@ -217,10 +220,12 @@ describe('vibelog-agent CLI (VL-85)', () => {
     // Файл сессии создан в .vibelog/agent-sessions/<sessionId>.jsonl
     const file = join(testDir, '.vibelog', 'agent-sessions', `${parsed.session_id}.jsonl`);
     const lines = readFileSync(file, 'utf-8').split('\n').filter((l) => l.trim());
-    assert.equal(lines.length, 2, 'user + финальный assistant');
-    assert.equal(JSON.parse(lines[0]).content, 'Запомни: синий кот');
-    assert.equal(JSON.parse(lines[1]).role, 'assistant');
-    assert.equal(JSON.parse(lines[1]).content, 'Готово');
+    // system (VL-96) + user + финальный assistant
+    assert.equal(lines.length, 3);
+    assert.equal(JSON.parse(lines[0]).role, 'system');
+    assert.equal(JSON.parse(lines[1]).content, 'Запомни: синий кот');
+    assert.equal(JSON.parse(lines[2]).role, 'assistant');
+    assert.equal(JSON.parse(lines[2]).content, 'Готово');
   });
 
   it('--resume vb:<id> продолжает сессию: история уходит в LLM (VL-95)', async () => {
@@ -237,17 +242,19 @@ describe('vibelog-agent CLI (VL-85)', () => {
     // Мок-LM получил историю первой сессии + новый промпт
     assert.ok(llmRequests.length >= 1);
     const msgs = llmRequests[0].messages;
-    assert.equal(msgs.length, 3);
-    assert.equal(msgs[0].content, 'Запомни: синий кот');
-    assert.equal(msgs[1].role, 'assistant');
-    assert.equal(msgs[2].content, 'А теперь продолжи');
-    // Файл сессии перезаписан: 2 старых + user + финальный assistant = 4
+    // system (VL-96, свежий при resume) + user + assistant + новый промпт
+    assert.equal(msgs.length, 4);
+    assert.equal(msgs[0].role, 'system');
+    assert.equal(msgs[1].content, 'Запомни: синий кот');
+    assert.equal(msgs[2].role, 'assistant');
+    assert.equal(msgs[3].content, 'А теперь продолжи');
+    // Файл сессии перезаписан: system + user + assistant + user + финальный assistant = 5
     const lines = readFileSync(join(testDir, '.vibelog', 'agent-sessions', `${sessionId}.jsonl`), 'utf-8')
       .split('\n')
       .filter((l) => l.trim());
-    assert.equal(lines.length, 4);
-    assert.equal(JSON.parse(lines[2]).content, 'А теперь продолжи');
-    assert.equal(JSON.parse(lines[3]).role, 'assistant');
+    assert.equal(lines.length, 5);
+    assert.equal(JSON.parse(lines[3]).content, 'А теперь продолжи');
+    assert.equal(JSON.parse(lines[4]).role, 'assistant');
   });
 
   it('--continue без файлов сессий: exit 1, stderr «Нет сохранённых сессий» (VL-95)', async () => {
@@ -272,8 +279,8 @@ describe('vibelog-agent CLI (VL-85)', () => {
     const { code } = await runCli(['И ещё раз', '--continue', '--no-mcp'], llmEnv());
     assert.equal(code, 0);
     const msgs = llmRequests[0].messages;
-    // Последняя сессия — перезаписанная resume-тестом (4 сообщения) + новый промпт
-    assert.equal(msgs.length, 5);
+    // Последняя сессия — перезаписанная resume-тестом (5 сообщений) → history 4 + system + промпт
+    assert.equal(msgs.length, 6);
     assert.equal(msgs.at(-1).content, 'И ещё раз');
   });
 
@@ -284,5 +291,37 @@ describe('vibelog-agent CLI (VL-85)', () => {
     );
     assert.equal(code, 1);
     assert.match(stderr, /только с готовым промптом/);
+  });
+
+  // ── VL-96: системный промпт и AGENTS.md ──
+
+  it('первое сообщение к LLM — role=system с базовым промптом (VL-96)', async () => {
+    llmRequests.length = 0;
+    const { code } = await runCli(['Проверь системный промпт'], llmEnv());
+    assert.equal(code, 0);
+    const first = llmRequests[0].messages?.[0];
+    assert.equal(first?.role, 'system');
+    assert.match(first?.content ?? '', /Vibelog-agent/);
+  });
+
+  it('AGENTS.md проекта подключается к системному промпту (VL-96)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-agentsmd-'));
+    try {
+      writeFileSync(join(projDir, 'AGENTS.md'), '# Правила проекта\nНе ломай сборку.', 'utf-8');
+      llmRequests.length = 0;
+      const { code } = await runCli(['Проверь AGENTS.md'], llmEnv(), projDir);
+      assert.equal(code, 0);
+      const first = llmRequests[0].messages?.[0];
+      assert.equal(first?.role, 'system');
+      assert.match(first?.content ?? '', /Не ломай сборку/);
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
+  it('лог stderr содержит «Системный промпт: N символов» (VL-96)', async () => {
+    const { code, stderr } = await runCli(['Скажи ок'], llmEnv());
+    assert.equal(code, 0);
+    assert.match(stderr, /Системный промпт: \d+ символов \(AGENTS.md: (да|нет)\)/);
   });
 });

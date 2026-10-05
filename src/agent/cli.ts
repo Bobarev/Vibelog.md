@@ -24,6 +24,7 @@ import { createLlmClient } from './llm.js';
 import type { ChatMessage } from './llm.js';
 import { runLoop } from './loop.js';
 import { agentSessionsDir, createSessionId, latestSession, loadSession, saveSession } from './session.js';
+import { buildSystemPrompt } from './system-prompt.js';
 import { listLocalTools } from './tools.js';
 import type { ToolSpec } from './tools.js';
 import { McpClient, toolsAsSpecs } from './mcp-client.js';
@@ -319,8 +320,21 @@ export async function main(argv: string[]): Promise<void> {
   // const-алиас: TS не сужает let внутри замыканий колбэков loop
   const tuiHandle = tui;
 
+  // Системный промпт (VL-96): базовая часть + AGENTS.md проекта. При resume
+  // сохранённый system заменяется свежесобранным — файл мог измениться между
+  // запусками; при первом запуске — просто первое сообщение диалога
+  const systemPrompt = buildSystemPrompt(cwd);
+  log(
+    `Системный промпт: ${systemPrompt.content.length} символов (AGENTS.md: ${systemPrompt.hasAgentsMd ? 'да' : 'нет'})`,
+  );
+  const history =
+    resumedMessages[0]?.role === 'system' ? resumedMessages.slice(1) : resumedMessages;
   // При resume в диалог вливается сохранённая история перед новым промптом
-  const messages: ChatMessage[] = [...resumedMessages, { role: 'user', content: prompt }];
+  const messages: ChatMessage[] = [
+    { role: 'system', content: systemPrompt.content },
+    ...history,
+    { role: 'user', content: prompt },
+  ];
   const loopResult = await runLoop({
     llm,
     messages,

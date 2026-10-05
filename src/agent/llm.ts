@@ -103,14 +103,32 @@ export function zeroUsage(): LlmUsage {
 /**
  * Маппит usage провайдера на наш формат: OpenAI-имена (prompt/completion)
  * и альтернативные (input/output/cache_read) живут вместе — Cloud.ru может
- * отдавать не всё (cache_read отсутствует → 0).
+ * отдавать не всё (cache_read отсутствует → 0). Кэш-токены читаются из всех
+ * известных вариантов полей (VL-96): прямые cache_read_input_tokens /
+ * cache_read_tokens / prompt_cache_hit_tokens и вложенное
+ * prompt_tokens_details.cached_tokens — OpenAI-совместимые провайдеры
+ * (Cloud.ru) отдают кэш именно во вложенном поле.
  */
 function mapUsage(raw: unknown): LlmUsage {
+  // Отладочный дамп (VL-96): env VIBELOG_LLM_DEBUG_USAGE=1 печатает сырой
+  // usage в stderr — по нему видно, под каким именем провайдер отдаёт кэш
+  if (process.env.VIBELOG_LLM_DEBUG_USAGE === '1') {
+    console.error(`[vibelog-agent] usage raw: ${JSON.stringify(raw)}`);
+  }
   const u = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
   const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
   const inputTokens = n(u.prompt_tokens) || n(u.input_tokens);
   const outputTokens = n(u.completion_tokens) || n(u.output_tokens);
-  const cacheRead = n(u.cache_read_input_tokens) || n(u.cache_read_tokens);
+  // Кэш-токены (VL-96): прямые поля (Anthropic/DeepSeek-стиль) важнее
+  // вложенного prompt_tokens_details (OpenAI-стиль, его отдаёт Cloud.ru)
+  const details = (typeof u.prompt_tokens_details === 'object' && u.prompt_tokens_details !== null
+    ? u.prompt_tokens_details
+    : {}) as Record<string, unknown>;
+  const cacheRead =
+    n(u.cache_read_input_tokens) ||
+    n(u.cache_read_tokens) ||
+    n(u.prompt_cache_hit_tokens) ||
+    n(details.cached_tokens);
   const totalTokens = n(u.total_tokens) || inputTokens + outputTokens;
   return {
     input_tokens: inputTokens,

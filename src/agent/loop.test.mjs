@@ -328,4 +328,21 @@ describe('runLoop LoopResult.messages (VL-95)', () => {
     assert.equal(res.is_error, true);
     assert.deepEqual(res.messages, USER_MSG);
   });
+
+  it('VL-96: tools сортируются по имени перед отправкой в LLM', async () => {
+    let receivedTools;
+    const llm = {
+      async streamChat(_messages, tools) {
+        receivedTools = tools;
+        return { text: 'ок', toolCalls: [], usage: zeroUsage() };
+      },
+    };
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [countingTool('zebra').spec, countingTool('alpha').spec],
+    });
+    assert.equal(res.is_error, false);
+    assert.deepEqual(receivedTools.map((t) => t.name), ['alpha', 'zebra']);
+  });
 });
