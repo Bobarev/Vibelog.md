@@ -199,9 +199,11 @@ export function formatPhaseResult(run: PhaseRun): string {
     `*Общее время:* ${res.duration_ms} мс \\(api: ${res.duration_api_ms} мс\\)`,
     `*Количество запросов:* ${res.num_turns}`,
   ];
-  // session_id — только hex/дефис (UUID), внутри pre-блока экранирование
-  // запрещено MarkdownV2 — вставляем как есть; пустой — строку не шлём
-  if (res.session_id) lines.push('', '`' + res.session_id + '`');
+  // session_id — только hex/дефис (UUID) и префикс агента, внутри pre-блока
+  // экранирование запрещено MarkdownV2 — вставляем как есть; пустой — строку
+  // не шлём. VL-93: единый формат '<agent>:<session_id>' для всех агентов
+  // (жалоба Pavel 2026-10-05); agent не задан — дефолт qwen
+  if (res.session_id) lines.push('', '`' + (run.agent ?? 'qwen') + ':' + res.session_id + '`');
   return lines.join('\n');
 }
 

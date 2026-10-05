@@ -373,7 +373,8 @@ describe('renderPhaseResultRich (VL-71)', () => {
     assert.match(md, /\*\*Всего токенов:\*\* 10975/);
     assert.match(md, /\*\*Общее время:\*\* 42411 мс \(api: 42369 мс\)/);
     assert.match(md, /\*\*Количество запросов:\*\* 1/);
-    assert.match(md, /`a470c7dd-2ca8-4510-9d81-b184f932af76`/);
+    // Единый формат вывода сессии '<agent>:<session_id>' (VL-93, жалоба Pavel 2026-10-05)
+    assert.match(md, /`qwen:a470c7dd-2ca8-4510-9d81-b184f932af76`/);
   });
 
   it('фолбэк без result: logTail в тройных backticks', () => {
@@ -414,6 +415,14 @@ describe('renderPhaseResultRich (VL-71)', () => {
       result: { ...okRun.result, result: 'а'.repeat(1600) },
     });
     assert.match(md, /а{1500}…/);
+  });
+
+  it('единый формат сессии: vb:<id> и qwen:<uuid> (VL-93)', () => {
+    const vb = renderPhaseResultRich({ ...okRun, agent: 'vb' });
+    assert.match(vb, /`vb:a470c7dd-2ca8-4510-9d81-b184f932af76`/);
+    // Жалоба Pavel 2026-10-05: qwen выводится по общему правилу с префиксом
+    const qwen = renderPhaseResultRich(okRun);
+    assert.match(qwen, /`qwen:a470c7dd-2ca8-4510-9d81-b184f932af76`/);
   });
 });
 describe('chunkRich (VL-39)', () => {

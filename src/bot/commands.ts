@@ -21,37 +21,60 @@ export interface StatusCommand {
   status: string;
 }
 
+/** Агент-исполнитель фаз (VL-92/94): qwen либо встроенный vibelog-agent. */
+export type AgentName = 'qwen' | 'vb';
+
 /** Результат разбора /comment. */
 export interface CommentCommand {
   id: string;
   text: string;
+  /** Агент Фазы Comment: задан явно суффиксом :<agent> (VL-94). */
+  agent?: AgentName;
 }
 
 /** Результат разбора /spec. */
 export interface SpecCommand {
   description: string;
+  /** Агент Фазы 1: задан явно суффиксом :<agent> (VL-94). */
+  agent?: AgentName;
 }
 
 /** Результат разбора /plan. Опциональный комментарий — хвост после ID (VL-80). */
 export interface PlanCommand {
   id: string;
   comment?: string;
+  /** Агент Фазы 2: задан явно суффиксом :<agent> (VL-94). */
+  agent?: AgentName;
 }
 
 /** Результат разбора /code. Опциональный комментарий — хвост после ID (VL-80). */
 export interface CodeCommand {
   id: string;
   comment?: string;
+  /** Агент Фазы 3: задан явно суффиксом :<agent> (VL-94). */
+  agent?: AgentName;
 }
 
 /** Результат разбора /close. */
 export interface CloseCommand {
   id: string;
+  /** Агент Фазы Close: задан явно суффиксом :<agent> (VL-94). */
+  agent?: AgentName;
 }
 
-/** Результат разбора /prompt (VL-66): произвольный запрос без задачи. */
+/** Результат разбора /set (VL-94): параметр настройки и его значение. */
+export interface SetCommand {
+  /** Имя параметра; пока только 'agent' — набор параметров расширяется. */
+  key: 'agent';
+  /** Значение: агент по умолчанию для команд и кнопок действий. */
+  value: AgentName;
+}
+
+/** Результат разбора /prompt (VL-66/92): запрос без задачи + агент-исполнитель. */
 export interface PromptCommand {
   text: string;
+  /** Агент: задан явно суффиксом :<agent>; иначе — из настроек (VL-94). */
+  agent?: AgentName;
 }
 
 /** Снятие окружающих кавычек. */
@@ -134,106 +157,207 @@ export function parseStatusCommand(text: string): StatusCommand | { error: strin
 
 /**
  * Разбирает /comment: «VL-1 текст комментария» — текст может содержать пробелы.
+ * Суффикс :<agent> выбирает агента Фазы Comment (VL-94, см. extractAgent).
  *
  * @param text — аргументы команды (без слова /comment)
- * @returns аргументы или {error} с подсказкой
+ * @param commandWord — слово команды с суффиксом (comment:vb), как в /prompt
+ * @returns {id, text, agent?} или {error} с подсказкой
  */
-export function parseCommentCommand(text: string): CommentCommand | { error: string } {
-  const hint = 'Синтаксис: /comment VL-1 текст комментария';
-  const trimmed = text.trim();
-  if (!trimmed) return { error: hint };
-
+export function parseCommentCommand(
+  text: string,
+  commandWord = ''
+): CommentCommand | { error: string } {
+  const hint = 'Синтаксис: /comment[:agent] VL-1 текст комментария (агенты: qwen, vb)';
+  const parsed = extractAgent('comment', commandWord, text, hint);
+  if ('error' in parsed) return parsed;
+  const trimmed = parsed.text;
   const spaceIdx = trimmed.indexOf(' ');
   if (spaceIdx === -1) return { error: hint };
-
   const id = trimmed.slice(0, spaceIdx).trim();
   const commentText = trimmed.slice(spaceIdx + 1).trim();
-  if (!commentText) return { error: hint };
-
-  return { id, text: commentText };
+  if (!id || !commentText) return { error: hint };
+  return { id, text: commentText, ...(parsed.agent ? { agent: parsed.agent } : {}) };
 }
 
 /**
  * Разбирает /spec: весь текст после команды — описание фичи.
+ * Суффикс :<agent> выбирает агента Фазы 1 (VL-94, см. extractAgent).
  * Окружающие кавычки снимаются; пустой ввод — {error} с подсказкой.
  *
  * @param text — аргументы команды (без слова /spec)
- * @returns описание фичи или {error} с подсказкой
+ * @param commandWord — слово команды с суффиксом (spec:vb), как в /prompt
+ * @returns {description, agent?} или {error} с подсказкой
  */
-export function parseSpecCommand(text: string): SpecCommand | { error: string } {
-  const hint = 'Синтаксис: /spec описание фичи';
-  const description = unquote(text.trim());
+export function parseSpecCommand(
+  text: string,
+  commandWord = ''
+): SpecCommand | { error: string } {
+  const hint = 'Синтаксис: /spec[:agent] описание фичи (агенты: qwen, vb)';
+  const parsed = extractAgent('spec', commandWord, text, hint);
+  if ('error' in parsed) return parsed;
+  const description = unquote(parsed.text);
   if (!description) return { error: hint };
-  return { description };
+  return { description, ...(parsed.agent ? { agent: parsed.agent } : {}) };
 }
 
 /**
  * Разбирает /plan: «VL-1» или «VL-1 комментарий» (VL-80).
  * Комментарий — хвост после ID, как в /comment; но опционален:
  * /plan VL-1 без хвоста обязан работать (регрессия VL-50).
+ * Суффикс :<agent> выбирает агента Фазы 2 (VL-94, см. extractAgent).
  *
  * @param text — аргументы команды (без слова /plan)
- * @returns {id, comment?} или {error} с подсказкой
+ * @param commandWord — слово команды с суффиксом (plan:vb), как в /prompt
+ * @returns {id, comment?, agent?} или {error} с подсказкой
  */
-export function parsePlanCommand(text: string): PlanCommand | { error: string } {
-  const hint = 'Синтаксис: /plan VL-<id> [комментарий]';
-  const trimmed = text.trim();
+export function parsePlanCommand(
+  text: string,
+  commandWord = ''
+): PlanCommand | { error: string } {
+  const hint = 'Синтаксис: /plan[:agent] VL-<id> [комментарий] (агенты: qwen, vb)';
+  const parsed = extractAgent('plan', commandWord, text, hint);
+  if ('error' in parsed) return parsed;
+  const trimmed = parsed.text;
   if (!trimmed) return { error: hint };
+  const agent = parsed.agent ? { agent: parsed.agent } : {};
   const spaceIdx = trimmed.indexOf(' ');
-  if (spaceIdx === -1) return { id: trimmed };
+  if (spaceIdx === -1) return { id: trimmed, ...agent };
   const id = trimmed.slice(0, spaceIdx).trim();
   const comment = trimmed.slice(spaceIdx + 1).trim();
   if (!id) return { error: hint };
-  // Ключ comment добавляем ТОЛЬКО при наличии — иначе сломаются deepEqual-тесты
-  return comment ? { id, comment } : { id };
+  // Ключи comment/agent добавляем ТОЛЬКО при наличии — иначе сломаются deepEqual-тесты
+  return comment ? { id, comment, ...agent } : { id, ...agent };
 }
 
 /**
  * Разбирает /code: «VL-1» или «VL-1 комментарий» (VL-80), как /plan.
+ * Суффикс :<agent> выбирает агента Фазы 3 (VL-94, см. extractAgent).
  *
  * @param text — аргументы команды (без слова /code)
- * @returns {id, comment?} или {error} с подсказкой
+ * @param commandWord — слово команды с суффиксом (code:vb), как в /prompt
+ * @returns {id, comment?, agent?} или {error} с подсказкой
  */
-export function parseCodeCommand(text: string): CodeCommand | { error: string } {
-  const hint = 'Синтаксис: /code VL-<id> [комментарий]';
-  const trimmed = text.trim();
+export function parseCodeCommand(
+  text: string,
+  commandWord = ''
+): CodeCommand | { error: string } {
+  const hint = 'Синтаксис: /code[:agent] VL-<id> [комментарий] (агенты: qwen, vb)';
+  const parsed = extractAgent('code', commandWord, text, hint);
+  if ('error' in parsed) return parsed;
+  const trimmed = parsed.text;
   if (!trimmed) return { error: hint };
+  const agent = parsed.agent ? { agent: parsed.agent } : {};
   const spaceIdx = trimmed.indexOf(' ');
-  if (spaceIdx === -1) return { id: trimmed };
+  if (spaceIdx === -1) return { id: trimmed, ...agent };
   const id = trimmed.slice(0, spaceIdx).trim();
   const comment = trimmed.slice(spaceIdx + 1).trim();
   if (!id) return { error: hint };
-  return comment ? { id, comment } : { id };
+  return comment ? { id, comment, ...agent } : { id, ...agent };
 }
 
 /**
  * Разбирает /close: «VL-1» — только ID задачи (первое слово).
  * Копия parseCodeCommand (VL-53) — фаза Close закрывает задачу.
+ * Суффикс :<agent> выбирает агента Фазы Close (VL-94, см. extractAgent).
  *
  * @param text — аргументы команды (без слова /close)
- * @returns {id} или {error} с подсказкой
+ * @param commandWord — слово команды с суффиксом (close:vb), как в /prompt
+ * @returns {id, agent?} или {error} с подсказкой
  */
-export function parseCloseCommand(text: string): CloseCommand | { error: string } {
-  const hint = 'Синтаксис: /close VL-<id>';
+export function parseCloseCommand(
+  text: string,
+  commandWord = ''
+): CloseCommand | { error: string } {
+  const hint = 'Синтаксис: /close[:agent] VL-<id> (агенты: qwen, vb)';
+  const parsed = extractAgent('close', commandWord, text, hint);
+  if ('error' in parsed) return parsed;
+  const id = parsed.text.split(/\s+/)[0];
+  if (!id) return { error: hint };
+  return { id, ...(parsed.agent ? { agent: parsed.agent } : {}) };
+}
+
+/**
+ * Разбирает /set: «agent <qwen|vb>» — установка агента по умолчанию (VL-94).
+ * Пока поддерживается один параметр (agent); неизвестные — {error} с подсказкой.
+ *
+ * @param text — аргументы команды (без слова /set)
+ * @returns {key, value} или {error} с подсказкой
+ */
+export function parseSetCommand(text: string): SetCommand | { error: string } {
+  const hint = 'Синтаксис: /set agent <qwen|vb>';
   const trimmed = text.trim();
   if (!trimmed) return { error: hint };
-  const id = trimmed.split(/\s+/)[0];
-  if (!id) return { error: hint };
-  return { id };
+  const spaceIdx = trimmed.indexOf(' ');
+  const key = (spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx)).trim().toLowerCase();
+  const value = (spaceIdx === -1 ? '' : trimmed.slice(spaceIdx + 1).trim()).toLowerCase();
+  if (key !== 'agent') {
+    return { error: `Неизвестный параметр: ${key}. Доступные: agent. ${hint}` };
+  }
+  if (value !== 'qwen' && value !== 'vb') {
+    return { error: `Неизвестный агент: ${value || '(пусто)'}. Доступные: qwen, vb. ${hint}` };
+  }
+  return { key: 'agent', value };
+}
+
+/**
+ * Извлекает суффикс :<agent> из слова команды и (двойная доставка при
+ * оборванной Telegram-entity, паттерн VL-92) из начала текста.
+ * Общий хелпер парсеров фаз (VL-94) и /prompt (VL-92).
+ *
+ * @param commandName — имя команды без слэша и суффикса (spec, prompt…)
+ * @param commandWord — слово команды с суффиксом (spec:vb); из текста
+ *   сообщения, т.к. grammy 1.46 не отдаёт ctx.command
+ * @param text — аргументы команды
+ * @param hint — подсказка синтаксиса для {error}
+ * @returns агент (только при явном суффиксе) + текст без суффикса либо {error}
+ */
+function extractAgent(
+  commandName: string,
+  commandWord: string,
+  text: string,
+  hint: string
+): { agent?: AgentName; text: string } | { error: string } {
+  let agent: AgentName | undefined;
+  const word = commandWord.match(new RegExp('^' + commandName + ':(\\S+)$'));
+  if (word) {
+    const suffix = word[1];
+    if (suffix === 'vb') agent = 'vb';
+    else if (suffix === 'qwen') agent = 'qwen';
+    else return { error: hint };
+  }
+  let rest = text.trim();
+  if (rest.startsWith(':')) {
+    const sp = rest.indexOf(' ');
+    const token = sp === -1 ? rest.slice(1) : rest.slice(1, sp);
+    if (token === 'qwen' || token === 'vb') {
+      if (agent === undefined) agent = token === 'vb' ? 'vb' : 'qwen';
+      rest = sp === -1 ? '' : rest.slice(sp + 1).trim();
+    }
+  }
+  return { agent, text: rest };
 }
 
 /**
  * Разбирает /prompt: весь текст после команды — запрос пользователя.
+ * Суффикс :<agent> выбирает агента (VL-92): без суффикса — агент по
+ * умолчанию из настроек (VL-94), :vb — встроенный vibelog-agent,
+ * неизвестный — {error} с подсказкой (спавна нет).
  * Без unquote — запрос естественный, кавычки значимы (VL-66).
  *
- * @param text — аргументы команды (без слова /prompt)
- * @returns {text} или {error} с подсказкой
+ * @param text — аргументы команды (без слова команды)
+ * @param commandWord — слово команды с суффиксом (prompt:vb); приходит из
+ *   хендлера, т.к. grammy 1.46 не отдаёт ctx.command
+ * @returns {text, agent?} или {error} с подсказкой
  */
-export function parsePromptCommand(text: string): PromptCommand | { error: string } {
-  const hint = 'Синтаксис: /prompt <запрос>';
-  const trimmed = text.trim();
-  if (!trimmed) return { error: hint };
-  return { text: trimmed };
+export function parsePromptCommand(
+  text: string,
+  commandWord = ''
+): PromptCommand | { error: string } {
+  const hint = 'Синтаксис: /prompt[:agent] <запрос> (агенты: qwen, vb)';
+  const parsed = extractAgent('prompt', commandWord, text, hint);
+  if ('error' in parsed) return parsed;
+  if (!parsed.text) return { error: hint };
+  return { text: parsed.text, ...(parsed.agent ? { agent: parsed.agent } : {}) };
 }
 
 /** Результат разбора /commits (VL-90): сколько коммитов показать. */
@@ -257,4 +381,88 @@ export function parseCommitsCommand(text: string): CommitsCommand | { error: str
     if (n > 0) return { count: n };
   }
   return { error: hint };
+}
+
+/** Ссылка на сессию агента из информационного сообщения бота (VL-93). */
+export interface SessionRef {
+  /** Агент, создавший сессию: qwen (UUID) либо vb (agent-<ts>). */
+  agent: 'qwen' | 'vb';
+  /** Идентификатор сессии: UUID (qwen) либо vb:<token> (vb). */
+  sessionId: string;
+}
+
+/**
+ * Извлекает идентификатор сессии из текста сообщения бота (VL-93).
+ *
+ * Информационное сообщение о завершении фазы (rich.ts / formatting.ts)
+ * выводит session_id в одинарных backticks последней строкой. Telegram
+ * может отдать reply_to_message без backticks (entities хранятся отдельно),
+ * поэтому сначала ищутся backtick-обёртки, затем голый токен.
+ *
+ * Проверяются последние две строки текста — session_id всегда в хвосте
+ * рендера. Форматы (единый вывод '<agent>:<session_id>', VL-93):
+ * qwen:<UUID> и голый UUID (старые сообщения); vb:<agent-N> / agent-N (vb).
+ *
+ * @param text — текст сообщения бота (reply_to_message.text)
+ * @returns SessionRef либо null, если токена сессии нет
+ */
+export function extractSessionRef(text: string): SessionRef | null {
+  // Хвост в две строки: последняя — session_id, предпоследняя — время/меты
+  const tail = text.split('\n').slice(-2).join('\n');
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  // Приоритет у vb:agent-N — специфичнее голого agent-N (без префикса)
+  const vbRe = /^(?:vb:)?agent-[0-9]+$/;
+  // Единый формат вывода сессии qwen (VL-93): qwen:<UUID>; --resume нужен
+  // голый UUID без префикса агента
+  const qwenRe = /^qwen:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+  // 1) Backtick-обёртки — основной формат рендера; в хвосте может быть
+  //    несколько токенов — проверяем все, валидный — последним
+  const btAll = [...tail.matchAll(/`([^`]+)`/g)];
+  for (const m of btAll) {
+    const t = m[1].trim();
+    if (t.startsWith('vb:') && vbRe.test(t)) return { agent: 'vb', sessionId: t };
+    if (vbRe.test(t)) return { agent: 'vb', sessionId: 'vb:' + t };
+    const qm = t.match(qwenRe);
+    if (qm) return { agent: 'qwen', sessionId: qm[1] };
+    if (uuidRe.test(t)) return { agent: 'qwen', sessionId: t };
+  }
+  // 2) Голый токен — фолбэк, если Telegram не отдал backticks
+  const vbBare = tail.match(/\bvb:agent-[0-9]+\b/);
+  if (vbBare) return { agent: 'vb', sessionId: vbBare[0] };
+  const agentBare = tail.match(/\bagent-[0-9]+\b/);
+  if (agentBare) return { agent: 'vb', sessionId: 'vb:' + agentBare[0] };
+  // Единый формат вывода сессии qwen (VL-93): qwen:<UUID> — до голого UUID
+  // (старые сообщения в истории чата); --resume нужен голый UUID
+  const qwenBare = tail.match(/\bqwen:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i);
+  if (qwenBare) return { agent: 'qwen', sessionId: qwenBare[1] };
+  const uuid = tail.match(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i);
+  if (uuid) return { agent: 'qwen', sessionId: uuid[0] };
+  return null;
+}
+
+/**
+ * Плоский текст rich-сообщения Telegram из его блоков (VL-93 fix).
+ *
+ * Информационное сообщение фазы шлётся sendRichMessage — у него нет поля
+ * text (RichMessageMessage = CommonMessage & MsgWith<"rich_message">),
+ * контент живёт в rich_message.blocks. Reply на rich-сообщение отдаёт
+ * blocks без markdown-разметки: `` `uuid` `` → paragraph с code-фрагментом
+ * (голый токен). Рекурсия: строка → как есть; массив → конкатенация
+ * (inline-фрагменты); объект → поле text, у списка — items, у
+ * custom_emoji — alternative_text; блоки разделяются '\n'.
+ *
+ * @param value — rich_message (или его часть: блок, RichText-фрагмент)
+ * @returns плоский текст для extractSessionRef (без markdown-символов)
+ */
+export function richToText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(richToText).join('');
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    if (Array.isArray(obj.blocks)) return obj.blocks.map(richToText).join('\n');
+    if (Array.isArray(obj.items)) return obj.items.map(richToText).join('\n');
+    if ('text' in obj) return richToText(obj.text);
+    if (typeof obj.alternative_text === 'string') return obj.alternative_text;
+  }
+  return '';
 }

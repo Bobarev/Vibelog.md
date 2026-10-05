@@ -232,6 +232,17 @@ describe('formatPhaseResult (VL-63/VL-65)', () => {
     assert.ok(text.includes('ошибка \\(код 1\\)'), 'код ошибки');
     assert.ok(text.includes('ошибка qwen'), 'is_error-метка');
   });
+
+  it('единый формат сессии: vb:<id> для vibelog-agent (VL-93)', () => {
+    const text = formatPhaseResult({ ...okRun, agent: 'vb' });
+    assert.ok(text.includes('`vb:a470c7dd-2ca8-4510-9d81-b184f932af76`'), 'префикс vb:');
+  });
+
+  it('агент не задан (qwen): session_id с префиксом qwen: — единый формат (VL-93)', () => {
+    // Жалоба Pavel 2026-10-05: qwen тоже по общему правилу '<agent>:<session_id>'
+    const text = formatPhaseResult(okRun);
+    assert.ok(text.includes('`qwen:a470c7dd-2ca8-4510-9d81-b184f932af76`'), 'префикс qwen:');
+  });
 });
 
 describe('formatDiffList (VL-88)', () => {

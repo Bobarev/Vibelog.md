@@ -38,12 +38,14 @@ import {
   renderTaskRich,
   renderTasksRich,
 } from './rich.js';
-import { loadBotSettings, saveBotSettings } from './settings.js';
+import { loadBotSettings, resolveDefaultAgent, saveBotSettings } from './settings.js';
 import { commandsHelp } from './registry.js';
 import { spawnReplacementBot } from './restart.js';
 import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
-import { getRun, startPhase, startPrompt } from '../web/orchestrator.js';
+import { getRun, startPhase, startPrompt, startResume } from '../web/orchestrator.js';
 import {
+  extractSessionRef,
+  richToText,
   parseCloseCommand,
   parseCodeCommand,
   parseCommitsCommand,
@@ -51,9 +53,11 @@ import {
   parseCreateCommand,
   parsePlanCommand,
   parsePromptCommand,
+  parseSetCommand,
   parseSpecCommand,
   parseStatusCommand,
 } from './commands.js';
+import type { AgentName } from './commands.js';
 
 /** Зависимости обработчиков (пин — из замыкания runBot, cwd — проект). */
 export interface HandlerDeps {
@@ -292,7 +296,12 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
    * и callback-кнопкой «Комментарий» — поведение /comment не меняется.
    * Ошибки пробрасываются вызывающему (обработчик шлёт «Ошибка: …»).
    */
-  async function commitComment(taskId: string, text: string, chatId: number): Promise<void> {
+  async function commitComment(
+    taskId: string,
+    text: string,
+    chatId: number,
+    agent: AgentName
+  ): Promise<void> {
     // Автор НЕ передаётся: addComment дефолтит git config user.name —
     // единый автор для CLI и бота (однопользовательская система, VL-35)
     const task = addComment(deps.cwd, taskId, text);
@@ -305,21 +314,30 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     const onExit: PhaseExitCallback = (run) => {
       notifyPhaseDone(bot, chatId, task, run);
     };
-    const result = startPhase(deps.cwd, task.id, 'comment', onExit, {
-      comment: text,
-    });
+    const result = startPhase(
+      deps.cwd,
+      task.id,
+      'comment',
+      onExit,
+      { comment: text },
+      agent
+    );
     if ('error' in result) {
       // Guard «уже выполняется» и прочие ошибки валидации startPhase:
       // комментарий уже сохранён — не откатываем, сообщаем явно (VL-60)
       await sendText(
         bot,
         chatId,
-        '⚠️ Комментарий добавлен, но запуск qwen не удался: ' +
+        '⚠️ Комментарий добавлен, но запуск ' + agent + ' не удался: ' +
           escapeMarkdownV2(result.error)
       );
       return;
     }
-    await sendText(bot, chatId, `🚀 Фаза Comment запущена для *${task.id}*, PID ${result.pid}`);
+    await sendText(
+      bot,
+      chatId,
+      `🚀 Фаза Comment (${agent}) запущена для *${task.id}*, PID ${result.pid}`
+    );
   }
 
   bot.command('start', async (ctx) => {
@@ -526,18 +544,44 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     }
   });
 
-  bot.command('comment', async (ctx) => {
+  // ── /set — настройки бота (VL-94): пока один параметр agent ──
+  // /set agent <qwen|vb> — агент по умолчанию для всех команд фаз и кнопок
+  // действий без суффикса :<agent>. Хранится в .vibelog/bot.yml.
+  bot.command('set', async (ctx) => {
     if (!requireBind(ctx)) return;
-    const parsed = parseCommentCommand((ctx.match ?? '').toString());
+    const parsed = parseSetCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    const settings = loadBotSettings(deps.cwd);
+    settings.default_agent = parsed.value;
+    saveBotSettings(deps.cwd, settings);
+    await sendMd(
+      ctx,
+      `⚙️ Агент по умолчанию: *${parsed.value}*. Команды без суффикса :<agent> запускают его.`
+    );
+  });
+
+  // ── /comment — комментарий + Фаза Comment (VL-35/60), агент — VL-94 ──
+  bot.command(['comment', 'comment:qwen', 'comment:vb'], async (ctx) => {
+    if (!requireBind(ctx)) return;
+    // ctx.command в grammy 1.46 отсутствует — слово команды берём из текста
+    // сообщения (первое слово без '/'): '/comment:vb VL-1 текст' → 'comment:vb'
+    const raw = (ctx.message?.text ?? '').trim();
+    const commandWord = raw.split(/\s+/)[0]?.replace(/^\//, '') ?? 'comment';
+    const parsed = parseCommentCommand((ctx.match ?? '').toString(), commandWord);
     if ('error' in parsed) {
       await sendMd(ctx, parsed.error);
       return;
     }
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return;
+    // Явный суффикс :<agent> перекрывает агента по умолчанию из настроек (VL-94)
+    const agent = parsed.agent ?? resolveDefaultAgent(deps.cwd);
     // Логика комментария общая с callback-кнопкой «Комментарий» (VL-78)
     try {
-      await commitComment(parsed.id, parsed.text, chatId);
+      await commitComment(parsed.id, parsed.text, chatId, agent);
     } catch (err) {
       await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -547,9 +591,13 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   // По аналогии с web (startPhase): создаём родительскую задачу с описанием
   // фичи и спавним qwen с шаблоном phase-1.md — агент сам разобьёт фичу на
   // подзадачи через Vibelog MCP, оставит отчёт комментарием и сменит статус.
-  bot.command('spec', async (ctx) => {
+  bot.command(['spec', 'spec:qwen', 'spec:vb'], async (ctx) => {
     if (!requireBind(ctx)) return;
-    const parsed = parseSpecCommand((ctx.match ?? '').toString());
+    // ctx.command в grammy 1.46 отсутствует — слово команды берём из текста
+    // сообщения (первое слово без '/'): '/spec:vb …' → 'spec:vb' (VL-94)
+    const raw = (ctx.message?.text ?? '').trim();
+    const commandWord = raw.split(/\s+/)[0]?.replace(/^\//, '') ?? 'spec';
+    const parsed = parseSpecCommand((ctx.match ?? '').toString(), commandWord);
     if ('error' in parsed) {
       await sendMd(ctx, parsed.error);
       return;
@@ -565,6 +613,8 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         title += '…';
       }
       const task = createTaskFile(deps.cwd, { title, description: parsed.description });
+      // Явный суффикс :<agent> перекрывает агента по умолчанию (VL-94)
+      const agent = parsed.agent ?? resolveDefaultAgent(deps.cwd);
       // VL-48: по завершении фазы — в чат ответ qwen + карточка задачи.
       // Колбэк синхронный (void async): ошибки сети не роняют polling.
       const notifyChat = ctx.chat?.id;
@@ -572,18 +622,20 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         if (notifyChat === undefined) return;
         notifyPhaseDone(bot, notifyChat, task, run);
       };
-      const result = startPhase(deps.cwd, task.id, 'spec', onExit);
+      const result = startPhase(deps.cwd, task.id, 'spec', onExit, undefined, agent);
       if ('error' in result) {
         await sendMd(
           ctx,
           '⚠️ Задача *' +
             task.id +
-            '* создана, но запуск qwen не удался: ' +
+            '* создана, но запуск ' +
+            agent +
+            ' не удался: ' +
             escapeMarkdownV2(result.error)
         );
         return;
       }
-      await sendMd(ctx, `🚀 Фаза Spec запущена для *${task.id}*, PID ${result.pid}`);
+      await sendMd(ctx, `🚀 Фаза Spec (${agent}) запущена для *${task.id}*, PID ${result.pid}`);
     } catch (err) {
       await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -593,9 +645,13 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   // ── /plan — Фаза 2 (Plan) через headless qwen (VL-51) ──
   // По аналогии с /spec (VL-42/48), но задача НЕ создаётся: аргумент —
   // ID существующей задачи (обычно после /spec, статус Planned).
-  bot.command('plan', async (ctx) => {
+  bot.command(['plan', 'plan:qwen', 'plan:vb'], async (ctx) => {
     if (!requireBind(ctx)) return;
-    const parsed = parsePlanCommand((ctx.match ?? '').toString());
+    // ctx.command в grammy 1.46 отсутствует — слово команды берём из текста
+    // сообщения (первое слово без '/'): '/plan:vb VL-1 …' → 'plan:vb' (VL-94)
+    const raw = (ctx.message?.text ?? '').trim();
+    const commandWord = raw.split(/\s+/)[0]?.replace(/^\//, '') ?? 'plan';
+    const parsed = parsePlanCommand((ctx.match ?? '').toString(), commandWord);
     if ('error' in parsed) {
       await sendMd(ctx, parsed.error);
       return;
@@ -612,26 +668,39 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
+    // Явный суффикс :<agent> перекрывает агента по умолчанию (VL-94)
+    const agent = parsed.agent ?? resolveDefaultAgent(deps.cwd);
     // Колбэк завершения — паттерн VL-63: карточка + информационное сообщение
     const notifyChat = ctx.chat?.id;
     const onExit: PhaseExitCallback = (run) => {
       if (notifyChat === undefined) return;
       notifyPhaseDone(bot, notifyChat, task, run);
     };
-    const result = startPhase(deps.cwd, task.id, 'plan', onExit, { comment: parsed.comment ?? '' });
+    const result = startPhase(
+      deps.cwd,
+      task.id,
+      'plan',
+      onExit,
+      { comment: parsed.comment ?? '' },
+      agent
+    );
     if ('error' in result) {
       // Guard «уже выполняется» и прочие ошибки валидации startPhase
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
       return;
     }
-    await sendMd(ctx, `🚀 Фаза Plan запущена для *${task.id}*, PID ${result.pid}`);
+    await sendMd(ctx, `🚀 Фаза Plan (${agent}) запущена для *${task.id}*, PID ${result.pid}`);
   });
   // ── /code — Фаза 3 (Code) через headless qwen (VL-53) ──
   // По аналогии с /plan (VL-51), но фаза — Code (шаблон phase-3.md).
   // ID существующей задачи (обычно после /plan).
-  bot.command('code', async (ctx) => {
+  bot.command(['code', 'code:qwen', 'code:vb'], async (ctx) => {
     if (!requireBind(ctx)) return;
-    const parsed = parseCodeCommand((ctx.match ?? '').toString());
+    // ctx.command в grammy 1.46 отсутствует — слово команды берём из текста
+    // сообщения (первое слово без '/'): '/code:vb VL-1 …' → 'code:vb' (VL-94)
+    const raw = (ctx.message?.text ?? '').trim();
+    const commandWord = raw.split(/\s+/)[0]?.replace(/^\//, '') ?? 'code';
+    const parsed = parseCodeCommand((ctx.match ?? '').toString(), commandWord);
     if ('error' in parsed) {
       await sendMd(ctx, parsed.error);
       return;
@@ -648,27 +717,40 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
+    // Явный суффикс :<agent> перекрывает агента по умолчанию (VL-94)
+    const agent = parsed.agent ?? resolveDefaultAgent(deps.cwd);
     // Колбэк завершения — паттерн VL-63: карточка + информационное сообщение
     const notifyChat = ctx.chat?.id;
     const onExit: PhaseExitCallback = (run) => {
       if (notifyChat === undefined) return;
       notifyPhaseDone(bot, notifyChat, task, run);
     };
-    const result = startPhase(deps.cwd, task.id, 'code', onExit, { comment: parsed.comment ?? '' });
+    const result = startPhase(
+      deps.cwd,
+      task.id,
+      'code',
+      onExit,
+      { comment: parsed.comment ?? '' },
+      agent
+    );
     if ('error' in result) {
       // Guard «уже выполняется» и прочие ошибки валидации startPhase
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
       return;
     }
-    await sendMd(ctx, `🚀 Фаза Code запущена для *${task.id}*, PID ${result.pid}`);
+    await sendMd(ctx, `🚀 Фаза Code (${agent}) запущена для *${task.id}*, PID ${result.pid}`);
   });
   // ── /close — Фаза Close (закрытие задачи) через headless qwen (VL-55) ──
   // По аналогии с /code (VL-53): закрывает задачу — статус завершения
   // из конфига проекта + git commit файлов задачи + отчёт комментарием.
   // Шаблон phase-close.md — единственная фаза, где git-операции разрешены.
-  bot.command('close', async (ctx) => {
+  bot.command(['close', 'close:qwen', 'close:vb'], async (ctx) => {
     if (!requireBind(ctx)) return;
-    const parsed = parseCloseCommand((ctx.match ?? '').toString());
+    // ctx.command в grammy 1.46 отсутствует — слово команды берём из текста
+    // сообщения (первое слово без '/'): '/close:vb VL-1 …' → 'close:vb' (VL-94)
+    const raw = (ctx.message?.text ?? '').trim();
+    const commandWord = raw.split(/\s+/)[0]?.replace(/^\//, '') ?? 'close';
+    const parsed = parseCloseCommand((ctx.match ?? '').toString(), commandWord);
     if ('error' in parsed) {
       await sendMd(ctx, parsed.error);
       return;
@@ -678,29 +760,38 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, `Задача ${escapeMarkdownV2(parsed.id)} не найдена.`);
       return;
     }
+    // Явный суффикс :<agent> перекрывает агента по умолчанию (VL-94)
+    const agent = parsed.agent ?? resolveDefaultAgent(deps.cwd);
     // Колбэк завершения — паттерн VL-63: карточка + информационное сообщение
     const notifyChat = ctx.chat?.id;
     const onExit: PhaseExitCallback = (run) => {
       if (notifyChat === undefined) return;
       notifyPhaseDone(bot, notifyChat, task, run);
     };
-    const result = startPhase(deps.cwd, task.id, 'close', onExit);
+    const result = startPhase(deps.cwd, task.id, 'close', onExit, undefined, agent);
     if ('error' in result) {
       // Guard «уже выполняется» и прочие ошибки валидации startPhase
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
       return;
     }
-    await sendMd(ctx, `🚀 Фаза Close запущена для *${task.id}*, PID ${result.pid}`);
+    await sendMd(ctx, `🚀 Фаза Close (${agent}) запущена для *${task.id}*, PID ${result.pid}`);
   });
-  // ── /prompt — произвольный запрос через qwen без задачи (VL-66) ──
+  // ── /prompt — произвольный запрос через LLM без задачи (VL-66/92) ──
   // Запросы, слишком мелкие для задачи (коммит незакоммиченных файлов,
-  // правка настроек и т.п.): бот спавнит qwen с шаблоном prompt.md.
-  // Задача НЕ создаётся, backlog/ не трогается; git-операции разрешены
-  // (шаблон запрещает только push без явной просьбы). Активен только
-  // один /prompt (guard в spawnQwenRun).
-  bot.command('prompt', async (ctx) => {
+  // правка настроек и т.п.): бот спавнит агент с шаблоном prompt.md.
+  // Суффикс :<agent> выбирает агента (VL-92): /prompt:vb — встроенный
+  // vibelog-agent, /prompt:qwen или без суффикса — qwen. grammy 1.46 матчит
+  // только строковые имена (has.command сравнивает Set'ы) — вариации
+  // регистрируются массивом. Задача НЕ создаётся, backlog/ не трогается;
+  // git-операции разрешены (шаблон запрещает только push без явной просьбы).
+  // Активен только один /prompt (guard в spawnQwenRun — общий для агентов).
+  bot.command(['prompt', 'prompt:qwen', 'prompt:vb'], async (ctx) => {
     if (!requireBind(ctx)) return;
-    const parsed = parsePromptCommand((ctx.match ?? '').toString());
+    // ctx.command в grammy 1.46 отсутствует — слово команды берём из текста
+    // сообщения (первое слово без '/'): '/prompt:vb привет' → 'prompt:vb'
+    const raw = (ctx.message?.text ?? '').trim();
+    const commandWord = raw.split(/\s+/)[0]?.replace(/^\//, '') ?? 'prompt';
+    const parsed = parsePromptCommand((ctx.match ?? '').toString(), commandWord);
     if ('error' in parsed) {
       await sendMd(ctx, parsed.error);
       return;
@@ -712,13 +803,31 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       if (notifyChat === undefined) return;
       void sendPhaseResult(bot, notifyChat, run);
     };
-    const result = startPrompt(deps.cwd, parsed.text, onExit);
+    // Явный суффикс :<agent> перекрывает агента по умолчанию из настроек (VL-94)
+    const agent = parsed.agent ?? resolveDefaultAgent(deps.cwd);
+    const result = startPrompt(deps.cwd, parsed.text, onExit, agent);
     if ('error' in result) {
       // Guard «уже выполняется» и прочие ошибки валидации startPrompt
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
       return;
     }
-    await sendMd(ctx, `🚀 Запрос отправлен в qwen, PID ${result.pid}`);
+    const agentLabel = agent === 'vb' ? 'vibelog-agent' : 'qwen';
+    await sendMd(ctx, `🚀 Запрос отправлен в ${escapeMarkdownV2(agentLabel)}, PID ${result.pid}`);
+  });
+  // Фолбэк VL-92 для /prompt:<неизвестный агент>: если Telegram-entity
+  // обрывается на двоеточии, command-хендлер выше не сматчит 'prompt:foo' —
+  // подсказка шлётся здесь, спавна нет
+  bot.hears(/^\/prompt:(\S+)/, async (ctx) => {
+    if (!requireBind(ctx)) return;
+    await sendMd(ctx, escapeMarkdownV2('Синтаксис: /prompt[:agent] <запрос> (агенты: qwen, vb)'));
+  });
+  // Фолбэк VL-94 для /<фаза>:<неизвестный агент>: как у /prompt — command-
+  // хендлеры выше не сматчат 'spec:foo' (только зарегистрированные имена),
+  // подсказка шлётся здесь, спавна нет
+  bot.hears(/^\/(spec|plan|code|close|comment):(\S+)/, async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const cmd = ctx.match?.[1] ?? 'команда';
+    await sendMd(ctx, escapeMarkdownV2(`Синтаксис: /${cmd}[:agent] … (агенты: qwen, vb)`));
   });
   // ── /restart — самоперезапуск бота (VL-70) ──
   // Сценарий разработки: после pnpm build старый процесс исполняет старый
@@ -861,12 +970,17 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       if (notifyChat === undefined) return;
       notifyPhaseDone(bot, notifyChat, task, run);
     };
-    const result = startPhase(deps.cwd, task.id, next.phase, onExit, { comment: '' });
+    // Агент по умолчанию из настроек (VL-94): кнопки действий — как команды
+    const agent = resolveDefaultAgent(deps.cwd);
+    const result = startPhase(deps.cwd, task.id, next.phase, onExit, { comment: '' }, agent);
     if ('error' in result) {
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
       return;
     }
-    await sendMd(ctx, `🚀 Фаза ${next.label} запущена для *${task.id}*, PID ${result.pid}`);
+    await sendMd(
+      ctx,
+      `🚀 Фаза ${next.label} (${agent}) запущена для *${task.id}*, PID ${result.pid}`
+    );
   });
   // ── Ввод комментария (VL-78): ОБЯЗАТЕЛЬНО ДО catch-all пина ──
   // Режим ожидания после кнопки «Комментарий»: текст сохраняется через
@@ -894,10 +1008,73 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     // Удаляем ДО async-работы — защита от двойного ввода, пока идёт addComment
     awaitingComment.delete(chatId);
     try {
-      await commitComment(taskId, text, chatId);
+      await commitComment(taskId, text, chatId, resolveDefaultAgent(deps.cwd));
     } catch (err) {
       await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
     }
+  });
+  // ── VL-93: reply на информационное сообщение бота → resume сессии qwen ──
+  // Строго МЕЖДУ awaitingComment (VL-78) и catch-all пина (ловушка порядка
+  // grammy VL-37): все «не мой случай» ветки уходят next() дальше — иначе
+  // catch-all пина перехватил бы reply и остановил цепочку.
+  bot.on('message:text', async (ctx, next) => {
+    const reply = ctx.message.reply_to_message;
+    if (!reply) {
+      await next();
+      return;
+    }
+    // Текст сообщения-ответа: обычное text-сообщение (MarkdownV2-фолбэк
+    // formatPhaseResult) либо rich-сообщение (sendRichMessage, VL-71) —
+    // у него НЕТ поля text, контент в rich_message.blocks (типы Telegram:
+    // RichMessageMessage = CommonMessage & MsgWith<"rich_message">).
+    // Раньше reply.text === undefined для rich-сообщения давал next() и
+    // тишину — жалоба Pavel 2026-10-05 «нет реакции на reply» (фикс VL-93).
+    const replyText =
+      typeof reply.text === 'string' && reply.text
+        ? reply.text
+        : reply.rich_message
+          ? richToText(reply.rich_message)
+          : '';
+    // Обычные тексты и reply без текста — к следующим обработчикам
+    if (!replyText) {
+      await next();
+      return;
+    }
+    // Resume имеет смысл только на сообщения бота: информационное
+    // сообщение фазы содержит session_id; в сообщениях пользователей
+    // идентификаторов сессий нет
+    if (!reply.from?.is_bot) {
+      await next();
+      return;
+    }
+    // Без session_id (прочие сообщения бота) — поведение пина/комментария
+    // не меняется
+    const ref = extractSessionRef(replyText);
+    if (!ref) {
+      await next();
+      return;
+    }
+    if (!requireBind(ctx)) return;
+    // Промпт — сырой текст reply-сообщения; resume вне жизненного цикла
+    // фаз задачи — карточка не шлётся, только информационное сообщение
+    // (паттерн sendPhaseResult, VL-63/71)
+    const chatId = ctx.chat?.id;
+    const onExit: PhaseExitCallback = (run) => {
+      if (chatId === undefined) return;
+      void sendPhaseResult(bot, chatId, run);
+    };
+    // Агент прокидывается из ref (VL-95): vb-сессии возобновляются через
+    // --resume vibelog-agent, qwen — как раньше (VL-93)
+    const result = startResume(deps.cwd, ref.sessionId, ctx.message.text.trim(), onExit, ref.agent);
+    if ('error' in result) {
+      // Guard «Запуск уже выполняется» (resume либо фаза в этом процессе)
+      await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
+      return;
+    }
+    await sendMd(
+      ctx,
+      `🔄 Сессия возобновлена (resume ${escapeMarkdownV2(ref.sessionId)}), PID ${result.pid}`
+    );
   });
   // Ввод пина — ОБЯЗАТЕЛЬНО ПОСЛЕ ВСЕХ bot.command: catch-all message:text
   // перехватывает любое текстовое сообщение и без next() останавливает

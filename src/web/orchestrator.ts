@@ -15,6 +15,7 @@ import { execFile, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { renderPrompt } from './phase-prompt.js';
 import type { Phase } from './phase-prompt.js';
 import { getTask } from '../core/store.js';
@@ -39,6 +40,8 @@ export interface PhaseRun {
   logTail?: string;
   /** Разобранный JSON-результат qwen (type=result); null-фолбэк — без данных. */
   result?: QwenResult;
+  /** Агент запуска (VL-93): 'qwen' по умолчанию, 'vb' — встроенный агент. */
+  agent?: string;
 }
 
 /** Результат startPhase: успех или ошибка валидации/guard. */
@@ -55,6 +58,8 @@ interface ActiveRun {
   phase: Phase;
   child: ChildProcess;
   onExit?: PhaseExitCallback;
+  /** Агент запуска (VL-93) — попадает в PhaseRun для рендера session_id. */
+  agent: string;
 }
 
 /** Задача → активный запуск (guard от двойного запуска). */
@@ -70,13 +75,17 @@ const lastRuns = new Map<string, PhaseRun>();
  * @param phase — spec | plan | code | close | comment
  * @param onExit — колбэк завершения фазы (VL-48)
  * @param extraVars — доп. подстановки промпта ({{comment}} для фазы comment)
+ * @param agent — агент-исполнитель (VL-94): qwen (дефолт) либо встроенный
+ *   vibelog-agent; выбор бинаря — в spawnQwenRun (VL-92), guard-ключ фазы
+ *   общий для обоих агентов — одновременно активен только один запуск фазы
  */
 export function startPhase(
   cwd: string,
   taskId: string,
   phase: string,
   onExit?: PhaseExitCallback,
-  extraVars?: Record<string, string>
+  extraVars?: Record<string, string>,
+  agent: 'qwen' | 'vb' = 'qwen'
 ): StartResult {
   // Защита HTTP-границы (VL-66): api.ts пропускает произвольный phase из
   // POST-body — без guard'а qwen получил бы шаблон prompt.md с неподставленным
@@ -90,23 +99,26 @@ export function startPhase(
   } catch (err) {
     return { error: (err as Error).message };
   }
-  return spawnQwenRun(cwd, taskId, phase as Phase, prompt, onExit);
+  return spawnQwenRun(cwd, taskId, phase as Phase, prompt, onExit, agent);
 }
 
 /**
- * Запускает произвольный промпт через qwen без задачи (VL-66/67, /prompt).
+ * Запускает произвольный промпт через агент без задачи (VL-66/67/92, /prompt).
  *
  * Ключ запуска — строка 'prompt' в общих activeRuns/lastRuns: guard от
- * двойного запуска и getRun('prompt') достаются без новых map.
+ * двойного запуска и getRun('prompt') достаются без новых map. Guard общий
+ * для обоих агентов (VL-92): одновременно активен только один /prompt.
  *
  * @param cwd — рабочая директория проекта
  * @param promptText — текст запроса пользователя (подставляется в {{prompt}})
  * @param onExit — колбэк завершения (бот шлёт информационное сообщение без карточки)
+ * @param agent — агент-исполнитель: qwen (дефолт) либо встроенный vibelog-agent
  */
 export function startPrompt(
   cwd: string,
   promptText: string,
-  onExit?: PhaseExitCallback
+  onExit?: PhaseExitCallback,
+  agent: 'qwen' | 'vb' = 'qwen'
 ): StartResult {
   let prompt: string;
   try {
@@ -115,29 +127,73 @@ export function startPrompt(
   } catch (err) {
     return { error: (err as Error).message };
   }
-  return spawnQwenRun(cwd, 'prompt', 'prompt', prompt, onExit);
+  return spawnQwenRun(cwd, 'prompt', 'prompt', prompt, onExit, agent);
 }
 
 /**
- * Спавнит процесс qwen с готовым промптом и ведёт его жизненный цикл.
+ * Продолжает существующую сессию агента по reply-сообщению бота (VL-93/95).
+ *
+ * Отличие от startPrompt: шаблон phase-prompt НЕ используется — позиционный
+ * промпт = сырой текст пользователя; флаг `--resume <sessionId>` продолжает
+ * ту же сессию (без --fork-session — по описанию фичи). runKey 'resume' —
+ * guard от двойного запуска в общих activeRuns, getRun('resume') доступен.
+ * Результат парсится штатным parseQwenResult (JSON type=result) — бот шлёт
+ * информационное сообщение паттерном sendPhaseResult.
+ *
+ * @param cwd — рабочая директория проекта
+ * @param sessionId — идентификатор сессии из сообщения бота (у vb — с префиксом vb:)
+ * @param promptText — текст пользователя (reply-сообщение)
+ * @param onExit — колбэк завершения (бот шлёт информационное сообщение)
+ * @param agent — VL-95: qwen (дефолт) либо встроенный vibelog-agent; у vb
+ *   есть --resume и JSONL-хранилище сессий, префикс vb: снимает CLI агента
+ */
+export function startResume(
+  cwd: string,
+  sessionId: string,
+  promptText: string,
+  onExit?: PhaseExitCallback,
+  agent: 'qwen' | 'vb' = 'qwen'
+): StartResult {
+  // Фаза 'prompt' — вне жизненного цикла задачи, шаблон не подставляется;
+  // resume поддержан для обоих агентов (VL-95: vb хранит сессии JSONL)
+  return spawnQwenRun(cwd, 'resume', 'prompt', promptText, onExit, agent, ['--resume', sessionId]);
+}
+
+/**
+ * Спавнит процесс агента с готовым промптом и ведёт его жизненный цикл.
  *
  * Общий хелпер startPhase/startPrompt (VL-66): guard от двойного запуска,
  * лог, probe тишины, парсер JSON-результата, onExit. runKey — ID задачи
  * либо 'prompt' (ключи общих activeRuns/lastRuns).
+ *
+ * @param agent — VL-92: qwen (дефолт) либо встроенный vibelog-agent
+ * @param extraArgs — VL-93: доп. флаги сразу после промпта (--resume <id>)
  */
 function spawnQwenRun(
   cwd: string,
   runKey: string,
   phase: Phase,
   prompt: string,
-  onExit?: PhaseExitCallback
+  onExit?: PhaseExitCallback,
+  agent: 'qwen' | 'vb' = 'qwen',
+  extraArgs: string[] = []
 ): StartResult {
   if (activeRuns.has(runKey)) {
     // Сообщение генерализовано (VL-66): подходит и фазе задачи, и /prompt
     return { error: 'Запуск уже выполняется' };
   }
 
-  const bin = process.env.VIBELOG_QWEN_BIN || 'qwen';
+  // VL-92: выбор бинаря по агенту. qwen — прежний путь без регрессий;
+  // vb — встроенный vibelog-agent: VIBELOG_AGENT_BIN либо bin/vibelog-agent.mjs
+  // относительно dist/web/ (import.meta.url). Флаги спавна не меняются —
+  // агент qwen-совместим по CLI (VL-85). LLM env (VIBELOG_LLM_*) наследуются
+  // из process.env: бот кладёт туда .env через loadDotEnv (VL-37), доп.
+  // настройка не нужна; при отсутствии ключа агент сам печатает is_error JSON.
+  const bin =
+    agent === 'vb'
+      ? process.env.VIBELOG_AGENT_BIN ||
+        fileURLToPath(new URL('../../bin/vibelog-agent.mjs', import.meta.url))
+      : process.env.VIBELOG_QWEN_BIN || 'qwen';
   // Промпт — позиционный аргумент: флаг -p/--prompt у qwen deprecated
   // («Use the positional prompt instead»).
   // Диагностика VL-58 (таймлайн, probe тишины) остаётся.
@@ -158,12 +214,14 @@ function spawnQwenRun(
     phase === 'spec' || phase === 'plan'
       ? ['--allowed-mcp-server-names', 'vibelog']
       : [];
-  const child = spawn(bin, [prompt, '--approval-mode', 'yolo', '--output-format', 'json', ...phaseFlags], {
+  // VL-93: extraArgs сразу после позиционного промпта (--resume <sessionId>);
+  // порядок флагов для qwen не значим, промпт обязан быть первым
+  const child = spawn(bin, [prompt, ...extraArgs, '--approval-mode', 'yolo', '--output-format', 'json', ...phaseFlags], {
     cwd,
     stdio: 'pipe',
   });
 
-  activeRuns.set(runKey, { phase, child, onExit });
+  activeRuns.set(runKey, { phase, child, onExit, agent });
   lastRuns.delete(runKey);
 
   // VL-63 (reopen): два независимых буфера. `log` — ТОЛЬКО stdout (источник
@@ -317,6 +375,7 @@ function spawnQwenRun(
     const record: PhaseRun = {
       running: false,
       phase,
+      agent,
       exitCode: code,
       finishedAt: new Date().toISOString(),
       // Фолбэк-хвост для бота/доски: оба потока, stdout первым
@@ -358,7 +417,7 @@ function spawnQwenRun(
 export function getRun(taskId: string): PhaseRun | null {
   const active = activeRuns.get(taskId);
   if (active) {
-    return { running: true, phase: active.phase, pid: active.child.pid };
+    return { running: true, phase: active.phase, pid: active.child.pid, agent: active.agent };
   }
   return lastRuns.get(taskId) ?? null;
 }

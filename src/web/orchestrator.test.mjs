@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { renderPrompt, startPhase, startPrompt, getRun } from '../../dist/web/orchestrator.js';
+import { renderPrompt, startPhase, startPrompt, startResume, getRun } from '../../dist/web/orchestrator.js';
 import { handleApi } from '../../dist/web/api.js';
 import { createTaskFile } from '../../dist/core/store.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
@@ -92,7 +92,7 @@ describe('orchestrator (VL-28)', () => {
     task1 = createTaskFile(testRoot, { title: 'Задача для фазы 1', status: 'Spec', priority: 'High' });
     task2 = createTaskFile(testRoot, { title: 'Задача для API-тестов', status: 'Backlog', priority: 'Low' });
 
-    for (const key of ['VIBELOG_QWEN_BIN', 'VL28_STUB_MARKER', 'VL28_STUB_SLEEP', 'VL28_STUB_EXIT', 'VL28_STUB_RESULT', 'VL28_STUB_RACE']) {
+    for (const key of ['VIBELOG_QWEN_BIN', 'VIBELOG_AGENT_BIN', 'VL28_STUB_MARKER', 'VL28_STUB_SLEEP', 'VL28_STUB_EXIT', 'VL28_STUB_RESULT', 'VL28_STUB_RACE']) {
       savedEnv[key] = process.env[key];
       delete process.env[key];
     }
@@ -341,6 +341,8 @@ describe('orchestrator (VL-28)', () => {
     assert.equal(run.exitCode, 0);
     assert.equal(run.result?.result, 'коммиты сделаны');
     assert.equal(run.phase, 'prompt');
+    // VL-93: агент по умолчанию qwen — рендер session_id без префикса vb:
+    assert.equal(run.agent, 'qwen');
     // Маркер: промпт — позиционный аргумент, запрос подставлен
     const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
     assert.ok(argv.some((a) => a.includes('сделай коммиты для файлов')));
@@ -360,6 +362,191 @@ describe('orchestrator (VL-28)', () => {
     assert.equal(getRun('prompt').running, true);
     const run = await waitDone('prompt');
     assert.equal(run.exitCode, 0);
+  });
+
+  it('startPrompt: agent=vb спавнит VIBELOG_AGENT_BIN (VL-92)', async () => {
+    // VIBELOG_QWEN_BIN указывает на заведомо несуществующий путь: если бы
+    // выбор бинаря игнорировал агента, spawn упал бы и маркер не создался
+    process.env.VIBELOG_QWEN_BIN = join(testRoot, 'no-such-qwen-bin');
+    process.env.VIBELOG_AGENT_BIN = stubBin;
+    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-vb.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    process.env.VL28_STUB_RESULT = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      duration_ms: 500,
+      duration_api_ms: 400,
+      num_turns: 1,
+      result: 'от-встроенного-агента',
+      usage: { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 7 },
+      session_id: 'vb-1',
+    });
+    const res = startPrompt(testRoot, 'запрос к агенту', undefined, 'vb');
+    assert.equal(res.started, true);
+    const run = await waitDone('prompt');
+    assert.equal(run.exitCode, 0);
+    // Контракт VL-63 сохранён: тот же parseQwenResult для обоих агентов
+    assert.equal(run.result?.result, 'от-встроенного-агента');
+    // VL-93: run.agent пробрасывается — рендер session_id получает vb:
+    assert.equal(run.agent, 'vb');
+    const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+    assert.ok(argv.some((a) => a.includes('запрос к агенту')));
+    process.env.VIBELOG_QWEN_BIN = stubBin;
+  });
+
+  it('startPhase: agent=vb спавнит VIBELOG_AGENT_BIN (VL-94)', async () => {
+    // Выбор бинаря через параметр startPhase: VIBELOG_QWEN_BIN на заведомо
+    // несуществующий путь — если бы агент игнорировался, spawn упал бы
+    process.env.VIBELOG_QWEN_BIN = join(testRoot, 'no-such-qwen-bin');
+    process.env.VIBELOG_AGENT_BIN = stubBin;
+    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-phase-vb.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    process.env.VL28_STUB_RESULT = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      duration_ms: 500,
+      duration_api_ms: 400,
+      num_turns: 1,
+      result: 'фаза-от-агента',
+      usage: { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 7 },
+      session_id: 'vb-phase-1',
+    });
+    const res = startPhase(testRoot, task1.id, 'spec', undefined, undefined, 'vb');
+    assert.equal(res.started, true);
+    const run = await waitDone(task1.id);
+    assert.equal(run.exitCode, 0);
+    // Контракт VL-63 сохранён: тот же parseQwenResult для обоих агентов
+    assert.equal(run.result?.result, 'фаза-от-агента');
+    // VL-93/94: run.agent пробрасывается и для фаз (рендер session_id vb:)
+    assert.equal(run.agent, 'vb');
+    const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+    assert.ok(argv.some((a) => a.includes(task1.id)));
+    process.env.VIBELOG_QWEN_BIN = stubBin;
+  });
+
+  it('startPrompt: guard общий для qwen и vb (VL-92)', async () => {
+    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-guard-vb.txt');
+    process.env.VL28_STUB_SLEEP = '1200';
+    process.env.VL28_STUB_EXIT = '0';
+    // Активен qwen-промпт → /prompt:vb получает тот же guard-ответ
+    const first = startPrompt(testRoot, 'запрос qwen');
+    assert.equal(first.started, true);
+    const second = startPrompt(testRoot, 'запрос vb', undefined, 'vb');
+    assert.match(second.error, /уже выполняется/);
+    const run = await waitDone('prompt');
+    assert.equal(run.exitCode, 0);
+  });
+
+  // ── VL-93: startResume — продолжение сессии qwen по reply ──
+
+  it('startResume: spawn с --resume <sessionId>, getRun("resume"), agent qwen (VL-93)', async () => {
+    process.env.VIBELOG_QWEN_BIN = stubBin;
+    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-resume.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    process.env.VL28_STUB_RESULT = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      duration_ms: 700,
+      duration_api_ms: 600,
+      num_turns: 1,
+      result: 'сессия-продолжена',
+      usage: { input_tokens: 7, output_tokens: 3, cache_read_input_tokens: 1, total_tokens: 10 },
+      session_id: 'resume-1',
+    });
+    const res = startResume(testRoot, '11111111-2222-3333-4444-555555555555', 'продолжай работу');
+    assert.equal(res.started, true);
+    const run = await waitDone('resume');
+    assert.equal(run.exitCode, 0);
+    assert.equal(run.phase, 'prompt');
+    assert.equal(run.result?.result, 'сессия-продолжена');
+    // Агент по умолчанию qwen — фолбэк рендера session_id без vb:
+    assert.equal(run.agent, 'qwen');
+    // Контракт argv: промпт, --resume <sessionId>, затем стандартные флаги
+    const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+    assert.deepEqual(argv, [
+      'продолжай работу',
+      '--resume',
+      '11111111-2222-3333-4444-555555555555',
+      '--approval-mode',
+      'yolo',
+      '--output-format',
+      'json',
+    ]);
+  });
+
+  it('startResume: guard от двойного запуска, onExit один раз (VL-93)', async () => {
+    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-resume2.txt');
+    process.env.VL28_STUB_SLEEP = '1200';
+    process.env.VL28_STUB_EXIT = '0';
+    let exitCalls = 0;
+    let exitRunning = null;
+    const first = startResume(
+      testRoot,
+      '22222222-3333-4444-5555-666666666666',
+      'первый',
+      (run) => {
+        exitCalls += 1;
+        exitRunning = run.running;
+      }
+    );
+    assert.equal(first.started, true);
+    // Пока жив — второй resume получает guard; getRun('resume') — running
+    const second = startResume(testRoot, '33333333-4444-5555-6666-777777777777', 'второй');
+    assert.match(second.error, /уже выполняется/);
+    assert.equal(getRun('resume').running, true);
+    const run = await waitDone('resume');
+    assert.equal(exitCalls, 1, 'onExit ровно один раз');
+    assert.equal(exitRunning, false, 'onExit получает завершённый run');
+    assert.equal(run.exitCode, 0);
+    assert.equal(run.agent, 'qwen');
+  });
+
+  it('startResume: agent=vb спавнит VIBELOG_AGENT_BIN с --resume (VL-95)', async () => {
+    // Выбор бинаря через параметр agent: VIBELOG_QWEN_BIN на заведомо
+    // несуществующий путь — если бы агент игнорировался, spawn упал бы
+    process.env.VIBELOG_QWEN_BIN = join(testRoot, 'no-such-qwen-bin');
+    process.env.VIBELOG_AGENT_BIN = stubBin;
+    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-resume-vb.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    process.env.VL28_STUB_RESULT = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      duration_ms: 500,
+      duration_api_ms: 400,
+      num_turns: 1,
+      result: 'vb-сессия-продолжена',
+      usage: { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 7 },
+      session_id: 'vb-resume-1',
+    });
+    // Бот передаёт sessionId с префиксом vb: (extractSessionRef) — оркестратор
+    // прокидывает его как есть, strip делает CLI агента (VL-95)
+    const res = startResume(testRoot, 'vb:agent-1234567890', 'продолжи vb', undefined, 'vb');
+    assert.equal(res.started, true);
+    const run = await waitDone('resume');
+    assert.equal(run.exitCode, 0);
+    // Контракт VL-63 сохранён: тот же parseQwenResult для обоих агентов
+    assert.equal(run.result?.result, 'vb-сессия-продолжена');
+    // VL-95: run.agent пробрасывается и для resume-запусков vb
+    assert.equal(run.agent, 'vb');
+    const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+    assert.deepEqual(argv, [
+      'продолжи vb',
+      '--resume',
+      'vb:agent-1234567890',
+      '--approval-mode',
+      'yolo',
+      '--output-format',
+      'json',
+    ]);
+    process.env.VIBELOG_QWEN_BIN = stubBin;
   });
 
   it('startPhase отклоняет phase=prompt — только через startPrompt (VL-67)', () => {

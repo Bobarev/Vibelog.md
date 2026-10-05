@@ -585,7 +585,10 @@ export function renderPhaseResultRich(run: PhaseRun): string {
     `**Общее время:** ${res.duration_ms} мс (api: ${res.duration_api_ms} мс)`,
     `**Количество запросов:** ${res.num_turns}`,
   ];
-  if (res.session_id) lines.push('', '`' + res.session_id + '`');
+  // VL-93: единый формат вывода сессии '<agent>:<session_id>' для ВСЕХ агентов
+  // (жалоба Pavel 2026-10-05: qwen тоже с префиксом — qwen:<uuid>); agent
+  // не задан у старых запусков — дефолт qwen; префикс только буквы/двоеточие
+  if (res.session_id) lines.push('', '`' + (run.agent ?? 'qwen') + ':' + res.session_id + '`');
   return lines.join('\n');
 }
 
