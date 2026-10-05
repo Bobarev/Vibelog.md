@@ -10,9 +10,12 @@ import type { Bot, Context } from 'grammy';
 import { addComment, createTaskFile, getTask, listTasks, updateTaskFile } from '../core/store.js';
 import { loadConfig } from '../core/config.js';
 import type { Task } from '../core/task.js';
+import { getGitStatus } from '../core/git-status.js';
+import type { DiffFile, GitStatus } from '../core/git-status.js';
 import {
   escapeMarkdownV2,
   formatBoard,
+  formatDiffList,
   formatPhaseResult,
   formatPhaseRun,
   formatTaskDetail,
@@ -21,6 +24,7 @@ import {
 import {
   chunkRich,
   nextPhaseForStatus,
+  renderDiffRich,
   renderPhaseResultRich,
   renderTaskRich,
   renderTasksRich,
@@ -131,6 +135,28 @@ async function sendTasksView(
     await sendText(bot, chatId, formatTaskList(tasks));
   }
 }
+
+/**
+ * Git-статус по chatId: rich-таблица /diff (VL-88), фолбэк — MarkdownV2
+ * (formatDiffList). Паттерн sendTasksView: try sendRichMessage → catch.
+ */
+async function sendDiffView(
+  bot: Bot,
+  chatId: number,
+  files: DiffFile[],
+  branch: string
+): Promise<void> {
+  try {
+    for (const part of chunkRich(renderDiffRich(files, branch))) {
+      await bot.api.sendRichMessage(chatId, { markdown: part });
+    }
+  } catch (err) {
+    console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
+    await sendText(bot, chatId, formatDiffList(files, branch));
+  }
+}
+
+
 
 /**
  * Информационное сообщение о завершении фазы по chatId: rich-рендер GFM
@@ -283,6 +309,26 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     const config = loadConfig(deps.cwd);
     const statuses = Array.isArray(config.statuses) ? config.statuses.map(String) : [];
     await sendMd(ctx, formatBoard(statuses, listTasks(deps.cwd)));
+  });
+
+  bot.command('diff', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    let status: GitStatus;
+    try {
+      status = getGitStatus(deps.cwd);
+    } catch (err) {
+      // git-сбой / не git-репозиторий — ошибка в чат, бот не падает (AC#2 VL-88)
+      await sendMd(ctx, err instanceof Error ? err.message : 'Не удалось получить git-статус');
+      return;
+    }
+    if (status.files.length === 0) {
+      // Пустой статус — короткое сообщение, таблица не строится (как пустой /tasks)
+      await sendMd(ctx, 'Незакоммиченных изменений нет');
+      return;
+    }
+    await sendDiffView(bot, chatId, status.files, status.branch);
   });
 
   // ── Управление задачами (VL-35): ПОСЛЕ всех доска-команд, ДО catch-all ──

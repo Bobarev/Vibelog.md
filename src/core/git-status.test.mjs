@@ -1,0 +1,159 @@
+/**
+ * Тесты VL-88 — сбор git-данных для /diff (porcelain/numstat).
+ *
+ * Парсеры — чистые (без git); интеграция — реальный git в mkdtemp /tmp
+ * (паттерн add-comment.test.mjs), изоляция GIT_CONFIG_GLOBAL.
+ */
+
+import { describe, it, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { getGitStatus, parsePorcelain, parseNumstat } from '../../dist/core/git-status.js';
+
+// GIT_CONFIG_GLOBAL=/dev/null изолирует тест от глобального git-конфига
+const ISO_ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+
+describe('parsePorcelain (VL-88)', () => {
+  it('modified staged (X-колонка) и unstaged (Y-колонка)', () => {
+    const files = parsePorcelain('M  a.txt\n M b.txt\n');
+    assert.equal(files.length, 2);
+    assert.deepEqual(
+      { path: files[0].path, status: files[0].status, staged: files[0].staged },
+      { path: 'a.txt', status: 'Modified', staged: true }
+    );
+    assert.deepEqual(
+      { path: files[1].path, status: files[1].status, staged: files[1].staged },
+      { path: 'b.txt', status: 'Modified', staged: false }
+    );
+  });
+
+  it('MM — две записи (staged не сливается с unstaged)', () => {
+    const files = parsePorcelain('MM c.txt\n');
+    assert.equal(files.length, 2);
+    assert.equal(files[0].staged, true);
+    assert.equal(files[1].staged, false);
+  });
+
+  it('untracked ?? → Untracked без метки staged', () => {
+    const files = parsePorcelain('?? new.txt\n');
+    assert.equal(files.length, 1);
+    assert.equal(files[0].status, 'Untracked');
+    assert.equal(files[0].staged, false);
+  });
+
+  it('renamed: R  old -> new → oldPath + новый путь', () => {
+    const files = parsePorcelain('R  old.txt -> new.txt\n');
+    assert.equal(files.length, 1);
+    assert.equal(files[0].path, 'new.txt');
+    assert.equal(files[0].oldPath, 'old.txt');
+    assert.equal(files[0].status, 'Renamed');
+    assert.equal(files[0].staged, true);
+  });
+
+  it('added/deleted статусы', () => {
+    const files = parsePorcelain('A  added.txt\nD  gone.txt\n');
+    assert.equal(files[0].status, 'Added');
+    assert.equal(files[1].status, 'Deleted');
+  });
+
+  it('кириллица в пути (quotepath=false, кавычки снимаются)', () => {
+    const files = parsePorcelain(' M "старый файл.txt"\n?? "новый файл.md"\n');
+    assert.equal(files[0].path, 'старый файл.txt');
+    assert.equal(files[1].path, 'новый файл.md');
+  });
+});
+
+describe('parseNumstat (VL-88)', () => {
+  it('обычные счётчики +N/−N по пути', () => {
+    const map = parseNumstat('5\t2\tsrc/app.ts\n');
+    assert.deepEqual(map.get('src/app.ts'), { additions: 5, deletions: 2 });
+  });
+
+  it('бинарник "-\t-" → 0/0', () => {
+    const map = parseNumstat('-\t-\timg.png\n');
+    assert.deepEqual(map.get('img.png'), { additions: 0, deletions: 0 });
+  });
+
+  it('renamed "old => new" → ключ по новому пути', () => {
+    const map = parseNumstat('0\t0\told.txt => new.txt\n');
+    assert.deepEqual(map.get('new.txt'), { additions: 0, deletions: 0 });
+    assert.ok(!map.has('old.txt'));
+  });
+
+  it('кириллица в пути numstat', () => {
+    const map = parseNumstat('3\t0\tстарый файл.txt\n');
+    assert.deepEqual(map.get('старый файл.txt'), { additions: 3, deletions: 0 });
+  });
+});
+
+describe('getGitStatus — интеграция с реальным git (VL-88)', () => {
+  const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-gitstatus-test-'));
+
+  after(() => {
+    rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  it('ветка, staged/unstaged/untracked/renamed со счётчиками', () => {
+    const git = (...args) =>
+      spawnSync('git', args, { cwd: testRoot, encoding: 'utf-8', env: ISO_ENV });
+    git('init', '-b', 'vl88-test');
+    git('config', 'user.email', 't@t');
+    git('config', 'user.name', 't');
+    writeFileSync(join(testRoot, 'a.txt'), '1\n2\n3\n', 'utf-8');
+    writeFileSync(join(testRoot, 'b.txt'), 'x\ny\nz\n', 'utf-8');
+    writeFileSync(join(testRoot, 'c.txt'), 'k\n', 'utf-8');
+    git('add', '-A');
+    git('commit', '-m', 'init');
+
+    // staged-модификация a.txt (+2 строки)
+    writeFileSync(join(testRoot, 'a.txt'), '1\n2\n3\n4\n5\n', 'utf-8');
+    git('add', 'a.txt');
+    // unstaged-модификация b.txt (+1 строка)
+    writeFileSync(join(testRoot, 'b.txt'), 'x\ny\nz\nw\n', 'utf-8');
+    // untracked с кириллицей в имени
+    writeFileSync(join(testRoot, 'новый файл.md'), 'new\n', 'utf-8');
+    // renamed staged
+    git('mv', 'c.txt', 'c-renamed.txt');
+
+    const status = getGitStatus(testRoot, ISO_ENV);
+    assert.equal(status.branch, 'vl88-test');
+
+    const byPath = (p) => status.files.find((f) => f.path === p);
+    const a = byPath('a.txt');
+    assert.ok(a, 'a.txt в статусе');
+    assert.equal(a.status, 'Modified');
+    assert.equal(a.staged, true, 'a.txt staged');
+    assert.equal(a.additions, 2, 'a.txt +2 из cached-numstat');
+    assert.equal(a.deletions, 0);
+
+    const b = byPath('b.txt');
+    assert.ok(b, 'b.txt в статусе');
+    assert.equal(b.staged, false, 'b.txt unstaged');
+    assert.equal(b.additions, 1, 'b.txt +1 из unstaged-numstat');
+
+    const r = byPath('c-renamed.txt');
+    assert.ok(r, 'c-renamed.txt в статусе');
+    assert.equal(r.status, 'Renamed');
+    assert.equal(r.oldPath, 'c.txt');
+    assert.equal(r.staged, true);
+
+    const u = byPath('новый файл.md');
+    assert.ok(u, 'новый файл.md в статусе (кириллица, quotepath=false)');
+    assert.equal(u.status, 'Untracked');
+    assert.equal(u.additions, 0, 'untracked без numstat');
+    assert.equal(u.deletions, 0);
+  });
+
+  it('не-git-директория → throw с русским сообщением', () => {
+    const plain = mkdtempSync(join(tmpdir(), 'vibelog-gitstatus-nogit-'));
+    try {
+      assert.throws(() => getGitStatus(plain, ISO_ENV), /Git недоступен или это не git-репозиторий/);
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
+  });
+});

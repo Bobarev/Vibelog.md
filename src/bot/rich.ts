@@ -14,6 +14,7 @@
  */
 
 import type { ChecklistItem, Task } from '../core/task.js';
+import type { DiffFile } from '../core/git-status.js';
 import type { PhaseRun } from '../web/orchestrator.js';
 import { VALID_TASK_STYLES } from './settings.js';
 
@@ -427,6 +428,30 @@ export function renderTasksRich(tasks: Task[], styles: Record<string, string>): 
     );
   }
   return `${table}\n\n${buttonRows.join('\n')}`;
+}
+
+/**
+ * Rich-рендер git-статуса для команды /diff (VL-88).
+ *
+ * HTML-таблица <table bordered striped compact> (паттерн renderTasksRich):
+ * колонки «Файл | Статус | Строки (+/−)». Staged — метка « (staged)»,
+ * не сливается с unstaged; renamed — «new ← old» (оба через cellSafe).
+ * Возврат без кнопок — у git-файлов нет callback-действий. Пустой вход → ''.
+ *
+ * @param files — незакоммиченные файлы (getGitStatus)
+ * @param branch — имя ветки для заголовка
+ */
+export function renderDiffRich(files: DiffFile[], branch: string): string {
+  if (files.length === 0) return '';
+  const header = '<tr><th>Файл</th><th>Статус</th><th>Строки (+/−)</th></tr>';
+  const rows = files.map((f) => {
+    // renamed: «new ← old» — оба пути через cellSafe, ячейка не ломается
+    const path = f.oldPath ? `${cellSafe(f.path)} ← ${cellSafe(f.oldPath)}` : cellSafe(f.path);
+    const status = cellSafe(f.status) + (f.staged ? ' (staged)' : '');
+    return `<tr><td><b>${path}</b></td><td>${status}</td><td>+${f.additions}/−${f.deletions}</td></tr>`;
+  });
+  const table = ['<table bordered striped compact>', header, ...rows, '</table>'].join('\n');
+  return `# 📝 Незакоммиченные изменения — \`${branch}\`\n\n${table}`;
 }
 
 /**

@@ -10,6 +10,7 @@
  */
 
 import type { Task } from '../core/task.js';
+import type { DiffFile } from '../core/git-status.js';
 import type { PhaseRun } from '../web/orchestrator.js';
 
 /**
@@ -37,6 +38,29 @@ export function formatTaskList(tasks: Task[]): string {
         `*${escapeMarkdownV2(t.id)}* — ${escapeMarkdownV2(t.title)} \\[${escapeMarkdownV2(t.status)}\\]`
     )
     .join('\n');
+}
+
+/**
+ * MarkdownV2-фолбэк /diff: список незакоммиченных файлов (VL-88).
+ *
+ * Паттерн formatTaskList: жирный путь, статус в скобках, staged — метка
+ * « · staged», счётчики +N/−N; ветка — первая строка. Пустой вход не
+ * вызывается (обработчик шлёт короткий текст до рендера).
+ *
+ * @param files — незакоммиченные файлы (getGitStatus)
+ * @param branch — имя ветки
+ */
+export function formatDiffList(files: DiffFile[], branch: string): string {
+  const lines = [`*Ветка:* ${escapeMarkdownV2(branch)}`];
+  for (const f of files) {
+    // renamed: «new ← old» — как в renderDiffRich; пути через escapeMarkdownV2
+    const path = f.oldPath ? `${f.path} ← ${f.oldPath}` : f.path;
+    const staged = f.staged ? ' · staged' : '';
+    lines.push(
+      `*${escapeMarkdownV2(path)}* \\[${escapeMarkdownV2(f.status)}${staged}\\] +${f.additions}/−${f.deletions}`
+    );
+  }
+  return lines.join('\n');
 }
 
 /**

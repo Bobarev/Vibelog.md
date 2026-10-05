@@ -12,6 +12,7 @@ import {
   formatPhaseRun,
   formatPhaseResult,
   formatBoard,
+  formatDiffList,
 } from '../../dist/bot/formatting.js';
 
 const task = {
@@ -209,5 +210,34 @@ describe('formatPhaseResult (VL-63/VL-65)', () => {
     const text = formatPhaseResult(run);
     assert.ok(text.includes('ошибка \\(код 1\\)'), 'код ошибки');
     assert.ok(text.includes('ошибка qwen'), 'is_error-метка');
+  });
+});
+
+describe('formatDiffList (VL-88)', () => {
+  const files = [
+    { path: 'src/app.ts', status: 'Modified', staged: false, additions: 5, deletions: 2 },
+    { path: 'src/index.ts', status: 'Added', staged: true, additions: 10, deletions: 0 },
+    { path: 'src/new.ts', oldPath: 'src/old.ts', status: 'Renamed', staged: true, additions: 0, deletions: 0 },
+  ];
+
+  it('ветка первой строкой, пути/статусы/счётчики, staged-метка', () => {
+    const text = formatDiffList(files, 'feature/x');
+    const lines = text.split('\n');
+    assert.equal(lines[0], '*Ветка:* feature/x');
+    assert.ok(text.includes('*src/app\\.ts* \\[Modified\\] +5/−2'), 'unstaged-строка');
+    assert.ok(text.includes('*src/index\\.ts* \\[Added · staged\\] +10/−0'), 'staged-строка');
+    assert.ok(
+      text.includes('*src/new\\.ts ← src/old\\.ts* \\[Renamed · staged\\] +0/−0'),
+      'renamed-строка'
+    );
+  });
+
+  it('спецсимволы MarkdownV2 в пути экранированы', () => {
+    const text = formatDiffList(
+      [{ path: 'a_b (1).md', status: 'Untracked', staged: false, additions: 0, deletions: 0 }],
+      'main'
+    );
+    assert.ok(text.includes('*a\\_b \\(1\\)\\.md*'), 'спецсимволы с backslash');
+    assert.ok(!text.includes('*a_b (1).md*'), 'сырой путь не выводится');
   });
 });

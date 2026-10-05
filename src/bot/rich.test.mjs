@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {
   renderTaskRich,
   renderTasksRich,
+  renderDiffRich,
   renderPhaseResultRich,
   chunkRich,
   RICH_LIMIT,
@@ -521,5 +522,54 @@ describe('renderTasksRich (VL-82)', () => {
     const tasks = Array.from({ length: 8 }, (_, i) => task({ id: `VL-${i + 1}` }));
     const md = renderTasksRich(tasks, {});
     assert.equal((md.match(/<tg-button-row>/g) || []).length, 1);
+  });
+});
+
+describe('renderDiffRich (VL-88)', () => {
+  const files = [
+    { path: 'src/app.ts', status: 'Modified', staged: false, additions: 5, deletions: 2 },
+    { path: 'src/index.ts', status: 'Modified', staged: true, additions: 1, deletions: 0 },
+    { path: 'new/<script>.md', status: 'Untracked', staged: false, additions: 0, deletions: 0 },
+    { path: 'src/new.ts', oldPath: 'src/old.ts', status: 'Renamed', staged: true, additions: 0, deletions: 0 },
+  ];
+
+  it('заголовок с веткой и таблица bordered striped compact', () => {
+    const md = renderDiffRich(files, 'feature/x');
+    assert.ok(md.includes('# 📝 Незакоммиченные изменения — `feature/x`'), 'заголовок с веткой');
+    assert.ok(md.includes('<table bordered striped compact>'), 'таблица');
+    assert.ok(
+      md.includes('<tr><th>Файл</th><th>Статус</th><th>Строки (+/−)</th></tr>'),
+      'шапка колонок'
+    );
+  });
+
+  it('staged — метка (staged), unstaged и untracked — без метки', () => {
+    const md = renderDiffRich(files, 'main');
+    assert.ok(md.includes('Modified (staged)'), 'staged-метка');
+    assert.ok(!md.includes('Untracked (staged)'), 'untracked без метки');
+  });
+
+  it('счётчики строк в ячейке +N/−N', () => {
+    const md = renderDiffRich(files, 'main');
+    assert.ok(md.includes('+5/−2'), 'unstaged-счётчики');
+    assert.ok(md.includes('+1/−0'), 'staged-счётчики');
+  });
+
+  it('renamed — «new ← old» в ячейке пути', () => {
+    const md = renderDiffRich(files, 'main');
+    assert.ok(md.includes('src/new.ts ← src/old.ts'), 'renamed-путь');
+  });
+
+  it('спецсимволы в пути экранируются через cellSafe', () => {
+    const md = renderDiffRich(
+      [{ path: 'a<b>&c.md', status: 'Untracked', staged: false, additions: 0, deletions: 0 }],
+      'main'
+    );
+    assert.ok(md.includes('a&#60;b&#62;&#38;c.md'), '< и > и & экранированы');
+    assert.ok(!md.includes('a<b>'), 'сырой < отсутствует');
+  });
+
+  it('пустой список → пустая строка', () => {
+    assert.equal(renderDiffRich([], 'main'), '');
   });
 });

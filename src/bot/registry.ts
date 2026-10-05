@@ -28,6 +28,7 @@ export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'tasks', description: 'Список невыполненных задач' },
   { command: 'task', description: 'Детали задачи: /task VL-1', usage: '/task <id>' },
   { command: 'board', description: 'Канбан-доска задач' },
+  { command: 'diff', description: 'Незакоммиченные файлы (git status)' },
   { command: 'create', description: 'Создать задачу' },
   { command: 'status', description: 'Сменить статус задачи' },
   { command: 'comment', description: 'Добавить комментарий и выполнить его через Фазу Comment (qwen)' },
