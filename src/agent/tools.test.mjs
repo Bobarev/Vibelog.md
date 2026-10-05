@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { listLocalTools, validateArgs, miniGlobToRegex } from '../../dist/agent/tools.js';
+import { listLocalTools, validateArgs, miniGlobToRegex, checkShellCommandInProject } from '../../dist/agent/tools.js';
 
 const TMP = '/tmp/vibelog-agent-tools-test';
 let tools;
@@ -225,5 +225,57 @@ describe('miniGlobToRegex (VL-83)', () => {
     const re = miniGlobToRegex('**/*.ts');
     assert.ok(re.test('a.ts'));
     assert.ok(re.test('sub/deep/a.ts'));
+  });
+});
+
+describe('checkShellCommandInProject (VL-99)', () => {
+  // Проверка лексическая — реальные файлы не нужны, cwd фиктивный.
+  const CWD = '/tmp/vibelog-vl99-fake-project';
+
+  it('отклоняет ~ в позиции пути', () => {
+    for (const cmd of ['ls ~', 'ls -la ~', 'find ~ -maxdepth 3']) {
+      assert.match(checkShellCommandInProject(cmd, CWD), /Команда отклонена/);
+    }
+  });
+
+  it('отклоняет ~/... в пути', () => {
+    assert.match(checkShellCommandInProject('ls ~/Desktop', CWD), /Команда отклонена/);
+  });
+
+  it('отклоняет $HOME и ${HOME}', () => {
+    assert.match(checkShellCommandInProject('cat $HOME/.zshrc', CWD), /Команда отклонена/);
+    assert.match(checkShellCommandInProject('cat ${HOME}/.zshrc', CWD), /Команда отклонена/);
+  });
+
+  it('отклоняет абсолютные пути вне проекта', () => {
+    assert.match(checkShellCommandInProject('ls /Users/bob/Desktop', CWD), /Команда отклонена/);
+    assert.match(checkShellCommandInProject("sed -n '1,5p' /etc/hosts", CWD), /Команда отклонена/);
+  });
+
+  it('отклоняет ../-переходы наружу', () => {
+    assert.match(checkShellCommandInProject('cd ../.. && ls', CWD), /Команда отклонена/);
+    assert.match(checkShellCommandInProject('ls ../../..', CWD), /Команда отклонена/);
+  });
+
+  it('пропускает команды с путями внутри проекта', () => {
+    const allowed = [
+      'ls -la',
+      'git status',
+      "sed -n '1,10p' src/agent/tools.ts",
+      'grep -rn foo src',
+      'ls node_modules',
+      'cd src && ls',
+    ];
+    for (const cmd of allowed) {
+      assert.equal(checkShellCommandInProject(cmd, CWD), null, 'неожиданный отказ: ' + cmd);
+    }
+  });
+});
+
+describe('run_shell_command: команда с путями вне проекта (VL-99)', () => {
+  it('ls ~ отклоняется до запуска процесса', async () => {
+    const out = await byName.get('run_shell_command').handler({ command: 'ls ~' });
+    assert.match(out, /Команда отклонена/);
+    assert.doesNotMatch(out, /exit code/);
   });
 });

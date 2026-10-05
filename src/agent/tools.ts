@@ -5,8 +5,9 @@
  * run_shell_command, grep_search, glob. Без внешних зависимостей: валидация —
  * plain TS; shell — только execFile('/bin/bash', ['-lc', command]) без
  * shell:true на уровне Node; пути резолвятся от cwd и отклоняются, если
- * вышли за пределы проекта. Ошибки — текстом модели (не исключениями): loop
- * дописывает их в messages и продолжает.
+ * вышли за пределы проекта — как аргументы-пути, так и строки shell-команд
+ * (checkShellCommandInProject, VL-99). Ошибки — текстом модели (не
+ * исключениями): loop дописывает их в messages и продолжает.
  */
 
 import { execFile } from 'node:child_process';
@@ -209,6 +210,60 @@ function makeEdit(cwd: string): ToolSpec {
 }
 
 /**
+ * Лексическая проверка shell-команды на обращения за пределы проекта (VL-99).
+ *
+ * Правило «работай только внутри cwd» в system-prompt — инструкция для модели,
+ * а не ограничение исполнения: bash -lc исполнил бы команду как есть. Поэтому
+ * пути наружу ловятся здесь, до execFile — источник запросов macOS TCC-доступа
+ * (Фото/Календарь/рабочий стол): «ls ~» и «find ~» вели агента в ~/Desktop,
+ * ~/Pictures, ~/Library/Calendar. Проверки: токен ~ в позиции пути, $HOME и
+ * ${HOME}, абсолютные пути вне cwd, относительные с сегментом .., резолвящиеся
+ * наружу. Лексика не закрывает динамическое построение путей (командные
+ * подстановки, base64) — остаточный риск, минимизируется правилом промпта.
+ */
+export function checkShellCommandInProject(command: string, cwd: string): ValidateResult {
+  // Отказ с одинаковым текстом для всех срабатываний проверок.
+  const reject = (what: string): string =>
+    `Команда отклонена: обращение к путям вне проекта (${what}). Разрешены только пути внутри ${cwd}`;
+  // ~ или ~user в позиции пути: начало/конец строки или после разделителя shell
+  // (`;|&=(`, пробел), затем / или конец токена — ловит и «ls ~», и «ls ~/Desktop».
+  if (/(^|[\s;|&=(])~($|[/\s;|&)])/.test(command)) {
+    return reject('~');
+  }
+  // $HOME / ${HOME} — любое вхождение: переменная вне проекта по определению.
+  if (/\$\{?HOME\}?/.test(command)) {
+    return reject('$HOME');
+  }
+  // Токенизация по разделителям shell; кавычки снимаются — путь внутри кавычек
+  // так же опасен, как и без них.
+  const tokens = command.match(/"[^"]*"|'[^']*'|[^\s;|&()<>]+/g) ?? [];
+  for (const raw of tokens) {
+    const token = raw.replace(/^["']|["']$/g, '');
+    // Тилда после снятия кавычек — та же домашняя директория (~, ~/...).
+    if (token === '~' || token.startsWith('~/')) return reject('~');
+    // Флаги, переменные и подстановки путями не считаем — резолвить нечего.
+    if (token.startsWith('-') || token.startsWith('$') || token.includes('`')) continue;
+    // Абсолютный путь должен резолвиться внутрь проекта.
+    if (isAbsolute(token)) {
+      const rel = relative(cwd, token);
+      if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+        return reject(token);
+      }
+      continue;
+    }
+    // Относительный с ..: резолвим от cwd — src/../ok внутри, ../.. наружу.
+    if (token.split('/').includes('..')) {
+      const abs = resolve(cwd, token);
+      const rel = relative(cwd, abs);
+      if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+        return reject(token);
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Инструмент run_shell_command: bash -lc с аргументами массивом (без
  * shell:true — интерполирует только bash, Node не парсит команду второй
  * раз). Таймаут по умолчанию 120с с SIGKILL; abort-сигнал тоже убивает
@@ -244,6 +299,13 @@ function makeRunShellCommand(cwd: string): ToolSpec {
             return;
           }
           workDir = target.path;
+        }
+        // VL-99: команда валидируется до запуска — лексическая проверка
+        // обращений за пределы проекта (~, $HOME, абсолютные/..-пути).
+        const commandError = checkShellCommandInProject(command, cwd);
+        if (commandError !== null) {
+          resolvePromise(commandError);
+          return;
         }
         if (ctx?.signal?.aborted) {
           resolvePromise('Команда отменена пользователем');
