@@ -1,11 +1,11 @@
 ---
 id: VL-75
 title: 'Создать свой агент Vibelog: минимальный LLM-агент с TUI на Ink для замены Qwen…'
-status: Planned
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-04 18:20'
-updated_date: '2026-10-05 00:32'
+updated_date: '2026-10-05 20:38'
 due_date: ''
 labels: []
 dependencies: []
@@ -50,16 +50,16 @@ modified_files: []
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 vibelog-agent <phase> <taskId> (headless) выполняет фазу через LLM + MCP и печатает JSON type=result, совместимый с parseQwenResult — оркестратор подхватывает результат без изменений
-- [ ] #2 Loop detection и лимиты (--max-tool-calls, --max-wall-time) предотвращают бесконечный цикл: при срабатывании агент завершает фазу с ошибкой в результатах, а не зависает
-- [ ] #3 TUI на Ink показывает стриминг ответа, выполняемые tool calls и счётчики (токены/время); pnpm build и pnpm test проходят, документация docs/agent.md обновлена
+- [x] #1 vibelog-agent <phase> <taskId> (headless) выполняет фазу через LLM + MCP и печатает JSON type=result, совместимый с parseQwenResult — оркестратор подхватывает результат без изменений
+- [x] #2 Loop detection и лимиты (--max-tool-calls, --max-wall-time) предотвращают бесконечный цикл: при срабатывании агент завершает фазу с ошибкой в результатах, а не зависает
+- [x] #3 TUI на Ink показывает стриминг ответа, выполняемые tool calls и счётчики (токены/время); pnpm build и pnpm test проходят, документация docs/agent.md обновлена
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -151,24 +151,52 @@ created: 2026-10-05 00:18
 ---
 Обнови план с учётом новых данных полученных в VL-77. Был добавлен референс qwen-code
 ---
-author:  @agent
+author: @agent
 created: 2026-10-05 00:32
 ---
 Фаза Comment выполнена: план VL-75 обновлён с учётом данных ресёрча VL-77 (включая референс qwen-code).
-
 **Что сделано.** Поле Implementation Plan у VL-75 и всех 5 дочерних задач (VL-83..VL-87) дополнено разделом «Уточнение по VL-77 (2026-10-05)» — по данным doc-4 «Ресёрч: LLM-агент Vibelog (VL-75)» (§4-§10) и решений decision-1..5 (backlog/decisions/, статус proposed).
-
 **Ключевые обновления по референсу qwen-code (doc-4 §10, добавлен в VL-77):**
 1. **JSON-контракт подтверждён на исходниках** (types.ts:161-179): CLIResultMessageSuccess точь-в-точь совпадает с QwenResult (src/web/qwen-result.ts:22-33); JsonOutputAdapter пишет строку-массив с result последним — parseQwenResult принимает и объект, и массив. Headless vibelog-agent печатает одну строку-объект type=result.
 2. **Флаги оркестратора легальны** (top-level-options.ts:28-33/250/278): --approval-mode yolo / --output-format json / --allowed-mcp-server-names — все реальные опции qwen 0.24.7.
 3. **Subtype ошибок** (types.ts:179): 'error_max_turns' | 'error_during_execution' — прецедент для --max-tool-calls; VL-85 может включать subtype в JSON при is_error (лишние поля toQwenResult игнорирует).
 4. **MCP-клиент** (§10.3): qwen-code использует StdioClientTransport; формат идентичен vibelog mcp start — decision-1 (минимальный самописный) подтверждён; свой конфиг агенту не нужен.
 5. **TUI/Ink** (§10.4): у qwen-code — официальный ink 7.0.3 + react ^19.2.4 (package.json:78/:91), у gemini-cli — форк @jrichman/ink@6.6.9; выбор версии — шаг 1 VL-86 (decision-2 proposed, официальный ink 7 проверен в целевой среде Catalina + Node 20).
-
 **Другие обновления планов:** VL-83 — retry провайдера ≤3 (429/5xx, Retry-After, вне лимита tool-calls) + AbortSignal + семантика лимитов с partial-результатом (decision-4); VL-85 — decision-5: VIBELOG_AGENT_BIN с фолбэком на VIBELOG_QWEN_BIN (правка orchestrator.ts:187 — одна строка) либо нулевой вариант без правки оркестратора; VL-87 — база сравнения токенов @qwen-code/qwen-code 0.24.7, ссылки на decision-1..5.
-
 **Открытые вопросы (не блокируют планирование):** probe streaming Cloud.ru (VL-83), дефолтная модель VIBELOG_LLM_MODEL, версия Ink (VL-86).
-
 **Статус не менялся** (смены в комментарии не указано — Planned). Git-операции не выполнялись.
+---
+author: @agent
+created: 2026-10-05 20:05
+---
+Фаза 3 (Code) на эпике VL-75: код эпика не реализовался (правило: Code на эпике не пишет код, оркестрирует детей). Все 5 детей НЕ в статусе Done:
+| ID | Статус | Фаза 3 |
+|----|--------|--------|
+| VL-83 | Review | выполнена ранее |
+| VL-84 | Review | выполнена ранее |
+| VL-85 | Review | выполнена ранее |
+| VL-86 | Review | выполнена ранее |
+| VL-87 | Planned | НЕ выполнялась (документация; зависит от VL-85/VL-86) |
+Изменено: — (правок файлов нет).
+Проверки текущего дерева (без изменений от этой фазы): pnpm build OK, pnpm test — 596/596.
+Действие пользователя: **запусти Code на детях: VL-87**. VL-83..VL-86 уже в Review — ждут ревью; после ревью перевести в Done. Когда все дети Done — повторить Фазу 3 на VL-75, эпик будет переведён в Done.
+Статус VL-75 не менялся (Planned — все дети не Done). Git-операции не выполнялись.
+---
+author: @agent
+created: 2026-10-05 20:38
+---
+Фаза 3 (Code) на эпике VL-75 выполнена. Правило: Code на эпике не пишет код — оркестрирует детей.
+**Все 5 детей Done** (VL-83, VL-84, VL-85, VL-86, VL-87) → эпик переводится в Done.
+| ID | Задача | Статус |
+|----|--------|--------|
+| VL-83 | Ядро агента: LLM-клиент, loop, инструменты, loop detection, лимиты | Done |
+| VL-84 | MCP-клиент Vibelog (stdio JSON-RPC) | Done |
+| VL-85 | CLI vibelog-agent (headless JSON) + интеграция с оркестратором | Done |
+| VL-86 | TUI на Ink (стриминг, карточки tool calls, счётчики) | Done |
+| VL-87 | Документация: docs/agent.md, CHANGELOG, README | Done |
+Изменено: — (правок файлов этой фазой нет; код реализован в дочерних задачах).
+Проверки текущего дерева: pnpm build OK, pnpm test — 602/602 (0 fail). Компоненты на месте: src/agent/{cli,llm,loop,mcp-client,tools,tui-format}.ts + tui.tsx + тесты, bin/vibelog-agent.mjs, docs/agent.md.
+Отмечено: AC 1-3 (headless JSON совместим с parseQwenResult; loop detection + лимиты; TUI + build/test + docs) — по факту реализации в детях; DoD 1-3 (тесты 602/602, документация обновлена, нет регрессий).
+Что осталось: decisions 1-5 (backlog/decisions/) имеют статус proposed — при желании закрыть их после ревью; реальный прогон фаз через Cloud.ru API (VIBELOG_API_KEY) — smoke после публикации. Git-операции не выполнялись.
 ---
 <!-- COMMENTS:END -->
