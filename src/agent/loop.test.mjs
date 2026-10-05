@@ -291,3 +291,41 @@ describe('runLoop externalTools (VL-84)', () => {
     assert.equal(toolState.calls, 1);
   });
 });
+
+describe('runLoop LoopResult.messages (VL-95)', () => {
+  it('полный диалог: user → assistant(tool_calls) → tool → assistant(финал)', async () => {
+    const { spec } = countingTool();
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'echo_tool', arguments: { x: 1 } }] },
+      { text: 'итог' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false);
+    // Финальный assistant дописан в диалог — транскрипт валиден для resume
+    assert.deepEqual(res.messages.map((m) => m.role), ['user', 'assistant', 'tool', 'assistant']);
+    assert.equal(res.messages[1].tool_calls[0].id, 'c1');
+    assert.equal(res.messages[2].tool_call_id, 'c1');
+    assert.equal(res.messages[3].content, 'итог');
+  });
+
+  it('fail-путь (loop detection): messages содержат накопленную историю', async () => {
+    const { spec } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 't', arguments: { x: 1 } }] },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, true);
+    assert.ok(res.messages.length >= 4, 'история должна накапливаться до fail');
+    assert.deepEqual(res.messages[0], USER_MSG[0]);
+    assert.ok(res.messages.some((m) => m.role === 'tool'));
+  });
+
+  it('fail-путь (ошибка llm): messages — исходные без ответа', async () => {
+    const { llm } = fakeLlm([new Error('HTTP 500')]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [] });
+    assert.equal(res.is_error, true);
+    assert.deepEqual(res.messages, USER_MSG);
+  });
+});

@@ -32,6 +32,12 @@ export interface LoopResult {
   num_turns: number;
   duration_ms: number;
   usage: LlmUsage;
+  /**
+   * Полный диалог на момент завершения (VL-95): хранилище сессии
+   * vibelog-agent. На fail-путях — накопленная история (частичный
+   * диалог), чтобы resume не начинал беседу с чистого листа.
+   */
+  messages: ChatMessage[];
 }
 
 /** Опции запуска loop. */
@@ -123,6 +129,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       num_turns: numTurns,
       duration_ms: duration(),
       usage,
+      messages,
     };
   };
 
@@ -150,12 +157,17 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
 
     // Нет tool_calls — финальный текст модели есть результат фазы.
     if (response.toolCalls.length === 0) {
+      // Финальный ответ дописывается в диалог (VL-95): транскрипт сессии
+      // должен заканчиваться assistant-сообщением — иначе при resume
+      // история обрывается на tool-сообщении и LLM API её отклонит
+      messages.push({ role: 'assistant', content: response.text });
       return {
         result: response.text,
         is_error: false,
         num_turns: numTurns,
         duration_ms: duration(),
         usage,
+        messages,
       };
     }
     if (response.text) partialText += (partialText ? '\n' : '') + response.text;

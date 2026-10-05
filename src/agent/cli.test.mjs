@@ -13,12 +13,13 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseQwenResult } from '../../dist/web/qwen-result.js';
+import { parseArgs } from '../../dist/agent/cli.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(__dirname, '..', '..', 'dist', 'agent', 'cli.js');
@@ -64,10 +65,10 @@ function llmEnv() {
 }
 
 /** Запуск CLI как дочернего процесса; возвращает {code, stdout, stderr}. */
-function runCli(args, env) {
+function runCli(args, env, cwd = testDir) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
-      cwd: testDir,
+      cwd,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -175,5 +176,113 @@ describe('vibelog-agent CLI (VL-85)', () => {
     const lines = stdout.trim().split('\n');
     assert.equal(lines.length, 1);
     assert.equal(JSON.parse(lines[0]).result, 'Готово');
+  });
+
+  // ── VL-95: parseArgs --resume/--continue ──
+
+  it('parseArgs: --resume со значением, префикс vb: снимается', () => {
+    const opts = parseArgs(['продолжи', '--resume', 'vb:agent-123']);
+    assert.equal(opts.resume, 'agent-123');
+  });
+
+  it('parseArgs: --resume без префикса — как есть', () => {
+    const opts = parseArgs(['продолжи', '--resume', 'agent-9']);
+    assert.equal(opts.resume, 'agent-9');
+  });
+
+  it('parseArgs: --continue — флаг', () => {
+    assert.equal(parseArgs(['продолжи', '--continue']).continue, true);
+  });
+
+  it('parseArgs: --resume и --continue вместе — throw', () => {
+    assert.throws(() => parseArgs(['x', '--resume', 'agent-1', '--continue']), /несовместимы/);
+  });
+
+  it('parseArgs: --resume без значения — throw', () => {
+    assert.throws(() => parseArgs(['x', '--resume']), /требует значение/);
+  });
+
+  // ── VL-95: интеграция — хранение и resume сессий ──
+
+  // Переменная между it: id свежей сессии из предыдущего теста
+  let freshSessionId;
+
+  it('готовый промпт: создаётся JSONL-сессия, session_id реальный (VL-95)', async () => {
+    llmRequests.length = 0;
+    const { code, stdout } = await runCli(['Запомни: синий кот', '--no-mcp'], llmEnv());
+    assert.equal(code, 0);
+    const parsed = JSON.parse(stdout.trim());
+    assert.match(parsed.session_id, /^agent-\d+$/);
+    freshSessionId = parsed.session_id;
+    // Файл сессии создан в .vibelog/agent-sessions/<sessionId>.jsonl
+    const file = join(testDir, '.vibelog', 'agent-sessions', `${parsed.session_id}.jsonl`);
+    const lines = readFileSync(file, 'utf-8').split('\n').filter((l) => l.trim());
+    assert.equal(lines.length, 2, 'user + финальный assistant');
+    assert.equal(JSON.parse(lines[0]).content, 'Запомни: синий кот');
+    assert.equal(JSON.parse(lines[1]).role, 'assistant');
+    assert.equal(JSON.parse(lines[1]).content, 'Готово');
+  });
+
+  it('--resume vb:<id> продолжает сессию: история уходит в LLM (VL-95)', async () => {
+    const sessionId = freshSessionId;
+    assert.ok(sessionId, 'сессия из предыдущего теста должна существовать');
+    llmRequests.length = 0;
+    const { code, stdout } = await runCli(
+      ['А теперь продолжи', '--resume', `vb:${sessionId}`, '--no-mcp'],
+      llmEnv()
+    );
+    assert.equal(code, 0);
+    const parsed = JSON.parse(stdout.trim());
+    assert.equal(parsed.session_id, sessionId);
+    // Мок-LM получил историю первой сессии + новый промпт
+    assert.ok(llmRequests.length >= 1);
+    const msgs = llmRequests[0].messages;
+    assert.equal(msgs.length, 3);
+    assert.equal(msgs[0].content, 'Запомни: синий кот');
+    assert.equal(msgs[1].role, 'assistant');
+    assert.equal(msgs[2].content, 'А теперь продолжи');
+    // Файл сессии перезаписан: 2 старых + user + финальный assistant = 4
+    const lines = readFileSync(join(testDir, '.vibelog', 'agent-sessions', `${sessionId}.jsonl`), 'utf-8')
+      .split('\n')
+      .filter((l) => l.trim());
+    assert.equal(lines.length, 4);
+    assert.equal(JSON.parse(lines[2]).content, 'А теперь продолжи');
+    assert.equal(JSON.parse(lines[3]).role, 'assistant');
+  });
+
+  it('--continue без файлов сессий: exit 1, stderr «Нет сохранённых сессий» (VL-95)', async () => {
+    // Свежий пустой cwd — сессий нет ни в одном каталоге выше
+    const emptyDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-empty-'));
+    try {
+      const { code, stdout, stderr } = await runCli(
+        ['продолжи', '--continue', '--no-mcp'],
+        llmEnv(),
+        emptyDir
+      );
+      assert.equal(code, 1);
+      assert.equal(stdout, '');
+      assert.match(stderr, /Нет сохранённых сессий/);
+    } finally {
+      rmSync(emptyDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--continue берёт последнюю сессию cwd (VL-95)', async () => {
+    llmRequests.length = 0;
+    const { code } = await runCli(['И ещё раз', '--continue', '--no-mcp'], llmEnv());
+    assert.equal(code, 0);
+    const msgs = llmRequests[0].messages;
+    // Последняя сессия — перезаписанная resume-тестом (4 сообщения) + новый промпт
+    assert.equal(msgs.length, 5);
+    assert.equal(msgs.at(-1).content, 'И ещё раз');
+  });
+
+  it('--resume в режиме фазы: exit 1, подсказка (VL-95)', async () => {
+    const { code, stderr } = await runCli(
+      ['comment', 'VL-1', '--resume', 'agent-1', '--no-mcp'],
+      llmEnv()
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /только с готовым промптом/);
   });
 });

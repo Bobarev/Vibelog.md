@@ -1,0 +1,99 @@
+/**
+ * Хранение сессий vibelog-agent (VL-95).
+ *
+ * Транскрипт диалога (LoopResult.messages) сохраняется JSONL в
+ * `.vibelog/agent-sessions/<sessionId>.jsonl` — по строке на сообщение.
+ * Формат session_id — прежний `agent-<Date.now()>`: его матчит
+ * extractSessionRef бота (commands.ts) и рендерится с префиксом `vb:` —
+ * менять нельзя, иначе бот определит сессию как qwen-сессию и спавнит
+ * не тот агент. Каталог `.vibelog/` покрыт .gitignore.
+ */
+
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { ChatMessage } from './llm.js';
+
+/** Каталог хранения сессий агента: `<cwd>/.vibelog/agent-sessions`. */
+export function agentSessionsDir(cwd: string): string {
+  return join(cwd, '.vibelog', 'agent-sessions');
+}
+
+/** Идентификатор новой сессии: `agent-<мс epoch>` (формат бота VL-95). */
+export function createSessionId(): string {
+  return `agent-${Date.now()}`;
+}
+
+/**
+ * Сохраняет транскрипт сессии (полная перезапись файла).
+ *
+ * @throws Error при ошибке mkdir/записи — вызывающий решает, фатальна ли она
+ */
+export async function saveSession(dir: string, sessionId: string, messages: ChatMessage[]): Promise<void> {
+  assertSafeSessionId(sessionId);
+  await mkdir(dir, { recursive: true });
+  // JSONL: по строке на сообщение — чтение/запись линейные
+  const body = messages.map((m) => JSON.stringify(m)).join('\n') + '\n';
+  await writeFile(join(dir, `${sessionId}.jsonl`), body, 'utf-8');
+}
+
+/**
+ * Загружает транскрипт сессии по идентификатору.
+ *
+ * @throws Error «Сессия <id> не найдена: <path>» либо «битая строка N»
+ */
+export async function loadSession(dir: string, sessionId: string): Promise<ChatMessage[]> {
+  assertSafeSessionId(sessionId);
+  const path = join(dir, `${sessionId}.jsonl`);
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf-8');
+  } catch {
+    throw new Error(`Сессия ${sessionId} не найдена: ${path}`);
+  }
+  const messages: ChatMessage[] = [];
+  const lines = raw.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue; // хвостовой перевод строки — не сообщение
+    try {
+      messages.push(JSON.parse(line));
+    } catch {
+      throw new Error(`Сессия ${sessionId}: битая строка ${i + 1} в ${path}`);
+    }
+  }
+  return messages;
+}
+
+/**
+ * Последняя сессия каталога — *.jsonl с максимальным mtime.
+ *
+ * @returns sessionId либо null, если сессий нет (нет каталога — тоже null)
+ */
+export async function latestSession(dir: string): Promise<string | null> {
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return null; // каталога ещё нет — сессий не было
+  }
+  const jsonl = entries.filter((e) => e.endsWith('.jsonl'));
+  if (jsonl.length === 0) return null;
+  let latest: { id: string; mtime: number } | null = null;
+  for (const entry of jsonl) {
+    const mtime = (await stat(join(dir, entry))).mtimeMs;
+    if (!latest || mtime > latest.mtime) {
+      latest = { id: entry.slice(0, -'.jsonl'.length), mtime };
+    }
+  }
+  return latest?.id ?? null;
+}
+
+/**
+ * sessionId приходит извне (--resume из CLI, ref бота) — без проверки
+ * `..` в имени вышел бы за пределы каталога сессий (path traversal).
+ */
+function assertSafeSessionId(sessionId: string): void {
+  if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) {
+    throw new Error(`Недопустимый идентификатор сессии: ${sessionId}`);
+  }
+}

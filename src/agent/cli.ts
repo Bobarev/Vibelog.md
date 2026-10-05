@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { createLlmClient } from './llm.js';
 import type { ChatMessage } from './llm.js';
 import { runLoop } from './loop.js';
+import { agentSessionsDir, createSessionId, latestSession, loadSession, saveSession } from './session.js';
 import { listLocalTools } from './tools.js';
 import type { ToolSpec } from './tools.js';
 import { McpClient, toolsAsSpecs } from './mcp-client.js';
@@ -62,6 +63,10 @@ export interface CliOptions {
   maxToolCalls?: number;
   /** --max-wall-time сек: лимит времени фазы (дефолт 900, VL-83). */
   maxWallTimeSec?: number;
+  /** --resume <sessionId>: продолжить сохранённую сессию (VL-95; vb: префикс снят). */
+  resume?: string;
+  /** --continue: продолжить последнюю сессию текущего каталога (VL-95). */
+  continue?: boolean;
   /** --help: показать справку. */
   help: boolean;
 }
@@ -78,6 +83,8 @@ const USAGE = `Использование:
   --comment <текст>        — подстановка {{comment}}/{{prompt}} в шаблон фазы
   --max-tool-calls <N>     — лимит tool-calls loop (дефолт 100)
   --max-wall-time <сек>    — лимит времени фазы (дефолт 900)
+  --resume <sessionId>     — продолжить сохранённую сессию (VL-95; префикс vb: игнорируется)
+  --continue               — продолжить последнюю сессию текущего каталога (VL-95)
   --help, -h               — эта справка
 Qwen-совместимость: --approval-mode <...>, --output-format json (= --headless),
 --allowed-mcp-server-names <...> — принимаются и игнорируются.
@@ -126,6 +133,12 @@ export function parseArgs(argv: string[]): CliOptions {
         throw new Error(`--max-wall-time: ожидается положительное число секунд, получено: ${raw}`);
       }
       opts.maxWallTimeSec = sec;
+    } else if (arg === '--resume') {
+      // Бот передаёт sessionId с префиксом vb: (extractSessionRef) — снимаем:
+      // файл сессии хранится как <id>.jsonl без префикса
+      opts.resume = takeValue(arg, argv[++i]).replace(/^vb:/, '');
+    } else if (arg === '--continue') {
+      opts.continue = true;
     } else if (arg === '--approval-mode' || arg === '--allowed-mcp-server-names') {
       // qwen-совместимость: значение съедается и игнорируется (AC#4 VL-85)
       takeValue(arg, argv[++i]);
@@ -137,6 +150,9 @@ export function parseArgs(argv: string[]): CliOptions {
     } else {
       opts.positionals.push(arg);
     }
+  }
+  if (opts.resume !== undefined && opts.continue) {
+    throw new Error('--resume и --continue несовместимы — укажи один флаг');
   }
   if (!opts.help && opts.positionals.length === 0) {
     throw new Error('Не заданы позиционные аргументы: укажи <фаза> <taskId> либо готовый промпт');
@@ -175,6 +191,14 @@ export async function main(argv: string[]): Promise<void> {
   const isPhaseMode = positionals.length === 2;
   const phase = isPhaseMode ? positionals[0] : undefined;
 
+  // Resume/continue продолжают готовый промпт: в режиме фазы промпт
+  // собирается из шаблона и история сессии не подставлялась бы (VL-95)
+  if ((opts.resume !== undefined || opts.continue) && isPhaseMode) {
+    console.error('--resume/--continue работают только с готовым промптом (без <фаза> <taskId>)');
+    process.exitCode = 1;
+    return;
+  }
+
   let prompt: string;
   try {
     prompt = isPhaseMode
@@ -210,6 +234,29 @@ export async function main(argv: string[]): Promise<void> {
   const llm = createLlmClient();
 
   const cwd = process.cwd();
+
+  // Сессии (VL-95): хранилище JSONL в .vibelog/agent-sessions (cwd проекта).
+  // --resume продолжает сохранённый транскрипт; --continue — последнюю
+  // сессию каталога; без флагов — новая сессия. Бот передаёт sessionId
+  // с префиксом vb: — parseArgs уже снял его.
+  const sessionsDir = agentSessionsDir(cwd);
+  let sessionId: string;
+  let resumedMessages: ChatMessage[] = [];
+  if (opts.resume !== undefined || opts.continue) {
+    const wanted = opts.resume ?? (await latestSession(sessionsDir));
+    if (!wanted) {
+      console.error(`Нет сохранённых сессий в ${sessionsDir} — --continue невозможен`);
+      process.exitCode = 1;
+      return;
+    }
+    sessionId = wanted;
+    // Ошибка «не найдена»/«битая строка» уходит через self-run catch в stderr + exit 1
+    resumedMessages = await loadSession(sessionsDir, sessionId);
+    log(`Сессия ${sessionId} возобновляется, сообщений в истории: ${resumedMessages.length}`);
+  } else {
+    sessionId = createSessionId();
+  }
+
   const tools: ToolSpec[] = listLocalTools(cwd);
 
   // MCP: phase!=='prompt' (шаблон prompt не требует Vibelog MCP) и не --no-mcp.
@@ -272,7 +319,8 @@ export async function main(argv: string[]): Promise<void> {
   // const-алиас: TS не сужает let внутри замыканий колбэков loop
   const tuiHandle = tui;
 
-  const messages: ChatMessage[] = [{ role: 'user', content: prompt }];
+  // При resume в диалог вливается сохранённая история перед новым промптом
+  const messages: ChatMessage[] = [...resumedMessages, { role: 'user', content: prompt }];
   const loopResult = await runLoop({
     llm,
     messages,
@@ -318,6 +366,15 @@ export async function main(argv: string[]): Promise<void> {
     }
   }
 
+  // Сохранение транскрипта сессии (VL-95): полная перезапись файла — при
+  // resume старые сообщения уже включены в loopResult.messages. Ошибка
+  // записи не должна ронять фазу — только предупреждение в stderr.
+  try {
+    await saveSession(sessionsDir, sessionId, loopResult.messages);
+  } catch (err) {
+    console.error(`Предупреждение: сессия ${sessionId} не сохранена — ${(err as Error).message}`);
+  }
+
   // Единственная строка stdout — JSON type=result (контракт parseQwenResult).
   // duration_api_ms loop не меряет отдельно — приравнен к общему duration_ms.
   const output: AgentJsonResult = {
@@ -327,7 +384,7 @@ export async function main(argv: string[]): Promise<void> {
     num_turns: loopResult.num_turns,
     duration_ms: loopResult.duration_ms,
     duration_api_ms: loopResult.duration_ms,
-    session_id: `agent-${Date.now()}`,
+    session_id: sessionId,
     usage: { ...loopResult.usage },
   };
   process.stdout.write(JSON.stringify(output) + '\n');
