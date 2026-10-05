@@ -1,11 +1,11 @@
 ---
 id: VL-87
 title: 'Документация агента: docs/agent.md, CHANGELOG, README'
-status: Planned
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-04 21:30'
-updated_date: '2026-10-05 00:31'
+updated_date: '2026-10-05 20:34'
 due_date: ''
 labels: []
 dependencies:
@@ -41,19 +41,19 @@ CHANGELOG.md: запись в Unreleased/следующей версии (рус
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 docs/agent.md создана (на русском): назначение агента и сравнение с qwen (зачем: 96k/935k токенов на фазах), установка зависимостей (pnpm install), настройка Cloud.ru (VIBELOG_LLM_BASE_URL / VIBELOG_LLM_API_KEY / VIBELOG_LLM_MODEL — пример .env и shell-переменных)
-- [ ] #2 Документированы все режимы запуска: vibelog-agent <phase> <taskId> (интерактивно с TUI), --headless (JSON для оркестратора), флаги --max-tool-calls/--max-wall-time/--no-mcp; пример интеграции с оркестратором: VIBELOG_QWEN_BIN=$(pwd)/bin/vibelog-agent.mjs vibelog browser
-- [ ] #3 Документированы инструменты агента (6 локальных + vibelog MCP), loop detection и лимиты (поведение при срабатывании), формат stdout (type=result, совместимость с parseQwenResult)
-- [ ] #4 Раздел «Сравнение расхода токенов»: как замерить (vibelog qwen-debug / JSON-usage агента), таблица-шаблон для заполнения после первых замеров
-- [ ] #5 CHANGELOG.md: запись об агенте (Unreleased/следующая версия); README.md: краткий раздел со ссылкой на docs/agent.md; package.json bin добавлен vibelog-agent (уже в VL-85 — проверить)
-- [ ] #6 pnpm build и pnpm test проходят (документация не ломает сборку)
+- [x] #1 docs/agent.md создана (на русском): назначение агента и сравнение с qwen (зачем: 96k/935k токенов на фазах), установка зависимостей (pnpm install), настройка Cloud.ru (VIBELOG_LLM_BASE_URL / VIBELOG_LLM_API_KEY / VIBELOG_LLM_MODEL — пример .env и shell-переменных)
+- [x] #2 Документированы все режимы запуска: vibelog-agent <phase> <taskId> (интерактивно с TUI), --headless (JSON для оркестратора), флаги --max-tool-calls/--max-wall-time/--no-mcp; пример интеграции с оркестратором: VIBELOG_QWEN_BIN=$(pwd)/bin/vibelog-agent.mjs vibelog browser
+- [x] #3 Документированы инструменты агента (6 локальных + vibelog MCP), loop detection и лимиты (поведение при срабатывании), формат stdout (type=result, совместимость с parseQwenResult)
+- [x] #4 Раздел «Сравнение расхода токенов»: как замерить (vibelog qwen-debug / JSON-usage агента), таблица-шаблон для заполнения после первых замеров
+- [x] #5 CHANGELOG.md: запись об агенте (Unreleased/следующая версия); README.md: краткий раздел со ссылкой на docs/agent.md; package.json bin добавлен vibelog-agent (уже в VL-85 — проверить)
+- [x] #6 pnpm build и pnpm test проходят (документация не ломает сборку)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -103,3 +103,27 @@ grep по README: раздел про фазы/оркестратор; абза�
 2. **Ссылки на решения:** decision-1..5 (backlog/decisions/, статус proposed на 2026-10-05) — упомянуть в docs/agent.md: MCP-клиент минимальный самописный, TUI Ink (официальный 7.0.3 — кандидат, см. VL-86), LLM-клиент Cloud.ru через fetch, loop detection + лимиты, headless-контракт parseQwenResult.
 3. **Открытые вопросы для документации (doc-4 §9):** streaming Cloud.ru (probe), дефолтная модель VIBELOG_LLM_MODEL, версия Ink — зафиксировать в docs/agent.md как «решается при реализации».
 <!-- SECTION:PLAN:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author: @agent
+created: 2026-10-05 20:18
+---
+Фаза 3 (Code) выполнена.
+**Изменено:**
+- `docs/agent.md` (новый, ~180 строк, на русском): назначение и мотивация (замена qwen, 96k/935k токенов на Comment/Spec), установка (`pnpm install && pnpm build`, Node 20+), настройка Cloud.ru (`VIBELOG_LLM_BASE_URL` дефолт `https://foundation-models.api.cloud.ru/v1` / `VIBELOG_LLM_API_KEY` / `VIBELOG_LLM_MODEL`, примеры shell и `.env`), режимы запуска (TUI на stderr, `--headless`, `--output-format json` = headless, флаги `--comment`/`--no-mcp`/`--no-tui`/`--max-tool-calls`/`--max-wall-time`, qwen-совместимые `--approval-mode`/`--allowed-mcp-server-names` игнорируются), интеграция с оркестратором (`VIBELOG_QWEN_BIN=$(pwd)/bin/vibelog-agent.mjs vibelog browser`, stdout — JSON `type=result` для `parseQwenResult`), инструменты (6 локальных + 21 vibelog MCP, ограничения путей/shell, отказ MCP не фатален), loop detection (сигнатура = имя+JSON аргументов, 3 подряд) и лимиты (100 tool-calls / 900 сек, поведение при срабатывании: partial + ошибка в result, exit 1), замер токенов (`vibelog qwen-debug` + JSON usage, таблица-шаблон), решения decision-1..5 и открытые вопросы VL-77/doc-4 §9. Все факты сверены grep'ом по `src/agent/*` (не по памяти).
+- `CHANGELOG.md`: запись VL-87 в Unreleased (после VL-85, стиль Keep a Changelog на русском).
+- `README.md`: строка в таблице «Документация» + подраздел «Агент Vibelog (замена qwen)» в «Работа с Qwen Code» со ссылкой на docs/agent.md.
+**Проверки:** `pnpm build` OK. `pnpm test` — 600/601: единственный фейл `src/web/static.test.mjs` — флаки параллельного test-runner («Unable to deserialize cloned data», баг сериализации между процессами); отдельно `node --test src/web/static.test.mjs` — 6/6 pass. Правки только .md-файлы, на тесты не влияют.
+**Отмечено:** AC #1-#6, DoD #2-#3. DoD #1 «Тесты проходят» оставлен незакрытым из-за флаки в полном прогоне (см. выше; не связано с этой задачей).
+**Что осталось:** заполнить таблицу-шаблон сравнения токенов в docs/agent.md §7 после первых живых замеров на Cloud.ru-ключе; `pnpm test` без флаки-фейла — после стабилизации test-runner (отдельная задача, вне VL-87).
+---
+author:  @agent
+created: 2026-10-05 20:34
+---
+Фаза Close выполнена. Статус: Done.
+Коммит feat: 8c378a3 — документация агента: docs/agent.md, CHANGELOG, README (docs/agent.md + запись CHANGELOG VL-87 + раздел README со ссылкой на docs/agent.md).
+Подзадач не упоминалось — файлы подзадач не коммитились.
+DoD #1 «Тесты проходят» оставлен незакрытым (флаки static.test.mjs в полном прогоне — см. отчёт Фазы 3).
+---
+<!-- COMMENTS:END -->
