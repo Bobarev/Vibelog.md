@@ -56,20 +56,31 @@ const RICH_TAG_G_RE = new RegExp(`</?(?:${RICH_TAG})[^<>]*>`, 'g');
  */
 const INNER_PAIR_G_RE = new RegExp(`<(${RICH_TAG})[^<>]*>[^<>]*<\\/\\1>`, 'g');
 
+/** Маркер fence-блока в контенте: настоящий ``` или экранированный fenceSafe ` ` `. */
+const FENCE_MARKER_RE = /^\s*(?:```|` ` `)\s*$/;
+
 /**
  * Оборачивает сырые rich-теги пользовательского контента в code-разметку (VL-81).
  *
  * Сырые <tg-button>/<details>/<summary> в теле задачи парсер Telegram
  * интерпретирует как настоящие элементы: дублируют кнопки карточки и ломают
  * вложенные <details> секций. Строки целиком из тегов складываются в
- * fenced-блок, теги вперемешку с текстом — в inline-бэкитики. Содержимое
- * существующих fenced-блоков пропускается — там теги уже в коде.
+ * fenced-блок, теги вперемешку с текстом — в inline-бэкитики. Теги, уже
+ * находящиеся внутри inline-кода, не изменяются (richTagInlineSafe).
+ *
+ * Маркеры бывших ```-блоков (` ` ` после fenceSafe) fenced-блоком в Telegram
+ * НЕ являются — их содержимое обрабатывается наравне с обычным: регион целиком
+ * из теговых строк уходит в настоящий fenced-блок, а маркеры поглощаются.
+ * Иначе сырые теги между маркерами парсер интерпретирует как элементы и
+ * ломает карточку (сломанный вывод VL-81 после первой итерации фикса).
  */
 function richTagsSafe(text: string): string {
   const lines = text.split('\n');
   const out: string[] = [];
-  let inFence = false;
   let group: string[] = [];
+  // Отложенный маркер fence-блока: выпущен в вывод, только если окружающие
+  // его строки не оказались теговыми (тогда маркер поглощается fence-блоком)
+  let pendingMarker: string | null = null;
 
   // Сброс накопленных теговых строк одним fenced-блоком
   const flush = (): void => {
@@ -79,26 +90,33 @@ function richTagsSafe(text: string): string {
   };
 
   for (const line of lines) {
-    // Фенс-гарантия: маркер ``` или уже экранированный fenceSafe ` ` `
-    // (contentSafe = richTagsSafe ∘ fenceSafe) — переключаем флаг, строку
-    // не трогаем: внутри фенса теги уже в коде, двойная обёртка ломает рендер
-    if (/^\s*(?:```|` ` `)\s*$/.test(line)) {
-      flush();
-      inFence = !inFence;
-      out.push(line);
-      continue;
-    }
-    if (inFence) {
-      out.push(line);
+    if (FENCE_MARKER_RE.test(line)) {
+      if (group.length > 0) {
+        // Закрывающий маркер вокруг теговой группы — поглощаем: группа уже
+        // уходит в настоящий fenced-блок
+        flush();
+        pendingMarker = null;
+        continue;
+      }
+      // Открывающий маркер: откладываем — проглотим, если далее только теги
+      if (pendingMarker !== null) out.push(pendingMarker);
+      pendingMarker = line;
       continue;
     }
     if (richTagOnlyLine(line)) {
       group.push(line);
       continue;
     }
+    // Обычная строка: отложенный маркер оказался вне тегового региона —
+    // выпускаем его как текст (экранированный fenceSafe-артефакт)
+    if (pendingMarker !== null) {
+      out.push(pendingMarker);
+      pendingMarker = null;
+    }
     flush();
     out.push(richTagInlineSafe(line));
   }
+  if (pendingMarker !== null) out.push(pendingMarker);
   flush();
   return out.join('\n');
 }
@@ -118,14 +136,81 @@ function richTagOnlyLine(line: string): boolean {
   return s.trim().length === 0;
 }
 
-/** Оборачивает каждый rich-тег строки в inline-код (VL-81). */
-function richTagInlineSafe(line: string): string {
-  return line.replace(RICH_TAG_G_RE, (tag) => {
+/** Сегмент строки: код-спан (не изменять) или обычный текст. */
+type CodeSegment = { code: boolean; text: string };
+
+/**
+ * Разбивает строку на код-спаны и обычный текст по правилам markdown.
+ *
+ * Спан — ран из N бэктиков, закрытый следующим раном той же длины; раны
+ * другой длины спан не закрывают. Незакрытый ран — литеральный текст.
+ * Теги внутри спанов уже в коде — richTagInlineSafe их не трогает: повторная
+ * обёртка добавляет бэктики внутрь спана, ломает его пары и выталкивает
+ * сырой тег наружу (сломанное форматирование VL-81).
+ */
+function codeSpans(line: string): CodeSegment[] {
+  const segs: CodeSegment[] = [];
+  let textStart = 0;
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== '`') {
+      i++;
+      continue;
+    }
+    // Текущий ран бэктиков [i, j)
+    let j = i;
+    while (j < line.length && line[j] === '`') j++;
+    const runLen = j - i;
+    // Ищем закрывающий ран той же длины после текущего
+    let k = j;
+    let close = -1;
+    while (k < line.length) {
+      if (line[k] !== '`') {
+        k++;
+        continue;
+      }
+      let m = k;
+      while (m < line.length && line[m] === '`') m++;
+      if (m - k === runLen) {
+        close = m;
+        break;
+      }
+      k = m;
+    }
+    if (close === -1) {
+      // Незакрытый ран — литеральный текст, продолжаем поиск после него
+      i = j;
+      continue;
+    }
+    if (i > textStart) segs.push({ code: false, text: line.slice(textStart, i) });
+    segs.push({ code: true, text: line.slice(i, close) });
+    textStart = close;
+    i = close;
+  }
+  if (textStart < line.length) segs.push({ code: false, text: line.slice(textStart) });
+  return segs;
+}
+
+/** Оборачивает каждый rich-тег фрагмента в inline-код (VL-81). */
+function wrapRichTags(text: string): string {
+  return text.replace(RICH_TAG_G_RE, (tag) => {
     // Бэктик внутри атрибутов ломает одинарный inline-код — берём двойной
     const wrap = tag.includes('`') ? '``' : '`';
-    return `${wrap}${tag}${wrap}`;
+    return wrap + tag + wrap;
   });
 }
+
+/**
+ * Оборачивает rich-теги строки в inline-код (VL-81).
+ *
+ * Теги внутри существующих code-спанов не изменяются — см. codeSpans.
+ */
+function richTagInlineSafe(line: string): string {
+  return codeSpans(line)
+    .map((seg) => (seg.code ? seg.text : wrapRichTags(seg.text)))
+    .join('');
+}
+
 
 /**
  * Защита контента задачи перед вставкой в rich-разметку (VL-81).

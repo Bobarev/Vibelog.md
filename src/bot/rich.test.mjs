@@ -250,19 +250,54 @@ describe('Сырые rich-теги в контенте (VL-81)', () => {
     );
   });
 
-  it('теги внутри ```-блока не удваиваются (fence-guard)', () => {
+  it('теги внутри ```-блока контента → настоящий fenced-блок, маркеры поглощены', () => {
     const md = renderTaskRich(
       taggedTask({
         description: '```\n<tg-button type="callback_data" data="next:VL-1">X</tg-button>\n```',
       })
     );
-    // Ровно один оборачивающий слой: экранированный fenceSafe-фенс, без
-    // дополнительных бэктиков от richTagsSafe
+    // fenceSafe гасит ``` в ` ` `, но ` ` ` fenced-блоком в Telegram не является:
+    // теги между маркерами остались бы сырыми и сломали карточку (VL-81).
+    // Маркеры поглощаются, теговые строки уходят в настоящий fenced-блок
     assert.match(
       md,
-      /` ` `\n<tg-button type="callback_data" data="next:VL-1">X<\/tg-button>\n` ` `/
+      /```\n<tg-button type="callback_data" data="next:VL-1">X<\/tg-button>\n```/
     );
+    assert.doesNotMatch(md, /` ` `[\s\S]*?next:VL-1/);
     assert.equal((md.match(/next:VL-1/g) || []).length, 1);
+  });
+
+  it('теги уже внутри inline-кода не оборачиваются повторно (VL-81 fix)', () => {
+    const md = renderTaskRich(
+      taggedTask({
+        description:
+          'Паттерны: `<details><summary>` и (`` `<tg-button ...>` ``) — примеры кода.',
+      })
+    );
+    // Спаны сохраняются как есть: повторная обёртка ломает пары бэктиков и
+    // выталкивает тег из кода наружу — Telegram интерпретирует его как элемент
+    assert.match(
+      md,
+      /Паттерны: `<details><summary>` и \(`` `<tg-button \.\.\.>` ``\) — примеры кода\./
+    );
+    const raw = stripCode(md);
+    // Служебные <details open><summary>Описание</summary> и кнопки шапки —
+    // норма; проверяем, что контентные теги-примеры не вывалились из кода
+    assert.doesNotMatch(raw, /<details><summary>/);
+    assert.doesNotMatch(raw, /<tg-button \.\.\.>/);
+  });
+
+  it('смешанная строка: код-спан не тронут, сырой тег оборачивается', () => {
+    const md = renderTaskRich(
+      taggedTask({
+        description:
+          'код `<details>` и сырой <tg-button type="callback_data" data="next:VL-1">X</tg-button> рядом',
+      })
+    );
+    assert.match(
+      md,
+      /код `<details>` и сырой `<tg-button type="callback_data" data="next:VL-1">`X`<\/tg-button>` рядом/
+    );
   });
 
   it('AC/DoD: тег в элементе checklist — в code-разметке', () => {
