@@ -1,0 +1,249 @@
+/**
+ * Тесты VL-83 — LLM-клиент Cloud.ru (src/agent/llm.ts).
+ *
+ * Все кейсы на мок-fetch без сети: SSE-стрим (сборка текста, tool_calls по
+ * индексам, usage), non-200, фолбэк non-stream, ретраи на сетевые ошибки.
+ */
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { createLlmClient } from '../../dist/agent/llm.js';
+
+/** Фейковый Response со SSE-телом: строки data: {...} / data: [DONE]. */
+function sseResponse(events, { status = 200, statusText = 'OK' } = {}) {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      for (const event of events) {
+        controller.enqueue(encoder.encode(`data: ${event}\n\n`));
+      }
+      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+      controller.close();
+    },
+  });
+  return { ok: status >= 200 && status < 300, status, statusText, headers: new Headers(), body };
+}
+
+/** Фейковый Response с JSON-телом (non-stream фолбэк). */
+function jsonResponse(obj, { status = 200, statusText = 'OK' } = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText,
+    headers: new Headers(),
+    json: async () => obj,
+  };
+}
+
+/** Обёртка fetchImpl со счётчиком вызовов и очередью ответов/ошибок. */
+function fakeFetch(script) {
+  const state = { calls: 0 };
+  const impl = async () => {
+    const step = script[state.calls] ?? script[script.length - 1];
+    state.calls++;
+    if (step instanceof Error) throw step;
+    return step;
+  };
+  return { impl, state };
+}
+
+const CLIENT_OPTS = { baseUrl: 'https://llm.test/v1', apiKey: 'k', model: 'm', retryDelayMs: 1 };
+
+describe('createLlmClient / streamChat (VL-83)', () => {
+  it('собирает текст по onToken из SSE-потока', async () => {
+    const { impl, state } = fakeFetch([
+      sseResponse([
+        JSON.stringify({ choices: [{ delta: { content: 'Привет' } }] }),
+        JSON.stringify({ choices: [{ delta: { content: ', мир!' } }] }),
+      ]),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const tokens = [];
+    const res = await client.streamChat([{ role: 'user', content: 'x' }], undefined, {
+      onToken: (t) => tokens.push(t),
+    });
+    assert.equal(res.text, 'Привет, мир!');
+    assert.deepEqual(tokens, ['Привет', ', мир!']);
+    assert.deepEqual(res.toolCalls, []);
+    assert.equal(state.calls, 1);
+  });
+
+  it('склеивает фрагменты tool_calls по индексам и парсит аргументы', async () => {
+    const { impl } = fakeFetch([
+      sseResponse([
+        JSON.stringify({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { index: 0, id: 'call_1', function: { name: 'read_file', arguments: '{"pa' } },
+                ],
+              },
+            },
+          ],
+        }),
+        JSON.stringify({
+          choices: [
+            {
+              delta: {
+                tool_calls: [{ index: 0, function: { arguments: 'th":"a.ts"}' } }],
+              },
+            },
+          ],
+        }),
+        JSON.stringify({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { index: 1, id: 'call_2', function: { name: 'glob', arguments: '{"pattern":"*.ts"}' } },
+                ],
+              },
+            },
+          ],
+        }),
+      ]),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const res = await client.streamChat([{ role: 'user', content: 'x' }], []);
+    assert.equal(res.toolCalls.length, 2);
+    assert.deepEqual(res.toolCalls[0], {
+      id: 'call_1',
+      name: 'read_file',
+      arguments: { path: 'a.ts' },
+    });
+    assert.deepEqual(res.toolCalls[1], {
+      id: 'call_2',
+      name: 'glob',
+      arguments: { pattern: '*.ts' },
+    });
+  });
+
+  it('маппит usage из последнего чанка (prompt/completion → input/output)', async () => {
+    const { impl } = fakeFetch([
+      sseResponse([
+        JSON.stringify({ choices: [{ delta: { content: 'ok' } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }),
+      ]),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const res = await client.streamChat([{ role: 'user', content: 'x' }], []);
+    assert.deepEqual(res.usage, {
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_read_input_tokens: 0,
+      total_tokens: 15,
+    });
+  });
+
+  it('не-retryable 4xx: стрим 400 + фолбэк non-stream 400 → ошибка со статусом', async () => {
+    const { impl, state } = fakeFetch([
+      sseResponse([], { status: 400, statusText: 'Bad Request' }),
+      jsonResponse({ error: 'bad' }, { status: 400, statusText: 'Bad Request' }),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    await assert.rejects(
+      () => client.streamChat([{ role: 'user', content: 'x' }], []),
+      (err) => {
+        assert.match(err.message, /Ошибка API Cloud.ru/);
+        assert.match(err.message, /400/);
+        return true;
+      },
+    );
+    assert.equal(state.calls, 2);
+  });
+
+  it('стрим 500 (ретраи исчерпаны) → фолбэк non-stream успешен', async () => {
+    const serverError = () => sseResponse([], { status: 500, statusText: 'Server Error' });
+    const { impl, state } = fakeFetch([
+      serverError(),
+      serverError(),
+      serverError(),
+      serverError(),
+      jsonResponse({
+        choices: [{ message: { content: 'из фолбэка' } }],
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      }),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const tokens = [];
+    const res = await client.streamChat([{ role: 'user', content: 'x' }], undefined, {
+      onToken: (t) => tokens.push(t),
+    });
+    assert.equal(res.text, 'из фолбэка');
+    assert.equal(tokens.join(''), 'из фолбэка'); // non-stream текст нарезается по словам
+    assert.equal(res.usage.input_tokens, 1);
+    // 4 стрим-попытки (1 + 3 ретрая) + 1 non-stream
+    assert.equal(state.calls, 5);
+  });
+
+  it('сетевые ошибки: падает дважды → успех на 3-й попытке', async () => {
+    const { impl, state } = fakeFetch([
+      new TypeError('fetch failed'),
+      new TypeError('fetch failed'),
+      sseResponse([JSON.stringify({ choices: [{ delta: { content: 'ok' } }] })]),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const res = await client.streamChat([{ role: 'user', content: 'x' }], []);
+    assert.equal(res.text, 'ok');
+    assert.equal(state.calls, 3);
+  });
+
+  it('сетевые ошибки: 4+ раза подряд → ошибка с русским текстом', async () => {
+    const { impl, state } = fakeFetch([new TypeError('fetch failed')]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl, maxRetries: 3 });
+    await assert.rejects(
+      () => client.streamChat([{ role: 'user', content: 'x' }], []),
+      (err) => {
+        assert.match(err.message, /Сетевая ошибка при запросе к LLM/);
+        return true;
+      },
+    );
+    // Сетевая ошибка фазы стрима не уходит в non-stream фолбэк (та же сеть):
+    // 4 попытки (1 + 3 ретрая) и ошибка (decision-4, п.3).
+    assert.equal(state.calls, 4);
+  });
+
+  it('битый JSON в non-stream ответе → ошибка', async () => {
+    const serverError = () => sseResponse([], { status: 500, statusText: 'Server Error' });
+    const { impl } = fakeFetch([
+      serverError(),
+      serverError(),
+      serverError(),
+      serverError(),
+      {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: new Headers(),
+        json: async () => {
+          throw new SyntaxError('bad json');
+        },
+      },
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    await assert.rejects(
+      () => client.streamChat([{ role: 'user', content: 'x' }], []),
+      /Сетевая ошибка|невалидный JSON/,
+    );
+  });
+
+  it('без модели (нет env) — createLlmClient кидает понятную ошибку', () => {
+    const prev = process.env.VIBELOG_LLM_MODEL;
+    delete process.env.VIBELOG_LLM_MODEL;
+    try {
+      assert.throws(() => createLlmClient({ baseUrl: 'https://x/v1', fetchImpl: async () => jsonResponse({}) }), /VIBELOG_LLM_MODEL/);
+    } finally {
+      if (prev !== undefined) process.env.VIBELOG_LLM_MODEL = prev;
+    }
+  });
+
+  it('abort-сигнал прерывает ожидание ретрая', async () => {
+    const controller = new AbortController();
+    const { impl } = fakeFetch([new TypeError('fetch failed'), sseResponse([])]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl, retryDelayMs: 5000 });
+    const promise = client.streamChat([{ role: 'user', content: 'x' }], [], { signal: controller.signal });
+    setTimeout(() => controller.abort(), 10);
+    await assert.rejects(promise, /прервана/);
+  });
+});
