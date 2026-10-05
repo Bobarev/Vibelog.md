@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 import {
   renderTaskRich,
   renderTasksRich,
+  renderDocsRich,
+  renderDocumentRich,
   renderDiffRich,
   renderPhaseResultRich,
   chunkRich,
@@ -571,5 +573,104 @@ describe('renderDiffRich (VL-88)', () => {
 
   it('пустой список → пустая строка', () => {
     assert.equal(renderDiffRich([], 'main'), '');
+  });
+});
+
+describe('renderDocsRich (VL-89)', () => {
+  const doc = (over) => ({
+    document: {
+      id: 'doc-1',
+      title: 'Гайд',
+      type: 'guide',
+      created_date: '2026-10-05',
+      tags: ['api'],
+      ...(over || {}),
+    },
+    body: 'Содержимое документа',
+    path: '/tmp/x.md',
+  });
+
+  it('шапка таблицы: колонки ID/Заголовок/Тип/Теги, ID жирный, без GFM | --- |', () => {
+    const md = renderDocsRich([doc()]);
+    assert.ok(md.includes('<table bordered striped compact>'));
+    assert.ok(
+      md.includes('<tr><th>ID</th><th>Заголовок</th><th>Тип</th><th>Теги</th></tr>')
+    );
+    assert.ok(md.includes('<b>doc-1</b>'));
+    assert.ok(!md.includes('| --- |'));
+  });
+
+  it('кнопки: data="doc:<id>", текст кнопки = ID', () => {
+    const md = renderDocsRich([doc(), doc({ id: 'doc-7', title: 'Другой' })]);
+    assert.ok(md.includes('<tg-button-row>'));
+    assert.ok(md.includes('<tg-button type="callback_data" data="doc:doc-1">doc-1</tg-button>'));
+    assert.ok(md.includes('<tg-button type="callback_data" data="doc:doc-7">doc-7</tg-button>'));
+  });
+
+  it('10 документов → 2 ряда по ≤8 кнопок; ровно 8 → 1 ряд', () => {
+    const many = Array.from({ length: 10 }, (_, i) => doc({ id: 'doc-' + (i + 1) }));
+    const md = renderDocsRich(many);
+    const rowBlocks = md.split('<tg-button-row>').slice(1);
+    assert.equal(rowBlocks.length, 2, '10 кнопок → 2 ряда (8 + 2)');
+    for (const block of rowBlocks) {
+      const count = (block.match(/<tg-button /g) || []).length;
+      assert.ok(count >= 1 && count <= 8, 'в ряду ' + count + ' кнопок (допустимо 1-8)');
+    }
+    const eight = Array.from({ length: 8 }, (_, i) => doc({ id: 'doc-' + (i + 1) }));
+    assert.equal((renderDocsRich(eight).match(/<tg-button-row>/g) || []).length, 1);
+  });
+
+  it('спецсимволы HTML экранируются в ячейках — таблица не ломается', () => {
+    const md = renderDocsRich([doc({ title: 'A < B & C > D' })]);
+    assert.ok(md.includes('A &#60; B &#38; C &#62; D'));
+  });
+
+  it('пустой массив → пустая строка', () => {
+    assert.equal(renderDocsRich([]), '');
+  });
+});
+
+describe('renderDocumentRich (VL-89)', () => {
+  const entry = {
+    document: {
+      id: 'doc-1',
+      title: 'Гайд',
+      type: 'guide',
+      created_date: '2026-10-05',
+      tags: ['api'],
+    },
+    body: 'Тело документа',
+    path: '/tmp/x.md',
+  };
+
+  it('заголовок и метаданные: Тип, Создан, Теги', () => {
+    const md = renderDocumentRich(entry);
+    assert.match(md, /^# doc-1 — Гайд/);
+    assert.match(md, /\*\*Тип:\*\* guide/);
+    assert.match(md, /\*\*Создан:\*\* 2026-10-05/);
+    assert.match(md, /\*\*Теги:\*\* api/);
+  });
+
+  it('тело — в секции Содержимое (открытой)', () => {
+    const md = renderDocumentRich(entry);
+    assert.ok(md.includes('<details open><summary>Содержимое</summary>'));
+    assert.ok(md.includes('Тело документа'));
+  });
+
+  it('пустое тело → секции «Содержимое» нет', () => {
+    const md = renderDocumentRich({ ...entry, body: '   ' });
+    assert.ok(!md.includes('Содержимое'));
+  });
+
+  it('сырые rich-теги в теле экранируются (VL-81)', () => {
+    const md = renderDocumentRich({
+      ...entry,
+      body: 'текст <tg-button>сырой</tg-button> и <details>x</details>',
+    });
+    // contentSafe оборачивает каждый тег в inline-бэкитики — сырой
+    // континуальный фрагмент в рендере отсутствует
+    assert.ok(!md.includes('<tg-button>сырой</tg-button>'), 'сырой тег не должен пройти');
+    assert.ok(!md.includes('<details>x</details>'), 'сырой details не должен пройти');
+    assert.ok(md.includes('`<tg-button>`'), 'тег обёрнут в inline-код');
   });
 });

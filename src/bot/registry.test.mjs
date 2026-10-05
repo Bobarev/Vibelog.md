@@ -10,7 +10,7 @@ import { BOT_COMMANDS, commandsHelp, syncCommands } from '../../dist/bot/registr
 
 describe('BOT_COMMANDS (VL-54)', () => {
   it('реестр валиден по лимитам Telegram', () => {
-    assert.equal(BOT_COMMANDS.length, 14, `ожидалось 14 команд, получено: ${BOT_COMMANDS.length}`);
+    assert.equal(BOT_COMMANDS.length, 16, `ожидалось 16 команд, получено: ${BOT_COMMANDS.length}`);
     assert.ok(BOT_COMMANDS.length <= 100, 'лимит Telegram: не более 100 команд');
     const seen = new Set();
     for (const c of BOT_COMMANDS) {
@@ -43,7 +43,7 @@ describe('BOT_COMMANDS (VL-54)', () => {
   it('commandsHelp() повторяет прежний хардкод help-строки /start', () => {
     assert.equal(
       commandsHelp(),
-      '/tasks, /task <id>, /board, /diff, /create, /status, /comment, /spec, /plan VL-<id> [комментарий], /code VL-<id> [комментарий], /close, /prompt <текст>, /restart'
+      '/tasks, /task <id>, /docs, /doc <id>, /board, /diff, /create, /status, /comment, /spec, /plan VL-<id> [комментарий], /code VL-<id> [комментарий], /close, /prompt <текст>, /restart'
     );
   });
 });

@@ -15,6 +15,7 @@
 
 import type { ChecklistItem, Task } from '../core/task.js';
 import type { DiffFile } from '../core/git-status.js';
+import type { DocumentEntry } from '../core/document.js';
 import type { PhaseRun } from '../web/orchestrator.js';
 import { VALID_TASK_STYLES } from './settings.js';
 
@@ -428,6 +429,64 @@ export function renderTasksRich(tasks: Task[], styles: Record<string, string>): 
     );
   }
   return `${table}\n\n${buttonRows.join('\n')}`;
+}
+
+/**
+ * Rich-рендер списка документов: таблица + callback-кнопки (VL-89).
+ *
+ * Полный аналог renderTasksRich (VL-82): HTML-<table bordered striped compact>
+ * с колонками ID/Заголовок/Тип/Теги (ID жирный — <b>) и <tg-button-row>
+ * с кнопками doc:<id> под таблицей. Кнопки дробятся по BUTTONS_PER_ROW=8 —
+ * лимит Telegram (RICH_MESSAGE_BUTTONS_TOO_MANY). Стили task_type_styles
+ * НЕ применяются — документы не имеют типов задач. Пустой список → ''.
+ *
+ * @param entries — документы в порядке вывода
+ */
+export function renderDocsRich(entries: DocumentEntry[]): string {
+  if (entries.length === 0) return '';
+  // HTML-таблица по Rich HTML (rich.d.ts) — паттерн renderTasksRich (VL-82)
+  const header = '<tr><th>ID</th><th>Заголовок</th><th>Тип</th><th>Теги</th></tr>';
+  const rows = entries.map(
+    (e) =>
+      `<tr><td><b>${cellSafe(e.document.id)}</b></td><td>${cellSafe(e.document.title)}</td><td>${cellSafe(e.document.type)}</td><td>${cellSafe(e.document.tags.join(', '))}</td></tr>`
+  );
+  const table = ['<table bordered striped compact>', header, ...rows, '</table>'].join('\n');
+  const buttons = entries.map(
+    (e) =>
+      `<tg-button type="callback_data" data="doc:${e.document.id}">${e.document.id}</tg-button>`
+  );
+  // Дробление по BUTTONS_PER_ROW — лимит Telegram (паттерн renderTasksRich)
+  const buttonRows: string[] = [];
+  for (let i = 0; i < buttons.length; i += BUTTONS_PER_ROW) {
+    buttonRows.push(
+      `<tg-button-row>\n${buttons.slice(i, i + BUTTONS_PER_ROW).join('\n')}\n</tg-button-row>`
+    );
+  }
+  return `${table}\n\n${buttonRows.join('\n')}`;
+}
+
+/**
+ * Rich-рендер карточки документа: метаданные + тело (VL-89).
+ *
+ * Аналог renderTaskRich без кнопок фаз (у документа нет workflow).
+ * Тело — через contentSafe (защита VL-81 от сырых rich-тегов) в секции
+ * «Содержимое», открытой по умолчанию; пустое тело — секция не выводится.
+ * Пустые меты опускаются (паттерн renderTaskRich).
+ *
+ * @param entry — документ (метаданные + тело)
+ */
+export function renderDocumentRich(entry: DocumentEntry): string {
+  const parts: string[] = [];
+  parts.push(`# ${entry.document.id} — ${entry.document.title}\n`);
+  const meta: string[] = [];
+  if (entry.document.type) meta.push(`**Тип:** ${entry.document.type}`);
+  if (entry.document.created_date) meta.push(`**Создан:** ${entry.document.created_date}`);
+  if (entry.document.tags.length > 0) meta.push(`**Теги:** ${entry.document.tags.join(', ')}`);
+  if (meta.length > 0) parts.push(meta.join('  \n') + '\n');
+  if (entry.body.trim()) {
+    parts.push(section('Содержимое', contentSafe(entry.body), true));
+  }
+  return parts.join('\n').trim();
 }
 
 /**

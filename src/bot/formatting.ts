@@ -11,6 +11,7 @@
 
 import type { Task } from '../core/task.js';
 import type { DiffFile } from '../core/git-status.js';
+import type { DocumentEntry } from '../core/document.js';
 import type { PhaseRun } from '../web/orchestrator.js';
 
 /**
@@ -38,6 +39,49 @@ export function formatTaskList(tasks: Task[]): string {
         `*${escapeMarkdownV2(t.id)}* — ${escapeMarkdownV2(t.title)} \\[${escapeMarkdownV2(t.status)}\\]`
     )
     .join('\n');
+}
+
+/**
+ * MarkdownV2-список документов для /docs (VL-89).
+ *
+ * Паттерн formatTaskList: жирный id, тип в скобках. Пустой список →
+ * короткий текст «Документов нет» (rich-таблица не строится).
+ *
+ * @param entries — документы в порядке вывода
+ */
+export function formatDocsList(entries: DocumentEntry[]): string {
+  if (entries.length === 0) return 'Документов нет';
+  return entries
+    .map(
+      (e) =>
+        `*${escapeMarkdownV2(e.document.id)}* — ${escapeMarkdownV2(e.document.title)} \\[${escapeMarkdownV2(e.document.type)}\\]`
+    )
+    .join('\n');
+}
+
+/**
+ * MarkdownV2-фолбэк /doc: карточка документа (VL-89).
+ *
+ * Паттерн formatTaskDetail: жирный заголовок, метки полей, тело через
+ * escapeMarkdownV2 с усечением >1500 символов (лимит Telegram 4096 —
+ * экранирование удваивает длину, режем с большим запасом).
+ *
+ * @param entry — документ (метаданные + тело)
+ */
+export function formatDocumentDetail(entry: DocumentEntry): string {
+  const lines = [
+    `*${escapeMarkdownV2(entry.document.id)} — ${escapeMarkdownV2(entry.document.title)}*`,
+    `*Тип:* ${escapeMarkdownV2(entry.document.type)}`,
+    `*Создан:* ${escapeMarkdownV2(entry.document.created_date)}`,
+  ];
+  if (entry.document.tags.length > 0) {
+    lines.push(`*Теги:* ${escapeMarkdownV2(entry.document.tags.join(', '))}`);
+  }
+  if (entry.body) {
+    const body = entry.body.length > 1500 ? entry.body.slice(0, 1500) + '…' : entry.body;
+    lines.push('', escapeMarkdownV2(body));
+  }
+  return lines.join('\n');
 }
 
 /**

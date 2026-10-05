@@ -12,10 +12,15 @@ import { loadConfig } from '../core/config.js';
 import type { Task } from '../core/task.js';
 import { getGitStatus } from '../core/git-status.js';
 import type { DiffFile, GitStatus } from '../core/git-status.js';
+import { getDocument, listDocuments, searchDocuments } from '../core/document.js';
+import type { DocumentEntry } from '../core/document.js';
+import { findBacklogDir } from '../core/paths.js';
 import {
   escapeMarkdownV2,
   formatBoard,
   formatDiffList,
+  formatDocsList,
+  formatDocumentDetail,
   formatPhaseResult,
   formatPhaseRun,
   formatTaskDetail,
@@ -25,6 +30,8 @@ import {
   chunkRich,
   nextPhaseForStatus,
   renderDiffRich,
+  renderDocsRich,
+  renderDocumentRich,
   renderPhaseResultRich,
   renderTaskRich,
   renderTasksRich,
@@ -133,6 +140,40 @@ async function sendTasksView(
   } catch (err) {
     console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
     await sendText(bot, chatId, formatTaskList(tasks));
+  }
+}
+
+/**
+ * Список документов по chatId: rich-таблица + кнопки doc:<id> (VL-89),
+ * фолбэк — MarkdownV2-список (formatDocsList). Паттерн sendTasksView.
+ */
+async function sendDocsView(
+  bot: Bot,
+  chatId: number,
+  entries: DocumentEntry[]
+): Promise<void> {
+  try {
+    for (const part of chunkRich(renderDocsRich(entries))) {
+      await bot.api.sendRichMessage(chatId, { markdown: part });
+    }
+  } catch (err) {
+    console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
+    await sendText(bot, chatId, formatDocsList(entries));
+  }
+}
+
+/**
+ * Карточка документа по chatId: rich-рендер (VL-89), фолбэк —
+ * MarkdownV2-детали (formatDocumentDetail). Паттерн sendTaskView.
+ */
+async function sendDocView(bot: Bot, chatId: number, entry: DocumentEntry): Promise<void> {
+  try {
+    for (const part of chunkRich(renderDocumentRich(entry))) {
+      await bot.api.sendRichMessage(chatId, { markdown: part });
+    }
+  } catch (err) {
+    console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
+    await sendText(bot, chatId, formatDocumentDetail(entry));
   }
 }
 
@@ -302,6 +343,48 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return;
     await sendTaskView(bot, chatId, task, phaseRun ?? undefined);
+  });
+
+  // ── /docs — список документов (VL-89) ──
+  bot.command('docs', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    // listDocuments/searchDocuments принимают backlogDir, а НЕ cwd —
+    // ищем backlog-директорию явно (паттерн src/cli/commands/doc.ts)
+    const backlogDir = findBacklogDir(deps.cwd);
+    // Нет backlog/ — ведём себя как пустой список, не падаем (VL-89)
+    if (!backlogDir) {
+      await sendMd(ctx, formatDocsList([]));
+      return;
+    }
+    const filter = (ctx.match ?? '').toString().trim();
+    const entries = filter ? searchDocuments(backlogDir, filter) : listDocuments(backlogDir);
+    // Пустой список — короткий текст без таблицы (паттерн /tasks)
+    if (entries.length === 0) {
+      await sendMd(ctx, formatDocsList(entries));
+      return;
+    }
+    await sendDocsView(bot, chatId, entries);
+  });
+
+  bot.command('doc', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const id = (ctx.match ?? '').toString().trim();
+    if (!id) {
+      await sendMd(ctx, 'Укажите ID документа: /doc doc-1');
+      return;
+    }
+    const backlogDir = findBacklogDir(deps.cwd);
+    const entry = backlogDir ? getDocument(backlogDir, id) : null;
+    if (!entry) {
+      // id экранируется — пользователь вводит что угодно (паттерн /task)
+      await sendMd(ctx, `Документ ${escapeMarkdownV2(id)} не найден.`);
+      return;
+    }
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    await sendDocView(bot, chatId, entry);
   });
 
   bot.command('board', async (ctx) => {
@@ -659,6 +742,28 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       }
       await ctx.answerCallbackQuery({ text: `📋 ${task.id}` }).catch(() => {});
       await sendTaskView(bot, chatId, task, getRun(id) ?? undefined);
+      return;
+    }
+    // ── Кнопка документа в списке /docs (VL-89): data = doc:<id> ──
+    // Полный аналог команды /doc <id>: карточка через sendDocView.
+    // answerCallbackQuery обязателен в любом исходе — иначе «часики».
+    if (data.startsWith('doc:')) {
+      const id = data.slice('doc:'.length).trim();
+      if (!requireBind(ctx)) {
+        await ctx
+          .answerCallbackQuery({ text: 'Бот не привязан к чату — выполните /start' })
+          .catch(() => {});
+        return;
+      }
+      const chatId = ctx.chat?.id;
+      const backlogDir = findBacklogDir(deps.cwd);
+      const entry = backlogDir ? getDocument(backlogDir, id) : null;
+      if (chatId === undefined || !entry) {
+        await ctx.answerCallbackQuery({ text: `Документ ${id} не найден.` }).catch(() => {});
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: `📄 ${entry.document.id}` }).catch(() => {});
+      await sendDocView(bot, chatId, entry);
       return;
     }
     if (!data.startsWith('next:')) return; // чужие callback не трогаем

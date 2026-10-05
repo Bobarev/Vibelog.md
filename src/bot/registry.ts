@@ -27,6 +27,8 @@ export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'start', description: 'Привязать чат: введите код из консоли' },
   { command: 'tasks', description: 'Список невыполненных задач' },
   { command: 'task', description: 'Детали задачи: /task VL-1', usage: '/task <id>' },
+  { command: 'docs', description: 'Список документов' },
+  { command: 'doc', description: 'Документ: /doc doc-1', usage: '/doc <id>' },
   { command: 'board', description: 'Канбан-доска задач' },
   { command: 'diff', description: 'Незакоммиченные файлы (git status)' },
   { command: 'create', description: 'Создать задачу' },

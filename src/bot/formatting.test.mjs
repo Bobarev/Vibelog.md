@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 import {
   escapeMarkdownV2,
   formatTaskList,
+  formatDocsList,
+  formatDocumentDetail,
   formatTaskDetail,
   formatPhaseRun,
   formatPhaseResult,
@@ -239,5 +241,63 @@ describe('formatDiffList (VL-88)', () => {
     );
     assert.ok(text.includes('*a\\_b \\(1\\)\\.md*'), 'спецсимволы с backslash');
     assert.ok(!text.includes('*a_b (1).md*'), 'сырой путь не выводится');
+  });
+});
+
+describe('formatDocsList (VL-89)', () => {
+  const entry = {
+    document: { id: 'doc-1', title: 'Гайд', type: 'guide', created_date: '2026-10-05', tags: ['api'] },
+    body: '',
+    path: '/tmp/x.md',
+  };
+
+  it('жирный id, заголовок, тип в скобках', () => {
+    const text = formatDocsList([entry]);
+    assert.ok(text.includes('*doc\\-1* — Гайд \\[guide\\]'), 'id жирный, тип в скобках');
+  });
+
+  it('спецсимволы MarkdownV2 экранированы', () => {
+    const text = formatDocsList([
+      { ...entry, document: { ...entry.document, id: 'doc-2', title: 'A_b (x).md' } },
+    ]);
+    assert.ok(text.includes('*doc\\-2* — A\\_b \\(x\\)\\.md'), 'заголовок экранирован');
+  });
+
+  it('пустой список → «Документов нет»', () => {
+    assert.equal(formatDocsList([]), 'Документов нет');
+  });
+});
+
+describe('formatDocumentDetail (VL-89)', () => {
+  const entry = {
+    document: { id: 'doc-1', title: 'Гайд', type: 'guide', created_date: '2026-10-05', tags: ['api'] },
+    body: 'Тело документа',
+    path: '/tmp/x.md',
+  };
+
+  it('метаданные: заголовок, тип, дата, теги', () => {
+    const text = formatDocumentDetail(entry);
+    assert.match(text, /\*doc\\-1 — Гайд\*/);
+    assert.match(text, /\*Тип:\* guide/);
+    assert.match(text, /\*Создан:\* 2026\\-10\\-05/);
+    assert.match(text, /\*Теги:\* api/);
+  });
+
+  it('без тегов строка Теги не выводится', () => {
+    const text = formatDocumentDetail({
+      ...entry,
+      document: { ...entry.document, tags: [] },
+    });
+    assert.ok(!text.includes('*Теги:*'));
+  });
+
+  it('тело экранировано и добавлено после меты', () => {
+    const text = formatDocumentDetail({ ...entry, body: 'Текст _подчёркнутый_' });
+    assert.match(text, /Текст \\_подчёркнутый\\_/);
+  });
+
+  it('длинное тело усекается до 1500 символов с многоточием', () => {
+    const text = formatDocumentDetail({ ...entry, body: 'а'.repeat(1600) });
+    assert.match(text, /а{1500}…/);
   });
 });
