@@ -40,6 +40,7 @@ pnpm link --global
 | [CLI-справочник](docs/cli-reference.md) | Все команды, подкоманды и флаги |
 | [MCP-справочник](docs/mcp-reference.md) | 21 MCP-инструмент: параметры и примеры вызовов |
 | [MCP-подключение](MCP-SETUP.md) | Подключение Vibelog MCP к Qwen Code |
+| [Агент Vibelog](docs/agent.md) | Собственный LLM-агент: headless-замена qwen в фазах, TUI, лимиты, замер токенов |
 
 ## Быстрый старт
 
@@ -183,6 +184,16 @@ vibelog init "Мой проект" --skills
 | `/vibelog:code <ID>` | 3 | Реализовать план, отметить AC |
 
 Workflow: spec → plan → code. На каждой фазе агент ждёт подтверждения.
+
+### Агент Vibelog (замена qwen)
+
+Оркестратор фаз может использовать собственный LLM-агент Vibelog вместо Qwen Code — без правок кода оркестратора:
+
+```bash
+VIBELOG_QWEN_BIN=$(pwd)/bin/vibelog-agent.mjs vibelog browser
+```
+
+Агент: интерактивный TUI или `--headless` (JSON `type=result`, контракт `parseQwenResult`), loop detection, лимиты tool-calls/wall-time, локальные инструменты + Vibelog MCP. LLM — env `VIBELOG_LLM_BASE_URL` / `VIBELOG_LLM_API_KEY` / `VIBELOG_LLM_MODEL` (Cloud.ru). Детали: [docs/agent.md](docs/agent.md).
 
 ### Флаги init
 
