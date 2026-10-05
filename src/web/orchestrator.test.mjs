@@ -13,14 +13,18 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { mkdirSync, writeFileSync, rmSync, mkdtempSync, chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { renderPrompt, startPhase, startPrompt, getRun } from '../../dist/web/orchestrator.js';
 import { handleApi } from '../../dist/web/api.js';
 import { createTaskFile } from '../../dist/core/store.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-test-'));
 const backlogDir = join(testRoot, 'backlog');
@@ -397,5 +401,56 @@ describe('orchestrator (VL-28)', () => {
     const run = await waitDone(task2.id);
     assert.equal(run.exitCode, null);
     assert.match(run.logTail, /Ошибка запуска/);
+  });
+
+  // ── VL-85: посевной тест интеграции — оркестратор спавнит vibelog-agent ──
+
+  it('VIBELOG_QWEN_BIN=vibelog-agent: настоящий агент с мок-LM → JSON type=result (VL-85)', async () => {
+    // Мок-LM: node:http на эфемерном порту, SSE-ответ с финальным текстом
+    const llmServer = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Готово-из-агента' } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, cache_read_input_tokens: 2, total_tokens: 17 } })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      });
+    });
+    await new Promise((r) => llmServer.listen(0, '127.0.0.1', r));
+    const llmPort = llmServer.address().port;
+
+    const agentBin = join(__dirname, '..', '..', 'bin', 'vibelog-agent.mjs');
+    const saved = {};
+    for (const key of ['VIBELOG_QWEN_BIN', 'VIBELOG_LLM_BASE_URL', 'VIBELOG_LLM_API_KEY', 'VIBELOG_LLM_MODEL', 'VIBELOG_BIN']) {
+      saved[key] = process.env[key];
+    }
+    process.env.VIBELOG_QWEN_BIN = agentBin;
+    process.env.VIBELOG_LLM_BASE_URL = `http://127.0.0.1:${llmPort}/v1`;
+    process.env.VIBELOG_LLM_API_KEY = 'test';
+    process.env.VIBELOG_LLM_MODEL = 'test-model';
+    // MCP-сервер недоступен намеренно: агент обязан мягко деградировать
+    // (предупреждение в stderr, фаза продолжается без MCP-инструментов)
+    process.env.VIBELOG_BIN = join(testRoot, 'no-such-vibelog');
+    try {
+      const res = startPhase(testRoot, task1.id, 'comment');
+      assert.equal(res.started, true);
+      const run = await waitDone(task1.id, 8000);
+      assert.equal(run.exitCode, 0);
+      assert.equal(run.result?.result, 'Готово-из-агента');
+      assert.equal(run.result?.is_error, false);
+      assert.equal(run.result?.usage.total_tokens, 17);
+      assert.match(run.result?.session_id ?? '', /^agent-/);
+      // stderr агента (диагностика + предупреждение MCP) виден в logTail,
+      // но не ломает JSON-парсер stdout — контракт VL-63 выдержан
+      assert.match(run.logTail ?? '', /MCP-инструменты недоступны/);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await new Promise((r) => llmServer.close(r));
+    }
   });
 });

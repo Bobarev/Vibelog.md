@@ -13,33 +13,18 @@
 
 import { execFile, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { renderPrompt } from './phase-prompt.js';
+import type { Phase } from './phase-prompt.js';
 import { getTask } from '../core/store.js';
 import { explainQwenParse, parseQwenResult } from './qwen-result.js';
 import type { QwenResult } from './qwen-result.js';
 
-/** Допустимые фазы. */
-const PHASES = ['spec', 'plan', 'code', 'close', 'comment', 'prompt'] as const;
-export type Phase = (typeof PHASES)[number];
-
-/** Шаблон промпта для каждой фазы. */
-const PHASE_FILES: Record<Phase, string> = {
-  spec: 'phase-1.md',
-  plan: 'phase-2.md',
-  code: 'phase-3.md',
-  close: 'phase-close.md',
-  comment: 'phase-comment.md',
-  prompt: 'prompt.md',
-};
-
-/**
- * Путь к headless-промптам. Вычисляется от расположения модуля
- * (dist/web/orchestrator.js → ../../templates/qwen-commands/), как webDistDir:
- * команда vibelog browser запускается в репозитории пользователя.
- */
-const templatesDir = fileURLToPath(new URL('../../templates/qwen-commands/', import.meta.url));
+// Реэкспорт для обратной совместимости (VL-85): renderPrompt/Phase вынесены
+// в phase-prompt.ts — общий модуль оркестратора и CLI vibelog-agent.
+export { renderPrompt };
+export type { Phase };
 
 /** Сколько строк лога хранить в хвосте. */
 const LOG_TAIL_LINES = 50;
@@ -76,38 +61,6 @@ interface ActiveRun {
 const activeRuns = new Map<string, ActiveRun>();
 /** Задача → последний завершённый запуск (для getRun после close). */
 const lastRuns = new Map<string, PhaseRun>();
-
-/**
- * Собирает промпт фазы: шаблон + подстановка {{taskId}}.
- *
- * @param phase — spec | plan | code | close | comment | prompt
- * @param taskId — ID задачи, например VL-28
- * @param extraVars — доп. подстановки {{key}} -> value ({{comment}} для comment, {{prompt}} для prompt)
- * @throws Error при неизвестной фазе или отсутствующем шаблоне
- */
-export function renderPrompt(
-  phase: string,
-  taskId: string,
-  extraVars?: Record<string, string>
-): string {
-  if (!PHASES.includes(phase as Phase)) {
-    throw new Error(`Неизвестная фаза: ${phase} (ожидается spec|plan|code|close|comment|prompt)`);
-  }
-  const templatePath = join(templatesDir, PHASE_FILES[phase as Phase]);
-  let template: string;
-  try {
-    template = readFileSync(templatePath, 'utf-8');
-  } catch {
-    throw new Error(`Шаблон промпта не найден: ${templatePath}`);
-  }
-  let prompt = template.replaceAll('{{taskId}}', taskId);
-  if (extraVars) {
-    for (const [key, value] of Object.entries(extraVars)) {
-      prompt = prompt.replaceAll('{{' + key + '}}', value);
-    }
-  }
-  return prompt;
-}
 
 /**
  * Запускает фазу для задачи (spawn qwen, fire-and-forget).
