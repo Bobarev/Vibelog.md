@@ -1,11 +1,11 @@
 ---
 id: VL-103
 title: 'Ошибка LLM-запроса: terminated'
-status: Planned
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-06 11:16'
-updated_date: '2026-10-06 11:42'
+updated_date: '2026-10-06 21:25'
 due_date: ''
 labels: []
 dependencies: []
@@ -82,17 +82,17 @@ modified_files: []
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Причина обрыва «terminated» установлена и описана (диагностика в плане/доке задачи)
-- [ ] #2 Обрыв LLM-запроса переживается: ретраи стрима + фолбэк non-stream; при исчерпании — понятная русская ошибка с диагностикой вместо сырого «terminated»
-- [ ] #3 Сессия .jsonl дописывается инкрементально (сообщения по мере выполнения фазы), тест подтверждает содержимое файла до завершения фазы
-- [ ] #4 Тесты обрыва LLM-запроса в llm/loop/session/cli.test.mjs; pnpm test без регрессий; docs/agent.md обновлён
+- [x] #1 Причина обрыва «terminated» установлена и описана (диагностика в плане/доке задачи)
+- [x] #2 Обрыв LLM-запроса переживается: ретраи стрима + фолбэк non-stream; при исчерпании — понятная русская ошибка с диагностикой вместо сырого «terminated»
+- [x] #3 Сессия .jsonl дописывается инкрементально (сообщения по мере выполнения фазы), тест подтверждает содержимое файла до завершения фазы
+- [x] #4 Тесты обрыва LLM-запроса в llm/loop/session/cli.test.mjs; pnpm test без регрессий; docs/agent.md обновлён
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -195,5 +195,29 @@ created: 2026-10-06 11:41
 Изменения (4 файла исходников + 4 теста + доки): llm.ts — цикл ретраев стрима (isRetryableStreamError) + non-stream фолбэк в том же цикле + понятная русская ошибка с диагностикой; loop.ts — fail() дописывает финальный assistant + новая опция onMessage (хук после каждого messages.push); session.ts — appendSessionMessage (appendFile, инкрементальная запись); cli.ts — стартовая запись jsonl до loop + onMessage-wiring + resume дописывает только новые сообщения; docs/agent.md раздел 3.1. Тесты: обрыв стрима с ретраем/фолбэком/abort (llm), финальный assistant + порядок onMessage (loop), append roundtrip (session), инкрементальность через чтение jsonl из мок-LM на 2-м запросе + сценарий socket.destroy mid-body (cli).
 Файлов для изменения: 8 (llm.ts, loop.ts, session.ts, cli.ts, llm.test.mjs, loop.test.mjs, session.test.mjs, cli.test.mjs) + docs/agent.md. Риски: дубли токенов в TUI при ретрае (решено suppress onToken), множение попыток 3×3 (приемлемо), смена контракта LoopResult.messages (транскрипт всегда заканчивается assistant — точечные обновления тестов при необходимости).
 Проверка: `pnpm build && pnpm test`; точечно `node --test src/agent/{llm,loop,session,cli}.test.mjs`. Правки кода не выполнялись — только план. Готова к Фазе 3 (Code).
+---
+author: Pavel Bobarev
+created: 2026-10-06 20:31
+---
+Учти при реализации, что после планирования были реализованы задачи VL-104 и VL-102, которые возможно затронула файлы в плане
+---
+author: @agent
+created: 2026-10-06 21:20
+---
+Фаза 3 (Code) выполнена. Реализация VL-103 уже присутствовала в рабочем дереве (незакоммиченные правки от прерванного запуска Code); текущая сессия провела полную верификацию по плану и закрыла оставшийся DoD.
+**Что реализовано (сверено с планом):**
+- `src/agent/llm.ts`: `isRetryableStreamError` (terminated/ECONNRESET/premature close/UND_ERR…; abort не ретраится) + внешний цикл ретраев стриминг-попыток с non-stream фолбэком в том же цикле; suppress `onToken` на повторных попытках; финальная ошибка — русский текст `Сетевая ошибка LLM (обрыв соединения: …) вместо сырого «terminated» (describe «ретраи обрыва стрима (VL-103)» в llm.test.mjs).
+- `src/agent/loop.ts`: `fail()` дописывает финальный assistant-сообщение (транскрипт всегда заканчивается assistant, resume после ошибки работает); хук `onMessage` после каждого `messages.push` (в т.ч. начальные сообщения в хук не попадают).
+- `src/agent/session.ts`: `appendSessionMessage` (assertSafeSessionId + mkdir recursive + appendFile); `saveSession` остался финальной нормализацией.
+- `src/agent/cli.ts`: стартовый набор jsonl пишется **до** runLoop (resume/continue — только новый user-промпт); `onMessage` → сериализованная цепочка append'ов (awaitable); перед `saveSession` цепочка дожидается хвоста (гонки append vs перезапись нет); ошибки записи — предупреждение в stderr без падения фазы.
+- `docs/agent.md` §3.1: разделы «Инкрементальная запись (VL-103)» и «Обрыв LLM-запроса (VL-103)».
+**Проверки:** `pnpm build` OK; `pnpm test` — 756/756, fail 0 (без регрессий, включая cli.test.mjs: инкрементальность jsonl и сценарий `socket.destroy` mid-body). AC 4/4 отмечены ранее, DoD «Нет регрессий» отмечен по результатам прогона.
+**Внимание по окружению (не код):** дефолтный `/usr/local/bin/node` v22.8.0 (собран для macOS 11) на Catalina падает с dyld `_pwritev` при запуске tsc — сборка/тесты нужно гонять с nvm-node v20.19.0 (`PATH=~/.nvm/versions/node/v20.19.0/bin:$PATH`). Все проверки выше выполнены на v20.19.0.
+**Что осталось:** git commit (по правилам Фазы 3 не выполняется); tmp-патч-скрипты `scripts/tmp-vl103-*.mjs` и `scripts/tmp-vl104-*.mjs` можно удалить после коммита.
+---
+author: @agent
+created: 2026-10-06 21:25
+---
+Фаза Close выполнена. Статус: Done. Коммит feat: b901d1a — «ретраи обрыва LLM-стрима и инкрементальная запись jsonl-сессии» (9 файлов: src/agent/{cli,llm,loop,session}.ts + тесты + docs/agent.md). Подзадач нет.
 ---
 <!-- COMMENTS:END -->
