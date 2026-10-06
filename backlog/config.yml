@@ -10,7 +10,17 @@ statuses:
   - Review
   - Done
   - Blocked
-labels: []
+labels:
+  - core
+  - cli
+  - mcp
+  - web
+  - bot
+  - agent
+  - docs
+  - prompt
+  - refactor
+  - release
 priorities:
   - High
   - Medium
