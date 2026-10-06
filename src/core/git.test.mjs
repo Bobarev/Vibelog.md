@@ -100,7 +100,8 @@ describe('getGitStatus — интеграция с реальным git (VL-88)'
   it('ветка, staged/unstaged/untracked/renamed со счётчиками', () => {
     const git = (...args) =>
       spawnSync('git', args, { cwd: testRoot, encoding: 'utf-8', env: ISO_ENV });
-    git('init', '-b', 'vl88-test');
+    git('init');
+    git('checkout', '-b', 'vl88-test');
     git('config', 'user.email', 't@t');
     git('config', 'user.name', 't');
     writeFileSync(join(testRoot, 'a.txt'), '1\n2\n3\n', 'utf-8');
@@ -198,7 +199,8 @@ describe('getGitLog — интеграция с реальным git (VL-90)', (
     spawnSync('git', args, { cwd: testRoot, encoding: 'utf-8', env: ISO_ENV });
 
   it('3 коммита → count=2 возвращает ровно 2, [0] — последний', () => {
-    git('init', '-b', 'vl90-test');
+    git('init');
+    git('checkout', '-b', 'vl90-test');
     git('config', 'user.email', 't@t');
     git('config', 'user.name', 't');
     writeFileSync(join(testRoot, 'a.txt'), '1\n', 'utf-8');

@@ -20,11 +20,15 @@ import {
 
 describe('project-settings (VL-45)', () => {
   const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-project-settings-test-'));
+  // Пустая HOME-директория: изоляция от ~/.gitconfig, работающая и на старом
+  // git 2.24 (Catalina), где GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM игнорируются
+  const ISO_HOME = mkdtempSync(join(tmpdir(), 'vibelog-project-settings-home-'));
   // GIT_CONFIG_GLOBAL=/dev/null изолирует тест от глобального git-конфига
-  const ISO_ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+  const ISO_ENV = { ...process.env, HOME: ISO_HOME, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
 
   after(() => {
     rmSync(testRoot, { recursive: true, force: true });
+    rmSync(ISO_HOME, { recursive: true, force: true });
   });
 
   it('projectSettingsPath → .vibelog/settings.yml', () => {

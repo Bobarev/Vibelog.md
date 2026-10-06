@@ -2,6 +2,8 @@
 
 Markdown-нативный таск-менеджер для git-репозиториев, совместимый с [Backlog.md](https://github.com/MrLesk/Backlog.md).
 
+Репозиторий: [https://gitverse.ru/bobarev/Vibelog.md](https://gitverse.ru/bobarev/Vibelog.md).
+
 ## Зачем
 
 Оригинальный Backlog.md написан на Bun и не работает на macOS 10.15 Catalina. Vibelog.md — это совместимая замена на чистом Node.js:
@@ -20,6 +22,8 @@ npm install -g vibelog.md
 ```
 
 В пакете уже собраны CLI (`dist/`) и веб-интерфейс (`web/dist`) — ничего компилировать не нужно. Одноразовый запуск без установки: `npx vibelog.md`.
+
+CLI автоматически проверяет npm registry на наличие новой версии (раз в сутки, молча). Если обновление доступно — выводится уведомление в stderr. Отключение: `VIBELOG_SKIP_UPDATE_CHECK=true`. Подробнее: [docs/cli-reference.md](docs/cli-reference.md).
 
 ### Из исходников (для контрибьюторов)
 

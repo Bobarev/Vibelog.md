@@ -26,6 +26,10 @@
   },
   "packageManager": "pnpm@10.7.1",
   "license": "Unlicense",
+  "repository": {
+    "type": "git",
+    "url": "https://gitverse.ru/bobarev/Vibelog.md"
+  },
   "devDependencies": {
     "@types/node": "^26.6.3",
     "@types/react": "^19.1.8",
