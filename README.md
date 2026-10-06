@@ -23,9 +23,9 @@ npm install -g vibelog.md
 
 В пакете уже собраны CLI (`dist/`) и веб-интерфейс (`web/dist`) — ничего компилировать не нужно. Одноразовый запуск без установки: `npx vibelog.md`.
 
-После установки доступны два имени CLI: `vibelog` и алиас `vb` — один и тот же бинарь, поведение идентично (`vb --help` = `vibelog --help`). Запуск `vibelog` или `vb` **без аргументов** в интерактивном терминале открывает TUI-чат с LLM-агентом Vibelog (ключи `VIBELOG_LLM_*` читаются из `.env` проекта; см. [docs/agent.md](docs/agent.md)); в скриптах и CI (не-TTY) — обычная справка.
+После установки доступны два имени CLI: `vibelog` и алиас `vb` — один и тот же бинарь, поведение идентично (`vb --help` = `vibelog --help`). Запуск `vibelog` или `vb` **без аргументов** в интерактивном терминале открывает TUI-чат с LLM-агентом Vibelog (ключи `VIBELOG_LLM_*` читаются из `.env` проекта; см. [backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md)); в скриптах и CI (не-TTY) — обычная справка.
 
-CLI автоматически проверяет npm registry на наличие новой версии (раз в сутки, молча). Если обновление доступно — в stderr выводится `⚠ Доступна новая версия для обновления: npm install -g vibelog.md (...)`, без автоустановки. Отключение: `VIBELOG_SKIP_UPDATE_CHECK=true`. Подробнее: [docs/cli-reference.md](docs/cli-reference.md#автообновление).
+CLI автоматически проверяет npm registry на наличие новой версии (раз в сутки, молча). Если обновление доступно — в stderr выводится `⚠ Доступна новая версия для обновления: npm install -g vibelog.md (...)`, без автоустановки. Отключение: `VIBELOG_SKIP_UPDATE_CHECK=true`. Подробнее: [backlog/docs/doc-7-CLI-справочник-Vibelogmd.md](backlog/docs/doc-7-CLI-справочник-Vibelogmd.md#автообновление).
 
 ### Из исходников (для контрибьюторов)
 
@@ -41,12 +41,12 @@ pnpm link --global
 
 | Документ | Для чего |
 |---|---|
-| [Руководство пользователя](docs/user-guide.md) | Полный обзор: команды, флаги, форматы файлов, примеры |
-| [Best practices и производительность](docs/best-practices.md) | Workflow с Qwen Code, dogfooding, сценарии «было/стало» |
-| [CLI-справочник](docs/cli-reference.md) | Все команды, подкоманды и флаги |
-| [MCP-справочник](docs/mcp-reference.md) | 21 MCP-инструмент: параметры и примеры вызовов |
+| [Руководство пользователя](backlog/docs/doc-6-Руководство-пользователя-Vibelogmd.md) | Полный обзор: команды, флаги, форматы файлов, примеры |
+| [Best practices и производительность](backlog/docs/doc-9-Best-practices-и-производительность-Vibelogmd.md) | Workflow с Qwen Code, dogfooding, сценарии «было/стало» |
+| [CLI-справочник](backlog/docs/doc-7-CLI-справочник-Vibelogmd.md) | Все команды, подкоманды и флаги |
+| [MCP-справочник](backlog/docs/doc-8-MCP-справочник-Vibelogmd.md) | 21 MCP-инструмент: параметры и примеры вызовов |
 | [MCP-подключение](MCP-SETUP.md) | Подключение Vibelog MCP к Qwen Code |
-| [Агент Vibelog](docs/agent.md) | Собственный LLM-агент: headless-замена qwen в фазах, TUI, лимиты, замер токенов |
+| [Агент Vibelog](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md) | Собственный LLM-агент: headless-замена qwen в фазах, TUI, лимиты, замер токенов |
 
 ## Быстрый старт
 
@@ -202,7 +202,7 @@ Workflow: spec → plan → code. На каждой фазе агент ждёт
 VIBELOG_QWEN_BIN=$(pwd)/bin/vibelog-agent.mjs vibelog browser
 ```
 
-Агент: интерактивный TUI или `--headless` (JSON `type=result`, контракт `parseQwenResult`), loop detection, лимиты tool-calls/wall-time, локальные инструменты + Vibelog MCP. LLM — env `VIBELOG_LLM_BASE_URL` / `VIBELOG_LLM_API_KEY` / `VIBELOG_LLM_MODEL` (Cloud.ru). Детали: [docs/agent.md](docs/agent.md).
+Агент: интерактивный TUI или `--headless` (JSON `type=result`, контракт `parseQwenResult`), loop detection, лимиты tool-calls/wall-time, локальные инструменты + Vibelog MCP. LLM — env `VIBELOG_LLM_BASE_URL` / `VIBELOG_LLM_API_KEY` / `VIBELOG_LLM_MODEL` (Cloud.ru). Детали: [backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md).
 
 ### Флаги init
 
