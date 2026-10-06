@@ -21,6 +21,7 @@ import type { Phase } from './phase-prompt.js';
 import { getTask } from '../core/store.js';
 import { explainQwenParse, parseQwenResult } from './qwen-result.js';
 import type { QwenResult } from './qwen-result.js';
+import { loadBotSettings } from '../bot/settings.js';
 
 // Реэкспорт для обратной совместимости (VL-85): renderPrompt/Phase вынесены
 // в phase-prompt.ts — общий модуль оркестратора и CLI vibelog-agent.
@@ -160,6 +161,24 @@ export function startResume(
 }
 
 /**
+ * Флаги лимитов фазы из bot.yml (VL-104): --max-wall-time и --max-requests,
+ * если настройки заданы. Только для агента vb — qwen эти флаги не
+ * поддерживает. Отсутствие/битый bot.yml — пустой массив (норма: настройки
+ * не заданы, флаги не передаются, поведение прежнее).
+ */
+function spawnLimitFlags(cwd: string): string[] {
+  const flags: string[] = [];
+  try {
+    const s = loadBotSettings(cwd);
+    if (s.max_wall_time !== undefined) flags.push('--max-wall-time', String(s.max_wall_time));
+    if (s.max_requests !== undefined) flags.push('--max-requests', String(s.max_requests));
+  } catch {
+    // битый bot.yml не должен ронять запуск фазы — флаги просто не добавляются
+  }
+  return flags;
+}
+
+/**
  * Спавнит процесс агента с готовым промптом и ведёт его жизненный цикл.
  *
  * Общий хелпер startPhase/startPrompt (VL-66): guard от двойного запуска,
@@ -216,7 +235,9 @@ function spawnQwenRun(
       : [];
   // VL-93: extraArgs сразу после позиционного промпта (--resume <sessionId>);
   // порядок флагов для qwen не значим, промпт обязан быть первым
-  const child = spawn(bin, [prompt, ...extraArgs, '--approval-mode', 'yolo', '--output-format', 'json', ...phaseFlags], {
+  // VL-104: лимиты фаз из bot.yml — только для vb; qwen флаги не поддерживает
+  const limitFlags = agent === 'vb' ? spawnLimitFlags(cwd) : [];
+  const child = spawn(bin, [prompt, ...extraArgs, ...limitFlags, '--approval-mode', 'yolo', '--output-format', 'json', ...phaseFlags], {
     cwd,
     stdio: 'pipe',
   });

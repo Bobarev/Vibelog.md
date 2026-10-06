@@ -10,7 +10,16 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { loadBotSettings, saveBotSettings, resolveToken, resolveProxy, resolveDefaultAgent, botSettingsPath } from '../../dist/bot/settings.js';
+import {
+  loadBotSettings,
+  saveBotSettings,
+  resolveToken,
+  resolveProxy,
+  resolveDefaultAgent,
+  resolveMaxWallTime,
+  resolveMaxRequests,
+  botSettingsPath,
+} from '../../dist/bot/settings.js';
 
 describe('settings (VL-34)', () => {
   const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-test-'));
@@ -139,5 +148,49 @@ describe('default_agent (VL-94)', () => {
     writeFileSync(botSettingsPath(root), 'chats: []\ndefault_agent: foo\n', 'utf-8');
     assert.equal(loadBotSettings(root).default_agent, undefined);
     assert.equal(resolveDefaultAgent(root), 'qwen');
+  });
+});
+
+describe('max_wall_time/max_requests (VL-104)', () => {
+  const limitsRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-limits-'));
+
+  after(() => {
+    rmSync(limitsRoot, { recursive: true, force: true });
+  });
+
+  it('roundtrip save/load: лимиты фаз', () => {
+    saveBotSettings(limitsRoot, { chats: [111], max_wall_time: 1800, max_requests: 50 });
+    const loaded = loadBotSettings(limitsRoot);
+    assert.equal(loaded.max_wall_time, 1800);
+    assert.equal(loaded.max_requests, 50);
+  });
+
+  it('сброс: undefined-поля не попадают в файл', () => {
+    saveBotSettings(limitsRoot, { chats: [], max_wall_time: 1800, max_requests: 50 });
+    saveBotSettings(limitsRoot, { chats: [] });
+    const loaded = loadBotSettings(limitsRoot);
+    assert.equal(loaded.max_wall_time, undefined);
+    assert.equal(loaded.max_requests, undefined);
+  });
+
+  it('битые значения в bot.yml игнорируются', () => {
+    const root = join(limitsRoot, 'invalid');
+    mkdirSync(join(root, '.vibelog'), { recursive: true });
+    writeFileSync(
+      botSettingsPath(root),
+      'chats: []\nmax_wall_time: abc\nmax_requests: -5\n',
+      'utf-8',
+    );
+    const loaded = loadBotSettings(root);
+    assert.equal(loaded.max_wall_time, undefined);
+    assert.equal(loaded.max_requests, undefined);
+  });
+
+  it('resolveMaxWallTime/resolveMaxRequests: без файла → undefined', () => {
+    assert.equal(resolveMaxWallTime(join(limitsRoot, 'nonexistent')), undefined);
+    assert.equal(resolveMaxRequests(join(limitsRoot, 'nonexistent')), undefined);
+    saveBotSettings(limitsRoot, { chats: [], max_wall_time: 900, max_requests: 40 });
+    assert.equal(resolveMaxWallTime(limitsRoot), 900);
+    assert.equal(resolveMaxRequests(limitsRoot), 40);
   });
 });

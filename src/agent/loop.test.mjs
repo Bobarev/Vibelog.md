@@ -186,6 +186,18 @@ describe('runLoop лимиты (VL-83)', () => {
     assert.equal(toolState.calls, 1, 'вторая итерация не должна стартовать');
   });
 
+  it('maxRequests=1: llm с tool_calls → is_error «--max-requests»', async () => {
+    const { spec, state: toolState } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 2 } }] },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec], limits: { maxRequests: 1 } });
+    assert.equal(res.is_error, true);
+    assert.match(res.result, /--max-requests \(1\)/);
+    assert.equal(toolState.calls, 1, 'второй LLM-ход не должен стартовать');
+  });
+
   it('частичный текст сохраняется в partial-результате при лимите', async () => {
     const { llm } = fakeLlm([
       { text: 'промежуточный текст', toolCalls: [{ id: 'c1', name: 'nope', arguments: {} }] },

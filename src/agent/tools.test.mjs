@@ -270,6 +270,33 @@ describe('checkShellCommandInProject (VL-99)', () => {
       assert.equal(checkShellCommandInProject(cmd, CWD), null, 'неожиданный отказ: ' + cmd);
     }
   });
+
+  it('VL-104: спецфайлы /dev/* не считаются путями наружу', () => {
+    const cmds = [
+      "ls nonexist 2>/dev/null",
+      "grep -rn foo src 2>/dev/null",
+      "ls /dev/stderr",
+      "echo test > /dev/null",
+    ];
+    for (const cmd of cmds) {
+      assert.equal(checkShellCommandInProject(cmd, CWD), null, 'неожиданный отказ: ' + cmd);
+    }
+  });
+
+  it('VL-104: regex-паттерны grep/sed не считаются путями', () => {
+    const cmds = [
+      'grep -rn "/set\\|max-wall-time" docs',
+      'grep -rn "^start" src README.md',
+      "grep -c (foo\\|bar) src",
+    ];
+    for (const cmd of cmds) {
+      assert.equal(checkShellCommandInProject(cmd, CWD), null, 'неожиданный отказ: ' + cmd);
+    }
+  });
+
+  it('VL-104: абсолютные пути вне проекта по-прежнему отклоняются', () => {
+    assert.match(checkShellCommandInProject('ls /Users/bob/Desktop', CWD), /Команда отклонена/);
+  });
 });
 
 describe('run_shell_command: команда с путями вне проекта (VL-99)', () => {

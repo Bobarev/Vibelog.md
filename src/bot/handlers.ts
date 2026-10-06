@@ -544,9 +544,12 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     }
   });
 
-  // ── /set — настройки бота (VL-94): пока один параметр agent ──
+  // ── /set — настройки бота (VL-94/104): агент и лимиты фаз ──
   // /set agent <qwen|vb> — агент по умолчанию для всех команд фаз и кнопок
-  // действий без суффикса :<agent>. Хранится в .vibelog/bot.yml.
+  // действий без суффикса :<agent>. /set max-wall-time <сек> и
+  // /set max-requests <N> — лимиты фазы для встроенного агента (vb):
+  // оркестратор прокидывает их флагами при следующем запуске; 0 — сброс
+  // настройки (дефолт агента). Хранится в .vibelog/bot.yml.
   bot.command('set', async (ctx) => {
     if (!requireBind(ctx)) return;
     const parsed = parseSetCommand((ctx.match ?? '').toString());
@@ -555,11 +558,30 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       return;
     }
     const settings = loadBotSettings(deps.cwd);
-    settings.default_agent = parsed.value;
+    if (parsed.key === 'agent') {
+      settings.default_agent = parsed.value;
+      saveBotSettings(deps.cwd, settings);
+      await sendMd(
+        ctx,
+        `⚙️ Агент по умолчанию: *${parsed.value}*. Команды без суффикса :<agent> запускают его.`
+      );
+      return;
+    }
+    // Числовые лимиты (VL-104): 0 — сброс (удаление ключа из bot.yml),
+    // иначе — запись; применяются при следующем запуске фазы (агент vb)
+    const key = parsed.key; // 'max-wall-time' | 'max-requests'
+    const field = key === 'max-wall-time' ? 'max_wall_time' : 'max_requests';
+    if (parsed.value === 0) {
+      settings[field] = undefined;
+      saveBotSettings(deps.cwd, settings);
+      await sendMd(ctx, `⚙️ Лимит *${key}* сброшен — используется дефолт агента (без лимита).`);
+      return;
+    }
+    settings[field] = parsed.value;
     saveBotSettings(deps.cwd, settings);
     await sendMd(
       ctx,
-      `⚙️ Агент по умолчанию: *${parsed.value}*. Команды без суффикса :<agent> запускают его.`
+      `⚙️ Лимит *${key}*: *${parsed.value}*. Передаётся при запуске фаз (агент vb). Сброс: \`/set ${key} 0\`.`
     );
   });
 

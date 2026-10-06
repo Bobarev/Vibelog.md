@@ -205,6 +205,18 @@ describe('vibelog-agent CLI (VL-85)', () => {
     assert.throws(() => parseArgs(['x', '--resume']), /требует значение/);
   });
 
+  // ── VL-104: parseArgs --max-requests ──
+
+  it('parseArgs: --max-requests 42 → maxRequests=42', () => {
+    assert.equal(parseArgs(['фаза', 'VL-1', '--max-requests', '42']).maxRequests, 42);
+  });
+
+  it('parseArgs: --max-requests 0 / abc / без значения — throw', () => {
+    assert.throws(() => parseArgs(['x', '--max-requests', '0']), /положительное целое/);
+    assert.throws(() => parseArgs(['x', '--max-requests', 'abc']), /положительное целое/);
+    assert.throws(() => parseArgs(['x', '--max-requests']), /требует значение/);
+  });
+
   // ── VL-95: интеграция — хранение и resume сессий ──
 
   // Переменная между it: id свежей сессии из предыдущего теста

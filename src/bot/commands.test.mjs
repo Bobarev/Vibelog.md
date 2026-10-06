@@ -346,6 +346,24 @@ describe('parseSetCommand (VL-94)', () => {
     assert.match(r.error, /Неизвестный параметр/);
     assert.match(r.error, /agent/);
   });
+
+  it('VL-104: max-wall-time / max-requests — числа', () => {
+    assert.deepEqual(parseSetCommand('max-wall-time 1800'), { key: 'max-wall-time', value: 1800 });
+    assert.deepEqual(parseSetCommand('max-requests 50'), { key: 'max-requests', value: 50 });
+    assert.deepEqual(parseSetCommand('max-wall-time 0'), { key: 'max-wall-time', value: 0 });
+  });
+
+  it('VL-104: числовые параметры — мусор, дроби, отрицательные → error', () => {
+    for (const bad of ['max-wall-time abc', 'max-wall-time -5', 'max-wall-time 3.5', 'max-requests', 'max-requests xyz']) {
+      const r = parseSetCommand(bad);
+      assert.ok('error' in r, '"' + bad + '" → error');
+      assert.match(r.error, /ожидается неотрицательное целое|Синтаксис/);
+    }
+  });
+
+  it('VL-104: регистр ключа не важен', () => {
+    assert.deepEqual(parseSetCommand('MAX-WALL-TIME 600'), { key: 'max-wall-time', value: 600 });
+  });
 });
 
 describe('parseCommitsCommand (VL-90)', () => {

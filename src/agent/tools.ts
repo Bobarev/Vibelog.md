@@ -210,6 +210,30 @@ function makeEdit(cwd: string): ToolSpec {
 }
 
 /**
+ * POSIX-специальные файлы (VL-104): штатные цели редиректов (2>/dev/null)
+ * и служебные устройства — не пути к данным пользователя. Без allow-list
+ * ложные отказы губили tool-call целиком (сессия vb:agent-1791289270341:
+ * 3 отказа команд с 2>/dev/null за фазу).
+ */
+const SPECIAL_FILES = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/stdin']);
+
+/**
+ * Токен похож на regex/глоб-паттерн grep/sed, а не на путь (VL-104).
+ *
+ * Метасимволы в двух видах: экранированные (\|, \(, \[) — штатный
+ * grep-паттерн вида "/set\|max-wall-time"; голые (*?+{}[]^$|) — глоб
+ * и regex-паттерны. Токен без метасимволов не матчится — регрессии нет.
+ * Лексическая эвристика: путь с метасимволами в имени не проверяется —
+ * остаточный риск сопоставим с лексической проверкой VL-99.
+ */
+function isRegexPatternToken(token: string): boolean {
+  // Экранированные метасимволы regex: \|, \(, \[ и т.п.
+  if (/\\[()[\]{}|*+?^$]/.test(token)) return true;
+  // Голые метасимволы: глоб (*, ?, +, {}, []), анкеры (^, $, |)
+  return /[*?+{}[\]^$|]/.test(token);
+}
+
+/**
  * Лексическая проверка shell-команды на обращения за пределы проекта (VL-99).
  *
  * Правило «работай только внутри cwd» в system-prompt — инструкция для модели,
@@ -218,6 +242,7 @@ function makeEdit(cwd: string): ToolSpec {
  * (Фото/Календарь/рабочий стол): «ls ~» и «find ~» вели агента в ~/Desktop,
  * ~/Pictures, ~/Library/Calendar. Проверки: токен ~ в позиции пути, $HOME и
  * ${HOME}, абсолютные пути вне cwd, относительные с сегментом .., резолвящиеся
+ * наружу. Спецфайлы /dev/* и regex-паттерны grep/sed пропускаются (VL-104).
  * наружу. Лексика не закрывает динамическое построение путей (командные
  * подстановки, base64) — остаточный риск, минимизируется правилом промпта.
  */
@@ -243,6 +268,11 @@ export function checkShellCommandInProject(command: string, cwd: string): Valida
     if (token === '~' || token.startsWith('~/')) return reject('~');
     // Флаги, переменные и подстановки путями не считаем — резолвить нечего.
     if (token.startsWith('-') || token.startsWith('$') || token.includes('`')) continue;
+    // Спецфайлы POSIX (VL-104): /dev/null и др. — не пути к данным пользователя.
+    if (SPECIAL_FILES.has(token)) continue;
+    // Regex-паттерны grep/sed (VL-104): токен с метасимволами — паттерн,
+    // а не путь ("/set\|max-wall-time" начинается с /, но путём не является).
+    if (isRegexPatternToken(token)) continue;
     // Абсолютный путь должен резолвиться внутрь проекта.
     if (isAbsolute(token)) {
       const rel = relative(cwd, token);

@@ -21,6 +21,11 @@ export interface LoopLimits {
   maxToolCalls?: number;
   /** Максимальное время фазы в миллисекундах (дефолт 900000, --max-wall-time). */
   maxWallTimeMs?: number;
+  /**
+   * Максимум LLM-запросов фазы (ходов модели, numTurns) — лимит запросов,
+   * не tool-calls (VL-104). Без значения — без лимита.
+   */
+  maxRequests?: number;
   /** Сколько одинаковых подряд вызовов считать зацикливанием (дефолт 3). */
   loopDetectionRepeat?: number;
 }
@@ -90,6 +95,8 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   const startedAt = Date.now();
   const maxToolCalls = options.limits?.maxToolCalls ?? MAX_TOOL_CALLS_DEFAULT;
   const maxWallTimeMs = options.limits?.maxWallTimeMs ?? MAX_WALL_TIME_MS_DEFAULT;
+  // Лимит LLM-запросов (VL-104): без значения — без лимита (поведение прежнее)
+  const maxRequests = options.limits?.maxRequests;
   const repeatLimit = options.limits?.loopDetectionRepeat ?? LOOP_DETECTION_REPEAT_DEFAULT;
 
   const messages: ChatMessage[] = [...options.messages];
@@ -143,6 +150,11 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       return fail(
         `Превышен лимит --max-wall-time (${Math.round(maxWallTimeMs / 1000)} секунд) — фаза прервана.`,
       );
+    }
+    // Лимит LLM-запросов (VL-104): проверяем ДО streamChat — не отправляем
+    // запрос, который заведомо превысит лимит ходов (numTurns ещё не вырос).
+    if (maxRequests !== undefined && numTurns + 1 > maxRequests) {
+      return fail(`Превышен лимит --max-requests (${maxRequests}) — фаза прервана.`);
     }
 
     let response;

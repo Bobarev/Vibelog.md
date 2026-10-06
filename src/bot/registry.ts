@@ -34,7 +34,7 @@ export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'commits', description: 'Последние коммиты git (log)', usage: '/commits [N]' },
   { command: 'create', description: 'Создать задачу' },
   { command: 'status', description: 'Сменить статус задачи' },
-  { command: 'set', description: 'Настройки бота: агент по умолчанию', usage: '/set agent <qwen|vb>' },
+  { command: 'set', description: 'Настройки бота: агент и лимиты фаз', usage: '/set agent <qwen|vb> | max-wall-time <сек> | max-requests <N>' },
   { command: 'comment', description: 'Комментарий + Фаза Comment: /comment[:agent] VL-1 текст', usage: '/comment[:agent] VL-1 <текст>' },
   { command: 'spec', description: 'Фаза 1 (Spec): /spec[:agent] описание фичи', usage: '/spec[:agent] <описание>' },
   { command: 'plan', description: 'Фаза 2 (Plan): /plan[:agent] VL-<id> [комментарий]', usage: '/plan[:agent] VL-<id> [комментарий]' },

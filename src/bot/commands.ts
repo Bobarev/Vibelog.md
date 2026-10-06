@@ -62,13 +62,18 @@ export interface CloseCommand {
   agent?: AgentName;
 }
 
-/** Результат разбора /set (VL-94): параметр настройки и его значение. */
-export interface SetCommand {
-  /** Имя параметра; пока только 'agent' — набор параметров расширяется. */
-  key: 'agent';
-  /** Значение: агент по умолчанию для команд и кнопок действий. */
-  value: AgentName;
-}
+/**
+ * Результат разбора /set (VL-94/104): параметр настройки и его значение.
+ * Дискриминированный union: в handler switch сужает key → value без
+ * приведений (agent: AgentName; числовые лимиты: number).
+ */
+export type SetCommand =
+  /** Агент по умолчанию для команд и кнопок действий (VL-94). */
+  | { key: 'agent'; value: AgentName }
+  /** Лимит времени фазы в секундах; 0 — сброс настройки (VL-104). */
+  | { key: 'max-wall-time'; value: number }
+  /** Лимит LLM-запросов фазы (ходов модели); 0 — сброс (VL-104). */
+  | { key: 'max-requests'; value: number };
 
 /** Результат разбора /prompt (VL-66/92): запрос без задачи + агент-исполнитель. */
 export interface PromptCommand {
@@ -277,26 +282,41 @@ export function parseCloseCommand(
 }
 
 /**
- * Разбирает /set: «agent <qwen|vb>» — установка агента по умолчанию (VL-94).
- * Пока поддерживается один параметр (agent); неизвестные — {error} с подсказкой.
+ * Разбирает /set: «agent <qwen|vb>» | «max-wall-time <сек>» |
+ * «max-requests <N>» (VL-94/104). Числовые параметры — неотрицательные
+ * целые: 0 — явный сброс настройки (удаление ключа в bot.yml), дробные,
+ * отрицательные и пустые значения — {error} с подсказкой.
  *
  * @param text — аргументы команды (без слова /set)
  * @returns {key, value} или {error} с подсказкой
  */
 export function parseSetCommand(text: string): SetCommand | { error: string } {
-  const hint = 'Синтаксис: /set agent <qwen|vb>';
+  const hint = 'Синтаксис: /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> (0 — сброс)';
   const trimmed = text.trim();
   if (!trimmed) return { error: hint };
   const spaceIdx = trimmed.indexOf(' ');
   const key = (spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx)).trim().toLowerCase();
   const value = (spaceIdx === -1 ? '' : trimmed.slice(spaceIdx + 1).trim()).toLowerCase();
-  if (key !== 'agent') {
-    return { error: `Неизвестный параметр: ${key}. Доступные: agent. ${hint}` };
+  if (key !== 'agent' && key !== 'max-wall-time' && key !== 'max-requests') {
+    return {
+      error: `Неизвестный параметр: ${key}. Доступные: agent, max-wall-time, max-requests. ${hint}`,
+    };
   }
-  if (value !== 'qwen' && value !== 'vb') {
-    return { error: `Неизвестный агент: ${value || '(пусто)'}. Доступные: qwen, vb. ${hint}` };
+  if (key === 'agent') {
+    if (value !== 'qwen' && value !== 'vb') {
+      return { error: `Неизвестный агент: ${value || '(пусто)'}. Доступные: qwen, vb. ${hint}` };
+    }
+    return { key: 'agent', value };
   }
-  return { key: 'agent', value };
+  // Числовые параметры (VL-104): Number('') === 0 — пустое значение отдельно
+  // отсекаем, иначе «/set max-wall-time» без числа прочиталось бы как сброс.
+  const n = Number(value);
+  if (value === '' || !Number.isInteger(n) || n < 0) {
+    return {
+      error: `${key}: ожидается неотрицательное целое (0 — сброс), получено: ${value || '(пусто)'}. ${hint}`,
+    };
+  }
+  return { key, value: n };
 }
 
 /**

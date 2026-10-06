@@ -21,6 +21,10 @@ export interface BotSettings {
   task_type_styles?: Record<string, string>;
   /** Агент по умолчанию для команд фаз и кнопок действий (VL-94, /set). */
   default_agent?: AgentName;
+  /** Лимит времени фазы в секундах (VL-104, /set max-wall-time). */
+  max_wall_time?: number;
+  /** Лимит LLM-запросов фазы, ходов модели (VL-104, /set max-requests). */
+  max_requests?: number;
 }
 
 /**
@@ -74,15 +78,30 @@ export function loadBotSettings(cwd: string): BotSettings {
   // попадать в запуски — неизвестный агент игнорируется (дефолт qwen)
   const defaultAgent =
     raw.default_agent === 'vb' || raw.default_agent === 'qwen' ? raw.default_agent : undefined;
+  // Лимиты фаз (VL-104): положительное целое; битое значение игнорируется —
+  // агент получит флаг только при валидной настройке
+  const maxWallTime = readPositiveInt(raw.max_wall_time);
+  const maxRequests = readPositiveInt(raw.max_requests);
   return {
     telegram_token: typeof raw.telegram_token === 'string' ? raw.telegram_token : undefined,
     telegram_proxy: typeof raw.telegram_proxy === 'string' ? raw.telegram_proxy : undefined,
     chats: chats.map(Number).filter((n) => Number.isFinite(n)),
     ...(defaultAgent ? { default_agent: defaultAgent } : {}),
+    ...(maxWallTime !== undefined ? { max_wall_time: maxWallTime } : {}),
+    ...(maxRequests !== undefined ? { max_requests: maxRequests } : {}),
     // Пользовательские записи перекрывают дефолты; поле всегда объект —
     // handlers не пишет ?? {} (VL-82)
     task_type_styles: { ...DEFAULT_TASK_TYPE_STYLES, ...extractTaskTypeStyles(raw.task_type_styles) },
   };
+}
+
+/**
+ * Положительное целое из YAML-значения (VL-104); иначе undefined.
+ * Number(null)/Number('') === 0 — не проходят проверку n > 0.
+ */
+function readPositiveInt(raw: unknown): number | undefined {
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
 /** Сохраняет настройки бота (создаёт .vibelog/ при необходимости). */
@@ -99,6 +118,8 @@ export function saveBotSettings(cwd: string, settings: BotSettings): void {
     ...(settings.telegram_proxy ? { telegram_proxy: settings.telegram_proxy } : {}),
     chats: settings.chats,
     ...(settings.default_agent ? { default_agent: settings.default_agent } : {}),
+    ...(settings.max_wall_time !== undefined ? { max_wall_time: settings.max_wall_time } : {}),
+    ...(settings.max_requests !== undefined ? { max_requests: settings.max_requests } : {}),
     ...(Object.keys(userStyles).length > 0 ? { task_type_styles: userStyles } : {}),
   };
   writeFileSync(path, stringifyYaml(payload), 'utf-8');
@@ -136,4 +157,20 @@ export function resolveProxy(cwd: string): string | null {
  */
 export function resolveDefaultAgent(cwd: string): AgentName {
   return loadBotSettings(cwd).default_agent ?? 'qwen';
+}
+
+/**
+ * Лимит wall-time фазы из bot.yml (VL-104): секунды; undefined — настройка
+ * не задана (оркестратор не передаёт --max-wall-time, агент берёт дефолт).
+ */
+export function resolveMaxWallTime(cwd: string): number | undefined {
+  return loadBotSettings(cwd).max_wall_time;
+}
+
+/**
+ * Лимит LLM-запросов фазы из bot.yml (VL-104): число запросов; undefined —
+ * настройка не задана (оркестратор не передаёт --max-requests).
+ */
+export function resolveMaxRequests(cwd: string): number | undefined {
+  return loadBotSettings(cwd).max_requests;
 }

@@ -64,6 +64,8 @@ export interface CliOptions {
   maxToolCalls?: number;
   /** --max-wall-time сек: лимит времени фазы (дефолт 900, VL-83). */
   maxWallTimeSec?: number;
+  /** --max-requests N: лимит LLM-запросов фазы (ходов; без лимита, VL-104). */
+  maxRequests?: number;
   /** --resume <sessionId>: продолжить сохранённую сессию (VL-95; vb: префикс снят). */
   resume?: string;
   /** --continue: продолжить последнюю сессию текущего каталога (VL-95). */
@@ -84,6 +86,7 @@ const USAGE = `Использование:
   --comment <текст>        — подстановка {{comment}}/{{prompt}} в шаблон фазы
   --max-tool-calls <N>     — лимит tool-calls loop (дефолт 100)
   --max-wall-time <сек>    — лимит времени фазы (дефолт 900)
+  --max-requests <N>       — лимит LLM-запросов фазы (ходов; без лимита)
   --resume <sessionId>     — продолжить сохранённую сессию (VL-95; префикс vb: игнорируется)
   --continue               — продолжить последнюю сессию текущего каталога (VL-95)
   --help, -h               — эта справка
@@ -134,6 +137,13 @@ export function parseArgs(argv: string[]): CliOptions {
         throw new Error(`--max-wall-time: ожидается положительное число секунд, получено: ${raw}`);
       }
       opts.maxWallTimeSec = sec;
+    } else if (arg === '--max-requests') {
+      const raw = takeValue(arg, argv[++i]);
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new Error(`--max-requests: ожидается положительное целое, получено: ${raw}`);
+      }
+      opts.maxRequests = n;
     } else if (arg === '--resume') {
       // Бот передаёт sessionId с префиксом vb: (extractSessionRef) — снимаем:
       // файл сессии хранится как <id>.jsonl без префикса
@@ -343,6 +353,7 @@ export async function main(argv: string[]): Promise<void> {
     limits: {
       ...(opts.maxToolCalls !== undefined ? { maxToolCalls: opts.maxToolCalls } : {}),
       ...(opts.maxWallTimeSec !== undefined ? { maxWallTimeMs: opts.maxWallTimeSec * 1000 } : {}),
+      ...(opts.maxRequests !== undefined ? { maxRequests: opts.maxRequests } : {}),
     },
     onToken: tuiHandle
       ? (t: string) => { tuiHandle.onToken(t); }

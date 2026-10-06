@@ -27,7 +27,7 @@ interface PackageInfo {
  * Путь вычисляется относительно bin/vibelog.mjs (через dist/ → ..),
  * чтобы версия не зависела от process.cwd().
  */
-function readPackageInfo(): PackageInfo {
+export function readPackageInfo(): PackageInfo {
   try {
     const pkgPath = join(__dirname, '..', '..', '..', 'package.json');
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as Record<string, unknown>;

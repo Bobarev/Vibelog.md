@@ -22,10 +22,10 @@ describe('BOT_COMMANDS (VL-54)', () => {
     }
   });
 
-  it('команда set в реестре с usage /set agent <qwen|vb> (VL-94)', () => {
+  it('команда set в реестре с usage /set agent/max-wall-time/max-requests (VL-94/104)', () => {
     const set = BOT_COMMANDS.find((c) => c.command === 'set');
     assert.ok(set, 'команда set отсутствует в реестре');
-    assert.equal(set.usage, '/set agent <qwen|vb>');
+    assert.equal(set.usage, '/set agent <qwen|vb> | max-wall-time <сек> | max-requests <N>');
   });
 
   it('команды фаз в реестре с синтаксисом [:agent] (VL-94)', () => {
@@ -76,7 +76,7 @@ describe('BOT_COMMANDS (VL-54)', () => {
   it('commandsHelp() повторяет прежний хардкод help-строки /start', () => {
     assert.equal(
       commandsHelp(),
-      '/tasks, /task <id>, /docs, /doc <id>, /board, /diff, /commits [N], /create, /status, /set agent <qwen|vb>, /comment[:agent] VL-1 <текст>, /spec[:agent] <описание>, /plan[:agent] VL-<id> [комментарий], /code[:agent] VL-<id> [комментарий], /close[:agent] VL-<id>, /prompt[:agent] <текст>, /restart'
+      '/tasks, /task <id>, /docs, /doc <id>, /board, /diff, /commits [N], /create, /status, /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N>, /comment[:agent] VL-1 <текст>, /spec[:agent] <описание>, /plan[:agent] VL-<id> [комментарий], /code[:agent] VL-<id> [комментарий], /close[:agent] VL-<id>, /prompt[:agent] <текст>, /restart'
     );
   });
 });

@@ -428,6 +428,50 @@ describe('orchestrator (VL-28)', () => {
     process.env.VIBELOG_QWEN_BIN = stubBin;
   });
 
+  it('startPhase: agent=vb получает --max-wall-time/--max-requests из bot.yml (VL-104)', async () => {
+    process.env.VIBELOG_AGENT_BIN = stubBin;
+    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-limits-vb.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    process.env.VL28_STUB_RESULT = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      duration_ms: 500,
+      duration_api_ms: 400,
+      num_turns: 1,
+      result: 'фаза-с-лимитами',
+      usage: { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 7 },
+      session_id: 'vb-limits-1',
+    });
+    // bot.yml с лимитами — оркестратор прокидывает оба флага (только vb)
+    mkdirSync(join(testRoot, '.vibelog'), { recursive: true });
+    writeFileSync(join(testRoot, '.vibelog', 'bot.yml'), 'chats: []\nmax_wall_time: 1800\nmax_requests: 50\n', 'utf-8');
+    try {
+      const res = startPhase(testRoot, task1.id, 'code', undefined, undefined, 'vb');
+      assert.equal(res.started, true);
+      const run = await waitDone(task1.id);
+      assert.equal(run.exitCode, 0);
+      const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const iWall = argv.indexOf('--max-wall-time');
+      const iReq = argv.indexOf('--max-requests');
+      assert.ok(iWall !== -1 && argv[iWall + 1] === '1800', 'нет --max-wall-time 1800: ' + JSON.stringify(argv));
+      assert.ok(iReq !== -1 && argv[iReq + 1] === '50', 'нет --max-requests 50: ' + JSON.stringify(argv));
+    } finally {
+      rmSync(join(testRoot, '.vibelog', 'bot.yml'), { force: true });
+    }
+    // Без bot.yml флаги не передаются — поведение прежнее
+    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-limits-none.txt');
+    const res2 = startPhase(testRoot, task1.id, 'code', undefined, undefined, 'vb');
+    assert.equal(res2.started, true);
+    const run2 = await waitDone(task1.id);
+    assert.equal(run2.exitCode, 0);
+    const argv2 = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+    assert.ok(!argv2.includes('--max-wall-time'), 'неожиданный --max-wall-time: ' + JSON.stringify(argv2));
+    assert.ok(!argv2.includes('--max-requests'), 'неожиданный --max-requests: ' + JSON.stringify(argv2));
+    process.env.VIBELOG_QWEN_BIN = stubBin;
+  });
+
   it('startPrompt: guard общий для qwen и vb (VL-92)', async () => {
     process.env.VL28_STUB_MARKER = join(testRoot, 'marker-guard-vb.txt');
     process.env.VL28_STUB_SLEEP = '1200';
