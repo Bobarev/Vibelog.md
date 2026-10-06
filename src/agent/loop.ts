@@ -78,6 +78,18 @@ export interface RunLoopOptions {
    * Вызывается в fail() до возврата; текст — русский, как в LoopResult.result.
    */
   onError?: (text: string) => void;
+  /**
+   * Хук инкрементальной записи сессии (VL-103): вызывается сразу после
+   * КАЖДОГО добавления сообщения в messages (assistant с tool_calls,
+   * tool-результат, финальный/ошибочный assistant). Headless/cli использует
+   * его для append в jsonl сессии — при обрыве процесса транскрипт сохранён
+   * до последнего сообщения. Начальные сообщения (system/history/user) сюда
+   * не попадают — их вызывающий дописывает сам перед запуском loop.
+   * Если onMessage возвращает промесс (append в jsonl) — loop ждёт его
+   * завершения: запись гарантированно завершается до следующего шага цикла
+   * (AC#3 VL-103: файл сессии содержит сообщения до завершения фазы).
+   */
+  onMessage?: (m: ChatMessage) => void | Promise<void>;
   /** Отмена фазы: прокидывается в LLM-запросы и handler'ы инструментов. */
   signal?: AbortSignal;
 }
@@ -100,6 +112,16 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   const repeatLimit = options.limits?.loopDetectionRepeat ?? LOOP_DETECTION_REPEAT_DEFAULT;
 
   const messages: ChatMessage[] = [...options.messages];
+  /**
+   * Дописывает сообщение в диалог и сразу уведомляет хук onMessage (VL-103):
+   * headless/cli пишет jsonl сессии инкрементально — каждое сообщение цикла
+   * уходит в файл сразу, а не по завершении фазы (обрыв процесса не теряет
+   * последний доступный результат). Начальные сообщения в хук не попадают.
+   */
+  const pushMessage = (m: ChatMessage): Promise<void> => {
+    messages.push(m);
+    return Promise.resolve(options.onMessage?.(m));
+  };
   // Внешние инструменты (VL-84) подмешиваются к локальным; конфликт имён —
   // отказ при старте: модель не должна получать два handler'а на одно имя.
   const externalTools = options.externalTools ?? [];
@@ -130,12 +152,21 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
 
   const duration = (): number => Date.now() - startedAt;
 
-  /** Ошибка фазы: partial-текст + текст ошибки, без исключений наружу. */
+  /**
+   * Ошибка фазы: partial-текст + текст ошибки, без исключений наружу.
+   *
+   * Транскрипт всегда заканчивается assistant-сообщением (VL-103): текст
+   * ошибки/результата дописывается в диалог — иначе jsonl сессии обрывается
+   * на tool-сообщении, а --resume после ошибки сломан (LLM API отклонит
+   * историю, оканчивающуюся tool-сообщением — см. комментарий VL-95).
+   */
   const fail = (errorText: string): LoopResult => {
     // TUI-блок ошибок (VL-86): событие до возврата — headless его игнорирует
     options.onError?.(errorText);
+    const resultText = partialText ? `${partialText}\n\n${errorText}` : errorText;
+    pushMessage({ role: 'assistant', content: resultText });
     return {
-      result: partialText ? `${partialText}\n\n${errorText}` : errorText,
+      result: resultText,
       is_error: true,
       num_turns: numTurns,
       duration_ms: duration(),
@@ -176,7 +207,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // Финальный ответ дописывается в диалог (VL-95): транскрипт сессии
       // должен заканчиваться assistant-сообщением — иначе при resume
       // история обрывается на tool-сообщении и LLM API её отклонит
-      messages.push({ role: 'assistant', content: response.text });
+      await pushMessage({ role: 'assistant', content: response.text });
       return {
         result: response.text,
         is_error: false,
@@ -188,7 +219,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
     }
     if (response.text) partialText += (partialText ? '\n' : '') + response.text;
 
-    messages.push({
+    await pushMessage({
       role: 'assistant',
       content: response.text || null,
       tool_calls: response.toolCalls,
@@ -236,7 +267,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // Хук завершения — и для неизвестного инструмента: TUI (VL-86) показывает
       // карточку со статусом error, а не теряет вызов модели
       options.onToolEnd?.(call.name, output, toolError);
-      messages.push({ role: 'tool', tool_call_id: call.id, content: output });
+      await pushMessage({ role: 'tool', tool_call_id: call.id, content: output });
     }
   }
 }

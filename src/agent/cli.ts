@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { createLlmClient } from './llm.js';
 import type { ChatMessage } from './llm.js';
 import { runLoop } from './loop.js';
-import { agentSessionsDir, createSessionId, latestSession, loadSession, saveSession } from './session.js';
+import { agentSessionsDir, appendSessionMessage, createSessionId, latestSession, loadSession, saveSession } from './session.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { listLocalTools } from './tools.js';
 import type { ToolSpec } from './tools.js';
@@ -345,6 +345,37 @@ export async function main(argv: string[]): Promise<void> {
     ...history,
     { role: 'user', content: prompt },
   ];
+  // Инкрементальная запись jsonl (VL-103): файл сессии создаётся ДО запуска
+  // loop — стартовый набор (system + история + новый промпт) уходит в файл
+  // сразу, а не по завершении фазы. При обрыве процесса (SIGKILL/таймаут
+  // оркестратора) транскрипт сохранён до последнего сообщения. Resume/
+  // continue: история уже в файле — дописываем ТОЛЬКО новый user-промпт
+  // (не переписываем файл и не дублируем system/history). Ошибка записи
+  // не должна ронять фазу — предупреждение в stderr (паттерн saveSession).
+  // Цепочка append'ов jsonl (VL-103): записи сериализуются и возвращаются
+  // loop'у как awaitable onMessage — каждое сообщение дописано до следующего
+  // шага цикла; перед saveSession цепочка дожидается хвоста (в т.ч. fail-
+  // сообщения, дописанного без await в loop) — гонки append vs перезапись нет.
+  let appendChain: Promise<void> = Promise.resolve();
+  const appendQueued = (m: ChatMessage): Promise<void> => {
+    appendChain = appendChain
+      .then(() => appendSessionMessage(sessionsDir, sessionId, m))
+      .catch((e) => {
+        console.error(`Предупреждение: сообщение сессии не дописано — ${(e as Error).message}`);
+      });
+    return appendChain;
+  };
+  const wasResumed = opts.resume !== undefined || opts.continue;
+  try {
+    const startup: ChatMessage[] = wasResumed
+      ? [{ role: 'user', content: prompt }]
+      : messages;
+    for (const m of startup) {
+      await appendQueued(m);
+    }
+  } catch (err) {
+    console.error(`Предупреждение: старт сессии ${sessionId} не записан в jsonl — ${(err as Error).message}`);
+  }
   const loopResult = await runLoop({
     llm,
     messages,
@@ -376,6 +407,12 @@ export async function main(argv: string[]): Promise<void> {
         : undefined,
     onUsage: tuiHandle ? (usage, turn) => { tuiHandle.onUsage(usage, turn); } : undefined,
     onError: tuiHandle ? (errorText: string) => { tuiHandle.onError(errorText); } : undefined,
+    // Инкрементальная запись jsonl (VL-103): каждое сообщение цикла
+    // дописывается в файл сессии сразу — при обрыве фазы транскрипт уже
+    // содержит последнее доступное сообщение. Ошибка записи — предупреждение,
+    // фаза продолжается (паттерн финального saveSession).
+    // awaitable (loop ждёт): запись завершается до следующего шага цикла
+    onMessage: (m) => appendQueued(m),
     signal: ac.signal,
   });
 
@@ -390,6 +427,10 @@ export async function main(argv: string[]): Promise<void> {
       // фаза уже отработала — ошибка закрытия не должна ломать вывод
     }
   }
+
+  // Дожидаемся цепочки append'ов (VL-103): fail-сообщения дописываются в
+  // loop без await — перезапись saveSession не должна гоняться с append'ом
+  await appendChain;
 
   // Сохранение транскрипта сессии (VL-95): полная перезапись файла — при
   // resume старые сообщения уже включены в loopResult.messages. Ошибка

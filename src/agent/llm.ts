@@ -9,8 +9,12 @@
  * Fetch внедряется параметром (дефолт — глобальный fetch Node 20): без этого
  * loop-тесты потребуют сети. Повторы на 429/5xx/сетевые ошибки (decision-4,
  * п.3) с экспоненциальной паузой; заголовок Retry-After (только числовые
- * секунды) имеет приоритет. Если стрим негоден — один фолбэк-раунд non-stream
- * (риск: SSE-формат Cloud.ru может отличаться от OpenAI).
+ * секунды) имеет приоритет. Если стрим негоден — фолбэк non-stream (риск:
+ * SSE-формат Cloud.ru может отличаться от OpenAI). Обрыв соединения во
+ * время чтения SSE-тела (VL-103: `terminated` от undici) ретраится внешним
+ * циклом стриминг-попыток с теми же паузами; после исчерпания попыток —
+ * non-stream фолбэк; abort не ретраится, финальная ошибка — русский текст
+ * с диагностикой вместо сырого «terminated».
  */
 
 /** Роль сообщения в диалоге (wire-формат OpenAI chat/completions). */
@@ -167,9 +171,32 @@ function parseToolArguments(raw: string): Record<string, unknown> {
   }
 }
 
+
 /** Статус, при котором имеет смысл повтор (decision-4, п.3). */
 function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
+}
+
+/**
+ * Ошибка обрыва соединения/стрима — имеет смысл повтор (VL-103).
+ * `terminated` — TypeError undici: сервер закрыл соединение до конца ответа
+ * (реальный кейс из лога VL-103); прочие матчи — типовые сетевые обрывы.
+ * Причина (cause) тоже проверяется: обёртки ошибок сохраняют исходную
+ * причину, и обрыв при чтении non-stream тела должен ретраиться.
+ */
+function isRetryableStreamError(err: Error): boolean {
+  const cause = err.cause instanceof Error ? err.cause.message : '';
+  const haystack = err.message + ' ' + cause;
+  return /terminated|fetch failed|ECONNRESET|EPIPE|premature close|UND_ERR|socket hang up/i.test(haystack);
+}
+
+/**
+ * Ошибка прерывания (abort): пользователь остановил фазу — ретраить
+ * бессмысленно (VL-103). Матчит имя AbortError и наше сообщение
+ * «Операция прервана пользователем» (см. sleep/requestWithRetry).
+ */
+function isAbortError(err: Error): boolean {
+  return err.name === 'AbortError' || /прервана/i.test(err.message);
 }
 
 /** Пауза между ретраями; abort сигнала прерывает ожидание немедленно. */
@@ -431,25 +458,88 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
       ...(tools && tools.length > 0 ? { tools: toWireTools(tools) } : {}),
     };
 
-    // Фаза 1: стриминг (предпочтительный путь — onToken для TUI).
-    const streamRes = await requestWithRetry(true, baseBody, opts.signal);
-    if (streamRes.ok) return parseSse(streamRes, opts.onToken);
+    // Ретраи обрыва стрима (VL-103): requestWithRetry покрывает только
+    // установку соединения/статусы — обрыв ТЕЛА SSE (terminated/ECONNRESET
+    // от undici при закрытии соединения сервером) случается уже в parseSse,
+    // после возврата fetch-ответа. Поэтому стриминг-попытка обёрнута во
+    // внешний цикл ретраев с той же retryDelayMsFor-паузой; в том же цикле
+    // живёт non-stream фолбэк — после исчерпания стрим-попыток либо не-ok
+    // статуса стрима. Худший случай множение попыток (внутренние ретраи
+    // requestWithRetry × внешний цикл стрима) — приемлемо: сетевой обрыв
+    // редок, цена — десятки миллисекунд пауз (риск «множение попыток» VL-103).
+    let lastErr: Error | null = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (opts.signal?.aborted) throw new Error('Операция прервана пользователем');
+      // Suppress onToken на повторных попытках (VL-103): частичный текст первой
+      // попытки уже ушёл в TUI — дублировать его нельзя; авторитетен response.text
+      // финальной успешной попытки (риск «дубли токенов» плана VL-103).
+      const onToken = attempt === 0 ? opts.onToken : undefined;
 
-    // Фаза 2: фолбэк non-stream (решение плана VL-83 + риск SSE Cloud.ru).
-    const fallbackRes = await requestWithRetry(false, baseBody, opts.signal);
-    if (!fallbackRes.ok) throw apiError(fallbackRes.status, fallbackRes.statusText);
-    let parsedBody: unknown;
-    try {
-      parsedBody = await fallbackRes.json();
-    } catch {
-      throw new Error('Ошибка API Cloud.ru: невалидный JSON в ответе non-stream');
+      // Фаза 1: стриминг (предпочтительный путь — onToken для TUI).
+      try {
+        const streamRes = await requestWithRetry(true, baseBody, opts.signal);
+        if (streamRes.ok) return await parseSse(streamRes, onToken);
+        // Статус не-ok: requestWithRetry уже отработал свои ретраи 429/5xx —
+        // идём в non-stream фолбэк (ниже), ошибкой стрима это не считается
+      } catch (err) {
+        const e = err instanceof Error ? err : new Error(String(err));
+        // Abort не ретраится никогда; прочие не-retryable ошибки (4xx API
+        // и т.п.) — тоже сразу наружу, вызывающий показывает их как есть
+        if (opts.signal?.aborted || isAbortError(e)) throw e;
+        if (!isRetryableStreamError(e)) throw e;
+        lastErr = e;
+        // Обрыв стрима — повтор стриминг-попытки; фолбэк ниже — после
+        // исчерпания ретраев стрима
+        if (attempt < maxRetries) {
+          await sleep(retryDelayMsFor(attempt, null, baseRetryDelay), opts.signal);
+          continue;
+        }
+      }
+
+      // Фаза 2: фолбэк non-stream (решение плана VL-83 + риск SSE Cloud.ru).
+      try {
+        const fallbackRes = await requestWithRetry(false, baseBody, opts.signal);
+        if (!fallbackRes.ok) throw apiError(fallbackRes.status, fallbackRes.statusText);
+        let parsedBody: unknown;
+        try {
+          parsedBody = await fallbackRes.json();
+        } catch (jsonErr) {
+          // cause сохраняем: обрыв соединения при чтении non-stream тела тоже
+          // бросает terminated — он должен ретраиться, а не падать как «невалидный JSON»
+          throw new Error('Ошибка API Cloud.ru: невалидный JSON в ответе non-stream', {
+            cause: jsonErr,
+          });
+        }
+        const response = parseNonStream(parsedBody);
+        // Текст режем по словам — эквивалент стриминга для onToken.
+        if (response.text && opts.onToken) {
+          for (const word of response.text.split(/(?<=\s)/)) opts.onToken(word);
+        }
+        return response;
+      } catch (err) {
+        const e = err instanceof Error ? err : new Error(String(err));
+        if (opts.signal?.aborted || isAbortError(e)) throw e;
+        if (!isRetryableStreamError(e)) throw e;
+        lastErr = e;
+        // Фолбэк упал retryable-ошибкой — общий цикл: новая стрим-попытка
+        if (attempt < maxRetries) {
+          await sleep(retryDelayMsFor(attempt, null, baseRetryDelay), opts.signal);
+          continue;
+        }
+      }
+      break; // попытки исчерпаны — финальная ошибка ниже
     }
-    const response = parseNonStream(parsedBody);
-    // Текст режем по словам — эквивалент стриминга для onToken.
-    if (response.text && opts.onToken) {
-      for (const word of response.text.split(/(?<=\s)/)) opts.onToken(word);
-    }
-    return response;
+
+    // Финальная ошибка вместо голого «terminated» (VL-103): русский текст,
+    // счётчик попыток и указание на диагностику — оператору понятно, что
+    // произошло и куда смотреть
+    throw new Error(
+      'Сетевая ошибка LLM (обрыв соединения: ' +
+        (lastErr?.message ?? 'неизвестная ошибка') +
+        ') после ' + (maxRetries + 1) + ' попыток и non-stream фолбэка. ' +
+        'Диагностика: логи stderr агента и .vibelog/agent-sessions/<sessionId>.jsonl; ' +
+        'повтори позже либо проверь сеть до LLM-провайдера.',
+    );
   }
 
   return { model, streamChat };

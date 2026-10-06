@@ -14,6 +14,7 @@ import { join } from 'node:path';
 
 import {
   agentSessionsDir,
+  appendSessionMessage,
   createSessionId,
   latestSession,
   loadSession,
@@ -115,5 +116,33 @@ describe('session (VL-95)', () => {
     mkdirSync(empty);
     assert.equal(await latestSession(empty), null);
     assert.equal(await latestSession(join(dir, 'no-such-dir')), null);
+  });
+
+  it('appendSessionMessage дописывает строки в конец (save→append→load roundtrip)', async () => {
+    const messages = [
+      { role: 'user', content: 'первый ход' },
+      { role: 'assistant', content: 'ответ' },
+    ];
+    await saveSession(dir, 'agent-app1', messages);
+    await appendSessionMessage(dir, 'agent-app1', { role: 'user', content: 'второй ход' });
+    await appendSessionMessage(dir, 'agent-app1', { role: 'assistant', content: 'готово' });
+    const loaded = await loadSession(dir, 'agent-app1');
+    assert.equal(loaded.length, 4);
+    assert.equal(loaded[2].content, 'второй ход');
+    assert.equal(loaded[3].content, 'готово');
+  });
+
+  it('appendSessionMessage: path traversal sessionId → throw', async () => {
+    await assert.rejects(appendSessionMessage(dir, '../escape', { role: 'user', content: 'x' }), (err) => {
+      assert.match(err.message, /Недопустимый идентификатор сессии/);
+      return true;
+    });
+  });
+
+  it('appendSessionMessage: несуществующий каталог создаётся', async () => {
+    const sub = join(dir, 'nested', 'deep');
+    await appendSessionMessage(sub, 'agent-app2', { role: 'user', content: 'a' });
+    const loaded = await loadSession(sub, 'agent-app2');
+    assert.deepEqual(loaded, [{ role: 'user', content: 'a' }]);
   });
 });

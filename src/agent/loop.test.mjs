@@ -334,11 +334,16 @@ describe('runLoop LoopResult.messages (VL-95)', () => {
     assert.ok(res.messages.some((m) => m.role === 'tool'));
   });
 
-  it('fail-путь (ошибка llm): messages — исходные без ответа', async () => {
+  it('fail-путь (ошибка llm): транскрипт заканчивается assistant с текстом ошибки (VL-103)', async () => {
     const { llm } = fakeLlm([new Error('HTTP 500')]);
     const res = await runLoop({ llm, messages: USER_MSG, tools: [] });
     assert.equal(res.is_error, true);
-    assert.deepEqual(res.messages, USER_MSG);
+    // Контракт VL-103: fail() дописывает финальный assistant — jsonl сессии
+    // завершён, а --resume после ошибки не получит историю с tool-хвостом
+    assert.equal(res.messages.length, USER_MSG.length + 1);
+    assert.deepEqual(res.messages[0], USER_MSG[0]);
+    assert.equal(res.messages.at(-1).role, 'assistant');
+    assert.match(res.messages.at(-1).content, /Ошибка LLM-запроса: HTTP 500/);
   });
 
   it('VL-96: tools сортируются по имени перед отправкой в LLM', async () => {
@@ -356,5 +361,49 @@ describe('runLoop LoopResult.messages (VL-95)', () => {
     });
     assert.equal(res.is_error, false);
     assert.deepEqual(receivedTools.map((t) => t.name), ['alpha', 'zebra']);
+  });
+});
+
+describe('runLoop onMessage и транскрипт ошибок (VL-103)', () => {
+  it('onMessage вызывается по одному разу на каждое сообщение в порядке добавления', async () => {
+    const { spec } = countingTool();
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'echo_tool', arguments: { x: 1 } }] },
+      { text: 'итог' },
+    ]);
+    const seen = [];
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [spec],
+      onMessage: (m) => seen.push(m),
+    });
+    assert.equal(res.is_error, false);
+    // Хук видит только сообщения, появившиеся ВНУТРИ loop: assistant(tool_calls)
+    // → tool → финальный assistant (system/history/user не дублируются)
+    assert.deepEqual(seen.map((m) => m.role), ['assistant', 'tool', 'assistant']);
+    assert.equal(seen[0].tool_calls[0].id, 'c1');
+    assert.equal(seen[1].tool_call_id, 'c1');
+    assert.equal(seen[2].content, 'итог');
+  });
+
+  it('при ошибке LLM onMessage последним получает assistant с текстом ошибки', async () => {
+    const { llm } = fakeLlm([new Error('HTTP 500 от провайдера')]);
+    const seen = [];
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [], onMessage: (m) => seen.push(m) });
+    assert.equal(res.is_error, true);
+    assert.equal(seen.length, 1, 'первое и единственное сообщение цикла — fail-assistant');
+    assert.equal(seen[0].role, 'assistant');
+    assert.match(seen[0].content, /Ошибка LLM-запроса: HTTP 500 от провайдера/);
+    // Хук получил ровно то, что легло в res.messages
+    assert.deepEqual(seen, res.messages.slice(USER_MSG.length));
+  });
+
+  it('fail-путь (лимит): assistant с текстом ошибки дописывается в messages', async () => {
+    const { llm } = fakeLlm([{ text: 'частичный текст', toolCalls: [{ id: 'c1', name: 'nope', arguments: {} }] }]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [], limits: { maxToolCalls: 1 } });
+    assert.equal(res.is_error, true);
+    assert.equal(res.messages.at(-1).role, 'assistant');
+    assert.match(res.messages.at(-1).content, /--max-tool-calls/);
   });
 });

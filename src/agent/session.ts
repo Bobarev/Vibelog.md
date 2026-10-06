@@ -9,7 +9,7 @@
  * не тот агент. Каталог `.vibelog/` покрыт .gitignore.
  */
 
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ChatMessage } from './llm.js';
 
@@ -34,6 +34,28 @@ export async function saveSession(dir: string, sessionId: string, messages: Chat
   // JSONL: по строке на сообщение — чтение/запись линейные
   const body = messages.map((m) => JSON.stringify(m)).join('\n') + '\n';
   await writeFile(join(dir, `${sessionId}.jsonl`), body, 'utf-8');
+}
+
+/**
+ * Дописывает одно сообщение в конец JSONL-файла сессии (VL-103).
+ *
+ * Инкрементальная запись: каждое сообщение цикла уходит в файл сразу, а не
+ * по завершении фазы — при обрыве процесса (SIGKILL/таймаут оркестратора)
+ * транскрипт сохранён до последнего дописанного сообщения. Финальный
+ * saveSession остаётся нормализацией: полная перезапись идемпотентна и
+ * подчищает любые расхождения append'ов.
+ *
+ * @throws Error при невалидном sessionId (path traversal) либо ошибке записи
+ */
+export async function appendSessionMessage(
+  dir: string,
+  sessionId: string,
+  message: ChatMessage,
+): Promise<void> {
+  assertSafeSessionId(sessionId);
+  // mkdir recursive: файл сессии может создаваться до первого saveSession
+  await mkdir(dir, { recursive: true });
+  await appendFile(join(dir, `${sessionId}.jsonl`), JSON.stringify(message) + '\n', 'utf-8');
 }
 
 /**

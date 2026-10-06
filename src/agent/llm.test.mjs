@@ -263,9 +263,10 @@ describe('createLlmClient / streamChat (VL-83)', () => {
         return true;
       },
     );
-    // Сетевая ошибка фазы стрима не уходит в non-stream фолбэк (та же сеть):
-    // 4 попытки (1 + 3 ретрая) и ошибка (decision-4, п.3).
-    assert.equal(state.calls, 4);
+    // Множение попыток (VL-103): внутренние ретраи requestWithRetry (4 fetch
+    // на стрим-попытку) × внешний цикл стрим-попыток (4) + non-stream фолбэк
+    // (4) = 20 fetch-вызовов до финальной ошибки (комментарий риска VL-103).
+    assert.equal(state.calls, 20);
   });
 
   it('битый JSON в non-stream ответе → ошибка', async () => {
@@ -309,5 +310,75 @@ describe('createLlmClient / streamChat (VL-83)', () => {
     const promise = client.streamChat([{ role: 'user', content: 'x' }], [], { signal: controller.signal });
     setTimeout(() => controller.abort(), 10);
     await assert.rejects(promise, /прервана/);
+  });
+});
+
+/**
+ * SSE-ответ, чьё тело бросает ошибку при чтении (обрыв mid-body, VL-103):
+ * undici кидает TypeError terminated, когда сервер закрывает соединение
+ * до конца ответа — именно так падала фаза VL-100 в логе постановки.
+ */
+function sseResponseThatThrows(error) {
+  const body = new ReadableStream({
+    start(controller) {
+      controller.error(error);
+    },
+  });
+  return { ok: true, status: 200, statusText: 'OK', headers: new Headers(), body };
+}
+
+describe('createLlmClient: ретраи обрыва стрима (VL-103)', () => {
+  it('обрыв тела на первой попытке → ретрай стрима, успех на второй', async () => {
+    const { impl, state } = fakeFetch([
+      sseResponseThatThrows(new TypeError('terminated')),
+      sseResponse([JSON.stringify({ choices: [{ delta: { content: 'вторая попытка' } }] })]),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const res = await client.streamChat([{ role: 'user', content: 'x' }], []);
+    assert.equal(res.text, 'вторая попытка');
+    assert.ok(state.calls >= 2, 'fetch должен быть вызван минимум дважды');
+  });
+
+  it('все стрим-попытки обрываются → результат из non-stream фолбэка', async () => {
+    const terminated = () => sseResponseThatThrows(new TypeError('terminated'));
+    const { impl, state } = fakeFetch([
+      terminated(), terminated(), terminated(), terminated(),
+      jsonResponse({
+        choices: [{ message: { content: 'из non-stream' } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const res = await client.streamChat([{ role: 'user', content: 'x' }], []);
+    assert.equal(res.text, 'из non-stream');
+    assert.equal(res.usage.input_tokens, 1);
+  });
+
+  it('обрыв и стрима, и фолбэка → русская ошибка с числом попыток и terminated', async () => {
+    const { impl, state } = fakeFetch([new TypeError('terminated')]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl, maxRetries: 3 });
+    await assert.rejects(
+      () => client.streamChat([{ role: 'user', content: 'x' }], []),
+      (err) => {
+        assert.match(err.message, /Сетевая ошибка LLM/);
+        assert.match(err.message, /после 4 попыток и non-stream фолбэка/);
+        assert.match(err.message, /terminated/);
+        assert.match(err.message, /Диагностика/);
+        return true;
+      },
+    );
+    // Множение попыток (VL-103): 4 стрим-попытки × 4 fetch внутри
+    // requestWithRetry + 4 non-stream = 20 вызовов fetch
+    assert.equal(state.calls, 20);
+  });
+
+  it('abort во время паузы между ретраями стрима → «Операция прервана», без ретраев', async () => {
+    const controller = new AbortController();
+    const { impl, state } = fakeFetch([sseResponseThatThrows(new TypeError('terminated'))]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl, retryDelayMs: 5000 });
+    const promise = client.streamChat([{ role: 'user', content: 'x' }], [], { signal: controller.signal });
+    setTimeout(() => controller.abort(), 10);
+    await assert.rejects(promise, /прервана/);
+    assert.equal(state.calls, 1, 'вторая попытка не должна стартовать');
   });
 });

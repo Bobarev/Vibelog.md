@@ -13,7 +13,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +28,8 @@ let testDir;
 let mock;
 /** Тела запросов к мок-LM (для проверки собранного промпта). */
 const llmRequests = [];
+/** Переопределяемый обработчик запроса мок-LM (VL-103): (body, res) => void. */
+let llmHandler = null;
 
 /** Мок-LM: SSE-ответ с фиксированным текстом и usage. */
 function startMockLlm(finalText) {
@@ -36,7 +38,11 @@ function startMockLlm(finalText) {
       let body = '';
       req.on('data', (c) => { body += c; });
       req.on('end', () => {
-        try { llmRequests.push(JSON.parse(body)); } catch { /* не-JSON — не важно */ }
+        let parsedBody = null;
+        try { parsedBody = JSON.parse(body); llmRequests.push(parsedBody); } catch { /* не-JSON — не важно */ }
+        // Гибкий сценарий (VL-103): тесты переопределяют поведение мока
+        // (tool_calls, обрыв сокета) — дефолт остаётся фиксированным текстом
+        if (llmHandler) { llmHandler(parsedBody, res); return; }
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
         res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: finalText } }] })}\n\n`);
         res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, cache_read_input_tokens: 2, total_tokens: 17 } })}\n\n`);
@@ -335,5 +341,93 @@ describe('vibelog-agent CLI (VL-85)', () => {
     const { code, stderr } = await runCli(['Скажи ок'], llmEnv());
     assert.equal(code, 0);
     assert.match(stderr, /Системный промпт: \d+ символов \(AGENTS.md: (да|нет)\)/);
+  });
+
+  // ── VL-103: инкрементальная запись jsonl и обрыв LLM-запроса ──
+
+  it('jsonl дописывается инкрементально: на 2-м LLM-запросе файл уже содержит сообщения (VL-103)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl103-inc-'));
+    try {
+      let requestCount = 0;
+      let capturedOnSecond = null;
+      llmHandler = (body, res) => {
+        requestCount++;
+        if (requestCount === 2) {
+          // Момент истины AC#3: на ВТОРОМ LLM-запросе jsonl уже существует
+          // и содержит дописанные сообщения (не пустой файл по завершении фазы)
+          const dir = join(projDir, '.vibelog', 'agent-sessions');
+          try {
+            const files = readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
+            capturedOnSecond = files.length > 0 ? readFileSync(join(dir, files[0]), 'utf-8') : null;
+          } catch { capturedOnSecond = null; }
+        }
+        if (requestCount === 1) {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'run_shell_command', arguments: JSON.stringify({ command: 'echo vl103-incremental' }) } }] } }] })}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'второй ответ готов' } }] })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      };
+      const { code, stdout } = await runCli(['Сделай echo', '--no-mcp'], llmEnv(), projDir);
+      assert.equal(code, 0, stdout);
+      assert.equal(requestCount, 2, 'должны быть 2 LLM-запроса (tool_calls + финал)');
+      assert.ok(capturedOnSecond, 'на 2-м запросе jsonl должен существовать');
+      const capturedRoles = capturedOnSecond.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l).role);
+      // Доказательство инкрементальности: system, user, assistant(tool_calls)
+      // и tool дописаны ДО завершения фазы — файл читался мок-LM во время
+      // 2-го запроса (стартовая запись + onMessage, VL-103)
+      assert.deepEqual(capturedRoles, ['system', 'user', 'assistant', 'tool']);
+      // Финальный файл завершён: + финальный assistant = 5
+      const finalFile = join(projDir, '.vibelog', 'agent-sessions', `${JSON.parse(stdout.trim()).session_id}.jsonl`);
+      const finalLines = readFileSync(finalFile, 'utf-8').split('\n').filter((l) => l.trim());
+      assert.equal(finalLines.length, 5);
+      assert.equal(JSON.parse(finalLines.at(-1)).role, 'assistant');
+    } finally {
+      llmHandler = null;
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
+  it('обрыв стрима mid-body (terminated): non-stream фолбэк, jsonl завершён (VL-103)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl103-sock-'));
+    try {
+      let streamCount = 0;
+      llmHandler = (body, res) => {
+        if (body && body.stream) {
+          streamCount++;
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'частичный' } }] })}\n\n`);
+          // Обрыв mid-body: сервер рвёт соединение до конца SSE — клиент
+          // получит terminated/ECONNRESET при чтении тела (кейс VL-103)
+          res.socket?.destroy();
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          choices: [{ message: { content: 'из non-stream фолбэка' } }],
+          usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+        }));
+      };
+      const { code, stdout } = await runCli(['Запомни обрыв', '--no-mcp'], llmEnv(), projDir);
+      assert.equal(code, 0, stdout);
+      const parsed = JSON.parse(stdout.trim());
+      assert.equal(parsed.is_error, false);
+      assert.equal(parsed.result, 'из non-stream фолбэка');
+      assert.ok(streamCount >= 1, 'стрим-попытки должны были состояться');
+      // jsonl завершён: system + user + финальный assistant (VL-103)
+      const file = join(projDir, '.vibelog', 'agent-sessions', `${parsed.session_id}.jsonl`);
+      const lines = readFileSync(file, 'utf-8').split('\n').filter((l) => l.trim());
+      assert.equal(lines.length, 3);
+      assert.equal(JSON.parse(lines[2]).role, 'assistant');
+      assert.equal(JSON.parse(lines[2]).content, 'из non-stream фолбэка');
+    } finally {
+      llmHandler = null;
+      rmSync(projDir, { recursive: true, force: true });
+    }
   });
 });
