@@ -11,6 +11,10 @@
  * - search — поиск задач
  * - instructions — инструкции для агентов
  * - help — справка
+ *
+ * Алиас: `vb` — тот же бинарь (bin.vb → ./bin/vibelog.mjs), поведение
+ * не зависит от имени argv[0]. Без аргументов в интерактивном TTY
+ * запускается TUI чата с агентом (VL-102); в не-TTY — справка.
  */
 
 import { parseArgs } from './args.js';
@@ -43,6 +47,15 @@ export async function route(args: string[]): Promise<void> {
   // --version / -v — перехват ДО роутинга (совместимо с оригиналом Backlog.md)
   if (args.includes('--version') || args.includes('-v')) {
     return runVersion(args, flags);
+  }
+
+  // Без аргументов в интерактивном TTY — TUI чата с агентом (VL-102):
+  // пустой запуск `vibelog`/`vb` открывает чат, а не пустой вывод. В не-TTY
+  // (скрипты, CI, тесты) и при явном help — справка, как раньше.
+  // Динамический импорт: ink/react не грузятся в headless-путях CLI.
+  if (args.length === 0 && process.stdout.isTTY && process.stdin.isTTY) {
+    const { runInteractiveAgent } = await import('../agent/interactive.js');
+    return runInteractiveAgent();
   }
 
   // Без команды — показываем справку
@@ -122,6 +135,9 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('doctor', colors.cyan)} [--json]                    Диагностика окружения
   ${colorize('--version', colors.cyan)}, ${colorize('-v', colors.cyan)}                 Версия и пути
   ${colorize('help', colors.cyan)}                                Эта справка
+
+${colorize('Алиас:', colors.bold)} vb — то же самое, что vibelog
+${colorize('Без аргументов:', colors.bold)} в интерактивном терминале запускается TUI чата с агентом
 
 ${colorize('Примеры:', colors.bold)}
   vibelog init "My Project"

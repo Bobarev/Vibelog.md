@@ -13,7 +13,7 @@
  */
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { ReactElement } from 'react';
-import { Box, Text, render } from 'ink';
+import { Box, Text, render, useInput } from 'ink';
 import type { LlmUsage } from './llm.js';
 import {
   formatCounters,
@@ -55,6 +55,10 @@ interface TuiState {
   startedAt: number;
   /** Тексты ошибок фазы (лимиты, LLM API) — блок ошибок. */
   errors: string[];
+  /** Строка ввода интерактивного TUI (VL-102); пустая в оркестраторном режиме. */
+  input: string;
+  /** Идёт ли ход чата: строка ввода блокируется (VL-102). */
+  busy: boolean;
 }
 
 /** Мини-внешний стор: колбэки loop обновляют состояние, React слушает. */
@@ -67,6 +71,8 @@ function createStore() {
     turn: 0,
     startedAt: Date.now(),
     errors: [],
+    input: '',
+    busy: false,
   };
   const listeners = new Set<() => void>();
   return {
@@ -156,8 +162,75 @@ function ErrorBlock({ errors }: { errors: string[] }): ReactElement | null {
   );
 }
 
-/** Корневое приложение TUI: раскладка блоков + тик времени раз в секунду. */
-function AgentApp({ store }: { store: Store }): ReactElement {
+/** Максимум символов в строке ввода (защита от случайной вставки гигантского текста). */
+const INPUT_MAX_CHARS = 500;
+
+/**
+ * Строка ввода интерактивного TUI (VL-102): печатаемые символы добавляются,
+ * Backspace удаляет, Enter отправляет сообщение (onSubmit + очистка),
+ * Ctrl+C/Ctrl+D — выход. При busy=true ввод игнорируется (ход уже выполняется,
+ * второй запрос сломал бы историю диалога) — кроме Ctrl+C/Ctrl+D.
+ */
+function InputLine({
+  store,
+  onSubmit,
+  onExit,
+}: {
+  store: Store;
+  onSubmit: (text: string) => void;
+  onExit: () => void;
+}): ReactElement {
+  const state = useSyncExternalStore(store.subscribe, store.get);
+  useInput((input, key) => {
+    // Выход работает всегда — не зависит от busy
+    if (key.ctrl && (input === 'c' || input === 'd')) {
+      onExit();
+      return;
+    }
+    if (state.busy) return;
+    if (key.return) {
+      const text = state.input.trim();
+      store.update({ input: '' });
+      if (text.length > 0) onSubmit(text);
+      return;
+    }
+    if (key.backspace || key.delete) {
+      // По символам, а не по байлам: slice(0,-1) сломал бы суррогатные пары (эмодзи)
+      store.update({ input: Array.from(state.input).slice(0, -1).join('') });
+      return;
+    }
+    // Печатаемые символы (вставка приходит одной строкой); управляющие пропускаем
+    const printable = input.replace(/[\u0000-\u001f\u007f]/g, '');
+    if (printable.length > 0 && !key.ctrl && !key.meta) {
+      store.update({ input: (state.input + printable).slice(0, INPUT_MAX_CHARS) });
+    }
+  });
+  return (
+    <Box flexDirection="column">
+      <Text color={state.busy ? 'yellow' : 'green'}>
+        {state.busy ? '⏳ выполняется… Ctrl+C — выход' : `> ${state.input}_`}
+      </Text>
+    </Box>
+  );
+}
+
+/**
+ * Корневое приложение TUI: раскладка блоков + тик времени раз в секунду.
+ *
+ * header/interactive задаются только интерактивным чатом (VL-102): в
+ * оркестраторном режиме (renderTui) раскладка и поведение не меняются.
+ */
+function AgentApp({
+  store,
+  header,
+  interactive,
+}: {
+  store: Store;
+  /** Заголовок шапки (интерактивный чат); в оркестраторном режиме не показывается */
+  header?: string;
+  /** Колбэки строки ввода; заданы только в интерактивном чате (VL-102) */
+  interactive?: { onSubmit: (text: string) => void; onExit: () => void };
+}): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.get);
   // Тик раз в секунду: время фазы и pending-длительности обновляются live
   const [, setTick] = useState(0);
@@ -168,6 +241,11 @@ function AgentApp({ store }: { store: Store }): ReactElement {
   const now = Date.now();
   return (
     <Box flexDirection="column">
+      {header !== undefined ? (
+        <Text color="blue" bold>
+          {header}
+        </Text>
+      ) : null}
       <Counters turn={state.turn} usage={state.usage} startedAt={state.startedAt} now={now} />
       <StreamText chunks={state.chunks} stream={state.stream} />
       <Box flexDirection="column">
@@ -176,6 +254,9 @@ function AgentApp({ store }: { store: Store }): ReactElement {
         ))}
       </Box>
       <ErrorBlock errors={state.errors} />
+      {interactive !== undefined ? (
+        <InputLine store={store} onSubmit={interactive.onSubmit} onExit={interactive.onExit} />
+      ) : null}
     </Box>
   );
 }
@@ -192,18 +273,15 @@ export interface TuiHandle {
 }
 
 /**
- * Запускает TUI на stderr (альтернативный буфер) и возвращает колбэки loop.
- * Вызывается cli.ts только в интерактивном режиме; в headless не грузится
- * (динамический импорт) — ink/react не участвуют в контракте оркестратора.
+ * Общий каркас handle TUI: колбэки loop + unmount с возвратом буфера.
+ * Вынесен из renderTui/renderInteractiveTui — логика карточек идентична.
  */
-export function renderTui(): TuiHandle {
-  const store = createStore();
-  // Ввод TUI не нужен: Ctrl+C обрабатывает cli (SIGINT → abort loop).
-  // Альтернативный буфер: скролл основного буфера не засоряется кадрами TUI.
-  const out = process.stderr;
-  const useAltBuffer = Boolean(out.isTTY);
-  if (useAltBuffer) out.write('\u001b[?1049h\u001b[2J\u001b[H');
-  const ink = render(<AgentApp store={store} />, { stdout: out, patchConsole: false });
+function buildHandle(
+  store: Store,
+  ink: ReturnType<typeof render>,
+  out: NodeJS.WriteStream,
+  useAltBuffer: boolean,
+): TuiHandle {
   /** Имя → момент onToolStart (последний вызов имени — задержки редки). */
   const started = new Map<string, number>();
   /** Счётчик id карточек — стабильные React-ключи. */
@@ -256,6 +334,66 @@ export function renderTui(): TuiHandle {
     unmount(): void {
       ink.unmount();
       if (useAltBuffer) out.write('\u001b[?1049l');
+    },
+  };
+}
+
+/**
+ * Запускает TUI на stderr (альтернативный буфер) и возвращает колбэки loop.
+ * Вызывается cli.ts только в интерактивном режиме; в headless не грузится
+ * (динамический импорт) — ink/react не участвуют в контракте оркестратора.
+ */
+export function renderTui(): TuiHandle {
+  const store = createStore();
+  // Ввод TUI не нужен: Ctrl+C обрабатывает cli (SIGINT → abort loop).
+  // Альтернативный буфер: скролл основного буфера не засоряется кадрами TUI.
+  const out = process.stderr;
+  const useAltBuffer = Boolean(out.isTTY);
+  if (useAltBuffer) out.write('\u001b[?1049h\u001b[2J\u001b[H');
+  const ink = render(<AgentApp store={store} />, { stdout: out, patchConsole: false });
+  return buildHandle(store, ink, out, useAltBuffer);
+}
+
+/** Handle интерактивного TUI (VL-102): колбэки loop + управление строкой ввода. */
+export interface InteractiveTuiHandle extends TuiHandle {
+  /** Идёт ли ход чата: строка ввода блокируется, показывается «⏳ выполняется…». */
+  setBusy(busy: boolean): void;
+}
+
+/**
+ * Интерактивный TUI чата (VL-102): шапка с sessionId, строка ввода внизу.
+ * Отличия от renderTui — только раскладка; колбэки loop те же (buildHandle).
+ *
+ * exitOnCtrlC: false — ink не перехватывает Ctrl+C сам (дефолт true):
+ * тогда useInput получает ctrl+c и вызывает onExit — чат корректно
+ * закрывает MCP и завершает процесс. При дефолте ink процесс завершался
+ * без закрытия MCP-клиента.
+ */
+export function renderInteractiveTui(options: {
+  /** Отправить текст пользователя в чат (Enter). */
+  onSubmit: (text: string) => void;
+  /** Выйти из чата (Ctrl+C/Ctrl+D). */
+  onExit: () => void;
+  /** Идентификатор сессии — в шапке TUI. */
+  sessionId: string;
+}): InteractiveTuiHandle {
+  const store = createStore();
+  const out = process.stderr;
+  const useAltBuffer = Boolean(out.isTTY);
+  if (useAltBuffer) out.write('\u001b[?1049h\u001b[2J\u001b[H');
+  const ink = render(
+    <AgentApp
+      store={store}
+      header={`vibelog-agent · сессия ${options.sessionId}`}
+      interactive={{ onSubmit: options.onSubmit, onExit: options.onExit }}
+    />,
+    { stdout: out, patchConsole: false, exitOnCtrlC: false },
+  );
+  const base = buildHandle(store, ink, out, useAltBuffer);
+  return {
+    ...base,
+    setBusy(busy: boolean): void {
+      store.update({ busy });
     },
   };
 }

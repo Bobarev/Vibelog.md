@@ -5,7 +5,8 @@
   "type": "module",
   "bin": {
     "vibelog": "./bin/vibelog.mjs",
-    "vibelog-agent": "./bin/vibelog-agent.mjs"
+    "vibelog-agent": "./bin/vibelog-agent.mjs",
+    "vb": "./bin/vibelog.mjs"
   },
   "files": [
     "bin",

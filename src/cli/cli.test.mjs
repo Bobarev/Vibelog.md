@@ -7,7 +7,7 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -118,6 +118,26 @@ describe('CLI — интеграционные тесты', () => {
     const out = run(['instructions', 'overview']);
     assert.ok(out.includes('Vibelog.md'));
     assert.ok(out.includes('vibelog task create'));
+  });
+
+  it('package.json — алиас vb указывает на bin/vibelog.mjs (VL-102)', () => {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'));
+    assert.equal(pkg.bin.vb, './bin/vibelog.mjs');
+  });
+
+  it('пустой запуск без аргументов (не-TTY) — справка, exit 0 (VL-102)', () => {
+    // stdio pipe → stdin/stdout не-TTY → TUI не запускается, показывается справка
+    const res = spawnSync('node', [cliPath], {
+      cwd: testDir,
+      encoding: 'utf-8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' },
+    });
+    assert.equal(res.status, 0, `exit=${res.status} signal=${res.signal ?? '-'}`);
+    const out = `${res.stdout || ''}${res.stderr || ''}`;
+    assert.ok(out.includes('Vibelog.md'), out.slice(0, 300));
+    assert.ok(out.includes('Алиас'), 'справка упоминает алиас vb');
   });
 
   it('init — повторная инициализация запрещена', () => {

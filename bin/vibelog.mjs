@@ -10,6 +10,9 @@
  *
  * Импорт идёт из dist/ — перед использованием нужна сборка `pnpm build`.
  */
+// Фильтр DEP0040 (punycode через grammy/node-fetch) — ПЕРЕД импортом dist:
+// ESM-импорты выполняются до тела модуля, фильтр должен встать раньше графа.
+import './warn-filter.mjs';
 import { route } from '../dist/cli/router.js';
 import { maybeNotifyUpdate } from '../dist/cli/update-check.js';
 

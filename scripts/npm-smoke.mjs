@@ -93,11 +93,24 @@ try {
 
   const bin = join(installDir, 'node_modules', '.bin', 'vibelog');
   check('бин vibelog создан', existsSync(bin));
+  // Алиас vb (VL-102): тот же бинарь, что vibelog
+  const binVb = join(installDir, 'node_modules', '.bin', 'vb');
+  check('бин vb создан', existsSync(binVb));
 
   // ── Шаг 3: реальный прогон CLI из установленного пакета.
   console.log('▶ vibelog --help…');
-  const help = run(bin, ['--help']);
+  // Без update-check сравнение выводов vb/vibelog детерминировано (VL-102)
+  const noUpdateEnv = { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' };
+  const help = run(bin, ['--help'], { env: noUpdateEnv });
   check('vibelog --help', help.code === 0 && help.out.includes('vibelog'));
+
+  console.log('▶ vb --help…');
+  const helpVb = run(binVb, ['--help'], { env: noUpdateEnv });
+  check(
+    'vb --help идентичен vibelog --help',
+    helpVb.code === 0 && helpVb.out === help.out,
+    helpVb.code !== 0 ? helpVb.out.slice(-200) : 'выводы различаются',
+  );
 
   console.log('▶ vibelog init…');
   mkdirSync(projectDir, { recursive: true });
