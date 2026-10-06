@@ -1,11 +1,11 @@
 ---
 id: VL-97
 title: Фаза close для задачи VL-95 была выполнена агентом vb и он не сделал коммит…
-status: Planned
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-06 00:51'
-updated_date: '2026-10-06 01:13'
+updated_date: '2026-10-06 21:57'
 due_date: ''
 labels: []
 dependencies: []
@@ -28,16 +28,16 @@ modified_files: []
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Установлена и задокументирована первопричина, по которой агент vb при Фазе close VL-95 не закоммитил все затронутые задачей файлы (в отчёте-комментарии: цепочка событий и точка отказа git-шага)
-- [ ] #2 Проверено, какие git-инструменты или шаги close-шаблона qwen отсутствуют или не работают у vb; список недостающего зафиксирован в комментарии или docs
-- [ ] #3 Если причина воспроизводима — исправлен шаблон close (или код vb), чтобы все затронутые файлы коммитились; если нет — зафиксировано явное ограничение и способ обхода
+- [x] #1 Установлена и задокументирована первопричина, по которой агент vb при Фазе close VL-95 не закоммитил все затронутые задачей файлы (в отчёте-комментарии: цепочка событий и точка отказа git-шага)
+- [x] #2 Проверено, какие git-инструменты или шаги close-шаблона qwen отсутствуют или не работают у vb; список недостающего зафиксирован в комментарии или docs
+- [x] #3 Если причина воспроизводима — исправлен шаблон close (или код vb), чтобы все затронутые файлы коммитились; если нет — зафиксировано явное ограничение и способ обхода
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -125,5 +125,47 @@ created: 2026-10-06 01:13
 6. **Гипотеза «гонка параллельных фаз» — контекст, не первопричина** (63080a2 штатно забрал общие файлы); но guard ps/mtime обязателен при коммите хвостов.
 **План Фазы 3:** усилить phase-close.md (ветка при пустом modified_files: восстановить пути из отчётов фаз, сверка git status/log, guard от гонки); прокинуть modifiedFiles в MCP backlog_update_task (schema + handler + тест server.test.mjs) и финальный шаг phase-3.md; закоммичить хвосты отдельными коммитами (feat VL-94, docs VL-85/86, chore шаблоны); отчёт-диагностика в эту задачу; CHANGELOG.
 Правок кода в Фазе 2 не делал. Риски: гонка параллельных фаз (guard ps/mtime, спорные файлы не коммитить), атрибуция шаблонов phase-1/2 (chore-коммит с оговоркой), не смешивать хвосты VL-85/86 с VL-94 в одном коммите.
+---
+author: @agent
+created: 2026-10-06 21:51
+---
+Фаза 3 (Code) выполнена. Диагностика инцидента (AC1+AC2), правки и проверки.
+## 1. Цепочка событий и точка отказа (AC1)
+1. **~23:08–00:00** — Фазы 3/Comment VL-94 (qwen): код в `src/bot/settings.ts` (default_agent/resolveDefaultAgent), `settings.test.mjs`, `registry.ts` (18 команд, `[:agent]`), `registry.test.mjs`; общие файлы (commands/handlers/orchestrator) — правки VL-94/95. `modified_files` в VL-94 — пустой.
+2. **00:16:37** — Фаза Close VL-94 (vb, сессия `.vibelog/agent-sessions/agent-1791234997714.jsonl`): шаг 4 шаблона → modified_files пуст → «Коммит feat: не требовался» (подтверждено дословно в jsonl-сессии); `git status --porcelain | grep 'VL-94'` матчит только путь файла задачи. Закоммичен только docs(task) 3387cf0. **Код VL-94 остался незакоммиченным — точка отказа.**
+3. **00:18:57** — Фаза Close VL-93 (qwen): feat 63080a2 забрал общие файлы (commands/handlers/orchestrator/formatting/rich + user-guide/CHANGELOG), включая правки VL-94/95. settings/registry не попали (не общие с VL-93).
+4. **00:29–00:32** — Фаза Close VL-95 (vb, сессия agent-1791235774001.jsonl): агент сверх шаблона прочитал отчёт Фазы 3 из файла задачи, прогнал `git diff HEAD --stat`/`git log` по кандидатам → feat 8fd7cb8 (7 файлов VL-95: session.ts/test, cli.ts/test, loop.ts/test, docs/agent.md); проверил `git status --porcelain -- docs/user-guide.md CHANGELOG.md` → чисто (63080a2); docs(task) → e77d1f6. **ВСЕ файлы VL-95 закоммичены — претензия «vb не закоммитил VL-95» не подтверждается данными сессии**; незакоммиченное дерево после close — это хвосты VL-94 и VL-85/86.
+**Точка отказа git-шага:** close VL-94, шаг 4 шаблона `templates/qwen-commands/phase-close.md` — feat-коммит строится ТОЛЬКО из `modified_files`; поле пустое → «feat не требовался». Дополнительный grep по 'VL-94' матчит имя файла задачи, не код-файлы.
+**Первопричина (системная):** `modified_files` физически невозможно записать штатным инструментом:
+- MCP `backlog_update_task` (src/mcp/tools.ts, inputSchema): поля `modifiedFiles` **не было** (в backlog_search оно было только фильтром); handler `toolUpdateTask` поле не прокидывал;
+- CLI `vibelog task edit` — флага нет;
+- core готов: Task-input допускает `modified_files` и сериализует его;
+- шаблоны фаз phase-1/2/3 поле не упоминали; phase-close.md только читал.
+→ поле всегда пустое → шаг 4 close бесполезен → поведение close-агента недетерминировано: qwen (VL-90, VL-93) импровизировал по git status/log — успешно; vb (VL-94) следовал шаблону буквально — хвост кода.
+## 2. Гипотезы (AC2)
+- **«У vb нет git-инструментов qwen» — ОПРОВЕРЖЕНА.** vb: run_shell_command (execFile /bin/bash -lc), MCP vibelog (backlog_*), glob, grep_search, read/write/edit — те же, что нужны. Шаблон phase-close.md общий для обоих агентов (src/web/phase-prompt.ts — маппинг phase→шаблон без учёта агента). Все git-команды сессии close VL-95 — exit 0. Разница не в инструментах, а в глубине следования шаблону (qwen импровизировал — выжил; vb — нет).
+- **«Гонка параллельных фаз» — контекст, не первопричина.** 63080a2 (VL-93) штатно забрал общие файлы. Но гонка — реальный риск при коммите хвостов → в шаблон добавлен guard ps/mtime.
+## 3. Исправления (AC3)
+- **src/mcp/tools.ts** — inputSchema `backlog_update_task`: добавлено `modifiedFiles: string[]`; handler `toolUpdateTask` прокидывает в `updates.modified_files` (запись в frontmatter через готовый core).
+- **templates/qwen-commands/phase-close.md** — шаг 4: ветка «Если modified_files пуст или неполон»: (а) собрать пути из отчётов Фаз 3/Comment; (б) сверить каждый путь: `git status --porcelain -- <путь>` и `git log -1 --stat -- <путь>` — закоммиченное пропустить; (в) guard от гонки: `ps aux | grep -E 'qwen|vibelog-agent'` + `ls -lT` — файл живой параллельной фазы НЕ коммитить; (г) закоммитить остаток одним feat-коммитом по явным путям. Шаг 5: отчёт дополнен пунктом «Не закоммичено: <список> (причина)».
+- **templates/qwen-commands/phase-3.md** — новый шаг 5: запись modifiedFiles через backlog_update_task (только файлы вне backlog/, явные пути) — раньше фаза 3 поле не заполняла.
+- **src/mcp/server.test.mjs** — новый кейс roundtrip: backlog_update_task с modifiedFiles → запись в frontmatter → чтение через view_task.
+- **docs/mcp-reference.md** — параметр `modifiedFiles` в таблице backlog_update_task. **CHANGELOG.md** [Unreleased] — строка VL-97.
+## 4. Хвосты (план, п.5) — уже закоммичены позднейшей работой
+Коммиты в рамках этой фазы не выполнялись (правила Фазы 3), но хвосты к моменту выполнения уже закоммичены:
+- код VL-94 → **36ca0de** feat: VL-94 — агент по умолчанию (settings/registry + тесты);
+- docs/cli-reference.md (VL-85/86) → **5ac257c** docs: vibelog-agent в CLI-справочнике;
+- templates/phase-1.md, phase-2.md → **9729331** fix(phase-1) и **986b869** docs(templates).
+В дереве не осталось хвостов VL-94/85/86.
+## 5. Проверки
+- `node node_modules/typescript/lib/tsc.js` (strict) — 0 ошибок. Примечание: `pnpm build`/`pnpm test` на этой машине падают на dyld (_pwritev, Catalina vs node из homebrew) — сборка и тесты запускались напрямую через node.
+- Полный прогон: **757/757 тестов зелёные** (включая новый roundtrip-кейс modifiedFiles в server.test.mjs: 9/9).
+- `grep -n "modified_files пуст" templates/qwen-commands/phase-close.md` — ветка на месте (строка 24).
+Изменено: src/mcp/tools.ts, src/mcp/server.test.mjs, templates/qwen-commands/phase-close.md, templates/qwen-commands/phase-3.md, docs/mcp-reference.md, CHANGELOG.md.
+---
+author: @agent
+created: 2026-10-06 21:57
+---
+Фаза Close выполнена. Статус: Done. Коммит feat: 75bc9b5 «VL-97 — запись modified_files через MCP и ветка в close-шаблоне при пустом поле» (6 файлов: src/mcp/tools.ts, src/mcp/server.test.mjs, templates/qwen-commands/phase-close.md, templates/qwen-commands/phase-3.md, docs/mcp-reference.md, CHANGELOG.md — все пути взяты из раздела «Изменено» отчёта Фазы 3, сверены git status --porcelain/git log, guard от гонки: активных параллельных фаз нет). Не закоммичено: backlog/config.yml, scripts/tmp-vl103-*/tmp-vl104-*, файлы задач VL-105..VL-108 — не относятся к VL-97 (чужие задачи/служебные скрипты).
 ---
 <!-- COMMENTS:END -->
