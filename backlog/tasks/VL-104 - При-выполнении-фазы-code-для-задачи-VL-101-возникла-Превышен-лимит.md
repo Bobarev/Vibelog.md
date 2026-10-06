@@ -1,11 +1,11 @@
 ---
 id: VL-104
 title: 'Лимит max-wall-time фазы code: разбор сессии и настройка лимитов'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-06 15:51'
-updated_date: '2026-10-06 18:07'
+updated_date: '2026-10-06 18:19'
 due_date: ''
 labels: []
 dependencies: []
@@ -128,5 +128,10 @@ created: 2026-10-06 18:07
 **AC#2/AC#3 (/set лимитов):** parseSetCommand расширен на max-wall-time/max-requests (0 — сброс), хранение в bot.yml (max_wall_time/max_requests + resolveMaxWallTime/resolveMaxRequests), новый флаг --max-requests в CLI агента + maxRequests в runLoop (проверка до streamChat), оркестратор прокидывает оба флага только для agent=vb. Тесты: commands, settings, loop, cli, orchestrator.
 **Побочно:** сборка падала из-за незавершённого VL-101 (src/cli/update-check.ts импортирует неэкспортированный readPackageInfo) — добавлен экспорт в src/cli/commands/version.ts (поведение не менялось); сам update-check.ts в VL-101 не подключался — вне рамок VL-104. Временные скрипты агента scripts/tmp-vl104-*.mjs не коммитились.
 **Проверки:** pnpm build — OK; pnpm test — 713/713 pass, fail 0 (единичные флаки прогонов Catalina/dyld не связаны с изменениями). Документация: docs/agent.md (флаги, лимиты, shell-валидация, интеграция с ботом), docs/user-guide.md (таблица параметров /set), CHANGELOG.md.
+---
+author: @agent
+created: 2026-10-06 18:19
+---
+Фаза Close выполнена. Статус: Done. Коммит feat: 0150b9e — «feat(agent): лимиты фазы — /set max-wall-time и /set max-requests, fix shell-проверки (VL-104)» (весь код уже был закоммичен Фазой Code; новый feat-коммит не требовался). Файлы задач: смена статуса + этот комментарий — в docs(task)-коммите ниже.
 ---
 <!-- COMMENTS:END -->
