@@ -143,6 +143,8 @@ export function listTools(): ToolDefinition[] {
           notes: { type: 'string', description: 'Заметки (полная замена ## Implementation Notes)' },
           append_notes: { type: 'string', description: 'Дописать в конец ## Implementation Notes' },
           final_summary: { type: 'string', description: 'Итоговое резюме (записывает в ## Final Summary)' },
+          // VL-97: без записи modified_files close-шаг не мог собрать feat-коммит (инцидент VL-94)
+          modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Изменённые файлы (полная замена modified_files)' },
         },
         required: ['id'],
       },
@@ -557,6 +559,10 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
     }
     updates.parent_task_id = parent;
   }
+
+  // VL-97: прокидываем modified_files — поле есть в core (Task-input/сериализация),
+  // но было недоступно ни в MCP, ни в CLI, поэтому всегда оставалось пустым
+  if (args.modifiedFiles !== undefined) updates.modified_files = args.modifiedFiles as string[];
 
   // Секции тела
   if (args.plan !== undefined) updates.implementationPlan = args.plan as string;

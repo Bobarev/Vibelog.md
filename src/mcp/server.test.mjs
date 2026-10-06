@@ -161,6 +161,33 @@ describe('MCP-сервер', () => {
     assert.ok(Array.isArray(data));
   });
 
+  it('tools/call — backlog_update_task записывает modifiedFiles (roundtrip)', async () => {
+    // VL-97: поле modified_files должно записываться в frontmatter и читаться обратно —
+    // иначе close-шаг не может собрать feat-коммит по затронутым файлам
+    const createResponses = await callMcp([
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_create_task', arguments: { title: 'MF Task' } } },
+    ]);
+    const createResp = createResponses.find(r => r.id === 2);
+    assert.ok(createResp);
+    // ID достаём из ответа create — хардкод 'mcp-1' сломается при изменении порядка тестов
+    const createdId = createResp.result.content[0].text.match(/mcp-\d+/)[0];
+
+    const responses = await callMcp([
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_update_task', arguments: { id: createdId, modifiedFiles: ['src/a.ts', 'docs/b.md'] } } },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id: createdId } } },
+    ]);
+    const updResp = responses.find(r => r.id === 2);
+    assert.ok(updResp);
+    assert.ok(updResp.result.content[0].text.includes('modified_files'));
+    // Roundtrip: view_task вернул записанное поле из frontmatter
+    const viewResp = responses.find(r => r.id === 3);
+    assert.ok(viewResp);
+    const data = JSON.parse(viewResp.result.content[0].text);
+    assert.deepEqual(data.modified_files, ['src/a.ts', 'docs/b.md']);
+  });
+
   it('Неизвестный метод → error', async () => {
     const responses = await callMcp([
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },

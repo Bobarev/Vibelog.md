@@ -28,10 +28,14 @@
    списки: backlog_manage_ac / backlog_manage_dod c action "list"; отметка: action "check", index N.
    Не отмечай «задним числом» — невыполненные пункты оставь незакрытыми и упомяни в отчёте.
 
-5. Оставь отчёт комментарием в формате markdown:
+5. Если type=task и в Фазе менялись файлы вне backlog/ — запиши затронутые файлы в задачу через backlog_update_task (поле modifiedFiles), иначе Фаза Close не сможет собрать feat-коммит (инцидент VL-94, расследование VL-97):
+   backlog_update_task {"id": "{{taskId}}", "modifiedFiles": ["src/foo.ts", "docs/bar.md"]}
+   Включай только явные пути к файлам ВНЕ backlog/ (код, тесты, шаблоны, docs); файлы задач в backlog/ не включай. Если ничего не менял — пропусти шаг.
+
+6. Оставь отчёт комментарием в формате markdown:
    backlog_add_comment {"id": "{{taskId}}", "comment": "Фаза 3 (Code) выполнена. Изменено: <файлы>. Проверки: pnpm build OK, pnpm test — N/N. Что осталось: ...", "author": "@agent"}
 
-6. Смени статус (только для type=task):
+7. Смени статус (только для type=task):
    backlog_update_status {"id": "{{taskId}}", "status": "Review"}
 
 ## Правила

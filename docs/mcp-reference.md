@@ -83,6 +83,7 @@
 | `notes` | string | Implementation Notes (полная замена) |
 | `append_notes` | string | Дописать в конец заметок |
 | `final_summary` | string | Итоговое резюме |
+| `modifiedFiles` | string[] | Изменённые файлы (полная замена `modified_files`; Фаза 3 пишет, Фаза Close читает) |
 
 ### backlog_manage_ac / backlog_manage_dod — чеклисты
 
