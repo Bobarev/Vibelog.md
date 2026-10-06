@@ -23,7 +23,7 @@ npm install -g vibelog.md
 
 В пакете уже собраны CLI (`dist/`) и веб-интерфейс (`web/dist`) — ничего компилировать не нужно. Одноразовый запуск без установки: `npx vibelog.md`.
 
-CLI автоматически проверяет npm registry на наличие новой версии (раз в сутки, молча). Если обновление доступно — выводится уведомление в stderr. Отключение: `VIBELOG_SKIP_UPDATE_CHECK=true`. Подробнее: [docs/cli-reference.md](docs/cli-reference.md).
+CLI автоматически проверяет npm registry на наличие новой версии (раз в сутки, молча). Если обновление доступно — в stderr выводится `⚠ Доступна новая версия для обновления: npm install -g vibelog.md (...)`, без автоустановки. Отключение: `VIBELOG_SKIP_UPDATE_CHECK=true`. Подробнее: [docs/cli-reference.md](docs/cli-reference.md#автообновление).
 
 ### Из исходников (для контрибьюторов)
 

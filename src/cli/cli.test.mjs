@@ -25,6 +25,10 @@ function run(args, opts = {}) {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['pipe', 'pipe', 'pipe'],
+      // VL-101: в тестах проверка обновлений отключена — иначе каждый
+      // запуск CLI идёт в npm registry и добавляет задержку (кэш не спасает:
+      // тесты гоняются параллельно и до записи кэша все попадают в сеть)
+      env: { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' },
     });
   } catch (err) {
     // dyld SIGABRT на Catalina — не считаем ошибкой, возвращаем что есть
