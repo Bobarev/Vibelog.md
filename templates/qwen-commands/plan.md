@@ -27,7 +27,8 @@ description: Составить план реализации для задач�
 
 4. Если type=epic — план в дочерних задачах:
    - Разбей эпик на 2-5 задач через backlog_create_task с parentTaskId={{args}}.
-   - Для каждой дочерней задачи — план через backlog_update_task.
+   - Для каждой дочерней задачи — план через backlog_update_task и статус Planned:
+     backlog_update_status {"id": "<ID дочерней>", "status": "Planned"}
    - План в эпик НЕ пиши — только в дочерних задачах.
    - Статус эпика на Planned: backlog_update_status {"id": "{{args}}", "status": "Planned"}
 
@@ -36,6 +37,5 @@ description: Составить план реализации для задач�
 
 Правила:
 - Одна фаза Plan = одна задача-исполнитель (type=task) или эпик с детьми (type=epic).
-- Не используй python3. Только Node.js.
 - Не читай файлы целиком.
 - Если план большой — пиши в 2-3 вызова MCP.

@@ -179,3 +179,47 @@ describe('VL-69 — промпты фаз поддержку Epic/parentTaskId',
     assert.ok(content.includes('parentTaskId'), 'parentTaskId');
   });
 });
+// ============================================================
+// VL-105 — ревизия промптов: дубли устранены, дрейф закрыт
+// ============================================================
+
+describe('VL-105 — инварианты промптов', () => {
+  const tmplDir = join(__dirname, '..', '..', 'templates', 'qwen-commands');
+  const phaseFiles = [
+    'phase-1.md', 'phase-2.md', 'phase-3.md', 'phase-close.md',
+    'phase-comment.md', 'prompt.md', 'spec.md', 'plan.md', 'code.md',
+  ];
+
+  it('В шаблонах фаз нет pnpm и «Только Node.js» — правила проекта в AGENTS.md', () => {
+    for (const name of phaseFiles) {
+      const content = readFileSync(join(tmplDir, name), 'utf-8');
+      assert.ok(!/pnpm/i.test(content), name + ': pnpm-правила не должны дублироваться');
+      assert.ok(!/только node\.js/i.test(content), name + ': запрет рантаймов не должен дублироваться');
+    }
+  });
+
+  it('code.md (интерактивный): статус исходной задачи — Review, Done только у эпика', () => {
+    const content = readFileSync(join(tmplDir, 'code.md'), 'utf-8');
+    assert.ok(content.includes('"status": "Review"'), 'статус исходной задачи — Review (как в phase-3.md)');
+    // Done допустим ровно один раз — закрытие эпика, когда все дети Done
+    const doneCount = (content.match(/"status": "Done"/g) || []).length;
+    assert.equal(doneCount, 1, 'Done — только для эпика (все дети Done)');
+  });
+
+  it('plan.md содержит Planned — статус дочерним задачам и эпику', () => {
+    const content = readFileSync(join(tmplDir, 'plan.md'), 'utf-8');
+    assert.ok(content.includes('Planned'), 'установка Planned дочерним задачам');
+  });
+
+  it('spec.md: вопросы при неполном описании (синхронизация с phase-1)', () => {
+    const content = readFileSync(join(tmplDir, 'spec.md'), 'utf-8');
+    assert.ok(content.includes('задай вопросы'), 'вопросы пользователю при неполном описании');
+  });
+
+  it('BASE_PROMPT не дублирует AGENTS.md: нет русского языка и pnpm', () => {
+    const content = readFileSync(join(__dirname, '..', '..', 'src', 'agent', 'system-prompt.ts'), 'utf-8');
+    assert.ok(!content.includes('Отвечай на русском'), 'русский язык — в AGENTS.md проекта');
+    assert.ok(!/pnpm/i.test(content), 'pnpm-правила — в AGENTS.md проекта');
+  });
+});
+

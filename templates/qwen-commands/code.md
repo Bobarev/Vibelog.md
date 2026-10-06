@@ -12,7 +12,7 @@ description: Реализовать задачу Vibelog (Фаза 3)
    Определи type задачи: task или epic.
 
 2. Если type=task — реализуй план:
-   - Запусти tsc или аналогичный линтер, запусти тесты.
+   - Выполни проверки проекта (сборка, тесты) по правилам AGENTS.md; если AGENTS.md нет — сделай минимальную самопроверку.
    - Если что-то не работает — вернись к плану и уточни.
 
 3. Если type=epic — код НЕ реализуй, оркестрируй дочерних:
@@ -23,14 +23,14 @@ description: Реализовать задачу Vibelog (Фаза 3)
      backlog_update_status {"id": "{{args}}", "status": "Done"}
 
 4. Обнови задачу через MCP:
-   - Отметь AC: backlog_manage_ac {"id": "{{args}}", "action": "check", "index": N}
+   - Отметь реально выполненные AC/DoD: backlog_manage_ac {"id": "{{args}}", "action": "check", "index": N}
+   - Если менялись файлы вне backlog/ — запиши их в задачу: backlog_update_task {"id": "{{args}}", "modifiedFiles": ["src/foo.ts"]}
    - Добавь комментарий: backlog_add_comment {"id": "{{args}}", "comment": "..."}
-   - Смени статус: backlog_update_status {"id": "{{args}}", "status": "Done"}
+   - Смени статус: backlog_update_status {"id": "{{args}}", "status": "Review"}
 
 5. Покажи git diff пользователю.
 
 Правила:
 - Code на эпике НЕ реализует код — он проверяет детей и запускает Фазу 3 на них.
-- Не используй python3. Только Node.js.
 - Не коммить, пока пользователь не подтвердил.
 - Если что-то пошло не так — не скрывай, сообщи.
