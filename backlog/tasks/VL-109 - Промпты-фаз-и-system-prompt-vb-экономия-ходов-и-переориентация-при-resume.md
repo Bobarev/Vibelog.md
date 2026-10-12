@@ -1,11 +1,11 @@
 ---
 id: VL-109
 title: 'Промпты фаз и system-prompt vb: экономия ходов и переориентация при resume'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-12 09:50'
-updated_date: '2026-10-12 10:18'
+updated_date: '2026-10-12 12:27'
 due_date: ''
 labels: []
 dependencies: []
@@ -60,9 +60,9 @@ P3. templates/qwen-commands/phase-2.md: перед записью плана п�
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Comments
@@ -84,5 +84,10 @@ created: 2026-10-12 10:18
 Оговорка по AC#2: правила P2 физически живут в templates/agent-prompt.md (в состав системного промпта vb входят — system-prompt.ts вставляет их как базовую часть), т.к. попутно по запросу Pavel хардкод промпта вынесен в md.
 
 Что осталось: влияние правил проверить на следующей реальной Фазе 3 vb (live-эффект); легаси-шаблоны skills (templates/qwen-commands/spec.md/plan.md/code.md для /vibelog:*) не менялись — вне AC.
+---
+author: @agent
+created: 2026-10-12 12:27
+---
+Фаза Close выполнена вручную (исполнитель — Qwen Code). Код: feat a0a3c57 (промпты VL-109: «Экономия ходов» в шести шаблонах фаз, базовый промпт vb в templates/agent-prompt.md + 3 правила) и fix cceb310 (убраны упоминания задач-инцидентов из шаблонов — были приманкой для агента, правки Pavel). Проверки: pnpm test 794/794, шаблонные тесты 9/9 после fix. DoD 3/3. Статус Done. Пуш по решению Pavel.
 ---
 <!-- COMMENTS:END -->
