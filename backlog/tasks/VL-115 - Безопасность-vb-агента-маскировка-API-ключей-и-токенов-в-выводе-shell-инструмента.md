@@ -1,11 +1,11 @@
 ---
 id: VL-115
 title: 'Безопасность vb-агента: маскировка API-ключей и токенов в выводе shell-инструмента'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-12 14:46'
-updated_date: '2026-10-12 15:49'
+updated_date: '2026-10-12 18:38'
 due_date: ''
 labels: []
 dependencies: []
@@ -41,9 +41,9 @@ modified_files:
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Comments
@@ -52,5 +52,10 @@ author: @agent
 created: 2026-10-12 15:49
 ---
 Фаза 3 (Code) выполнена вручную (исполнитель — Qwen Code; feat 6299ce4). tools.ts: maskSecrets — строки NAME=value с API_KEY/TOKEN/SECRET/PASSWORD в имени (без учёта регистра, regex g-i-m) → NAME=***; применяется к собранному выводу run_shell_command поверх per-stream обрезки и финального лимита 8KB (VL-110). Файловые инструменты намеренно не маскируются (AC#1 уточнён — единственный вектор shell env, маскировка файлов искажала бы чтение кода). agent-prompt.md: правило «не выводи env целиком; нужная переменная — printenv <ЕЁ_ИМЯ>». Тесты: tools +4 (unit: маскировка, регистронезависимость, не-секреты; интеграция: stdout с NAME=ключом → ***, значение не утекает), system-prompt +1 (правило в собранном промпте). Проверки: pnpm build OK; pnpm test — 834/834, fail 0. Что осталось: устаревший ключ в jsonl-транскрипте сессии agent-1791802592105 (2026-10-12) технически остаётся на диске — при желании ротировать ключ Selectel; DoD закрывается Фазой Close.
+---
+author: @agent
+created: 2026-10-12 18:38
+---
+Фаза Close выполнена вручную (исполнитель — Qwen Code). Код: feat 6299ce4 (maskSecrets в run_shell_command — NAME=*** для API_KEY/TOKEN/SECRET/PASSWORD без учёта регистра; правило «не выводи env целиком» в agent-prompt.md; AC#1 уточнён — файловые инструменты не маскируются сознательно). Тесты: tools +4, system-prompt +1; pnpm test 834/834. Остаток: ключ в jsonl-транскрипте сессии VL-113 остаётся на диске — рекомендована ротация ключа Selectel владельцем. DoD 3/3. Статус Done.
 ---
 <!-- COMMENTS:END -->
