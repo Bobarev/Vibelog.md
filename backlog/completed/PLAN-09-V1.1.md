@@ -1,3 +1,24 @@
+---
+id: PLAN-09
+title: V1.1 — MCP и CLI для полного workflow
+status: Done
+assignee: []
+reporter: ''
+created_date: '2026-10-07 00:30'
+updated_date: '2026-10-07 00:30'
+due_date: ''
+labels: []
+dependencies: []
+milestone: ''
+references: []
+priority: ''
+type: ''
+project: ''
+parent_task_id: ''
+ordinal: 0
+documentation: []
+modified_files: []
+---
 # PLAN-09: V1.1 — MCP и CLI для полного workflow
 
 ## Контекст

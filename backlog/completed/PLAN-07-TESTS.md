@@ -1,3 +1,24 @@
+---
+id: PLAN-07
+title: Тесты
+status: Done
+assignee: []
+reporter: ''
+created_date: '2026-10-07 00:30'
+updated_date: '2026-10-07 00:30'
+due_date: ''
+labels: []
+dependencies: []
+milestone: ''
+references: []
+priority: ''
+type: ''
+project: ''
+parent_task_id: ''
+ordinal: 0
+documentation: []
+modified_files: []
+---
 # PLAN-07: Тесты
 
 ## Задача
