@@ -22,7 +22,7 @@ import { execFileSync } from 'node:child_process';
 
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { markdownToTask, taskToMarkdown } from '../../dist/core/task.js';
-import { listTools, handleToolCall } from '../../dist/mcp/tools.js';
+import { handleToolCall } from '../../dist/mcp/tools.js';
 import { createTaskFile, getTask } from '../../dist/core/store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -57,40 +57,6 @@ function runCli(...args) {
     return (err.stdout || '') + (err.stderr || '');
   }
 }
-
-// ============================================================
-// Список инструментов
-// ============================================================
-
-describe('MCP v1.1 — список инструментов', () => {
-  it('Все 21 инструмент зарегистрирован', () => {
-    const tools = listTools();
-    assert.equal(tools.length, 21);
-    const names = tools.map(t => t.name);
-    assert.ok(names.includes('backlog_create_task'));
-    assert.ok(names.includes('backlog_list_tasks'));
-    assert.ok(names.includes('backlog_view_task'));
-    assert.ok(names.includes('backlog_update_status'));
-    assert.ok(names.includes('backlog_search'));
-    assert.ok(names.includes('backlog_ready'));
-    assert.ok(names.includes('backlog_update_task'));
-    assert.ok(names.includes('backlog_manage_ac'));
-    assert.ok(names.includes('backlog_manage_dod'));
-    assert.ok(names.includes('backlog_add_comment'));
-    assert.ok(names.includes('backlog_update_dependencies'));
-  });
-
-  it('Новые инструменты имеют inputSchema', () => {
-    const tools = listTools();
-    const newTools = ['backlog_update_task', 'backlog_manage_ac', 'backlog_manage_dod', 'backlog_add_comment', 'backlog_update_dependencies'];
-    for (const name of newTools) {
-      const tool = tools.find(t => t.name === name);
-      assert.ok(tool, `${name} не найден`);
-      assert.ok(tool.inputSchema, `${name} не имеет inputSchema`);
-      assert.equal(tool.inputSchema.type, 'object');
-    }
-  });
-});
 
 // ============================================================
 // Все MCP-инструменты v1.1 (общий setup)

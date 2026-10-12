@@ -2,7 +2,13 @@
  * Тесты совместимости с реальными файлами Backlog.md.
  *
  * Читает задачи из refs/Backlog.md/backlog/
- * и проверяет, что我们的 парсер корректно их обрабатывает.
+ * и проверяет, что наш парсер корректно их обрабатывает.
+ *
+ * Дублирующие проверки парсинга tasks/, round-trip и конфига удалены
+ * (аудит VL-131): они покрыты строже в compat-full.test.mjs
+ * (все задачи вместо slice(0,10), больший набор полей round-trip,
+ * полный набор ключей конфига). Здесь — только уникальные кейсы:
+ * completed/ задачи и имя файла в формате оригинала.
  *
  * Статический тест — оригинал Backlog.md не запускается (Catalina).
  * Пропускается, если директория оригинала не найдена.
@@ -13,9 +19,8 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { parseFrontmatter, serializeFrontmatter } from '../../dist/core/frontmatter.js';
-import { markdownToTask, taskToMarkdown, taskFilename } from '../../dist/core/task.js';
-import { parseYaml, stringifyYaml } from '../../dist/core/yaml.js';
+import { parseFrontmatter } from '../../dist/core/frontmatter.js';
+import { taskFilename } from '../../dist/core/task.js';
 
 const BACKLOG_ROOT = 'refs/Backlog.md';
 const TASKS_DIR = join(BACKLOG_ROOT, 'backlog', 'tasks');
@@ -23,36 +28,6 @@ const COMPLETED_DIR = join(BACKLOG_ROOT, 'backlog', 'completed');
 
 // Пропускаем все тесты, если оригинал Backlog.md недоступен
 const BACKLOG_EXISTS = existsSync(TASKS_DIR);
-
-describe('Совместимость с Backlog.md — frontmatter', () => {
-  if (!BACKLOG_EXISTS) {
-    it.skip('Оригинал Backlog.md не найден', () => {});
-    return;
-  }
-
-  const files = readdirSync(TASKS_DIR).filter(f => f.endsWith('.md')).slice(0, 10);
-
-  for (const file of files) {
-    it(`Парсинг ${file}`, () => {
-      const content = readFileSync(join(TASKS_DIR, file), 'utf-8');
-      const { data, body } = parseFrontmatter(content);
-
-      // Проверяем обязательные поля
-      assert.ok(data.id, `Поле id отсутствует в ${file}`);
-      assert.ok(data.title, `Поле title отсутствует в ${file}`);
-      assert.ok(data.status, `Поле status отсутствует в ${file}`);
-
-      // Проверяем, что тело не пустое
-      assert.ok(body.length > 0, `Тело пустое в ${file}`);
-
-      // Проверяем, что тело содержит хотя бы один заголовок секции
-      assert.ok(
-        body.includes('## Description') || body.includes('## ') || body.includes('# '),
-        `Тело не содержит заголовков в ${file}`
-      );
-    });
-  }
-});
 
 describe('Совместимость с Backlog.md — completed задачи', () => {
   if (!BACKLOG_EXISTS) {
@@ -78,40 +53,6 @@ describe('Совместимость с Backlog.md — completed задачи', 
   }
 });
 
-describe('Совместимость с Backlog.md — round-trip', () => {
-  if (!BACKLOG_EXISTS) {
-    it.skip('Оригинал Backlog.md не найден', () => {});
-    return;
-  }
-
-  // Берём 3 реальные задачи и проверяем round-trip
-  const files = readdirSync(TASKS_DIR).filter(f => f.endsWith('.md')).slice(0, 3);
-
-  for (const file of files) {
-    it(`Round-trip ${file}: markdownToTask → taskToMarkdown`, () => {
-      const content = readFileSync(join(TASKS_DIR, file), 'utf-8');
-      const task = markdownToTask(content);
-
-      // Проверяем, что задача распарсилась
-      assert.ok(task.id, 'id пустой');
-      assert.ok(task.title, 'title пустой');
-
-      // Сериализуем обратно
-      const serialized = taskToMarkdown(task);
-
-      // Парсим заново
-      const task2 = markdownToTask(serialized);
-
-      // Сравниваем ключевые поля
-      assert.equal(task.id, task2.id, 'id не совпадает после round-trip');
-      assert.equal(task.title, task2.title, 'title не совпадает после round-trip');
-      assert.equal(task.status, task2.status, 'status не совпадает после round-trip');
-      assert.deepStrictEqual(task.labels, task2.labels, 'labels не совпадают');
-      assert.deepStrictEqual(task.dependencies, task2.dependencies, 'dependencies не совпадают');
-    });
-  }
-});
-
 describe('Совместимость с Backlog.md — имя файла', () => {
   if (!BACKLOG_EXISTS) {
     it.skip('Оригинал Backlog.md не найден', () => {});
@@ -128,25 +69,5 @@ describe('Совместимость с Backlog.md — имя файла', () =>
       const name = taskFilename({ id, title });
       assert.equal(name, expected, `Имя файла для ${id} не совпадает`);
     }
-  });
-});
-
-describe('Совместимость с Backlog.md — YAML-парсер', () => {
-  if (!BACKLOG_EXISTS) {
-    it.skip('Оригинал Backlog.md не найден', () => {});
-    return;
-  }
-
-  it('Парсинг конфига backlog/config.yml', () => {
-    const configPath = join(BACKLOG_ROOT, 'backlog', 'config.yml');
-    if (!existsSync(configPath)) return;
-
-    const content = readFileSync(configPath, 'utf-8');
-    const config = parseYaml(content);
-
-    assert.ok(config.project_name, 'project_name отсутствует');
-    assert.ok(config.task_prefix, 'task_prefix отсутствует');
-    assert.ok(Array.isArray(config.statuses), 'statuses не массив');
-    assert.ok(config.statuses.length > 0, 'statuses пуст');
   });
 });
