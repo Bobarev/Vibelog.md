@@ -7,7 +7,7 @@
  * (json-адаптер qwen 0.24.x — фикс Фазы Comment на VL-63).
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { parseQwenResult, explainQwenParse } from '../../dist/web/qwen-result.js';

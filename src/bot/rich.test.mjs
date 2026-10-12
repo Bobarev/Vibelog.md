@@ -2,7 +2,7 @@
  * Тесты VL-39 — рендер Rich Markdown для Telegram Rich Messages.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

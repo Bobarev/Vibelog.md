@@ -4,7 +4,7 @@
  * Каталоги — в /tmp; переменные окружения сохраняются/восстанавливаются.
  */
 
-import { describe, it, after } from 'node:test';
+import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +17,7 @@ describe('loadDotEnv (VL-37)', () => {
   const KEYS = ['VL_TEST_TOKEN', 'VL_TEST_PROXY', 'VL_TEST_PRESET'];
   const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
 
-  after(() => {
+  afterAll(() => {
     for (const k of KEYS) {
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];

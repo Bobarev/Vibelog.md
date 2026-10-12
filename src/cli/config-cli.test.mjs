@@ -12,7 +12,7 @@
  * stdout/stderr, проверка содержимого не exit code.
  */
 
-import { describe, it, after } from 'node:test';
+import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -44,7 +44,7 @@ function runCli(...args) {
 }
 
 describe('VL-12 — CLI config', () => {
-  after(() => cleanup());
+  afterAll(() => cleanup());
 
   it('get: строка, массив, число, boolean', () => {
     fresh();

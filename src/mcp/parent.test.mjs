@@ -8,7 +8,7 @@
  * - backlog_list_tasks: фильтр parentTaskId + parent_task_id в simplified-выводе
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';

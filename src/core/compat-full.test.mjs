@@ -11,7 +11,7 @@
  * Все проверки статические — оригинал Backlog.md НЕ запускается.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';

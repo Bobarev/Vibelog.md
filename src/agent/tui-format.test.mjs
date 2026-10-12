@@ -4,7 +4,7 @@
  * сборка .tsx проверяется pnpm build (tsc не пропустит ошибки JSX).
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

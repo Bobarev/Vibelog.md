@@ -10,7 +10,7 @@
  * - Exit code при провале обязательных проверок
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
@@ -69,10 +69,10 @@ function runCli(args, opts = {}) {
 }
 
 describe('Диагностика — --version', () => {
-  before(() => {
+  beforeAll(() => {
     mkdirSync(testDir, { recursive: true });
   });
-  after(() => {
+  afterAll(() => {
     if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
   });
 
@@ -107,10 +107,10 @@ describe('Диагностика — --version', () => {
 });
 
 describe('Диагностика — doctor', () => {
-  before(() => {
+  beforeAll(() => {
     mkdirSync(testDir, { recursive: true });
   });
-  after(() => {
+  afterAll(() => {
     if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
   });
 

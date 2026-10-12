@@ -8,7 +8,7 @@
  * - Вывод содержит type/project/labels/milestone
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -58,8 +58,8 @@ function cleanup() {
 }
 
 describe('VL-8 — фильтры поиска (ядро)', () => {
-  before(() => setup());
-  after(() => cleanup());
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
 
   it('фильтр status (case-insensitive)', () => {
     const r = searchTasks(testDir, { status: 'to do' });
@@ -124,8 +124,8 @@ describe('VL-8 — фильтры поиска (ядро)', () => {
 });
 
 describe('VL-8 — backlog_search (MCP)', () => {
-  before(() => setup());
-  after(() => cleanup());
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
 
   it('вызов без query — только фильтры (как в оригинале)', async () => {
     const res = await handleToolCall('backlog_search', { status: 'Done' }, testDir);

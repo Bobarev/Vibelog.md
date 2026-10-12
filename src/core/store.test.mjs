@@ -1,4 +1,4 @@
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -33,8 +33,8 @@ function cleanup() {
 }
 
 describe('store.mjs — CRUD операции', () => {
-  before(() => setup());
-  after(() => cleanup());
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
 
   it('listTasks — пусто когда задач нет', () => {
     assert.deepStrictEqual(listTasks(testDir), []);

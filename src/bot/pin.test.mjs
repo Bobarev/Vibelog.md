@@ -2,7 +2,7 @@
  * Тесты VL-34 — генерация пин-кода привязки.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { generatePin } from '../../dist/bot/pin.js';

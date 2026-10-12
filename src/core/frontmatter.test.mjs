@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -139,10 +139,10 @@ describe('Парсинг реальных файлов Backlog.md', () => {
   const refsTasksDir = join(backlogRoot, 'backlog', 'tasks');
   const refsCompletedDir = join(backlogRoot, 'backlog', 'completed');
 
-  it('back-200: активная задача с массивами и кавычками', async (t) => {
+  it('back-200: активная задача с массивами и кавычками', async (ctx) => {
     const filePath = join(refsTasksDir, 'back-200 - Add-Claude-Code-integration-with-workflow-commands-during-init.md');
     if (!existsSync(filePath)) {
-      t.skip(`Оригинал Backlog.md не найден: ${filePath}`);
+      ctx.skip();
       return;
     }
     const content = await readFile(filePath, 'utf-8');
@@ -158,10 +158,10 @@ describe('Парсинг реальных файлов Backlog.md', () => {
     assert.ok(body.includes('## Description'));
   });
 
-  it('back-100: завершённая задача', async (t) => {
+  it('back-100: завершённая задача', async (ctx) => {
     const filePath = join(refsCompletedDir, 'back-100 - Add-embedded-web-server-to-Backlog-CLI.md');
     if (!existsSync(filePath)) {
-      t.skip(`Оригинал Backlog.md не найден: ${filePath}`);
+      ctx.skip();
       return;
     }
     const content = await readFile(filePath, 'utf-8');
@@ -172,10 +172,10 @@ describe('Парсинг реальных файлов Backlog.md', () => {
     assert.ok(body.includes('## Description'));
   });
 
-  it('back-100.1: подзадача с parent_task_id', async (t) => {
+  it('back-100.1: подзадача с parent_task_id', async (ctx) => {
     const filePath = join(refsCompletedDir, 'back-100.1 - Setup-React-project-structure-with-shadcn-ui.md');
     if (!existsSync(filePath)) {
-      t.skip(`Оригинал Backlog.md не найден: ${filePath}`);
+      ctx.skip();
       return;
     }
     const content = await readFile(filePath, 'utf-8');
@@ -187,10 +187,10 @@ describe('Парсинг реальных файлов Backlog.md', () => {
     assert.ok(body.includes('## Description'));
   });
 
-  it('back-418: задача с кавычками и references', async (t) => {
+  it('back-418: задача с кавычками и references', async (ctx) => {
     const filePath = join(refsTasksDir, 'back-418 - Publish-supported-container-runtime-for-backlog-browser.md');
     if (!existsSync(filePath)) {
-      t.skip(`Оригинал Backlog.md не найден: ${filePath}`);
+      ctx.skip();
       return;
     }
     const content = await readFile(filePath, 'utf-8');

@@ -2,7 +2,7 @@
  * Тесты VL-70 — самоперезапуск бота: spawn замещающего процесса и реестр.
  */
 
-import { after, before, describe, it } from 'node:test';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,11 +24,11 @@ describe('spawnReplacementBot (VL-70)', () => {
   // разработчика — дочерний процесс нашёл бы его в env и ушёл в реальный
   // long-polling: тест висел до таймаута и плодил живых ботов (поймано 2026-10-03).
   let savedToken;
-  before(() => {
+  beforeAll(() => {
     savedToken = process.env.TELEGRAM_BOT_TOKEN;
     delete process.env.TELEGRAM_BOT_TOKEN;
   });
-  after(() => {
+  afterAll(() => {
     if (savedToken !== undefined) process.env.TELEGRAM_BOT_TOKEN = savedToken;
   });
 

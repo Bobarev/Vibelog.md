@@ -4,7 +4,7 @@
  * Каталоги — в /tmp; git-окружение изолируется через GIT_CONFIG_GLOBAL.
  */
 
-import { describe, it, after } from 'node:test';
+import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -20,7 +20,7 @@ describe('addComment (VL-35)', () => {
   const ISO_ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
   let taskId;
 
-  after(() => {
+  afterAll(() => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 

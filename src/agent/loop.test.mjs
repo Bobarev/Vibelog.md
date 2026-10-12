@@ -5,7 +5,7 @@
  * detection, оба лимита, ошибка handler (loop продолжает), ошибка llm.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { runLoop } from '../../dist/agent/loop.js';

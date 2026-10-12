@@ -9,7 +9,7 @@
  * - archive переносит в completed/
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -92,8 +92,8 @@ describe('MCP v1.3 — milestone-инструменты', () => {
 // ============================================================
 
 describe('MCP v1.3 — milestone CRUD', () => {
-  before(() => setup());
-  after(() => cleanup());
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
 
   it('add: создаёт файл backlog/milestones/<slug>.md', async () => {
     const res = await handleToolCall('milestone_add', { name: 'v1.3', description: 'Релиз', due_date: '2026-12-31' }, testDir);
@@ -212,8 +212,8 @@ describe('MCP v1.3 — milestone CRUD', () => {
 // ============================================================
 
 describe('CLI v1.3 — milestone', () => {
-  before(() => setup());
-  after(() => cleanup());
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
 
   it('add/list/rename/remove/archive', async () => {
     runCli('milestone', 'add', 'v1.3', '-d', 'Описание', '--due-date', '2026-12-31');

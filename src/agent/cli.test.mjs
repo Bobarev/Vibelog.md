@@ -9,7 +9,7 @@
  * --output-format json) и ошибки валидации.
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -97,14 +97,14 @@ function runCli(args, env, cwd = testDir) {
 }
 
 describe('vibelog-agent CLI (VL-85)', () => {
-  before(async () => {
+  beforeAll(async () => {
     testDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-cli-'));
     mkdirSync(join(testDir, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(join(testDir, 'backlog', 'config.yml'), 'project_name: Agent Test\n', 'utf-8');
     mock = await startMockLlm('Готово');
   });
 
-  after(async () => {
+  afterAll(async () => {
     await mock.close();
     rmSync(testDir, { recursive: true, force: true });
   });

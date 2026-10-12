@@ -2,7 +2,7 @@
  * Тесты VL-35 — парсеры Telegram-команд бота.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

@@ -1,4 +1,4 @@
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
@@ -82,8 +82,8 @@ function callMcp(messages) {
 }
 
 describe('MCP-сервер', () => {
-  before(() => setup());
-  after(() => cleanup());
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
 
   it('initialize — возвращает capabilities', async () => {
     const responses = await callMcp([

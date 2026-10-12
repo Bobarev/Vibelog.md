@@ -6,7 +6,7 @@
  * изолируется (ISO_ENV), локальный user задаётся в temp-репо.
  */
 
-import { describe, it, after } from 'node:test';
+import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   existsSync,
@@ -65,7 +65,7 @@ describe('taskBranchName / taskWorktreeDir (VL-107)', () => {
 
 describe('ensureTaskWorktree — интеграция с реальным git (VL-107)', () => {
   const repos = [];
-  after(() => {
+  afterAll(() => {
     for (const r of repos) rmSync(r, { recursive: true, force: true });
   });
 
@@ -163,7 +163,7 @@ describe('ensureTaskWorktree — интеграция с реальным git (V
 
 describe('buildTaskWorktree (VL-107)', () => {
   const repos = [];
-  after(() => {
+  afterAll(() => {
     for (const r of repos) rmSync(r, { recursive: true, force: true });
   });
 

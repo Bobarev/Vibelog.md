@@ -4,7 +4,7 @@
  * Каталоги — в /tmp (findBacklogDir поднимается вверх по дереву).
  */
 
-import { describe, it, after } from 'node:test';
+import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -26,7 +26,7 @@ describe('settings (VL-34)', () => {
   const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-test-'));
   const savedEnv = process.env.TELEGRAM_BOT_TOKEN;
 
-  after(() => {
+  afterAll(() => {
     if (savedEnv === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
     else process.env.TELEGRAM_BOT_TOKEN = savedEnv;
     rmSync(testRoot, { recursive: true, force: true });
@@ -74,7 +74,7 @@ describe('settings (VL-34)', () => {
 describe('task_type_styles (VL-82)', () => {
   const stylesRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-styles-'));
 
-  after(() => {
+  afterAll(() => {
     rmSync(stylesRoot, { recursive: true, force: true });
   });
 
@@ -125,7 +125,7 @@ describe('task_type_styles (VL-82)', () => {
 describe('default_agent (VL-94)', () => {
   const agentRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-agent-'));
 
-  after(() => {
+  afterAll(() => {
     rmSync(agentRoot, { recursive: true, force: true });
   });
 
@@ -155,7 +155,7 @@ describe('default_agent (VL-94)', () => {
 describe('max_wall_time/max_requests (VL-104)', () => {
   const limitsRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-limits-'));
 
-  after(() => {
+  afterAll(() => {
     rmSync(limitsRoot, { recursive: true, force: true });
   });
 
@@ -199,7 +199,7 @@ describe('max_wall_time/max_requests (VL-104)', () => {
 describe('branch_mode (VL-107)', () => {
   const branchRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-branch-'));
 
-  after(() => {
+  afterAll(() => {
     rmSync(branchRoot, { recursive: true, force: true });
   });
 

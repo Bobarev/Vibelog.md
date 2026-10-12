@@ -5,7 +5,7 @@
  * (паттерн add-comment.test.mjs), изоляция GIT_CONFIG_GLOBAL.
  */
 
-import { describe, it, after } from 'node:test';
+import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -93,7 +93,7 @@ describe('parseNumstat (VL-88)', () => {
 describe('getGitStatus — интеграция с реальным git (VL-88)', () => {
   const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-gitstatus-test-'));
 
-  after(() => {
+  afterAll(() => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 
@@ -191,7 +191,7 @@ describe('parseGitLog (VL-90)', () => {
 describe('getGitLog — интеграция с реальным git (VL-90)', () => {
   const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-gitlog-test-'));
 
-  after(() => {
+  afterAll(() => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 

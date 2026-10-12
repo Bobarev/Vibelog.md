@@ -7,7 +7,7 @@
  * см. ручной чек-лист в implementationPlan VL-102.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { composeTurnMessages } from '../../dist/agent/interactive.js';
 

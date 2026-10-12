@@ -14,7 +14,7 @@
  * в stderr при exit 0), проверка содержимого не exit code (Catalina SIGABRT).
  */
 
-import { describe, it, after } from 'node:test';
+import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -55,7 +55,7 @@ function seed() {
 }
 
 describe('VL-9 — CLI search с фильтрами', () => {
-  after(() => cleanup());
+  afterAll(() => cleanup());
 
   it('query-режим работает без флагов (обратная совместимость)', () => {
     seed();

@@ -7,7 +7,7 @@
  * ENOENT спавна, toolsAsSpecs (текст модели при протокольной ошибке).
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -23,7 +23,7 @@ const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
 let testDir;
 let client;
 
-before(async () => {
+beforeAll(async () => {
   // Изолированный /tmp-проект: backlog/ + конфиг (паттерн server.test.mjs).
   testDir = mkdtempSync(join(tmpdir(), 'vl-agent-mcp-'));
   mkdirSync(join(testDir, 'backlog', 'tasks'), { recursive: true });
@@ -45,7 +45,7 @@ before(async () => {
   client = await McpClient.create({ bin: process.execPath, binArgs: [cliPath], cwd: testDir, env });
 });
 
-after(async () => {
+afterAll(async () => {
   await client?.close();
   rmSync(testDir, { recursive: true, force: true });
 });

@@ -5,7 +5,7 @@
  * Используют временную директорию для изоляции.
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
@@ -41,11 +41,11 @@ function run(args, opts = {}) {
 }
 
 describe('CLI — интеграционные тесты', () => {
-  before(() => {
+  beforeAll(() => {
     mkdirSync(testDir, { recursive: true });
     execFileSync('git', ['init'], { cwd: testDir, stdio: 'pipe' });
   });
-  after(() => {
+  afterAll(() => {
     if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
   });
 

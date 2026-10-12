@@ -11,7 +11,7 @@
  * stdout/stderr, проверка содержимого не exit code.
  */
 
-import { describe, it, after } from 'node:test';
+import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -51,7 +51,7 @@ function draftFiles() {
 }
 
 describe('VL-13 — CLI draft', () => {
-  after(() => cleanup());
+  afterAll(() => cleanup());
 
   it('create/list/view/edit', () => {
     fresh();

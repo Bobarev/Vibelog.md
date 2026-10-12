@@ -10,7 +10,7 @@
  * - Round-trip с форматом Backlog.md
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -100,8 +100,8 @@ describe('VL-4 — конфиг и нормализация типов', () => {
 // ============================================================
 
 describe('VL-4 — MCP: type в create/list/update', () => {
-  before(() => setup());
-  after(() => cleanup());
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
 
   it('create_task с type записывает тип', async () => {
     await handleToolCall('backlog_create_task', { title: 'Баг', type: 'bug' }, testDir);
@@ -161,8 +161,8 @@ describe('VL-4 — MCP: type в create/list/update', () => {
 // ============================================================
 
 describe('VL-4 — CLI: --type', () => {
-  before(() => setup());
-  after(() => cleanup());
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
 
   it('task create --type записывает type во frontmatter', () => {
     const out = runCli('task', 'create', 'CLI фича', '--type', 'feature');
@@ -215,8 +215,8 @@ describe('VL-4 — CLI: --type', () => {
 // ============================================================
 
 describe('VL-4 — types из конфига', () => {
-  before(() => setup(['bug']));
-  after(() => cleanup());
+  beforeAll(() => setup(['bug']));
+  afterAll(() => cleanup());
 
   it('CLI: type из кастомного конфига проходит, чужой — нет', () => {
     const ok = runCli('task', 'create', 'Своя фича', '--type', 'bug');

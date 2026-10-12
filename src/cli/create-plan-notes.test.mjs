@@ -11,7 +11,7 @@
  * stdout/stderr, проверка содержимого не exit code.
  */
 
-import { describe, it, after } from 'node:test';
+import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, rmSync, readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -53,7 +53,7 @@ function seed(createArgs) {
 }
 
 describe('VL-10 — task create --plan/--notes', () => {
-  after(() => cleanup());
+  afterAll(() => cleanup());
 
   it('create --plan/--notes записывает секции', () => {
     const id = seed(['Задача с планом', '--plan', '1. Шаг один', '--notes', 'Заметка V1']);

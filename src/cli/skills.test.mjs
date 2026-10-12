@@ -15,7 +15,7 @@
  * assert-ы на конкретные формулировки текста шаблонов удалены.
  */
 
-import { describe, it, beforeEach, after } from 'node:test';
+import { describe, it, beforeEach, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -86,7 +86,7 @@ describe('PLAN-10 — init --skills', () => {
     rmSync(testDir, { recursive: true, force: true });
     mkdirSync(testDir, { recursive: true });
   });
-  after(() => cleanup());
+  afterAll(() => cleanup());
 
   it('init без --skills — команды /vibelog:* НЕ создаются', () => {
     runCli(['init', 'Test', '--prefix', 'tst']);

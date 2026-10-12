@@ -11,7 +11,7 @@
  * - remove массива — по убыванию (без сдвига)
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -48,7 +48,7 @@ function runCli(...args) {
 }
 
 describe('VL-15 — CLI batch AC/DoD + list limit/skip', () => {
-  after(() => rmSync(cliDir, { recursive: true, force: true }));
+  afterAll(() => rmSync(cliDir, { recursive: true, force: true }));
 
   it('edit --check-ac 1,3 и --uncheck-dod 1,2', () => {
     cliFresh();
@@ -133,8 +133,8 @@ function setup() {
 }
 
 describe('VL-15 — MCP manage_ac/dod с массивами', () => {
-  before(() => setup());
-  after(() => rmSync(testDir, { recursive: true, force: true }));
+  beforeAll(() => setup());
+  afterAll(() => rmSync(testDir, { recursive: true, force: true }));
 
   it('check/uncheck с массивом index', async () => {
     const t = createTaskFile(testDir, { title: 'Массив' });

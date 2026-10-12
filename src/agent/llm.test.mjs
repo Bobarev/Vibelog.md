@@ -5,7 +5,7 @@
  * индексам, usage), non-200, фолбэк non-stream, ретраи на сетевые ошибки.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { createLlmClient } from '../../dist/agent/llm.js';

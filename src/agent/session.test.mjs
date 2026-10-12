@@ -6,7 +6,7 @@
  * Каталоги — mkdtemp в /tmp (изоляция тестов).
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,10 +25,10 @@ import {
 
 describe('session (VL-95)', () => {
   let dir;
-  before(() => {
+  beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), 'vibelog-session-'));
   });
-  after(() => {
+  afterAll(() => {
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -151,10 +151,10 @@ describe('session (VL-95)', () => {
 
 describe('метаданные сессии — meta.json (VL-110)', () => {
   let metaDir;
-  before(() => {
+  beforeAll(() => {
     metaDir = mkdtempSync(join(tmpdir(), 'vibelog-session-meta-'));
   });
-  after(() => {
+  afterAll(() => {
     rmSync(metaDir, { recursive: true, force: true });
   });
 

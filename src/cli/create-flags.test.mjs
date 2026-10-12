@@ -8,7 +8,7 @@
  * CLI — /tmp + spawnSync; MCP — in-process (in-project .test-create-flags).
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -53,7 +53,7 @@ function createAndRead(createArgs) {
 }
 
 describe('VL-16 — DoD-дефолты и --no-dod-defaults', () => {
-  after(() => rmSync(cliDir, { recursive: true, force: true }));
+  afterAll(() => rmSync(cliDir, { recursive: true, force: true }));
 
   it('create без --dod наполняет дефолты из конфига', () => {
     cliFresh();
@@ -77,7 +77,7 @@ describe('VL-16 — DoD-дефолты и --no-dod-defaults', () => {
 });
 
 describe('VL-17 — create --project/--parent/--ordinal/--final-summary', () => {
-  after(() => rmSync(cliDir, { recursive: true, force: true }));
+  afterAll(() => rmSync(cliDir, { recursive: true, force: true }));
 
   it('флаги записывают поля (round-trip)', () => {
     cliFresh();
@@ -124,7 +124,7 @@ describe('VL-17 — create --project/--parent/--ordinal/--final-summary', () => 
 });
 
 describe('VL-18 — create --draft + edit --final-summary/--ordinal', () => {
-  after(() => rmSync(cliDir, { recursive: true, force: true }));
+  afterAll(() => rmSync(cliDir, { recursive: true, force: true }));
 
   it('create --draft: черновик в drafts/, в tasks/ пусто', () => {
     cliFresh();
@@ -170,7 +170,7 @@ describe('VL-18 — create --draft + edit --final-summary/--ordinal', () => {
 // ============================================================
 
 describe('VL-69 — edit --parent и list --parent', () => {
-  after(() => rmSync(cliDir, { recursive: true, force: true }));
+  afterAll(() => rmSync(cliDir, { recursive: true, force: true }));
 
   it('edit --parent: установка, ошибка на несуществующем, сброс пустой строкой', () => {
     cliFresh();

@@ -6,7 +6,7 @@
  * с kill, abort-сигнал), grep_search и glob по фейковому дереву.
  */
 
-import { describe, it, before } from 'node:test';
+import { describe, it, beforeAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,7 +17,7 @@ const TMP = '/tmp/vibelog-agent-tools-test';
 let tools;
 let byName;
 
-before(() => {
+beforeAll(() => {
   rmSync(TMP, { recursive: true, force: true });
   mkdirSync(join(TMP, 'sub'), { recursive: true });
   mkdirSync(join(TMP, 'grep', 'sub'), { recursive: true });

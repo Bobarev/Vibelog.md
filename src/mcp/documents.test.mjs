@@ -8,7 +8,7 @@
  * - listTools() = 21 (16 + 5 document_*)
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -77,8 +77,8 @@ describe('VL-11 — document_* инструменты', () => {
 // ============================================================
 
 describe('VL-11 — MCP document_*', () => {
-  before(() => setup());
-  after(() => cleanup());
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
 
   it('create: записывает документ (doc-1, тип по умолчанию other)', async () => {
     const res = await handleToolCall('document_create', { title: 'Гайд API', content: '# API\nТекст' }, testDir);
@@ -149,8 +149,8 @@ function existsDoc(idPrefix) {
 // ============================================================
 
 describe('VL-11 — CLI doc', () => {
-  before(() => setup());
-  after(() => cleanup());
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
 
   it('create/list/view/update/search', () => {
     let out = runCli('doc', 'create', 'README проекта', '--type', 'readme', '--tags', 'main,docs');

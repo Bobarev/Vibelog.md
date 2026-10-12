@@ -4,7 +4,7 @@
  * Каталоги — в /tmp; git-окружение изолируется через GIT_CONFIG_GLOBAL.
  */
 
-import { describe, it, after } from 'node:test';
+import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, mkdtempSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -26,7 +26,7 @@ describe('project-settings (VL-45)', () => {
   // GIT_CONFIG_GLOBAL=/dev/null изолирует тест от глобального git-конфига
   const ISO_ENV = { ...process.env, HOME: ISO_HOME, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
 
-  after(() => {
+  afterAll(() => {
     rmSync(testRoot, { recursive: true, force: true });
     rmSync(ISO_HOME, { recursive: true, force: true });
   });

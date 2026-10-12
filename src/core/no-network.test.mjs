@@ -7,7 +7,7 @@
  */
 
 import '../test-setup.mjs';
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';

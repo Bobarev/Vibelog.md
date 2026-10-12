@@ -11,7 +11,7 @@
  * (findBacklogDir поднимается вверх и внутри проекта находит настоящий backlog/).
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync, writeFileSync, rmSync, mkdtempSync, chmodSync, readFileSync, realpathSync } from 'node:fs';
@@ -78,7 +78,7 @@ describe('orchestrator (VL-28)', () => {
   let task1; // для unit-тестов startPhase
   let task2; // для тестов handleApi
 
-  before(() => {
+  beforeAll(() => {
     rmSync(testRoot, { recursive: true, force: true });
     mkdirSync(join(backlogDir, 'tasks'), { recursive: true });
     writeFileSync(join(backlogDir, 'config.yml'), stringifyYaml({
@@ -103,7 +103,7 @@ describe('orchestrator (VL-28)', () => {
     process.env.VIBELOG_QWEN_BIN = stubBin;
   });
 
-  after(() => {
+  afterAll(() => {
     for (const [key, value] of Object.entries(savedEnv)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;

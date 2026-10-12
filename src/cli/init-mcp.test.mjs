@@ -12,7 +12,7 @@
  * а не exit code (на Catalina SIGABRT перехватывает коды выхода).
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -46,7 +46,7 @@ function runCli(...args) {
 }
 
 describe('VL-6 — init MCP-настройка', () => {
-  after(() => cleanup());
+  afterAll(() => cleanup());
 
   it('init добавляет mcpServers.vibelog в .qwen/settings.json', () => {
     fresh();

@@ -1,4 +1,4 @@
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -41,8 +41,8 @@ function cleanupTestDir() {
 }
 
 describe('task.mjs — модель задачи', () => {
-  before(() => setupTestDir());
-  after(() => cleanupTestDir());
+  beforeAll(() => setupTestDir());
+  afterAll(() => cleanupTestDir());
 
   it('createTask создаёт объект с дефолтами', () => {
     const config = { default_status: 'To Do' };
@@ -198,8 +198,8 @@ describe('task.mjs — модель задачи', () => {
 });
 
 describe('id.mjs — генерация ID', () => {
-  before(() => setupTestDir());
-  after(() => cleanupTestDir());
+  beforeAll(() => setupTestDir());
+  afterAll(() => cleanupTestDir());
 
   it('nextTaskId возвращает tst-1 когда задач нет', () => {
     const id = nextTaskId(testDir, 'tst');
@@ -221,7 +221,7 @@ describe('id.mjs — генерация ID', () => {
 });
 
 describe('search.mjs — поиск задач', () => {
-  before(() => {
+  beforeAll(() => {
     setupTestDir();
     // Создаём тестовые задачи напрямую в файловой системе
     const tasks = [
@@ -234,7 +234,7 @@ describe('search.mjs — поиск задач', () => {
       writeFileSync(join(tasksDir, `${t.id} - ${t.title.replace(/\s+/g, '-')}.md`), md, 'utf-8');
     }
   });
-  after(() => cleanupTestDir());
+  afterAll(() => cleanupTestDir());
 
   it('Пустой запрос → все задачи', () => {
     const results = searchTasks(testDir, '');
@@ -271,7 +271,7 @@ describe('search.mjs — поиск задач', () => {
 });
 
 describe('deps.mjs — зависимости', () => {
-  before(() => {
+  beforeAll(() => {
     setupTestDir();
     const tasks = [
       { id: 'tst-1', title: 'Base task' },
@@ -283,7 +283,7 @@ describe('deps.mjs — зависимости', () => {
       writeFileSync(join(tasksDir, `${t.id} - ${t.title.replace(/\s+/g, '-')}.md`), md, 'utf-8');
     }
   });
-  after(() => cleanupTestDir());
+  afterAll(() => cleanupTestDir());
 
   it('blockedBy возвращает зависимости', () => {
     const task2 = { id: 'tst-2', dependencies: ['tst-1'] };

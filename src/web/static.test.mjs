@@ -11,7 +11,7 @@
  * настоящий web/dist репозитория.
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -43,7 +43,7 @@ function mockRes() {
 describe('serveStatic (VL-26)', () => {
   const distDir = join(testRoot, 'dist');
 
-  before(() => {
+  beforeAll(() => {
     rmSync(testRoot, { recursive: true, force: true });
     mkdirSync(join(distDir, 'assets'), { recursive: true });
     writeFileSync(join(distDir, 'index.html'), '<!doctype html><div id="root"></div>');
@@ -52,7 +52,7 @@ describe('serveStatic (VL-26)', () => {
     writeFileSync(join(testRoot, 'secret.txt'), 'секрет');
   });
 
-  after(() => {
+  afterAll(() => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 
@@ -89,7 +89,7 @@ describe('vibelog browser + web/dist (VL-26)', () => {
   const cwd = join(testRoot, 'project'); // каталог без backlog — список задач пуст
   const reactDist = join(testRoot, 'react-dist');
 
-  before(() => {
+  beforeAll(() => {
     rmSync(testRoot, { recursive: true, force: true });
     mkdirSync(join(reactDist, 'assets'), { recursive: true });
     mkdirSync(cwd, { recursive: true });
@@ -97,7 +97,7 @@ describe('vibelog browser + web/dist (VL-26)', () => {
     writeFileSync(join(reactDist, 'assets', 'app.js'), 'console.log(1)');
   });
 
-  after(() => {
+  afterAll(() => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 

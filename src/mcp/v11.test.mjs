@@ -12,7 +12,7 @@
  * - Round-trip с Backlog.md после обновлений
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -65,8 +65,8 @@ function runCli(...args) {
 // ============================================================
 
 describe('MCP v1.1 — инструменты', () => {
-  before(() => setup());
-  after(() => cleanup());
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
 
   // --- backlog_update_task ---
 
@@ -329,8 +329,8 @@ describe('MCP v1.1 — инструменты', () => {
 // ============================================================
 
 describe('CLI v1.1 — новые флаги', () => {
-  before(() => setup());
-  after(() => cleanup());
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
 
   it('task edit --check-dod / --uncheck-dod / --remove-dod', async () => {
     const t = createTaskFile(testDir, { title: 'CLI DoD' });
@@ -387,8 +387,8 @@ describe('CLI v1.1 — новые флаги', () => {
 // ============================================================
 
 describe('Round-trip после обновлений v1.1', () => {
-  before(() => setup());
-  after(() => cleanup());
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
 
   it('Полный workflow остаётся валидным', async () => {
     const t = createTaskFile(testDir, {
