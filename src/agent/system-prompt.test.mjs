@@ -77,4 +77,20 @@ describe('buildSystemPrompt (VL-96)', () => {
       assert.equal(content, buildSystemPrompt(dir).content);
     });
   });
+
+  it('VL-117: backlog правится только через MCP — правило в базовой части промпта', () => {
+    withTmpCwd((dir) => {
+      const { content } = buildSystemPrompt(dir);
+      assert.match(content, /backlog\//, 'правило про файлы backlog/');
+      assert.match(content, /MCP-инструмент/, 'указание править через MCP-инструменты');
+      assert.match(content, /worktree/, 'предупреждение про потерю в worktree-копии');
+    });
+  });
+
+  it('VL-117: в базовой части нет упоминаний VL-N (шаблон универсален для других проектов)', () => {
+    withTmpCwd((dir) => {
+      const { content } = buildSystemPrompt(dir);
+      assert.ok(!/VL-\d+/.test(content), 'базовая часть промпта не должна содержать ID задач Vibelog');
+    });
+  });
 });
