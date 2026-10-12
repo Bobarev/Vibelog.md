@@ -1,11 +1,11 @@
 ---
 id: VL-107
 title: Параллельная разработка в git-ветках vb/vl-N с перезапуском бота
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-06 19:29'
-updated_date: '2026-10-07 00:24'
+updated_date: '2026-10-12 09:46'
 due_date: ''
 labels: []
 dependencies: []
