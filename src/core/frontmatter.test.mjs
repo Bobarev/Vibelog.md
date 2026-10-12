@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -131,83 +132,74 @@ Implement a web-based UI.`;
 });
 
 describe('Парсинг реальных файлов Backlog.md', () => {
-  it('back-200: активная задача с массивами и кавычками', async () => {
-    const filePath = join(backlogRoot, 'backlog/tasks/back-200 - Add-Claude-Code-integration-with-workflow-commands-during-init.md');
-    try {
-      const content = await readFile(filePath, 'utf-8');
-      const { data, body } = parseFrontmatter(content);
+  // refs/ не в git (worktree его не видит) — пропускаем паттерном compat-тестов.
+  // console.log в ENOENT-фолбэке НЕ использовать: stdout дочернего процесса
+  // node --test — канал сериализации тест-раннера, посторонние записи ломают
+  // десериализацию («Unable to deserialize cloned data», поймано в worktree).
+  const refsTasksDir = join(backlogRoot, 'backlog', 'tasks');
+  const refsCompletedDir = join(backlogRoot, 'backlog', 'completed');
 
-      assert.equal(data.id, 'BACK-200');
-      assert.equal(data.title, 'Add Claude Code integration with workflow commands during init');
-      assert.equal(data.status, 'To Do');
-      assert.ok(Array.isArray(data.assignee));
-      assert.ok(Array.isArray(data.labels));
-      assert.ok(Array.isArray(data.dependencies));
-      assert.equal(data.priority, 'medium');
-      assert.ok(body.includes('## Description'));
-    } catch (err) {
-      if (err.code === 'ENOENT') {
-        console.log(`  ⏭ Пропущен (файл не найден): ${filePath}`);
-      } else {
-        throw err;
-      }
+  it('back-200: активная задача с массивами и кавычками', async (t) => {
+    const filePath = join(refsTasksDir, 'back-200 - Add-Claude-Code-integration-with-workflow-commands-during-init.md');
+    if (!existsSync(filePath)) {
+      t.skip(`Оригинал Backlog.md не найден: ${filePath}`);
+      return;
     }
+    const content = await readFile(filePath, 'utf-8');
+    const { data, body } = parseFrontmatter(content);
+
+    assert.equal(data.id, 'BACK-200');
+    assert.equal(data.title, 'Add Claude Code integration with workflow commands during init');
+    assert.equal(data.status, 'To Do');
+    assert.ok(Array.isArray(data.assignee));
+    assert.ok(Array.isArray(data.labels));
+    assert.ok(Array.isArray(data.dependencies));
+    assert.equal(data.priority, 'medium');
+    assert.ok(body.includes('## Description'));
   });
 
-  it('back-100: завершённая задача', async () => {
-    const filePath = join(backlogRoot, 'backlog/completed/back-100 - Add-embedded-web-server-to-Backlog-CLI.md');
-    try {
-      const content = await readFile(filePath, 'utf-8');
-      const { data, body } = parseFrontmatter(content);
-
-      assert.equal(data.id, 'BACK-100');
-      assert.equal(data.status, 'Done');
-      assert.ok(body.includes('## Description'));
-    } catch (err) {
-      if (err.code === 'ENOENT') {
-        console.log(`  ⏭ Пропущен (файл не найден): ${filePath}`);
-      } else {
-        throw err;
-      }
+  it('back-100: завершённая задача', async (t) => {
+    const filePath = join(refsCompletedDir, 'back-100 - Add-embedded-web-server-to-Backlog-CLI.md');
+    if (!existsSync(filePath)) {
+      t.skip(`Оригинал Backlog.md не найден: ${filePath}`);
+      return;
     }
+    const content = await readFile(filePath, 'utf-8');
+    const { data, body } = parseFrontmatter(content);
+
+    assert.equal(data.id, 'BACK-100');
+    assert.equal(data.status, 'Done');
+    assert.ok(body.includes('## Description'));
   });
 
-  it('back-100.1: подзадача с parent_task_id', async () => {
-    const filePath = join(backlogRoot, 'backlog/completed/back-100.1 - Setup-React-project-structure-with-shadcn-ui.md');
-    try {
-      const content = await readFile(filePath, 'utf-8');
-      const { data, body } = parseFrontmatter(content);
-
-      assert.equal(data.id, 'BACK-100.1');
-      assert.equal(data.status, 'Done');
-      assert.equal(data.parent_task_id, 'task-100');
-      assert.ok(body.includes('## Description'));
-    } catch (err) {
-      if (err.code === 'ENOENT') {
-        console.log(`  ⏭ Пропущен (файл не найден): ${filePath}`);
-      } else {
-        throw err;
-      }
+  it('back-100.1: подзадача с parent_task_id', async (t) => {
+    const filePath = join(refsCompletedDir, 'back-100.1 - Setup-React-project-structure-with-shadcn-ui.md');
+    if (!existsSync(filePath)) {
+      t.skip(`Оригинал Backlog.md не найден: ${filePath}`);
+      return;
     }
+    const content = await readFile(filePath, 'utf-8');
+    const { data, body } = parseFrontmatter(content);
+
+    assert.equal(data.id, 'BACK-100.1');
+    assert.equal(data.status, 'Done');
+    assert.equal(data.parent_task_id, 'task-100');
+    assert.ok(body.includes('## Description'));
   });
 
-  it('back-418: задача с кавычками и references', async () => {
-    const filePath = join(backlogRoot, 'backlog/tasks/back-418 - Publish-supported-container-runtime-for-backlog-browser.md');
-    try {
-      const content = await readFile(filePath, 'utf-8');
-      const { data, body } = parseFrontmatter(content);
-
-      assert.equal(data.id, 'BACK-418');
-      assert.ok(Array.isArray(data.references));
-      assert.ok(data.references.length > 0);
-      assert.ok(data.references[0].startsWith('https://'));
-      assert.ok(body.includes('## Description'));
-    } catch (err) {
-      if (err.code === 'ENOENT') {
-        console.log(`  ⏭ Пропущен (файл не найден): ${filePath}`);
-      } else {
-        throw err;
-      }
+  it('back-418: задача с кавычками и references', async (t) => {
+    const filePath = join(refsTasksDir, 'back-418 - Publish-supported-container-runtime-for-backlog-browser.md');
+    if (!existsSync(filePath)) {
+      t.skip(`Оригинал Backlog.md не найден: ${filePath}`);
+      return;
     }
+    const content = await readFile(filePath, 'utf-8');
+    const { data, body } = parseFrontmatter(content);
+
+    assert.equal(data.id, 'BACK-418');
+    assert.ok(Array.isArray(data.references));
+    assert.ok(data.references.length > 0);
+    assert.ok(data.references[0].startsWith('https://'));
+    assert.ok(body.includes('## Description'));
   });
 });
