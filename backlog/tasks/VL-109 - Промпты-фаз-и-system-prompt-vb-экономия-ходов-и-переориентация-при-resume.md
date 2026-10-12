@@ -1,11 +1,11 @@
 ---
 id: VL-109
 title: 'Промпты фаз и system-prompt vb: экономия ходов и переориентация при resume'
-status: To Do
+status: Review
 assignee: []
 reporter: ''
 created_date: '2026-10-12 09:50'
-updated_date: '2026-10-12 09:50'
+updated_date: '2026-10-12 10:18'
 due_date: ''
 labels: []
 dependencies: []
@@ -17,7 +17,18 @@ project: ''
 parent_task_id: ''
 ordinal: 0
 documentation: []
-modified_files: []
+modified_files:
+  - templates/agent-prompt.md
+  - templates/qwen-commands/phase-1.md
+  - templates/qwen-commands/phase-2.md
+  - templates/qwen-commands/phase-3.md
+  - templates/qwen-commands/phase-close.md
+  - templates/qwen-commands/phase-comment.md
+  - templates/qwen-commands/prompt.md
+  - src/agent/system-prompt.ts
+  - src/agent/system-prompt.test.mjs
+  - src/web/phase-prompt.test.mjs
+  - CHANGELOG.md
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -41,10 +52,10 @@ P3. templates/qwen-commands/phase-2.md: перед записью плана п�
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 templates/qwen-commands/phase-*.md (spec/plan/code/close/comment/prompt) содержат блок «Экономия ходов» с 4 правилами P1
-- [ ] #2 system-prompt vb (src/agent/system-prompt.ts) содержит правила P2: одна grep-проверка якоря перед патчем; git status/diff при «Продолжи» вместо повторного исследования; предупреждение про BSD sed на macOS
-- [ ] #3 templates/qwen-commands/phase-2.md содержит правило P3 (ls-проверка существования файлов перед записью плана)
-- [ ] #4 pnpm test зелёный; renderPrompt работает без изменений (шаблоны валидны)
+- [x] #1 templates/qwen-commands/phase-*.md (spec/plan/code/close/comment/prompt) содержат блок «Экономия ходов» с 4 правилами P1
+- [x] #2 system-prompt vb (src/agent/system-prompt.ts) содержит правила P2: одна grep-проверка якоря перед патчем; git status/diff при «Продолжи» вместо повторного исследования; предупреждение про BSD sed на macOS
+- [x] #3 templates/qwen-commands/phase-2.md содержит правило P3 (ls-проверка существования файлов перед записью плана)
+- [x] #4 pnpm test зелёный; renderPrompt работает без изменений (шаблоны валидны)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -53,3 +64,25 @@ P3. templates/qwen-commands/phase-2.md: перед записью плана п�
 - [ ] #2 Документация обновлена
 - [ ] #3 Нет регрессий
 <!-- DOD:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author: @agent
+created: 2026-10-12 10:18
+---
+Фаза 3 (Code) выполнена вручную (исполнитель — Qwen Code, без headless-фазы; feat a0a3c57).
+
+Изменено:
+- templates/agent-prompt.md (новый) — базовая часть системного промпта vb вынесена из хардкода src/agent/system-prompt.ts (по запросу Pavel) + 3 правила P2: одна grep-проверка якоря перед патчем; «Продолжи» после прерывания → git status/git diff вместо повторного исследования; предупреждение про BSD sed на macOS.
+- src/agent/system-prompt.ts — чтение базовой части из md (trimEnd), throw при отсутствии шаблона (паттерн renderPrompt); AGENTS.md-поведение не изменилось.
+- templates/qwen-commands/phase-1/2/3/close/comment.md + prompt.md — раздел «Экономия ходов» (P1): верь Implementation Plan (файлы из плана не перечитывать), упоминания инцидентов — контекст, ≤2 хода на поиск недостающего файла, первая правка в первых 5–8 вызовах инструментов; в phase-2 дополнительно ls-проверка файлов плана (P3).
+- CHANGELOG.md — запись Unreleased (VL-109).
+- Тесты: src/web/phase-prompt.test.mjs (новый, 9 тестов: раздел во всех шести шаблонах, ls-правило phase-2, верь-плану phase-3, renderPrompt), src/agent/system-prompt.test.mjs (+1 тест: базовая часть из md с новыми правилами).
+
+Проверки: pnpm build (tsc strict) OK; pnpm test — 794/794.
+
+Оговорка по AC#2: правила P2 физически живут в templates/agent-prompt.md (в состав системного промпта vb входят — system-prompt.ts вставляет их как базовую часть), т.к. попутно по запросу Pavel хардкод промпта вынесен в md.
+
+Что осталось: влияние правил проверить на следующей реальной Фазе 3 vb (live-эффект); легаси-шаблоны skills (templates/qwen-commands/spec.md/plan.md/code.md для /vibelog:*) не менялись — вне AC.
+---
+<!-- COMMENTS:END -->
