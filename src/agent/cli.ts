@@ -288,14 +288,28 @@ export async function main(argv: string[]): Promise<void> {
     sessionId = createSessionId();
   }
 
-  // Метаданные сессии (VL-110): задача-владелец + cwd создания — по ним
-  // оркестратор возобновляет задачную сессию в её worktree (инцидент VL-98:
-  // reply «Продолжи» из главного cwd патчил главный репозиторий вместо
-  // worktree vb/vl-N). Только для новых задачных сессий (<фаза> <taskId>):
-  // resume/--continue продолжают существующую сессию, её мета уже записана.
-  if (isPhaseMode) {
+  // Метаданные сессии (VL-110/114): два источника taskId/phase — позиционные
+  // <фаза> <taskId> (прямой CLI-запуск, без фильтров — task_prefix
+  // конфигурируем) и env оркестратора VIBELOG_PHASE_TASK_ID/NAME (боевой
+  // путь: спавн готовым промптом, isPhaseMode=false). Resume/--continue
+  // мету не перезаписывают: сессия продолжается, мета уже записана — по
+  // ней startResume возобновляет задачу в её worktree (инцидент VL-98).
+  const isNewSession = opts.resume === undefined && !opts.continue;
+  if (isNewSession) {
     try {
-      await saveSessionMeta(sessionsDir, sessionId, { taskId: positionals[1], phase, cwd });
+      if (isPhaseMode) {
+        await saveSessionMeta(sessionsDir, sessionId, { taskId: positionals[1], phase, cwd });
+      } else {
+        // Env-путь (боевой спавн оркестратора): фильтруем мусор — только VL-N
+        const envTaskId = process.env.VIBELOG_PHASE_TASK_ID;
+        if (envTaskId && /^VL-\d+$/i.test(envTaskId)) {
+          await saveSessionMeta(sessionsDir, sessionId, {
+            taskId: envTaskId.toUpperCase(),
+            phase: process.env.VIBELOG_PHASE_NAME,
+            cwd,
+          });
+        }
+      }
     } catch (err) {
       // Ошибка меты не должна ронять фазу: resume просто пойдёт прежним путём
       console.error(`Предупреждение: метаданные сессии не записаны — ${(err as Error).message}`);

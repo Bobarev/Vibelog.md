@@ -231,7 +231,10 @@ function spawnLimitFlags(cwd: string): string[] {
  * @param agent — VL-92: qwen (дефолт) либо встроенный vibelog-agent
  * @param extraArgs — VL-93: доп. флаги сразу после промпта (--resume <id>)
  * @param worktreeTaskId — VL-110: ID задачи для worktree при resume (мета
- *   сессии); runKey задач ('VL-N') определяет worktree сам по себе
+ *   сессии); runKey задач ('VL-N') определяет worktree сам по себе.
+ *   VL-114: задачным фазам (кроме close) в spawnEnv кладутся
+ *   VIBELOG_PHASE_TASK_ID/VIBELOG_PHASE_NAME — по ним CLI пишет мету
+ *   сессии при спавне готовым промптом (isPhaseMode=false)
  */
 function spawnQwenRun(
   cwd: string,
@@ -259,6 +262,20 @@ function spawnQwenRun(
   // VL-112: close исключён — закрытие идёт в главном репо: merge ветки и
   // docs(task)-коммит backlog возможны только здесь (см. phase-close-worktree.md)
   const branchTask = /^VL-\d+$/i.test(runKey) && phase !== 'close' ? runKey : (worktreeTaskId ?? '');
+  // VL-114: задачный env нужен фазам задач независимо от worktree: CLI пишет
+  // по нему мету сессии даже когда промпт пришёл готовым (isPhaseMode=false).
+  // Close исключён (VL-112: закрытие в главном репо, его resume не должен
+  // уходить в worktree); у resume taskId берётся из worktreeTaskId (мета
+  // VL-110) — без меты resume остаётся на прежнем пути без env.
+  const phaseTaskId =
+    /^VL-\d+$/i.test(runKey) && phase !== 'close' ? runKey.toUpperCase() : (worktreeTaskId ?? '');
+  if (phaseTaskId !== '') {
+    spawnEnv = {
+      ...process.env,
+      VIBELOG_PHASE_TASK_ID: phaseTaskId,
+      VIBELOG_PHASE_NAME: phase,
+    };
+  }
   if (resolveBranchMode(cwd) && branchTask !== '') {
     let runDir: string;
     try {
@@ -269,7 +286,7 @@ function spawnQwenRun(
     runCwd = runDir;
     // MCP-сервер агента наследует cwd worktree, но backlog пишет в главный
     // репозиторий через VIBELOG_CWD (см. cli/commands/mcp.ts)
-    spawnEnv = { ...process.env, VIBELOG_CWD: cwd };
+    spawnEnv = { ...(spawnEnv ?? process.env), VIBELOG_CWD: cwd };
     prompt +=
       `\n\nРежим параллельной разработки: работаешь в git worktree ветки ${taskBranchName(branchTask)}` +
       ` (директория ${runDir}). Backlog живёт в основном репозитории — MCP уже настроен на него.` +
@@ -313,7 +330,7 @@ function spawnQwenRun(
   const limitFlags = agent === 'vb' ? spawnLimitFlags(cwd) : [];
   const child = spawn(bin, [prompt, ...extraArgs, ...limitFlags, '--approval-mode', 'yolo', '--output-format', 'json', ...phaseFlags], {
     // VL-107: runCwd — worktree ветки при branch_mode, иначе главный cwd;
-    // spawnEnv задаётся только в режиме веток (VIBELOG_CWD для MCP)
+    // spawnEnv: задачный env меты сессии (VL-114) и/или VIBELOG_CWD (branch-mode)
     cwd: runCwd,
     stdio: 'pipe',
     ...(spawnEnv ? { env: spawnEnv } : {}),

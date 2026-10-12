@@ -504,4 +504,43 @@ describe('vibelog-agent CLI (VL-85)', () => {
       rmSync(projDir, { recursive: true, force: true });
     }
   });
+  // ── VL-114: мета по env оркестратора (боевой путь спавна) ──
+
+  it('env-путь: готовый промпт + VIBELOG_PHASE_TASK_ID → мета пишется (VL-114)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-metaenv-'));
+    try {
+      const env = { ...llmEnv(), VIBELOG_PHASE_TASK_ID: 'vl-88', VIBELOG_PHASE_NAME: 'code' };
+      const { code, stdout } = await runCli(['Просто запрос', '--no-mcp'], env, projDir);
+      assert.equal(code, 0, stdout);
+      const parsed = JSON.parse(stdout.trim());
+      const meta = JSON.parse(
+        readFileSync(join(projDir, '.vibelog', 'agent-sessions', `${parsed.session_id}.meta.json`), 'utf-8')
+      );
+      assert.equal(meta.taskId, 'VL-88', 'taskId нормализован в верхний регистр');
+      assert.equal(meta.phase, 'code');
+      // realpathSync: macOS /var — симлинк на /private/var, process.cwd() физический
+      assert.equal(meta.cwd, realpathSync(projDir));
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
+  it('env-путь: resume не перезаписывает мету (VL-114)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-metares-'));
+    try {
+      const env = { ...llmEnv(), VIBELOG_PHASE_TASK_ID: 'vl-88', VIBELOG_PHASE_NAME: 'code' };
+      const first = await runCli(['Просто запрос', '--no-mcp'], env, projDir);
+      assert.equal(first.code, 0, first.stdout);
+      const sid = JSON.parse(first.stdout.trim()).session_id;
+      const metaPath = join(projDir, '.vibelog', 'agent-sessions', `${sid}.meta.json`);
+      // Ставим маркер — resume обязан оставить мету как есть
+      writeFileSync(metaPath, JSON.stringify({ taskId: 'VL-OLD', phase: 'x', cwd: 'old' }), 'utf-8');
+      const second = await runCli(['Продолжи', '--resume', sid, '--no-mcp'], env, projDir);
+      assert.equal(second.code, 0, second.stdout);
+      const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
+      assert.equal(meta.taskId, 'VL-OLD', 'мета resume-сессии не перезаписана');
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
 });

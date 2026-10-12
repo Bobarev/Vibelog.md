@@ -890,4 +890,180 @@ describe('orchestrator (VL-28)', () => {
       rmSync(codeRoot, { recursive: true, force: true });
     }
   });
+  // ── VL-114: задачный env оркестратора (мета сессии боевого пути) ──
+
+  /** Заглушка агента, фиксирующая argv/cwd и задачный env в маркере. */
+  const writeEnvStub = (dir, markerName) => {
+    const stub = join(dir, markerName);
+    writeFileSync(stub, [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      'fs.writeFileSync(process.env.VL28_STUB_MARKER, JSON.stringify({',
+      '  argv: process.argv.slice(2),',
+      '  cwd: process.cwd(),',
+      '  envPhaseTaskId: process.env.VIBELOG_PHASE_TASK_ID || null,',
+      '  envPhaseName: process.env.VIBELOG_PHASE_NAME || null,',
+      '  envCwd: process.env.VIBELOG_CWD || null,',
+      '}));',
+      "fs.writeSync(1, 'stub env\\n');",
+      'process.exit(0);',
+      '',
+    ].join('\n'), 'utf-8');
+    chmodSync(stub, 0o755);
+    return stub;
+  };
+
+  it('startPhase: задачный env в spawnEnv (VL-114)', async () => {
+    const envRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-env-'));
+    mkdirSync(join(envRoot, 'backlog'), { recursive: true });
+    writeFileSync(join(envRoot, 'backlog', 'config.yml'), 'project_name: Env Test\n', 'utf-8');
+    process.env.VIBELOG_QWEN_BIN = writeEnvStub(envRoot, 'env-stub.cjs');
+    process.env.VL28_STUB_MARKER = join(envRoot, 'marker-env.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startPhase(envRoot, 'VL-88', 'code');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-88');
+      assert.equal(run.exitCode, 0);
+      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      assert.equal(m.envPhaseTaskId, 'VL-88', 'VIBELOG_PHASE_TASK_ID передаётся без worktree');
+      assert.equal(m.envPhaseName, 'code', 'VIBELOG_PHASE_NAME = фаза');
+      assert.equal(m.envCwd, null, 'без branch-mode VIBELOG_CWD не задаётся');
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(envRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('startPrompt: задачный env не передаётся (VL-114)', async () => {
+    const envRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-env0-'));
+    mkdirSync(join(envRoot, 'backlog'), { recursive: true });
+    writeFileSync(join(envRoot, 'backlog', 'config.yml'), 'project_name: Env Prompt\n', 'utf-8');
+    process.env.VIBELOG_QWEN_BIN = writeEnvStub(envRoot, 'env0-stub.cjs');
+    process.env.VL28_STUB_MARKER = join(envRoot, 'marker-env0.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startPrompt(envRoot, 'привет');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('prompt');
+      assert.equal(run.exitCode, 0);
+      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      assert.equal(m.envPhaseTaskId, null, '/prompt не задачная фаза — env нет');
+      assert.equal(m.envPhaseName, null);
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(envRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('startPhase: close не получает задачный env (VL-112-гард, VL-114)', async () => {
+    const envRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-envc-'));
+    mkdirSync(join(envRoot, 'backlog'), { recursive: true });
+    writeFileSync(join(envRoot, 'backlog', 'config.yml'), 'project_name: Env Close\n', 'utf-8');
+    process.env.VIBELOG_QWEN_BIN = writeEnvStub(envRoot, 'envc-stub.cjs');
+    process.env.VL28_STUB_MARKER = join(envRoot, 'marker-envc.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startPhase(envRoot, 'VL-88', 'close');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-88');
+      assert.equal(run.exitCode, 0);
+      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      assert.equal(m.envPhaseTaskId, null, 'close всегда в главном репо — env нет (VL-112)');
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(envRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('startResume с worktreeTaskId: env несёт taskId задачи (VL-114)', async () => {
+    const wtRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-wt2-'));
+    const git = (args) => spawnSync('git', ['-C', wtRoot, ...args], { encoding: 'utf-8' });
+    git(['init', '-q']);
+    git(['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+    mkdirSync(join(wtRoot, 'backlog'), { recursive: true });
+    writeFileSync(join(wtRoot, 'backlog', 'config.yml'), 'project_name: WT Env\n', 'utf-8');
+    mkdirSync(join(wtRoot, '.vibelog', 'agent-sessions'), { recursive: true });
+    writeFileSync(join(wtRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    const wtPath = join(wtRoot, '.vibelog', 'worktrees', 'vl-77');
+    writeFileSync(
+      join(wtRoot, '.vibelog', 'agent-sessions', 'agent-777.meta.json'),
+      JSON.stringify({ taskId: 'VL-77', phase: 'code', cwd: wtPath }),
+      'utf-8'
+    );
+    process.env.VIBELOG_QWEN_BIN = writeEnvStub(wtRoot, 'wt2-stub.cjs');
+    process.env.VL28_STUB_MARKER = join(wtRoot, 'marker-wt2.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startResume(wtRoot, 'agent-777', 'продолжи');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('resume');
+      assert.equal(run.exitCode, 0);
+      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      assert.equal(m.envPhaseTaskId, 'VL-77', 'resume с worktreeTaskId несёт taskId задачи');
+      assert.equal(m.envPhaseName, 'prompt');
+      assert.equal(m.envCwd, wtRoot, 'branch-mode: VIBELOG_CWD — главный репо');
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(wtRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('E2E: оркестраторный спавн пишет meta.json сессии (VL-114)', async () => {
+    // Настоящий агент + мок-LM (паттерн VL-85): доказывает, что боевой путь
+    // спавна готовым промптом создаёт мету — дыра VL-110 закрыта end-to-end
+    const llmServer = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Готово-E2E' } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      });
+    });
+    await new Promise((r) => llmServer.listen(0, '127.0.0.1', r));
+    const llmPort = llmServer.address().port;
+    const agentBin = join(__dirname, '..', '..', 'bin', 'vibelog-agent.mjs');
+    const keys = ['VIBELOG_QWEN_BIN', 'VIBELOG_LLM_BASE_URL', 'VIBELOG_LLM_API_KEY', 'VIBELOG_LLM_MODEL', 'VIBELOG_BIN', 'VIBELOG_PHASE_TASK_ID', 'VIBELOG_PHASE_NAME'];
+    const saved = {};
+    for (const key of keys) saved[key] = process.env[key];
+    process.env.VIBELOG_QWEN_BIN = agentBin;
+    process.env.VIBELOG_LLM_BASE_URL = `http://127.0.0.1:${llmPort}/v1`;
+    process.env.VIBELOG_LLM_API_KEY = 'test';
+    process.env.VIBELOG_LLM_MODEL = 'test-model';
+    process.env.VIBELOG_BIN = join(testRoot, 'no-such-vibelog');
+    delete process.env.VIBELOG_PHASE_TASK_ID;
+    delete process.env.VIBELOG_PHASE_NAME;
+    try {
+      const res = startPhase(testRoot, 'VL-88', 'comment');
+      assert.equal(res.started, true);
+      const run = await waitDone('VL-88', 8000);
+      assert.equal(run.exitCode, 0);
+      assert.equal(run.result?.result, 'Готово-E2E');
+      const sid = run.result?.session_id ?? '';
+      assert.match(sid, /^agent-/);
+      const metaPath = join(testRoot, '.vibelog', 'agent-sessions', `${sid}.meta.json`);
+      assert.ok(existsSync(metaPath), `нет meta.json: ${metaPath}`);
+      const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
+      assert.equal(meta.taskId, 'VL-88', 'боевой путь пишет taskId задачи');
+      assert.equal(meta.phase, 'comment');
+      assert.equal(meta.cwd, realpathSync(testRoot));
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await new Promise((r) => llmServer.close(r));
+    }
+  });
 });
