@@ -441,3 +441,104 @@ describe('runLoop guard пустого финального ответа (VL-110
     assert.equal(res.messages.at(-1).role, 'assistant');
   });
 });
+
+describe('runLoop guard по намерению (VL-119)', () => {
+  const INTENT = 'Приступаю к реализации… уточню якоря.';
+
+  it('4 хода с одним текстом и РАЗНЫМИ tool-вызовами → fail «Зацикливание», 4-й не выполняется', async () => {
+    const { spec, state: toolState } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: INTENT, toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: INTENT, toolCalls: [{ id: 'c2', name: 't', arguments: { x: 2 } }] },
+      { text: INTENT, toolCalls: [{ id: 'c3', name: 't', arguments: { x: 3 } }] },
+      { text: INTENT, toolCalls: [{ id: 'c4', name: 't', arguments: { x: 4 } }] },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, true);
+    assert.match(res.result, /Зацикливание/);
+    assert.match(res.result, /4 ходов подряд/);
+    assert.match(res.result, /намерением/);
+    // Сигнатурный детектор VL-83 молчит (аргументы разные) — сработал
+    // только guard намерений; 4-й ход не выполнен (guard ДО tool-вызовов).
+    assert.equal(toolState.calls, 3);
+  });
+
+  it('меняющийся текст — нет срабатывания, финал достигнут', async () => {
+    const { spec, state: toolState } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: 'шаг 1: уточню якоря', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: 'шаг 2: прочитаю файлы', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 2 } }] },
+      { text: 'шаг 3: внесу правки', toolCalls: [{ id: 'c3', name: 't', arguments: { x: 3 } }] },
+      { text: 'шаг 4: соберу проект', toolCalls: [{ id: 'c4', name: 't', arguments: { x: 4 } }] },
+      { text: 'шаг 5: прогоню тесты', toolCalls: [{ id: 'c5', name: 't', arguments: { x: 5 } }] },
+      { text: 'итог' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false);
+    assert.equal(res.result, 'итог');
+    assert.equal(toolState.calls, 5);
+  });
+
+  it('порог: 3 хода с одинаковым текстом + финал → без fail (ниже порога 4)', async () => {
+    const { spec, state: toolState } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: INTENT, toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: INTENT, toolCalls: [{ id: 'c2', name: 't', arguments: { x: 2 } }] },
+      { text: INTENT, toolCalls: [{ id: 'c3', name: 't', arguments: { x: 3 } }] },
+      { text: 'итог' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false);
+    assert.equal(res.result, 'итог');
+    assert.equal(toolState.calls, 3);
+  });
+
+  it('регресс VL-83/103: пустой промежуточный текст не триггерит guard', async () => {
+    const { spec, state: toolState } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 2 } }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 't', arguments: { x: 3 } }] },
+      { text: '', toolCalls: [{ id: 'c4', name: 't', arguments: { x: 4 } }] },
+      { text: '', toolCalls: [{ id: 'c5', name: 't', arguments: { x: 5 } }] },
+      { text: 'итог' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false);
+    assert.equal(res.result, 'итог');
+    assert.equal(toolState.calls, 5);
+  });
+
+  it('нормализация: тексты, отличающиеся только пробелами/переносами → fail', async () => {
+    const { spec } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: 'Приступаю.\nУточню якоря.', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: '  Приступаю.  Уточню   якоря. ', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 2 } }] },
+      { text: 'Приступаю. Уточню якоря.', toolCalls: [{ id: 'c3', name: 't', arguments: { x: 3 } }] },
+      { text: 'Приступаю.\tУточню якоря.', toolCalls: [{ id: 'c4', name: 't', arguments: { x: 4 } }] },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, true);
+    assert.match(res.result, /Зацикливание/);
+    assert.match(res.result, /намерением/);
+  });
+
+  it('контракт resume VL-103: onMessage видит fail-assistant, транскрипт им заканчивается', async () => {
+    const { spec } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: INTENT, toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: INTENT, toolCalls: [{ id: 'c2', name: 't', arguments: { x: 2 } }] },
+      { text: INTENT, toolCalls: [{ id: 'c3', name: 't', arguments: { x: 3 } }] },
+      { text: INTENT, toolCalls: [{ id: 'c4', name: 't', arguments: { x: 4 } }] },
+    ]);
+    const seen = [];
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec], onMessage: (m) => seen.push(m) });
+    assert.equal(res.is_error, true);
+    // Последнее сообщение цикла — assistant с текстом ошибки (контракт VL-103)
+    assert.equal(res.messages.at(-1).role, 'assistant');
+    assert.match(res.messages.at(-1).content, /Зацикливание/);
+    // onMessage увидел это сообщение (транскрипт завершён штатно)
+    assert.equal(seen.at(-1).role, 'assistant');
+    assert.match(seen.at(-1).content, /Зацикливание/);
+  });
+});
