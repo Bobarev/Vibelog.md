@@ -29,8 +29,10 @@
 
 5. После успешного merge удали worktree и ветку:
    git worktree remove {{worktreeDir}}
+   - remove отказался «contains modified or untracked files» — посмотри git status {{worktreeDir}} --short:
+     в worktree ТОЛЬКО untracked-симлинки node_modules/refs (их кладёт туда оркестратор; это ссылки на главный репозиторий, данные не теряются) — удали с force: git worktree remove --force {{worktreeDir}};
+     есть modified-файлы или иной мусор — НЕ удаляй силой, упомяни в отчёте.
    git branch -d {{branch}}
-   - worktree remove отказался — не удаляй силой, упомяни в отчёте.
    - branch -d отказался (ветка не считается слитой) — перепроверь шаг 4, упомяни в отчёте.
 
 6. Отметь реально выполненный DoD задачи:
