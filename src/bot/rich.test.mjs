@@ -488,11 +488,11 @@ describe('renderTasksRich (VL-82)', () => {
     assert.ok(md.indexOf('<b>VL-2</b>') < md.indexOf('<b>VL-1</b>'));
   });
 
-  it('tg-button-row: data="task:VL-N", текст кнопки = ID', () => {
+  it('tg-button-row: data="task:VL-N", текст кнопки = номер без префикса (VL-128)', () => {
     const md = renderTasksRich([task(), task({ id: 'VL-7' })], {});
     assert.ok(md.includes('<tg-button-row>'));
-    assert.ok(md.includes('<tg-button type="callback_data" data="task:VL-1">VL-1</tg-button>'));
-    assert.ok(md.includes('<tg-button type="callback_data" data="task:VL-7">VL-7</tg-button>'));
+    assert.ok(md.includes('<tg-button type="callback_data" data="task:VL-1">1</tg-button>'));
+    assert.ok(md.includes('<tg-button type="callback_data" data="task:VL-7">7</tg-button>'));
   });
 
   it('стили по типу: bug→danger, feature→success, enhancement→primary, epic→primary', () => {

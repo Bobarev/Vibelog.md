@@ -441,7 +441,11 @@ export function renderTasksRich(
     // Telegram покажет кнопку в дефолтном стиле
     const styleAttr =
       style !== undefined && VALID_TASK_STYLES.includes(style) ? ` style="${style}"` : '';
-    return `<tg-button type="callback_data"${styleAttr} data="task:${t.id}">${t.id}</tg-button>`;
+    // Подпись — только номер задачи без префикса (VL-128): на узкой кнопке
+    // «VL-128» текст не помещался, «128» читается. Callback data остаётся
+    // полным task:<id> — ветка task: в handlers.ts не меняется.
+    const label = t.id.split('-').pop() ?? t.id;
+    return `<tg-button type="callback_data"${styleAttr} data="task:${t.id}">${label}</tg-button>`;
   });
   // В ряду /tasks максимум 5 кнопок (TASK_BUTTONS_PER_ROW, VL-128):
   // при 8 подписи-ID узкие и текст не виден. 5 < 8 (BUTTONS_PER_ROW,
