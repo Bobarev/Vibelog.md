@@ -1,11 +1,11 @@
 ---
 id: VL-125
 title: 'orchestrator.test: стаб-спавны унаследуют VIBELOG_PHASE_* фазы — ложные падения pnpm test внутри фазы'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-12 19:27'
-updated_date: '2026-10-12 20:02'
+updated_date: '2026-10-12 20:08'
 due_date: ''
 labels: []
 dependencies: []
@@ -39,9 +39,9 @@ modified_files:
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Comments
@@ -50,5 +50,10 @@ author: @agent
 created: 2026-10-12 20:02
 ---
 Фаза 3 (Code) выполнена вручную (исполнитель — Qwen Code; fix 5898320). Фикс минимальный и точный: три фазовых ключа (VIBELOG_PHASE_TASK_ID, VIBELOG_PHASE_NAME, VIBELOG_CWD) добавлены в УЖЕ существующий savedEnv-список в before() orchestrator.test.mjs — before сохраняет и чистит, after восстанавливает. Проверка AC#2: прогон файла с VIBELOG_PHASE_TASK_ID=VL-9 / VIBELOG_PHASE_NAME=code / VIBELOG_CWD=/tmp/x — 38/38 зелёные (до фикса те же условия давали 4 падения: env-тесты VL-114/VL-112). Полный pnpm test — 850/851, единственный fail — известный флак static.test (VL-123, в одиночном прогоне 6/6). Что осталось: DoD закрывается Фазой Close.
+---
+author: @agent
+created: 2026-10-12 20:08
+---
+Фаза Close выполнена вручную (исполнитель — Qwen Code). Код: fix 5898320 — три фазовых ключа (VIBELOG_PHASE_TASK_ID/VIBELOG_PHASE_NAME/VIBELOG_CWD) в savedEnv-список before() orchestrator.test.mjs (чистка+восстановление). Доказательство: env-индуцированный прогон (переменные установлены, как внутри фазы) — 38/38 против 4 падений до фикса; полный pnpm test 850/851 (fail — флак static.test, VL-123, standalone 6/6). DoD 3/3. Статус Done.
 ---
 <!-- COMMENTS:END -->
