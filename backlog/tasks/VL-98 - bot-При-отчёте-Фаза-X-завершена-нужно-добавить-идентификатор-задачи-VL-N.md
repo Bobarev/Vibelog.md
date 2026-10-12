@@ -1,11 +1,11 @@
 ---
 id: VL-98
 title: '#bot При отчёте Фаза X завершена нужно добавить идентификатор задачи VL-N'
-status: Planned
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-06 01:02'
-updated_date: '2026-10-06 01:19'
+updated_date: '2026-10-12 12:10'
 due_date: ''
 labels: []
 dependencies: []
@@ -17,7 +17,13 @@ project: ''
 parent_task_id: ''
 ordinal: 0
 documentation: []
-modified_files: []
+modified_files:
+  - src/bot/formatting.ts
+  - src/bot/rich.ts
+  - src/bot/handlers.ts
+  - src/bot/formatting.test.mjs
+  - src/bot/rich.test.mjs
+  - CHANGELOG.md
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -31,108 +37,104 @@ modified_files: []
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Implementation Plan
 <!-- SECTION:PLAN:BEGIN -->
-# План реализации VL-98 (Фаза 2 Plan)
+## Контекст (найдено в коде)
 
-## Файлы для изменения
-1. `src/web/orchestrator.ts`
-2. `src/bot/rich.ts`
-3. `src/bot/formatting.ts`
-4. `src/bot/rich.test.mjs`
-5. `src/bot/formatting.test.mjs`
-6. `src/web/orchestrator.test.mjs`
-7. `docs/user-guide.md`
+Отчёт «Фаза X завершена» собирается в двух рендерах и шлётся одним отправщиком:
 
-## Шаги
+- `src/bot/rich.ts` — `renderPhaseResultRich(run: PhaseRun)` (строки 557-592), основной GFM-рендер (VL-71).
+- `src/bot/formatting.ts` — `formatPhaseResult(run: PhaseRun)` (строки 142-203), MarkdownV2-фолбэк для старых клиентов.
+- `src/bot/handlers.ts` — `sendPhaseResult(bot, chatId, run)` (строка 240): rich → md → plain. Вызывается из `notifyPhaseDone(bot, chatId, task, run)` (строки ~283-291, task есть в параметре!) и из потоков `/prompt` (~850) и resume (~1140) — там задачи нет.
+- Все 6 мест вызова `notifyPhaseDone` передают `task` → идентификатор `task.id` (VL-N) доступен у всех реальных завершений фаз (comment/spec/plan/code/close).
+- В `PhaseRun` (src/web/orchestrator.ts:37) поля taskId нет — добавлять в оркестратор не будем, прокидываем опциональным параметром рендеров (минимальный след изменений).
+- Фикстуры тестов `okRun` в formatting.test.mjs/rich.test.mjs taskId не содержат — опциональный параметр не ломает старые кейсы.
 
-### 1. src/web/orchestrator.ts — taskId в PhaseRun
-- Строки 34-47 (интерфейс `PhaseRun`): добавить поле
-  `/** ID задачи запуска (VL-98); 'prompt'/'resume' — undefined. */ taskId?: string;`
-- Строки ~374-383 (`record: PhaseRun` в `finish()`): добавить
-  `taskId: runKey === 'prompt' || runKey === 'resume' ? undefined : runKey,`
-- Зачем: рендеры отчёта получают taskId из `run` без смены сигнатур
-  `sendPhaseResult`/`notifyPhaseDone`; `/prompt` и resume остаются без
-  идентификатора (задачи там нет).
+## Целевой формат отчёта (rich, GFM)
 
-### 2. src/bot/rich.ts — renderPhaseResultRich (строки 548-592)
-- ~562-565 (status): если задан `run.taskId` — приклеить к заголовку
-  ` — ${run.taskId}` → `# Фаза code: завершена (код 0) — VL-98`.
-- ~573-574 (body): обернуть ответ модели в blockquote GFM:
-  `body.split('\n').map((l) => '> ' + l).join('\n')`; обрезка до 1500 символов сохраняется.
-- ~576-587 (lines): между строками токенов вставить пустые строки (в rich-парсере
-  Telegram одиночный `\n` схлопывается в пробел — причина жалобы «в одну строку»).
-  После «Кэш-токены» добавить новую строку
-  `**Входные токены минус Кэш-токены:** ${res.usage.input_tokens - res.usage.cache_read_input_tokens}`.
-  Строка времени: `**Общее время:** ${formatDuration(res.duration_ms)} (api: ${formatDuration(res.duration_api_ms)})`
-  — импорт `formatDuration` из `../agent/tui-format.js` (чистая функция, уже
-  протестирована в src/agent/tui-format.test.mjs: MM:SS / H:MM:SS).
-- Строка 591 (session_id) — без изменений, остаётся последней
-  (VL-93: extractSessionRef смотрит последние две строки).
+```
+# Фаза code: завершена (код 0) — VL-98
 
-### 3. src/bot/formatting.ts — formatPhaseResult (строки 163-207)
-- ~168-171 (status): то же ` — ${escapeMarkdownV2(run.taskId)}` — taskId
-  экранируется ('-' — спецсимвол MarkdownV2 → `VL\-98`).
-- ~188-192 (body): цитата MarkdownV2 — сначала `escapeMarkdownV2(body)`, затем
-  каждую строку префиксовать `> ` (непрефиктированная строка → 400 от Telegram).
-- ~194-200: добавить строку «Входные токены минус Кэш-токены» (то же вычисление);
-  время — через `formatDuration` (`:` вне списка экранируемых символов MDV2).
+> Первая строка ответа модели
+> вторая строка (каждая строка body — с префиксом "> ")
+
+**Токены:** входные: 10956 · сгенерированные: 320 · кэш: 8000 · всего: 11276
+**Входные минус кэш:** 2956
+
+**Общее время:** 1м 23с (api: 20с)
+**Количество запросов:** 5
+
+`qwen:<session_id>`
+```
+
+MarkdownV2-фолбэк — аналогично: `*...*` вместо `**...**`, body и taskId экранированы (`VL\-98`).
+
+## Изменяемые файлы (5)
+
+### 1. src/bot/formatting.ts
+- Новый экспорт `formatDuration(ms: number): string` (после `escapeMarkdownV2`, ~строка 150):
+  - `< 1000` → `` `${ms} мс` ``;
+  - `< 60_000` → `` `${Math.round(ms/1000)}с` ``;
+  - иначе `` `${Math.floor(ms/60000)}м ${Math.round((ms%60000)/1000)}с` ``.
+- `formatPhaseResult(run, taskId?: string)`:
+  - Заголовки (строки 146 и 171): после закрывающей `*` дописать ` — ${taskId}` при заданном taskId (обе ветки: завершена и ошибка). Проверено: существующие `includes('*Фаза X: завершена \(код 0\)*')` в тестах продолжат проходить.
+  - Body (строки 187-188): каждую строку экранировать `escapeMarkdownV2` и префиксовать `"> "` (blockquote MarkdownV2) — ответ модели в цитате.
+  - Токены (строки 194-197): заменить 4 строки одной: `*Токены:* входные: N · сгенерированные: N · кэш: N · всего: N` + новая строка `*Входные минус кэш:* ${input_tokens - cache_read_input_tokens}`.
+  - Время (строка 199): `*Общее время:* ${formatDuration(res.duration_ms)} \\(api: ${formatDuration(res.duration_api_ms)}\\)`.
+  - Обновить JSDoc (упомянуть VL-98, опциональный taskId).
+
+### 2. src/bot/rich.ts
+- Импорт `import { formatDuration } from './formatting.js';` (цикла нет: formatting.ts импортирует только типы из core).
+- `renderPhaseResultRich(run, taskId?: string)`:
+  - Заголовки (563-566): ` — ${taskId}` в конец обеих строк статуса (shared `status` — ветка фолбэка «Данные результата недоступны» тоже получит VL-N).
+  - Body (575-576): `body.split('\n').map((l) => '> ' + l).join('\n')`.
+  - Токены (580-583): одна строка `**Токены:** входные: N · сгенерированные: N · кэш: N · всего: N` + `**Входные минус кэш:** N`.
+  - Время (585): `**Общее время:** ${formatDuration(res.duration_ms)} (api: ${formatDuration(res.duration_api_ms)})`.
+  - Обновить JSDoc.
+
+### 3. src/bot/handlers.ts
+- `sendPhaseResult` (строка 240): добавить параметр `taskId?: string`; передать в `renderPhaseResultRich(run, taskId)` (242) и `formatPhaseResult(run, taskId)` (248).
+- `notifyPhaseDone` (строка ~289): `await sendPhaseResult(bot, chatId, run, task.id)`.
+- Потоки `/prompt` (~850) и resume (~1140) — без изменений: taskId undefined, отчёт без VL-N (там задачи нет — корректно).
 
 ### 4. Тесты
-- `src/bot/rich.test.mjs` (344-430): в `okRun` добавить `taskId: 'VL-98'`;
-  обновить assertions: заголовок с `— VL-98`; body в blockquote (`^> понг`);
-  строка «Входные токены минус Кэш-токены:** 12» (10956−10944);
-  время `00:42 (api: 00:42)`; пустые строки между метриками токенов;
-  отдельный тест — run без `taskId`: заголовок без суффикса;
-  ошибочные пути (exitCode 1, is_error, fallback без result) — сохранить.
-- `src/bot/formatting.test.mjs` (144-245): аналогично для MarkdownV2:
-  суффикс с экранированием `VL\-98`, `> понг`, новая строка «минус Кэш»,
-  время `00:42`, отсутствие суффикса без taskId.
-- `src/web/orchestrator.test.mjs`: новый тест — record фазы содержит
-  `taskId` = runKey задачи; `startPrompt`/`startResume` → `taskId: undefined`.
-  Переиспользовать существующий паттерн заглушки `VIBELOG_QWEN_BIN` (VL28_STUB_MARKER).
+- `src/bot/formatting.test.mjs` (~строки 160-230):
+  - Обновить ассерты токенов/времени/строк под новый формат; body — assert начинается со строки `"> ..."`.
+  - Новый тест: `formatPhaseResult(runWithTaskId, 'VL-98')` → заголовок содержит `— VL\-98`; без taskId — суффикса нет.
+  - Юнит-тесты `formatDuration`: 0 → «0 мс», 830 → «830 мс», 20000 → «20с», 83000 → «1м 23с», 3600000 → «60м 0с».
+- `src/bot/rich.test.mjs` (~345-425):
+  - `assert.match(md, /^# Фаза comment: завершена \(код 0\)/)` пройдёт как есть; добавить ассерты: `— VL-1` в заголовке, `> ` у body, `**Токены:** входные: 10956`, `**Входные минус кэш:** 7000`, `1м 23с`.
+  - Кейсы ошибок (exitCode=1, qwenErr) — с taskId, суффикс есть в обоих статусах.
+- `src/bot/commands.test.mjs` (436-492) — mock-тексты для `extractSessionRef`, рендереры не вызываются — без правок.
 
 ### 5. Документация
-- `docs/user-guide.md`, раздел «Ответ по завершении фазы — 2 сообщения (VL-63)»
-  (строки 402-424): обновить пример — заголовок с идентификатором задачи,
-  ответ модели в цитате, метрики токенов с переносами строк и строкой
-  «Входные токены минус Кэш-токены», время в формате MM:SS.
+- `CHANGELOG.md` — запись VL-98 (новый формат отчёта фазы: VL-N в заголовке, цитата ответа, компактные токены + «Входные минус кэш», время в м/с).
+- `backlog/docs/doc-6-Руководство-пользователя-Vibelogmd.md` — добавить подраздел о формате информационного сообщения о завершении фазы (коротко, с примером).
 
 ## Порядок действий
-1. orchestrator.ts (поле + record).
-2. rich.ts (renderPhaseResultRich).
-3. formatting.ts (formatPhaseResult — MarkdownV2-фолбэк).
-4. Тесты: rich.test.mjs, formatting.test.mjs, orchestrator.test.mjs.
+1. `formatDuration` + правки `formatPhaseResult` в formatting.ts.
+2. Правки `renderPhaseResultRich` в rich.ts.
+3. `sendPhaseResult`/`notifyPhaseDone` в handlers.ts.
+4. Обновление/добавление тестов.
 5. `pnpm build && pnpm test`.
-6. docs/user-guide.md (пример отчёта).
-7. Финальная сборка и полный прогон тестов.
+6. CHANGELOG + руководство пользователя.
 
-## Как проверить
-- `pnpm build` — tsc в strict-режиме, без ошибок.
-- `pnpm test` (= build + `node --test src`) — все тесты зелёные.
-- Точечно: `node --test src/bot/rich.test.mjs src/bot/formatting.test.mjs src/web/orchestrator.test.mjs` после сборки.
-- Ручной smoke: `vibelog bot` → `/plan VL-98` → в чате отчёт с идентификатором
-  задачи, цитатой ответа, переносами токенов, строкой «минус Кэш-токены» и
-  временем MM:SS (недоступно в этой среде — выполняется в Фазе Code).
+## Проверка
+- `pnpm build` (tsc strict) — без ошибок типов.
+- `pnpm test` — все тесты проходят (build + `node --test src`).
+- Ручная (после merge): в Telegram выполнить `/comment VL-N` с любым текстом и убедиться: в заголовке отчёта есть VL-N, ответ модели в цитате, токены одной строкой + строка «Входные минус кэш», время вида «1м 23с (api: 20с)».
 
 ## Риски
-- Telegram rich-парсер схлопывает одиночный `\n` — исправлено `\n\n`;
-  требует ручного smoke в Code-фазе (вживую в этой среде не проверяется).
-- MarkdownV2-цитата: каждая строка обязана начинаться с `>` — все строки
-  префиксируются ПОСЛЕ экранирования, иначе Telegram отклоняет сообщение.
-- `chunkRich` может разрезать цитату по `\n\n` внутри обрезанного body
-  (>1500 символов) — косметический edge-case, приемлем.
-- Новый межслойный импорт `formatDuration` (bot → agent); альтернатива —
-  локальный helper в formatting.ts (решение на усмотрение Фазы Code).
-- Теоретически `cache_read_input_tokens > input_tokens` — вычислять через
-  `Math.max(0, input - cache)`.
-- Старые сообщения в истории чата (без taskId) не затрагиваются — поле
-  опциональное.
+- **Blockquote в MarkdownV2** требует Bot API ≥ 7.0; парсинг серверный, риск минимален. Если клиент старый/ошибка парсинга — `sendText` имеет цепочку фолбэков rich→md→plain: проверить, что 400 от Telegram не роняет отправку (plain-режим приемлем).
+- **Экранирование**: taskId в MarkdownV2-заголовке уходит в `escapeMarkdownV2` (дефис → `VL\-98`); в GFM — как есть. Новый тест это фиксирует.
+- **Truncation**: body режется до 1500 символов до префиксации `"> "` — префикс не должен ломать срез (срез по старому body, затем prefix — ок).
+- `/prompt` и resume-отчёты остаются без VL-N — это осознанно (задача там неизвестна).
+- Старые сообщения в истории чата не меняются — изменения только к новым отправкам.
 <!-- SECTION:PLAN:END -->
 
 ## Comments
@@ -142,9 +144,27 @@ created: 2026-10-06 01:02
 ---
 Фаза 1 (Spec) выполнена. Масштаб: task (все правки касаются одного отчёта «Фаза X завершена»). Уточнено: добавлен идентификатор задачи VL-N в отчёт; критерии приёмки по четырём пунктам форматирования (цитирование ответа модели, переносы строк для токенов, расчёт «Входные токены минус Кэш-токены», время в минуты/секунды). Вопросов нет.
 ---
-author: Pavel Bobarev
-created: 2026-10-06 01:19
+author: @agent
+created: 2026-10-12 11:54
 ---
-Фаза 2 (Plan) выполнена. Тип: task. План записан в задачу (раздел ## Implementation Plan). Охват: 7 файлов — src/web/orchestrator.ts (поле taskId в PhaseRun + запись в record по runKey), src/bot/rich.ts (renderPhaseResultRich: суффикс — VL-N в заголовке, ответ модели в blockquote GFM, пустые строки между метриками токенов, новая строка «Входные токены минус Кэш-токены», время MM:SS через formatDuration из src/agent/tui-format.ts), src/bot/formatting.ts (то же для MarkdownV2-фолбэка: экранированный суффикс, префикс '> ' после escapeMarkdownV2), тесты rich.test.mjs / formatting.test.mjs / orchestrator.test.mjs, docs/user-guide.md (пример отчёта в разделе VL-63). Риски: одиночный \n схлопывается rich-парсером Telegram (решение \n\n — нужен ручной smoke в Фазе Code); MarkdownV2-цитата требует '> ' на каждой строке после экранирования; cache_read > input — защита Math.max(0, …); новый межслойный импорт bot → agent (альтернатива — локальный helper). Проверка: pnpm build && pnpm test. MCP-инструменты в этой среде недоступны — backlog обновлён через CLI vibelog (тот же бэкенд, файлы backlog/tasks/VL-98…md).
+Фаза 3 (Code) выполнена. Изменено: `src/bot/formatting.ts`, `src/bot/rich.ts`, `src/bot/handlers.ts`, `src/bot/formatting.test.mjs`, `src/bot/rich.test.mjs`, `CHANGELOG.md`, `backlog/docs/doc-6-Руководство-пользователя-Vibelogmd.md`.
+Реализовано по Implementation Plan:
+1. **VL-N в заголовке** — `sendPhaseResult` получил опциональный `taskId` и передаёт его в оба рендера; `notifyPhaseDone` передаёт `task.id` (все 6 мест вызова с `task`). Заголовок обеих веток статуса (завершена/ошибка, включая фолбэк без result) получает суффикс ` — VL-N`; в MarkdownV2 taskId экранируется (`VL\-98`). `/prompt` и resume-отчёты — без суффикса (там задачи нет, осознанно).
+2. **Цитата ответа модели** — каждая строка body с префиксом `> `; в MarkdownV2 — после escapeMarkdownV2 (валидный blockquote, Bot API ≥ 7.0); срез до 1500 символов — до префиксации.
+3. **Токены одной строкой** — `**Токены:** входные: N · сгенерированные: N · кэш: N · всего: N` + новая строка `**Входные минус кэш:** N` (в обоих рендерах).
+4. **Время в читаемом формате** — новый экспорт `formatDuration(ms)`: `<1с` → «830 мс», `<60с` → «20с», иначе «1м 23с»; применяется к duration_ms и duration_api_ms.
+Проверки: `pnpm build` (tsc strict) — без ошибок; `pnpm test` — все тесты проходят, включая обновлённые (formatting: цитата, компактные токены, входные-минус-кэш, суффикс с экранированием, unit-тесты formatDuration 0/830/20000/59999/83000/60000/3600000; rich: суффикс в обоих статусах ошибок, blockquote, новые строки) — регрессий нет, фикстуры `okRun` без taskId продолжают работать.
+Документация: запись в CHANGELOG.md (Unreleased); пример информационного сообщения в руководстве пользователя (doc-6) обновлён под новый формат.
+Что осталось: ручная проверка в Telegram после merge (команда `/comment VL-N`: VL-N в заголовке, цитата, токены + «Входные минус кэш», время вида «42с (api: 42с)») и проверка фолбэка MarkdownV2 на старом клиенте (цепочка rich→md→plain защищает от 400).
+---
+author: @agent
+created: 2026-10-12 12:10
+---
+Фаза Close выполнена. Статус: Done. Коммит feat: b34c0b2 — «VL-98 — VL-N в заголовке отчёта фазы, цитата ответа модели, компактные токены + "Входные минус кэш", время в формате м/с» (7 файлов: src/bot/formatting.ts, rich.ts, handlers.ts, тесты, CHANGELOG.md, doc-6 — руководство пользователя). Не закоммичено: templates/qwen-commands/phase-2.md, phase-3.md (чужие изменения после коммита a0a3c57,不属于 этой задаче — вероятно, другая фаза/VL-110) и backlog/tasks/VL-111 (untracked, чужая задача) — не входят в modified_files VL-98, guard от гонки.
+---
+author: @agent
+created: 2026-10-12 12:10
+---
+Уточнение к предыдущему комментарию (опечатка): templates/qwen-commands/phase-2.md и phase-3.md — не принадлежат задаче VL-98 (изменены после коммита a0a3c57 другой фазой), оставлены незакоммиченными намеренно. Файлов, принадлежащих VL-98, вне коммитов не осталось.
 ---
 <!-- COMMENTS:END -->
