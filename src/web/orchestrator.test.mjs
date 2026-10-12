@@ -1045,9 +1045,9 @@ describe('orchestrator (VL-28)', () => {
     delete process.env.VIBELOG_PHASE_TASK_ID;
     delete process.env.VIBELOG_PHASE_NAME;
     try {
-      const res = startPhase(testRoot, 'VL-88', 'comment');
+      const res = startPhase(testRoot, 'ot-88', 'comment');
       assert.equal(res.started, true);
-      const run = await waitDone('VL-88', 8000);
+      const run = await waitDone('ot-88', 8000);
       assert.equal(run.exitCode, 0);
       assert.equal(run.result?.result, 'Готово-E2E');
       const sid = run.result?.session_id ?? '';
@@ -1055,7 +1055,7 @@ describe('orchestrator (VL-28)', () => {
       const metaPath = join(testRoot, '.vibelog', 'agent-sessions', `${sid}.meta.json`);
       assert.ok(existsSync(metaPath), `нет meta.json: ${metaPath}`);
       const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
-      assert.equal(meta.taskId, 'VL-88', 'боевой путь пишет taskId задачи');
+      assert.equal(meta.taskId, 'OT-88', 'боевой путь пишет taskId по префиксу конфига testRoot (ot)');
       assert.equal(meta.phase, 'comment');
       assert.equal(meta.cwd, realpathSync(testRoot));
     } finally {
@@ -1064,6 +1064,37 @@ describe('orchestrator (VL-28)', () => {
         else process.env[key] = value;
       }
       await new Promise((r) => llmServer.close(r));
+    }
+  });
+  it('branch-mode с task_prefix ot: worktree ot-5 и env OT-5 (VL-118)', async () => {
+    // Регрессия хардкода VL: префикс задач проекта читается из конфига
+    const otRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-ot-'));
+    const git = (args) => spawnSync('git', ['-C', otRoot, ...args], { encoding: 'utf-8' });
+    git(['init', '-q']);
+    git(['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+    mkdirSync(join(otRoot, 'backlog'), { recursive: true });
+    writeFileSync(join(otRoot, 'backlog', 'config.yml'), 'project_name: OT Test\ntask_prefix: ot\n', 'utf-8');
+    mkdirSync(join(otRoot, '.vibelog'), { recursive: true });
+    writeFileSync(join(otRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    process.env.VIBELOG_QWEN_BIN = writeEnvStub(otRoot, 'ot-stub.cjs');
+    process.env.VL28_STUB_MARKER = join(otRoot, 'marker-ot.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startPhase(otRoot, 'ot-5', 'code');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('ot-5');
+      assert.equal(run.exitCode, 0);
+      const wtPath = join(otRoot, '.vibelog', 'worktrees', 'ot-5');
+      assert.ok(existsSync(join(wtPath, '.git')), 'worktree ot-5 создаётся при чужом префиксе');
+      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      assert.equal(m.cwd, realpathSync(wtPath), 'фаза работает в worktree ot-5');
+      assert.equal(m.envPhaseTaskId, 'OT-5', 'env несёт id по префиксу конфига');
+      assert.equal(m.envCwd, otRoot, 'VIBELOG_CWD — главный репо');
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(otRoot, { recursive: true, force: true });
     }
   });
 });

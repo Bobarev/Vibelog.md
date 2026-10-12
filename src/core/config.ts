@@ -100,6 +100,32 @@ export function loadConfig(cwd: string): Record<string, unknown> {
 }
 
 /**
+ * Regex «id похож на задачу проекта» (VL-118): префикс берётся из
+ * task_prefix backlog/config.yml и экранируется — префикс приходит из
+ * данных пользователя и может содержать спецсимволы regex. Дефолт VL,
+ * когда конфига нет или префикс пуст (например /prompt без проекта).
+ *
+ * Ранее хардкод /^VL-\d+$/i в оркестраторе и CLI молча отключал
+ * branch-mode, мету сессии и worktree-resume у проектов с чужим
+ * префиксом (LB-, ot-…): worktree не создавалась, мета не писалась.
+ */
+export function taskIdPattern(cwd: string): RegExp {
+  let prefix = 'VL';
+  try {
+    const raw = loadConfig(cwd).task_prefix;
+    if (typeof raw === 'string' && raw.trim() !== '') prefix = raw.trim();
+  } catch {
+    // backlog/ или config.yml нет — дефолтный префикс
+  }
+  return new RegExp('^' + escapeRegExp(prefix) + '-\\d+$', 'i');
+}
+
+/** Экранирует спецсимволы regex — префикс задач приходит из данных пользователя. */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
  * Сохраняет конфиг проекта в YAML-файл.
  *
  * @param cwd — текущая рабочая директория

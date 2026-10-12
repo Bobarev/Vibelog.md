@@ -23,6 +23,7 @@ import { ensureTaskWorktree, taskBranchName, taskWorktreeDir } from '../core/wor
 import { explainQwenParse, parseQwenResult } from './qwen-result.js';
 import type { QwenResult } from './qwen-result.js';
 import { loadBotSettings, resolveBranchMode } from '../bot/settings.js';
+import { taskIdPattern } from '../core/config.js';
 import { agentSessionsDir, loadSessionMetaSync } from '../agent/session.js';
 
 // Реэкспорт для обратной совместимости (VL-85): renderPrompt/Phase вынесены
@@ -180,7 +181,8 @@ export function startResume(
   let note = '';
   // Бот передаёт sessionId с префиксом vb: — для поиска меты снимаем его
   const meta = loadSessionMetaSync(agentSessionsDir(cwd), sessionId.replace(/^vb:/, ''));
-  if (meta?.taskId && /^VL-\d+$/i.test(meta.taskId) && resolveBranchMode(cwd)) {
+  // VL-118: taskId проверяется по префиксу конфига проекта, не хардкодом VL
+  if (meta?.taskId && taskIdPattern(cwd).test(meta.taskId) && resolveBranchMode(cwd)) {
     worktreeTaskId = meta.taskId.toUpperCase();
   } else if (meta?.cwd && meta.cwd !== cwd) {
     // Сессия создавалась в другом каталоге (worktree), а resume идёт вне
@@ -261,14 +263,15 @@ function spawnQwenRun(
   // VL-110: источник taskId для worktree — runKey задачи либо мета resume-сессии.
   // VL-112: close исключён — закрытие идёт в главном репо: merge ветки и
   // docs(task)-коммит backlog возможны только здесь (см. phase-close-worktree.md)
-  const branchTask = /^VL-\d+$/i.test(runKey) && phase !== 'close' ? runKey : (worktreeTaskId ?? '');
+  // VL-118: «задачная» проверка — по task_prefix конфига проекта
+  const branchTask = taskIdPattern(cwd).test(runKey) && phase !== 'close' ? runKey : (worktreeTaskId ?? '');
   // VL-114: задачный env нужен фазам задач независимо от worktree: CLI пишет
   // по нему мету сессии даже когда промпт пришёл готовым (isPhaseMode=false).
   // Close исключён (VL-112: закрытие в главном репо, его resume не должен
   // уходить в worktree); у resume taskId берётся из worktreeTaskId (мета
   // VL-110) — без меты resume остаётся на прежнем пути без env.
   const phaseTaskId =
-    /^VL-\d+$/i.test(runKey) && phase !== 'close' ? runKey.toUpperCase() : (worktreeTaskId ?? '');
+    taskIdPattern(cwd).test(runKey) && phase !== 'close' ? runKey.toUpperCase() : (worktreeTaskId ?? '');
   if (phaseTaskId !== '') {
     spawnEnv = {
       ...process.env,

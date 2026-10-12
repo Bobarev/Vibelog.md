@@ -25,6 +25,7 @@ import type { ChatMessage } from './llm.js';
 import { runLoop } from './loop.js';
 import { agentSessionsDir, appendSessionMessage, createSessionId, latestSession, loadSession, saveSession, saveSessionMeta } from './session.js';
 import { taskWorktreeDir } from '../core/worktree.js';
+import { taskIdPattern } from '../core/config.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { listLocalTools } from './tools.js';
 import type { ToolSpec } from './tools.js';
@@ -300,9 +301,10 @@ export async function main(argv: string[]): Promise<void> {
       if (isPhaseMode) {
         await saveSessionMeta(sessionsDir, sessionId, { taskId: positionals[1], phase, cwd });
       } else {
-        // Env-путь (боевой спавн оркестратора): фильтруем мусор — только VL-N
+        // Env-путь (боевой спавн оркестратора): фильтруем мусор — только
+        // id по префиксу конфига проекта (VL-118; дефолт VL без конфига)
         const envTaskId = process.env.VIBELOG_PHASE_TASK_ID;
-        if (envTaskId && /^VL-\d+$/i.test(envTaskId)) {
+        if (envTaskId && taskIdPattern(cwd).test(envTaskId)) {
           await saveSessionMeta(sessionsDir, sessionId, {
             taskId: envTaskId.toUpperCase(),
             phase: process.env.VIBELOG_PHASE_NAME,

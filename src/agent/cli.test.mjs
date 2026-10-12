@@ -543,4 +543,43 @@ describe('vibelog-agent CLI (VL-85)', () => {
       rmSync(projDir, { recursive: true, force: true });
     }
   });
+  // ── VL-118: префикс env-пути — из конфига проекта ──
+
+  it('env-путь: префикс конфига проекта (ot) пишет мету (VL-118)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-otprefix-'));
+    try {
+      mkdirSync(join(projDir, 'backlog'), { recursive: true });
+      writeFileSync(
+        join(projDir, 'backlog', 'config.yml'),
+        'project_name: OT Env\ntask_prefix: ot\n',
+        'utf-8'
+      );
+      const env = { ...llmEnv(), VIBELOG_PHASE_TASK_ID: 'ot-7', VIBELOG_PHASE_NAME: 'code' };
+      const { code, stdout } = await runCli(['Просто запрос', '--no-mcp'], env, projDir);
+      assert.equal(code, 0, stdout);
+      const parsed = JSON.parse(stdout.trim());
+      const meta = JSON.parse(
+        readFileSync(join(projDir, '.vibelog', 'agent-sessions', `${parsed.session_id}.meta.json`), 'utf-8')
+      );
+      assert.equal(meta.taskId, 'OT-7', 'мета пишется по префиксу конфига проекта');
+      assert.equal(meta.phase, 'code');
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
+  it('env-путь: без конфига проекта чужой id не пишет мету (VL-118)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-noprefix-'));
+    try {
+      // projDir без backlog — дефолтный префикс VL, weird-7 отфильтрован
+      const env = { ...llmEnv(), VIBELOG_PHASE_TASK_ID: 'weird-7', VIBELOG_PHASE_NAME: 'code' };
+      const { code, stdout } = await runCli(['Просто запрос', '--no-mcp'], env, projDir);
+      assert.equal(code, 0, stdout);
+      const parsed = JSON.parse(stdout.trim());
+      const metaPath = join(projDir, '.vibelog', 'agent-sessions', `${parsed.session_id}.meta.json`);
+      assert.ok(!existsSync(metaPath), 'без конфига фильтр VL отсекает чужие id');
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
 });
