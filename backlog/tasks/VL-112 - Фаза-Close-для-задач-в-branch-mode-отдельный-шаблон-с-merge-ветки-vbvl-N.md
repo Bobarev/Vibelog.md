@@ -1,11 +1,11 @@
 ---
 id: VL-112
 title: 'Фаза Close для задач в branch-mode: отдельный шаблон с merge ветки vb/vl-N'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-12 12:46'
-updated_date: '2026-10-12 13:26'
+updated_date: '2026-10-12 18:38'
 due_date: ''
 labels: []
 dependencies: []
@@ -49,9 +49,9 @@ modified_files:
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Comments
@@ -71,5 +71,10 @@ created: 2026-10-12 13:26
 Проверки: pnpm build (tsc strict) OK; pnpm test — 823/823, fail 0; целевые phase-prompt/orchestrator/cli — 70/70.
 
 Что осталось: первый живой прогон /close на задаче с worktree (например, ветки vb/vl-98-patches после доводки VL-98); DoD закрывается Фазой Close.
+---
+author: @agent
+created: 2026-10-12 18:38
+---
+Фаза Close выполнена вручную (исполнитель — Qwen Code). Код: feat 2980346 (шаблон phase-close-worktree.md, close вне worktree-спавна, renderPrompt closeWorktree, npm-smoke/README) + fix 00f073d (worktree remove --force для untracked-симлинков linkWorktreeDeps) + fix c32bd08 (docs(task)-коммит последним шагом — конвенция VL-105). Живые проверки шаблона: закрытие VL-113 (feat из worktree, merge --no-ff без конфликтов, worktree/ветка удалены, DoD 3/3) и VL-108 (второй прогон, merge fec65e0, закрыт по исправленному порядку шагов). Проверки: pnpm test 823/823 на момент feat, тесты шаблонов 12/12 после fix. DoD 3/3. Статус Done.
 ---
 <!-- COMMENTS:END -->
