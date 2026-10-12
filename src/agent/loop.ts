@@ -28,6 +28,8 @@ export interface LoopLimits {
   maxRequests?: number;
   /** Сколько одинаковых подряд вызовов считать зацикливанием (дефолт 3). */
   loopDetectionRepeat?: number;
+  /** Сколько ходов подряд с одним и тем же промежуточным текстом считать зацикливанием намерений (VL-119, дефолт 4). */
+  intentLoopRepeat?: number;
 }
 
 /** Результат фазы (совместим по полям с QwenResult CLI). */
@@ -97,6 +99,10 @@ export interface RunLoopOptions {
 const MAX_TOOL_CALLS_DEFAULT = 100;
 const MAX_WALL_TIME_MS_DEFAULT = 900_000;
 const LOOP_DETECTION_REPEAT_DEFAULT = 3;
+// Дефолт guard'а зацикливания намерений (VL-119): 4 хода подряд с одним
+// промежуточным текстом. Порог 4, а не 3 — снизить ложные срабатывания:
+// одинаковый короткий текст («Ок.») на паре ходов ещё не зацикливание.
+const INTENT_LOOP_REPEAT_DEFAULT = 4;
 
 /**
  * Выполняет tool-calling loop до финального текста модели, лимита или
@@ -110,6 +116,9 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // Лимит LLM-запросов (VL-104): без значения — без лимита (поведение прежнее)
   const maxRequests = options.limits?.maxRequests;
   const repeatLimit = options.limits?.loopDetectionRepeat ?? LOOP_DETECTION_REPEAT_DEFAULT;
+  // Лимит guard'а зацикливания намерений (VL-119): N ходов подряд с одним
+  // промежуточным текстом → fail штатным путём (контракт resume VL-103).
+  const intentRepeatLimit = options.limits?.intentLoopRepeat ?? INTENT_LOOP_REPEAT_DEFAULT;
 
   const messages: ChatMessage[] = [...options.messages];
   /**
@@ -149,6 +158,11 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   let partialText = '';
   let prevSignature: string | null = null;
   let streak = 0;
+  // Стейт guard'а зацикливания намерений (VL-119): предыдущий нормализованный
+  // промежуточный текст и длина серии одинаковых. Пустой текст streak не
+  // сбрасывает — молчаливые tool-ходы легитимны (решение плана VL-119).
+  let prevIntent: string | null = null;
+  let intentStreak = 0;
 
   const duration = (): number => Date.now() - startedAt;
 
@@ -226,6 +240,28 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         usage,
         messages,
       };
+    }
+    // Guard зацикливания намерений (VL-119, инцидент VL-98): N ходов подряд
+    // с идентичным промежуточным текстом (намерением) при РАЗНЫХ вызовах
+    // инструментов сигнатурный детектор VL-83 пропускает. Сравнивается только
+    // текст хода до tool_calls, после trim + схлопывания пробелов/переносов;
+    // пустой текст не участвует (молчаливые tool-ходы легитимны) и streak
+    // не сбрасывает. Fail идёт штатным fail()-путём (контракт resume VL-103)
+    // ДО pushMessage текущего assistant(tool_calls): несработавший ход не
+    // попадает в диалог и не выполняется — экономит wall-time.
+    const intent = (response.text ?? '').trim().replace(/\s+/g, ' ');
+    if (intent) {
+      if (intent === prevIntent) {
+        intentStreak++;
+      } else {
+        intentStreak = 1;
+        prevIntent = intent;
+      }
+      if (intentStreak >= intentRepeatLimit) {
+        return fail(
+          `Зацикливание: ${intentStreak} ходов подряд с одним и тем же намерением — смени подход, проверь git status или уточни задачу.`,
+        );
+      }
     }
     if (response.text) partialText += (partialText ? '\n' : '') + response.text;
 
