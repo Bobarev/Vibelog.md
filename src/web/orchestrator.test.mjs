@@ -774,4 +774,120 @@ describe('orchestrator (VL-28)', () => {
       rmSync(warnRoot, { recursive: true, force: true });
     }
   });
+  // ── VL-112: close-фаза задач с worktree ──
+
+  it('startPhase: close с worktree — спавн в главном репо + merge-шаблон (VL-112)', async () => {
+    const closeRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-close-'));
+    mkdirSync(join(closeRoot, 'backlog'), { recursive: true });
+    writeFileSync(join(closeRoot, 'backlog', 'config.yml'), 'project_name: Close WT\n', 'utf-8');
+    mkdirSync(join(closeRoot, '.vibelog'), { recursive: true });
+    // branch_mode включён, worktree vl-77 существует (задача работала в ветке)
+    writeFileSync(join(closeRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    mkdirSync(join(closeRoot, '.vibelog', 'worktrees', 'vl-77'), { recursive: true });
+    // Своя заглушка: пишет argv и cwd процесса
+    const stubClose = join(closeRoot, 'close-stub.cjs');
+    writeFileSync(stubClose, [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      'fs.writeFileSync(process.env.VL28_STUB_MARKER, JSON.stringify({',
+      '  argv: process.argv.slice(2),',
+      '  cwd: process.cwd(),',
+      '}));',
+      "fs.writeSync(1, 'stub close\\n');",
+      'process.exit(0);',
+      '',
+    ].join('\n'), 'utf-8');
+    chmodSync(stubClose, 0o755);
+    process.env.VIBELOG_QWEN_BIN = stubClose;
+    process.env.VL28_STUB_MARKER = join(closeRoot, 'marker-close.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startPhase(closeRoot, 'VL-77', 'close');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-77');
+      assert.equal(run.exitCode, 0);
+      const marker = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      // cwd — ГЛАВНЫЙ репо: close не спавнится в worktree даже при branch_mode
+      assert.equal(marker.cwd, realpathSync(closeRoot), 'close должен работать в главном cwd');
+      // Промпт — из phase-close-worktree.md, примечания веток нет
+      assert.ok(marker.argv[0].includes('merge --no-ff'), 'close-worktree шаблон с merge-шагом');
+      assert.ok(marker.argv[0].includes('vb/vl-77'), '{{branch}} подставлен');
+      assert.ok(!marker.argv[0].includes('Режим параллельной разработки'), 'примечания worktree не должно быть');
+      assert.equal(run.phase, 'close');
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(closeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('startPhase: close без worktree — прежний шаблон, спавн в главном (VL-112)', async () => {
+    const plainRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-close0-'));
+    mkdirSync(join(plainRoot, 'backlog'), { recursive: true });
+    writeFileSync(join(plainRoot, 'backlog', 'config.yml'), 'project_name: Close Plain\n', 'utf-8');
+    // branch_mode включён, но worktree vl-77 НЕТ
+    mkdirSync(join(plainRoot, '.vibelog'), { recursive: true });
+    writeFileSync(join(plainRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    process.env.VIBELOG_QWEN_BIN = stubBin;
+    process.env.VL28_STUB_MARKER = join(plainRoot, 'marker-close0.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startPhase(plainRoot, 'VL-77', 'close');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-77');
+      assert.equal(run.exitCode, 0);
+      const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      assert.ok(!argv[0].includes('merge --no-ff'), 'без worktree — обычный шаблон close');
+      assert.ok(!argv[0].includes('Режим параллельной разработки'), 'worktree не создавалась — примечания нет');
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      rmSync(plainRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('startPhase: code с branch_mode — спавн в worktree (регресс VL-112)', async () => {
+    // Регрессия: исключение close не должно задеть остальные фазы задач
+    const codeRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-code-'));
+    const git = (args) => spawnSync('git', ['-C', codeRoot, ...args], { encoding: 'utf-8' });
+    git(['init', '-q']);
+    git(['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+    mkdirSync(join(codeRoot, 'backlog'), { recursive: true });
+    writeFileSync(join(codeRoot, 'backlog', 'config.yml'), 'project_name: Code WT\n', 'utf-8');
+    mkdirSync(join(codeRoot, '.vibelog'), { recursive: true });
+    writeFileSync(join(codeRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    const stubCode = join(codeRoot, 'code-stub.cjs');
+    writeFileSync(stubCode, [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      'fs.writeFileSync(process.env.VL28_STUB_MARKER, JSON.stringify({',
+      '  argv: process.argv.slice(2),',
+      '  cwd: process.cwd(),',
+      '}));',
+      "fs.writeSync(1, 'stub code\\n');",
+      'process.exit(0);',
+      '',
+    ].join('\n'), 'utf-8');
+    chmodSync(stubCode, 0o755);
+    process.env.VIBELOG_QWEN_BIN = stubCode;
+    process.env.VL28_STUB_MARKER = join(codeRoot, 'marker-code.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startPhase(codeRoot, 'VL-88', 'code');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-88');
+      assert.equal(run.exitCode, 0);
+      const wtPath = join(codeRoot, '.vibelog', 'worktrees', 'vl-88');
+      assert.ok(existsSync(join(wtPath, '.git')), 'worktree vl-88 должна быть создана для code');
+      const marker = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      assert.equal(marker.cwd, realpathSync(wtPath), 'code работает в worktree');
+      assert.ok(marker.argv[0].includes('Режим параллельной разработки'), 'примечание веток присутствует');
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(codeRoot, { recursive: true, force: true });
+    }
+  });
 });

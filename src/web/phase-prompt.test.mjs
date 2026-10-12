@@ -53,3 +53,34 @@ describe('шаблоны фаз — экономия ходов (VL-109)', () =>
     assert.ok(prompt.includes('## Экономия ходов'), 'раздел должен попасть в собранный промпт');
   });
 });
+
+describe('close в worktree — отдельный шаблон (VL-112)', () => {
+  it('шаблон phase-close-worktree.md существует и содержит merge-протокол', () => {
+    const text = readFileSync(join(templatesDir, 'phase-close-worktree.md'), 'utf-8');
+    assert.ok(text.includes('{{taskId}}'), 'подстановка taskId');
+    assert.ok(text.includes('merge --no-ff'), 'шаг слияния ветки');
+    assert.ok(text.includes('НЕ резолвь'), 'конфликт не резолвится молча');
+    assert.ok(text.includes('git worktree remove'), 'очистка worktree');
+    assert.ok(text.includes('git branch -d'), 'удаление ветки');
+    assert.ok(text.includes('docs(task)'), 'docs(task)-коммит в главном репо');
+  });
+
+  it('renderPrompt({ closeWorktree: true }) выбирает close-worktree шаблон', () => {
+    const p = renderPrompt(
+      'close',
+      'VL-77',
+      { branch: 'vb/vl-77', worktreeDir: '.vibelog/worktrees/vl-77' },
+      { closeWorktree: true }
+    );
+    assert.ok(p.includes('merge --no-ff'), 'должен использоваться close-worktree шаблон');
+    assert.ok(p.includes('vb/vl-77'), '{{branch}} подставлен');
+    assert.ok(p.includes('.vibelog/worktrees/vl-77'), '{{worktreeDir}} подставлен');
+    assert.ok(!p.includes('{{'), 'неподставленных подстановок не остаться');
+  });
+
+  it('обычный close без опции — прежний шаблон без merge-шага', () => {
+    const p = renderPrompt('close', 'VL-77');
+    assert.ok(!p.includes('merge --no-ff'), 'без closeWorktree worktree-шаблон не применяется');
+    assert.ok(p.includes('## Правила'), 'обычный шаблон close сохранён');
+  });
+});

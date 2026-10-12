@@ -145,10 +145,11 @@ try {
   // ── Шаг 4: содержимое установленного пакета.
   console.log('▶ содержимое пакета…');
   const pkg = join(installDir, 'node_modules', 'vibelog.md');
-  for (const phase of ['phase-1', 'phase-2', 'phase-3']) {
+  for (const phase of ['phase-1', 'phase-2', 'phase-3', 'phase-close', 'phase-close-worktree', 'phase-comment', 'prompt']) {
     const p = join(pkg, 'templates', 'qwen-commands', `${phase}.md`);
     check(`шаблон оркестратора ${phase}.md читается`, existsSync(p));
   }
+  check('шаблон agent-prompt.md (системный промпт vb) читается', existsSync(join(pkg, 'templates', 'agent-prompt.md')));
   check('web/dist/index.html в пакете', existsSync(join(pkg, 'web', 'dist', 'index.html')));
   check('backlog/ НЕ в пакете', !existsSync(join(pkg, 'backlog')));
   check('.qwen НЕ в пакете', !existsSync(join(pkg, '.qwen')));

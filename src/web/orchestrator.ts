@@ -13,13 +13,13 @@
 
 import { execFile, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderPrompt } from './phase-prompt.js';
 import type { Phase } from './phase-prompt.js';
 import { getTask } from '../core/store.js';
-import { ensureTaskWorktree, taskBranchName } from '../core/worktree.js';
+import { ensureTaskWorktree, taskBranchName, taskWorktreeDir } from '../core/worktree.js';
 import { explainQwenParse, parseQwenResult } from './qwen-result.js';
 import type { QwenResult } from './qwen-result.js';
 import { loadBotSettings, resolveBranchMode } from '../bot/settings.js';
@@ -98,7 +98,18 @@ export function startPhase(
   }
   let prompt: string;
   try {
-    prompt = renderPrompt(phase, taskId, extraVars);
+    prompt = renderPrompt(
+      phase,
+      taskId,
+      // VL-112: {{branch}}/{{worktreeDir}} — подстановки для close-worktree шаблона
+      {
+        ...extraVars,
+        branch: taskBranchName(taskId),
+        worktreeDir: `.vibelog/worktrees/${taskId.toLowerCase()}`,
+      },
+      // VL-112: close задачи с worktree — отдельный шаблон с merge-шагом
+      { closeWorktree: phase === 'close' && existsSync(taskWorktreeDir(cwd, taskId)) }
+    );
   } catch (err) {
     return { error: (err as Error).message };
   }
@@ -244,8 +255,10 @@ function spawnQwenRun(
   // стартует, сообщение уходит в чат/api как { error }.
   let runCwd = cwd;
   let spawnEnv: NodeJS.ProcessEnv | undefined;
-  // VL-110: источник taskId для worktree — runKey задачи либо мета resume-сессии
-  const branchTask = /^VL-\d+$/i.test(runKey) ? runKey : (worktreeTaskId ?? '');
+  // VL-110: источник taskId для worktree — runKey задачи либо мета resume-сессии.
+  // VL-112: close исключён — закрытие идёт в главном репо: merge ветки и
+  // docs(task)-коммит backlog возможны только здесь (см. phase-close-worktree.md)
+  const branchTask = /^VL-\d+$/i.test(runKey) && phase !== 'close' ? runKey : (worktreeTaskId ?? '');
   if (resolveBranchMode(cwd) && branchTask !== '') {
     let runDir: string;
     try {

@@ -17,13 +17,14 @@
  * - vibelog-agent <промпт> — готовый промпт (qwen-совместимость).
  */
 
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createLlmClient } from './llm.js';
 import type { ChatMessage } from './llm.js';
 import { runLoop } from './loop.js';
 import { agentSessionsDir, appendSessionMessage, createSessionId, latestSession, loadSession, saveSession, saveSessionMeta } from './session.js';
+import { taskWorktreeDir } from '../core/worktree.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { listLocalTools } from './tools.js';
 import type { ToolSpec } from './tools.js';
@@ -210,19 +211,6 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  let prompt: string;
-  try {
-    prompt = isPhaseMode
-      ? renderPrompt(positionals[0], positionals[1], {
-          comment: opts.comment ?? '',
-          prompt: opts.comment ?? '',
-        })
-      : positionals[0];
-  } catch (err) {
-    console.error((err as Error).message);
-    process.exitCode = 1;
-    return;
-  }
 
   // Headless: явный флаг, --output-format json (qwen) или не-TTY stdout
   const headless = opts.headless || !process.stdout.isTTY;
@@ -245,6 +233,32 @@ export async function main(argv: string[]): Promise<void> {
   const llm = createLlmClient();
 
   const cwd = process.cwd();
+
+  // Промпт фазы собирается до инициализации сессий: ошибка шаблона завершает
+  // CLI до создания jsonl. Блок объявлен после cwd (VL-112): выбор
+  // close-worktree шаблона зависит от worktree задачи в этом cwd
+  let prompt: string;
+  try {
+    prompt = isPhaseMode
+      ? renderPrompt(
+          positionals[0],
+          positionals[1],
+          {
+            comment: opts.comment ?? '',
+            prompt: opts.comment ?? '',
+          },
+          // VL-112: close задачи с worktree — тот же выбор шаблона, что в оркестраторе
+          {
+            closeWorktree:
+              positionals[0] === 'close' && existsSync(taskWorktreeDir(cwd, positionals[1])),
+          }
+        )
+      : positionals[0];
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exitCode = 1;
+    return;
+  }
 
   // Сессии (VL-95): хранилище JSONL в .vibelog/agent-sessions.
   // VL-107 fix: в режиме веток оркестратор спавнит фазу в git-worktree
