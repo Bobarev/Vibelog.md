@@ -106,4 +106,12 @@ describe('VL-126: коммит Фазы 3, документация Close, пр�
     assert.ok(text.includes('pnpm test'), 'тесты после merge');
     assert.ok(text.includes('НЕ выполняй шаги 6–11'), 'прерывание при падении сборки/тестов');
   });
+
+  it('оба close-шаблона перед git add требуют ls для точного имени файла задачи (VL-121)', () => {
+    for (const file of ['phase-close.md', 'phase-close-worktree.md']) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      assert.ok(text.includes('ls backlog/tasks/{{taskId}}*'), file + ': ls-подсказка для точного имени');
+      assert.ok(text.includes('Не угадывай имя по заголовку'), file + ': запрет угадывать имя по заголовку');
+    }
+  });
 });
