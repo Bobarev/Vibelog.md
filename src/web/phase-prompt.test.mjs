@@ -84,3 +84,26 @@ describe('close в worktree — отдельный шаблон (VL-112)', () =>
     assert.ok(p.includes('## Правила'), 'обычный шаблон close сохранён');
   });
 });
+
+describe('VL-126: коммит Фазы 3, документация Close, проверки после merge', () => {
+  it('phase-3 коммитит в ветку и не трогает CHANGELOG/docs', () => {
+    const text = readFileSync(join(templatesDir, 'phase-3.md'), 'utf-8');
+    assert.ok(text.includes('git commit -m "feat: {{taskId}}'), 'шаг feat-коммита в ветку');
+    assert.ok(text.includes('CHANGELOG.md и документы backlog/docs в Фазе 3 НЕ обновляй'), 'запрет документации в Фазе 3');
+  });
+
+  it('оба close-шаблона содержат шаг документации и CHANGELOG', () => {
+    for (const file of ['phase-close.md', 'phase-close-worktree.md']) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      assert.ok(text.includes('docs: {{taskId}} — документация и CHANGELOG'), file + ': docs-коммит документации');
+      assert.ok(text.includes('CHANGELOG.md'), file + ': шаг CHANGELOG');
+    }
+  });
+
+  it('close-worktree проверяет сборку и тесты после merge', () => {
+    const text = readFileSync(join(templatesDir, 'phase-close-worktree.md'), 'utf-8');
+    assert.ok(text.includes('pnpm build'), 'сборка после merge');
+    assert.ok(text.includes('pnpm test'), 'тесты после merge');
+    assert.ok(text.includes('НЕ выполняй шаги 6–11'), 'прерывание при падении сборки/тестов');
+  });
+});
