@@ -187,6 +187,60 @@ describe('MCP v1.1 — инструменты', () => {
     assert.ok(result.includes('К1'));
   });
 
+  // --- VL-120: валидация индекса на границе MCP (инцидент VL-113) ---
+
+  it('manage_ac: строка-число index "3" принимается', async () => {
+    const t = createTaskFile(testDir, { title: 'AC index string' });
+    for (const text of ['К1', 'К2', 'К3']) {
+      await handleToolCall('backlog_manage_ac', { id: t.id, action: 'add', text }, testDir);
+    }
+    await handleToolCall('backlog_manage_ac', { id: t.id, action: 'check', index: '3' }, testDir);
+    const task = getTask(testDir, t.id);
+    assert.equal(task.acceptanceCriteria[2].checked, true);
+  });
+
+  it("manage_ac: index 'NaN' → ошибка с подсказкой формата и количеством пунктов", async () => {
+    const t = createTaskFile(testDir, { title: 'AC index NaN' });
+    await handleToolCall('backlog_manage_ac', { id: t.id, action: 'add', text: 'К1' }, testDir);
+    await handleToolCall('backlog_manage_ac', { id: t.id, action: 'add', text: 'К2' }, testDir);
+    await assert.rejects(
+      handleToolCall('backlog_manage_ac', { id: t.id, action: 'check', index: 'NaN' }, testDir),
+      (err) => {
+        assert.ok(err.message.includes('целое число, начиная с 1'), `нет подсказки формата: ${err.message}`);
+        assert.ok(err.message.includes('пунктов чек-листа: 2'), `нет количества пунктов: ${err.message}`);
+        return true;
+      }
+    );
+  });
+
+  it('manage_ac: дробный index 2.5 → ошибка (без тихого срезания)', async () => {
+    const t = createTaskFile(testDir, { title: 'AC index float' });
+    for (const text of ['К1', 'К2', 'К3']) {
+      await handleToolCall('backlog_manage_ac', { id: t.id, action: 'add', text }, testDir);
+    }
+    await assert.rejects(
+      handleToolCall('backlog_manage_ac', { id: t.id, action: 'check', index: 2.5 }, testDir),
+      /целое число, начиная с 1/
+    );
+    // 2.5 не «срезается» до 2 — пункт не отмечен
+    const task = getTask(testDir, t.id);
+    assert.equal(task.acceptanceCriteria[1].checked, false);
+  });
+
+  it("manage_ac: пустой index '' → ошибка, а не «Неверный индекс: 0»", async () => {
+    const t = createTaskFile(testDir, { title: 'AC index empty' });
+    await handleToolCall('backlog_manage_ac', { id: t.id, action: 'add', text: 'К1' }, testDir);
+    await assert.rejects(
+      handleToolCall('backlog_manage_ac', { id: t.id, action: 'check', index: '' }, testDir),
+      (err) => {
+        // раньше Number('') → 0 давало запутанное «Неверный индекс: 0»
+        assert.ok(!err.message.includes('Неверный индекс: 0'), `пустой ввод интерпретирован как 0: ${err.message}`);
+        assert.ok(err.message.includes('целое число, начиная с 1'), err.message);
+        return true;
+      }
+    );
+  });
+
   // --- backlog_manage_dod ---
 
   it('manage_dod: add/check/remove', async () => {
@@ -201,6 +255,21 @@ describe('MCP v1.1 — инструменты', () => {
     await handleToolCall('backlog_manage_dod', { id: t.id, action: 'remove', index: 2 }, testDir);
     task = getTask(testDir, t.id);
     assert.equal(task.definitionOfDone.length, 1);
+  });
+
+  it("manage_dod: строка-число '2' принимается, дробь '2.5' → ошибка", async () => {
+    const t = createTaskFile(testDir, { title: 'DoD index strings' });
+    await handleToolCall('backlog_manage_dod', { id: t.id, action: 'add', text: 'DoD1' }, testDir);
+    await handleToolCall('backlog_manage_dod', { id: t.id, action: 'add', text: 'DoD2' }, testDir);
+
+    await handleToolCall('backlog_manage_dod', { id: t.id, action: 'check', index: '2' }, testDir);
+    let task = getTask(testDir, t.id);
+    assert.equal(task.definitionOfDone[1].checked, true);
+
+    await assert.rejects(
+      handleToolCall('backlog_manage_dod', { id: t.id, action: 'check', index: '2.5' }, testDir),
+      /целое число, начиная с 1/
+    );
   });
 
   // --- backlog_add_comment ---
