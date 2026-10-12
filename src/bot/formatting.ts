@@ -27,6 +27,21 @@ export function escapeMarkdownV2(text: string): string {
 }
 
 /**
+ * Человекочитаемая длительность из миллисекунд (VL-98).
+ *
+ * До 1с — «830 мс», до минуты — «20с», иначе — «1м 23с».
+ * Заменяет сырой вывод «42411 мс» в отчёте фазы: юзеру проще
+ * воспринимать минуты/секунды (жалоба Pavel, VL-98).
+ *
+ * @param ms — длительность в миллисекундах
+ */
+export function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms} мс`;
+  if (ms < 60_000) return `${Math.round(ms / 1000)}с`;
+  return `${Math.floor(ms / 60000)}м ${Math.round((ms % 60000) / 1000)}с`;
+}
+
+/**
  * Список задач для /tasks: жирный ID, статус в скобках.
  *
  * @param tasks — задачи для отображения
@@ -159,18 +174,23 @@ export function formatPhaseRun(run: PhaseRun | null | undefined): string {
  * «Данные результата недоступны» + logTail обрезан до 800 символов.
  *
  * @param run — завершённый запуск фазы из оркестратора (getRun)
+ * @param taskId — идентификатор задачи VL-N (VL-98): добавляет суффикс
+ *   « — VL-N» в заголовок статуса; undefined (/prompt, resume) — без суффикса
  */
-export function formatPhaseResult(run: PhaseRun): string {
+export function formatPhaseResult(run: PhaseRun, taskId?: string): string {
   const phase = escapeMarkdownV2(run.phase ?? '—');
   const res = run.result;
   const errFlag = res?.is_error === true;
+  // Суффикс задачи в обоих статусах (завершена и ошибка), VL-98:
+  // в MarkdownV2 taskId экранируется (дефис → VL\-98)
+  const taskSuffix = taskId ? ` — ${escapeMarkdownV2(taskId)}` : '';
   // Статусная строка формируется заново (не formatPhaseRun): шаблон VL-63
   // задаёт свой вид, а is_error при exit 0 — тоже «ошибка qwen»
   const status =
-    run.exitCode === 0 && !errFlag
+    (run.exitCode === 0 && !errFlag
       ? `*Фаза ${phase}: завершена \\(код 0\\)*`
       : `*Фаза ${phase}: ошибка \\(код ${run.exitCode ?? '—'}\\)` +
-        (errFlag ? ' \\(ошибка qwen\\)' : '');
+        (errFlag ? ' \\(ошибка qwen\\)' : '')) + taskSuffix;
   if (!res) {
     // Фолбэк: данных результата нет — показываем статус и хвост лога.
     // Хвост ОБЯЗАН экранироваться (escapeMarkdownV2): сырой JSON содержит
@@ -187,16 +207,25 @@ export function formatPhaseResult(run: PhaseRun): string {
   // удваивает длину — режем с большим запасом
   const body =
     res.result.length > 1500 ? res.result.slice(0, 1500) + '…' : res.result;
+  // VL-98: ответ модели — в цитате MarkdownV2 (каждая строка с "> ",
+  // спецсимволы экранируются; "> " в начале строки — валидный blockquote,
+  // Bot API ≥ 7.0, серверный парсинг). Срез — до префиксации (срез по
+  // старому body, затем prefix — логику среза не ломает)
+  const quoted = body
+    .split('\n')
+    .map((l) => '> ' + escapeMarkdownV2(l))
+    .join('\n');
   const lines = [
     status,
-    escapeMarkdownV2(body),
+    quoted,
     '',
-    `*Входные токены:* ${res.usage.input_tokens}`,
-    `*Сгенерированные токены:* ${res.usage.output_tokens}`,
-    `*Кэш-токены:* ${res.usage.cache_read_input_tokens}`,
-    `*Всего токенов:* ${res.usage.total_tokens}`,
+    // VL-98: токены одной строкой + расчёт «входные минус кэш»
+    // (кэш-токены уже во входных — разница показывает «свежий» вход)
+    `*Токены:* входные: ${res.usage.input_tokens} · сгенерированные: ${res.usage.output_tokens} · кэш: ${res.usage.cache_read_input_tokens} · всего: ${res.usage.total_tokens}`,
+    `*Входные минус кэш:* ${res.usage.input_tokens - res.usage.cache_read_input_tokens}`,
     '',
-    `*Общее время:* ${res.duration_ms} мс \\(api: ${res.duration_api_ms} мс\\)`,
+    // VL-98: время в человекочитаемом формате (formatDuration) вместо сырых мс
+    `*Общее время:* ${formatDuration(res.duration_ms)} \\(api: ${formatDuration(res.duration_api_ms)}\\)`,
     `*Количество запросов:* ${res.num_turns}`,
   ];
   // session_id — только hex/дефис (UUID) и префикс агента, внутри pre-блока

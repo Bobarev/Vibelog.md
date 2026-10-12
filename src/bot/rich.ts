@@ -18,6 +18,7 @@ import type { DiffFile, GitCommit } from '../core/git.js';
 import type { DocumentEntry } from '../core/document.js';
 import type { PhaseRun } from '../web/orchestrator.js';
 import { VALID_TASK_STYLES } from './settings.js';
+import { formatDuration } from './formatting.js';
 
 /** Лимит Rich Message по спецификации Telegram (символов UTF-8). */
 export const RICH_LIMIT = 32768;
@@ -554,15 +555,20 @@ export function renderCommitsRich(commits: GitCommit[]): string {
  * Telegram-клиентов — паттерн sendTaskView → formatTaskDetail.
  *
  * @param run — завершённый запуск фазы из оркестратора (getRun)
+ * @param taskId — идентификатор задачи VL-N (VL-98): добавляет суффикс
+ *   « — VL-N» в заголовок статуса; undefined (/prompt, resume) — без суффикса
  */
-export function renderPhaseResultRich(run: PhaseRun): string {
+export function renderPhaseResultRich(run: PhaseRun, taskId?: string): string {
   const res = run.result;
   const errFlag = res?.is_error === true;
+  // Суффикс задачи в обоих статусах (завершена и ошибка), VL-98;
+  // GFM-рендер — taskId как есть, без экранирования
+  const taskSuffix = taskId ? ` — ${taskId}` : '';
   const status =
-    run.exitCode === 0 && !errFlag
+    (run.exitCode === 0 && !errFlag
       ? `# Фаза ${run.phase ?? '—'}: завершена (код 0)`
       : `# Фаза ${run.phase ?? '—'}: ошибка (код ${run.exitCode ?? '—'})` +
-        (errFlag ? ' (ошибка qwen)' : '');
+        (errFlag ? ' (ошибка qwen)' : '')) + taskSuffix;
   if (!res) {
     // Фолбэк без данных результата: хвост лога в блоке кода — экранирование
     // не нужно (GFM), fenceSafe гасит вложенные тройные backticks
@@ -572,17 +578,24 @@ export function renderPhaseResultRich(run: PhaseRun): string {
   }
   const body =
     res.result.length > 1500 ? res.result.slice(0, 1500) + '…' : res.result;
+  // VL-98: ответ модели — GFM-цитата (каждая строка с "> "), без
+  // экранирования — рендер GFM
+  const quoted = body
+    .split('\n')
+    .map((l) => '> ' + l)
+    .join('\n');
   const lines = [
     status,
     '',
-    body,
+    quoted,
     '',
-    `**Входные токены:** ${res.usage.input_tokens}`,
-    `**Сгенерированные токены:** ${res.usage.output_tokens}`,
-    `**Кэш-токены:** ${res.usage.cache_read_input_tokens}`,
-    `**Всего токенов:** ${res.usage.total_tokens}`,
+    // VL-98: токены одной строкой + расчёт «входные минус кэш»
+    // (кэш-токены уже во входных — разница показывает «свежий» вход)
+    `**Токены:** входные: ${res.usage.input_tokens} · сгенерированные: ${res.usage.output_tokens} · кэш: ${res.usage.cache_read_input_tokens} · всего: ${res.usage.total_tokens}`,
+    `**Входные минус кэш:** ${res.usage.input_tokens - res.usage.cache_read_input_tokens}`,
     '',
-    `**Общее время:** ${res.duration_ms} мс (api: ${res.duration_api_ms} мс)`,
+    // VL-98: время в человекочитаемом формате (formatDuration) вместо сырых мс
+    `**Общее время:** ${formatDuration(res.duration_ms)} (api: ${formatDuration(res.duration_api_ms)})`,
     `**Количество запросов:** ${res.num_turns}`,
   ];
   // VL-93: единый формат вывода сессии '<agent>:<session_id>' для ВСЕХ агентов

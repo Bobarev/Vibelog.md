@@ -236,16 +236,19 @@ async function sendCommitsView(
  * (VL-71), фолбэк — MarkdownV2 (formatPhaseResult + sendText). Паттерн
  * sendTaskView: лимит rich 32768 — разбивка нужна только для гигантских
  * отчётов.
+ *
+ * @param taskId — идентификатор задачи VL-N (VL-98): попадает в заголовок
+ *   отчёта; undefined (/prompt, resume) — отчёт без суффикса задачи
  */
-async function sendPhaseResult(bot: Bot, chatId: number, run: PhaseRun): Promise<void> {
+async function sendPhaseResult(bot: Bot, chatId: number, run: PhaseRun, taskId?: string): Promise<void> {
   try {
-    const rich = renderPhaseResultRich(run);
+    const rich = renderPhaseResultRich(run, taskId);
     for (const part of chunkRich(rich)) {
       await bot.api.sendRichMessage(chatId, { markdown: part });
     }
   } catch (err) {
     console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
-    await sendText(bot, chatId, formatPhaseResult(run));
+    await sendText(bot, chatId, formatPhaseResult(run, taskId));
   }
 }
 
@@ -286,7 +289,9 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       // Файл мог изменить qwen — перечитываем; rich-рендер без phaseRun
       const fresh = getTask(deps.cwd, task.id) ?? task;
       await sendTaskView(bot, chatId, fresh);
-      await sendPhaseResult(bot, chatId, run);
+      // VL-98: task.id есть у всех реальных завершений фаз (comment/spec/
+      // plan/code/close) — идентификатор попадает в заголовок отчёта
+      await sendPhaseResult(bot, chatId, run, task.id);
     })().catch((err) => {
       console.error('Уведомление о завершении фазы не отправлено:', err);
     });

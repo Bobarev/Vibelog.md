@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 
 import {
   escapeMarkdownV2,
+  formatDuration,
   formatTaskList,
   formatDocsList,
   formatDocumentDetail,
@@ -169,14 +170,29 @@ describe('formatPhaseResult (VL-63/VL-65)', () => {
     const text = formatPhaseResult(okRun);
     // includes вместо regex — экранированные скобки MarkdownV2 не мешают
     assert.ok(text.includes('*Фаза comment: завершена \\(код 0\\)*'), 'статус');
-    assert.ok(text.includes('понг'), 'result');
-    assert.ok(text.includes('*Входные токены:* 10956'), 'input_tokens');
-    assert.ok(text.includes('*Сгенерированные токены:* 19'), 'output_tokens');
-    assert.ok(text.includes('*Кэш-токены:* 10944'), 'cache');
-    assert.ok(text.includes('*Всего токенов:* 10975'), 'total');
-    assert.ok(text.includes('*Общее время:* 42411 мс \\(api: 42369 мс\\)'), 'время');
+    // VL-98: ответ модели — в цитате MarkdownV2 (каждая строка с "> ")
+    assert.ok(text.includes('> понг'), 'result в цитате');
+    // VL-98: токены одной строкой + расчёт «входные минус кэш»
+    assert.ok(
+      text.includes('*Токены:* входные: 10956 · сгенерированные: 19 · кэш: 10944 · всего: 10975'),
+      'токены одной строкой'
+    );
+    assert.ok(text.includes('*Входные минус кэш:* 12'), 'входные минус кэш');
+    // VL-98: время в человекочитаемом формате (42411 мс → 42с)
+    assert.ok(text.includes('*Общее время:* 42с \\(api: 42с\\)'), 'время');
     assert.ok(text.includes('*Количество запросов:* 1'), 'num_turns');
     assert.ok(text.includes('a470c7dd-2ca8-4510-9d81-b184f932af76'), 'session_id');
+    // Без taskId (VL-98): суффикса задачи в заголовке нет
+    assert.ok(!text.includes('VL-'), 'нет суффикса задачи без taskId');
+  });
+
+  it('taskId добавляет суффикс «— VL-N» в заголовок (VL-98)', () => {
+    const text = formatPhaseResult(okRun, 'VL-98');
+    // В MarkdownV2 taskId экранирован: дефис → \-
+    assert.ok(text.includes('*Фаза comment: завершена \\(код 0\\)* — VL\\-98'), 'суффикс в заголовке');
+    // Ошибка — тоже получает суффикс (обе ветки статуса)
+    const errText = formatPhaseResult({ ...okRun, exitCode: 1, result: { ...okRun.result, is_error: true } }, 'VL-98');
+    assert.ok(errText.includes('ошибка qwen) — VL\\-98') || errText.includes('VL\\-98'), 'суффикс при ошибке');
   });
 
   it('спецсимволы в result экранированы', () => {
@@ -189,8 +205,9 @@ describe('formatPhaseResult (VL-63/VL-65)', () => {
     const run = { ...okRun, result: { ...okRun.result, result: 'x'.repeat(2000) } };
     const text = formatPhaseResult(run);
     const bodyLine = text.split('\n')[1];
-    // 'x' не экранируется — длина строки = 1500 + '…'
-    assert.equal(bodyLine.length, 1501);
+    // 'x' не экранируется — длина = префикс '> ' (2) + 1500 + '…' (VL-98: цитата)
+    assert.equal(bodyLine.length, 1503);
+    assert.ok(bodyLine.startsWith('> '), 'префикс цитаты');
     assert.ok(bodyLine.endsWith('…'));
   });
 
@@ -242,6 +259,24 @@ describe('formatPhaseResult (VL-63/VL-65)', () => {
     // Жалоба Pavel 2026-10-05: qwen тоже по общему правилу '<agent>:<session_id>'
     const text = formatPhaseResult(okRun);
     assert.ok(text.includes('`qwen:a470c7dd-2ca8-4510-9d81-b184f932af76`'), 'префикс qwen:');
+  });
+});
+
+describe('formatDuration (VL-98)', () => {
+  it('мс до секунды — «N мс»', () => {
+    assert.equal(formatDuration(0), '0 мс');
+    assert.equal(formatDuration(830), '830 мс');
+  });
+
+  it('до минуты — секунды с округлением', () => {
+    assert.equal(formatDuration(20000), '20с');
+    assert.equal(formatDuration(59999), '60с');
+  });
+
+  it('минуты и секунды', () => {
+    assert.equal(formatDuration(83000), '1м 23с');
+    assert.equal(formatDuration(60000), '1м 0с');
+    assert.equal(formatDuration(3600000), '60м 0с');
   });
 });
 

@@ -365,16 +365,32 @@ describe('renderPhaseResultRich (VL-71)', () => {
   it('успех: заголовок, меты, session_id в backticks; скобки без экранирования', () => {
     const md = renderPhaseResultRich(okRun);
     assert.match(md, /^# Фаза comment: завершена \(код 0\)/);
-    assert.match(md, /понг \(тест\) \[скобки\]/);
+    // VL-98: ответ модели — GFM-цитата (каждая строка с "> ")
+    assert.match(md, /^> понг \(тест\) \[скобки\]/m);
     assert.doesNotMatch(md, /\\\(/);
-    assert.match(md, /\*\*Входные токены:\*\* 10956/);
-    assert.match(md, /\*\*Сгенерированные токены:\*\* 19/);
-    assert.match(md, /\*\*Кэш-токены:\*\* 10944/);
-    assert.match(md, /\*\*Всего токенов:\*\* 10975/);
-    assert.match(md, /\*\*Общее время:\*\* 42411 мс \(api: 42369 мс\)/);
+    // VL-98: токены одной строкой + расчёт «входные минус кэш» (10956-10944=12)
+    assert.match(md, /\*\*Токены:\*\* входные: 10956 · сгенерированные: 19 · кэш: 10944 · всего: 10975/);
+    assert.match(md, /\*\*Входные минус кэш:\*\* 12/);
+    // VL-98: время в человекочитаемом формате (42411 мс → 42с)
+    assert.match(md, /\*\*Общее время:\*\* 42с \(api: 42с\)/);
     assert.match(md, /\*\*Количество запросов:\*\* 1/);
     // Единый формат вывода сессии '<agent>:<session_id>' (VL-93, жалоба Pavel 2026-10-05)
     assert.match(md, /`qwen:a470c7dd-2ca8-4510-9d81-b184f932af76`/);
+    // Без taskId (VL-98): суффикса задачи в заголовке нет
+    assert.doesNotMatch(md, /— VL-/);
+  });
+
+  it('taskId добавляет суффикс «— VL-N» в оба статуса (VL-98)', () => {
+    const ok = renderPhaseResultRich(okRun, 'VL-1');
+    assert.match(ok, /^# Фаза comment: завершена \(код 0\) — VL-1$/m);
+    // Кейсы ошибок: суффикс есть в обоих статусах
+    const codeErr = renderPhaseResultRich({ ...okRun, exitCode: 1 }, 'VL-1');
+    assert.match(codeErr, /# Фаза comment: ошибка \(код 1\) — VL-1/);
+    const qwenErr = renderPhaseResultRich(
+      { ...okRun, result: { ...okRun.result, is_error: true } },
+      'VL-1'
+    );
+    assert.match(qwenErr, /# Фаза comment: ошибка \(код 0\) \(ошибка qwen\) — VL-1/);
   });
 
   it('фолбэк без result: logTail в тройных backticks', () => {
