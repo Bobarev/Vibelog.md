@@ -158,7 +158,7 @@ export function listTools(): ToolDefinition[] {
           id: { type: 'string', description: 'ID задачи' },
           action: { type: 'string', enum: ['add', 'check', 'uncheck', 'remove', 'list'], description: 'Действие' },
           text: { type: 'string', description: 'Текст критерия (для action=add)' },
-          index: { anyOf: [{ type: 'number' }, { type: 'array', items: { type: 'number' } }], description: 'Номер(а) критерия с 1, массив — для check/uncheck/remove' },
+          index: { anyOf: [{ type: 'number' }, { type: 'string' }, { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] } }], description: 'Номер(а) критерия с 1; строка-число ("3") тоже принимается — массив для check/uncheck/remove' },
         },
         required: ['id', 'action'],
       },
@@ -172,7 +172,7 @@ export function listTools(): ToolDefinition[] {
           id: { type: 'string', description: 'ID задачи' },
           action: { type: 'string', enum: ['add', 'check', 'uncheck', 'remove', 'list'], description: 'Действие' },
           text: { type: 'string', description: 'Текст критерия (для action=add)' },
-          index: { anyOf: [{ type: 'number' }, { type: 'array', items: { type: 'number' } }], description: 'Номер(а) критерия с 1, массив — для check/uncheck/remove' },
+          index: { anyOf: [{ type: 'number' }, { type: 'string' }, { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] } }], description: 'Номер(а) критерия с 1; строка-число ("3") тоже принимается — массив для check/uncheck/remove' },
         },
         required: ['id', 'action'],
       },
@@ -600,6 +600,42 @@ function toolManageDod(args: ToolArgs, cwd: string): string {
 }
 
 /**
+ * Нормализация и валидация индексов чек-листа на границе MCP-инструмента.
+ *
+ * Инцидент VL-113: модель передавала индекс не того типа ('NaN', '', 2.5),
+ * вызовы падали с невнятной ошибкой и фаза теряла ходы на повтор.
+ * Поэтому ошибка самодостаточна: содержит исходный ввод (JSON), подсказку
+ * формата и текущее количество пунктов — модель может исправиться с первого раза.
+ *
+ * parseInt('2.5') = 2 — «тихое» срезание дроби недопустимо, поэтому строка
+ * принимается только строго по /^\d+$/ (после trim), а число — только целое.
+ */
+function parseChecklistIndexes(raw: unknown, listLength: number): number[] {
+  const items = Array.isArray(raw) ? raw : [raw];
+  const hint = (v: unknown): Error =>
+    new Error(
+      `Неверный индекс: ${JSON.stringify(v)}. Индекс — целое число, начиная с 1 ` +
+        `(текущих пунктов чек-листа: ${listLength}). Пример: index: 2 или index: "3".`
+    );
+
+  const indexes: number[] = [];
+  for (const v of items) {
+    let n: number;
+    if (typeof v === 'number' && Number.isInteger(v)) {
+      n = v;
+    } else if (typeof v === 'string' && /^\d+$/.test(v.trim())) {
+      n = parseInt(v, 10);
+    } else {
+      // NaN, пустая строка, дробь, 'abc', null, undefined — ошибка с подсказкой
+      throw hint(v);
+    }
+    if (n < 1 || n > listLength) throw hint(v);
+    indexes.push(n);
+  }
+  return indexes;
+}
+
+/**
  * Общая логика управления чеклистами (AC / DoD).
  *
  * @param field — 'acceptanceCriteria' или 'definitionOfDone'
@@ -631,14 +667,8 @@ function manageChecklist(args: ToolArgs, cwd: string, field: 'acceptanceCriteria
 
     case 'check':
     case 'uncheck': {
-      // index: одиночный номер или массив (как acceptanceCriteriaCheck оригинала)
-      const indexes = (Array.isArray(args.index) ? args.index : [args.index]).map(Number);
-      for (const i of indexes) {
-        const idx = i - 1;
-        if (!Number.isInteger(idx) || idx < 0 || idx >= list.length) {
-          throw new Error(`Неверный индекс: ${i}. Доступно: 1-${list.length}`);
-        }
-      }
+      // index: одиночный номер или массив; нормализация — parseChecklistIndexes (VL-120)
+      const indexes = parseChecklistIndexes(args.index, list.length);
       const checked = action === 'check';
       for (const i of indexes) {
         list[i - 1].checked = checked;
@@ -651,13 +681,7 @@ function manageChecklist(args: ToolArgs, cwd: string, field: 'acceptanceCriteria
 
     case 'remove': {
       // Несколько индексов — удаляем по убыванию, чтобы не сдвигать позиции
-      const indexes = (Array.isArray(args.index) ? args.index : [args.index]).map(Number);
-      for (const i of indexes) {
-        const idx = i - 1;
-        if (!Number.isInteger(idx) || idx < 0 || idx >= list.length) {
-          throw new Error(`Неверный индекс: ${i}. Доступно: 1-${list.length}`);
-        }
-      }
+      const indexes = parseChecklistIndexes(args.index, list.length);
       for (const i of [...indexes].sort((a, b) => b - a)) {
         list.splice(i - 1, 1);
       }

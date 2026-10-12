@@ -85,6 +85,18 @@ describe('MCP-клиент: tools/call (VL-84)', () => {
     assert.match(text, /^Ошибка MCP-инструмента backlog_view_task:/);
     assert.match(text, /не найдена/);
   });
+
+  it("manage_dod: index '2.5' → isError с подсказкой формата (VL-120)", async () => {
+    // Дробный индекс не должен «срезаться» до 2 — ошибка с форматом и лимитом.
+    const created = await client.callTool('backlog_create_task', { title: 'DoD validation' });
+    const taskId = created.match(/mcpcli-\d+/)[0];
+    await client.callTool('backlog_manage_dod', { id: taskId, action: 'add', text: 'D1' });
+    await client.callTool('backlog_manage_dod', { id: taskId, action: 'add', text: 'D2' });
+    const text = await client.callTool('backlog_manage_dod', { id: taskId, action: 'check', index: '2.5' });
+    assert.match(text, /^Ошибка MCP-инструмента backlog_manage_dod:/, `нет пометки isError: ${text}`);
+    assert.match(text, /целое число, начиная с 1/, `нет подсказки формата: ${text}`);
+    assert.match(text, /пунктов чек-листа: 2/, `нет количества пунктов: ${text}`);
+  });
 });
 
 describe('MCP-клиент: ошибки протокола (VL-84)', () => {

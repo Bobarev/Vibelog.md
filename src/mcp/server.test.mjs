@@ -196,6 +196,34 @@ describe('MCP-сервер', () => {
     assert.deepEqual(data.modified_files, ['src/a.ts', 'docs/b.md']);
   });
 
+  it('tools/call — backlog_manage_ac валидирует index (VL-120)', async () => {
+    // Задача с 2 AC; index:'NaN' → isError с подсказкой формата, index:'2' (строка) → успех
+    const responses = await callMcp([
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_create_task', arguments: { title: 'AC validation' } } },
+    ]);
+    // ID достаём из ответа — в фикстуре уже могут быть задачи от других тестов
+    const createdId = responses.find(r => r.id === 2).result.content[0].text.match(/mcp-\d+/)[0];
+    const responses2 = await callMcp([
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id: createdId, action: 'add', text: 'К1' } } },
+      { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id: createdId, action: 'add', text: 'К2' } } },
+      { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id: createdId, action: 'check', index: 'NaN' } } },
+      { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id: createdId, action: 'check', index: '2' } } },
+    ]);
+    const all = [...responses, ...responses2];
+    const badResp = all.find(r => r.id === 5);
+    assert.ok(badResp);
+    assert.equal(badResp.result.isError, true, 'index NaN должен дать isError');
+    const badText = badResp.result.content[0].text;
+    assert.ok(badText.includes('целое число, начиная с 1'), `нет подсказки формата: ${badText}`);
+    assert.ok(badText.includes('пунктов чек-листа: 2'), `нет количества пунктов: ${badText}`);
+    const goodResp = all.find(r => r.id === 6);
+    assert.ok(goodResp);
+    assert.ok(!goodResp.result.isError, 'строка-число "2" должна приниматься');
+    assert.ok(goodResp.result.content[0].text.includes('#2'));
+  });
+
   it('Неизвестный метод → error', async () => {
     const responses = await callMcp([
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
