@@ -1,11 +1,11 @@
 ---
 id: VL-116
 title: 'Тест-харнесс: утечка VIBELOG_CWD в дочерние CLI-процессы тестов (загрязнение реального backlog)'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-12 14:47'
-updated_date: '2026-10-12 15:49'
+updated_date: '2026-10-12 18:38'
 due_date: ''
 labels: []
 dependencies: []
@@ -40,9 +40,9 @@ modified_files:
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Comments
@@ -51,5 +51,10 @@ author: @agent
 created: 2026-10-12 15:49
 ---
 Фаза 3 (Code) выполнена вручную (исполнитель — Qwen Code; fix 92a042f). Три вектора утечки env фазы в дочерние тестовые процессы закрыты: llmEnv() (cli.test.mjs) удаляет VIBELOG_CWD/VIBELOG_PHASE_TASK_ID/VIBELOG_PHASE_NAME из env дочернего CLI; callMcp() (mcp/server.test.mjs) спавнит MCP-сервер с чистым env; McpClient (src/agent/mcp-client.ts) получил опцию env и mcp-client.test передаёт чистый env. Проверка AC#2: прогоны cli/server/mcp-client тестов с VIBELOG_CWD на throwaway-каталог (/tmp/vl116-leakcheck-*) — 46/46 зелёные, ноль задач/сессий в целевом каталоге (до фикса привели бы к записи в реальный backlog). Полный pnpm test — 834/834, fail 0. Что осталось: DoD закрывается Фазой Close; при первой возможности прогнать pnpm test ИМЕННО из живой фазы branch-mode как двойную подтверждение (агент VL-113 обходился env -u).
+---
+author: @agent
+created: 2026-10-12 18:38
+---
+Фаза Close выполнена вручную (исполнитель — Qwen Code). Код: fix 92a042f (llmEnv/callMcp чистят VIBELOG_CWD/VIBELOG_PHASE_*; McpClient получил опцию env). Доказательство: прогоны cli/server/mcp-client тестов с VIBELOG_CWD на throwaway-каталог — 46/46, ноль записи в целевой каталог; позже прогоны фаз в branch-mode (VL-113 resume + close VL-113/VL-108) не оставили тестового мусора в backlog. DoD 3/3. Статус Done.
 ---
 <!-- COMMENTS:END -->
