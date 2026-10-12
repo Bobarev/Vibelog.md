@@ -5,13 +5,13 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-04 21:30'
-updated_date: '2026-10-05 20:34'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies:
   - VL-85
   - VL-86
-milestone: ''
+milestone: v1.7
 references: []
 priority: medium
 type: ''
@@ -118,7 +118,7 @@ created: 2026-10-05 20:18
 **Отмечено:** AC #1-#6, DoD #2-#3. DoD #1 «Тесты проходят» оставлен незакрытым из-за флаки в полном прогоне (см. выше; не связано с этой задачей).
 **Что осталось:** заполнить таблицу-шаблон сравнения токенов в docs/agent.md §7 после первых живых замеров на Cloud.ru-ключе; `pnpm test` без флаки-фейла — после стабилизации test-runner (отдельная задача, вне VL-87).
 ---
-author:  @agent
+author: @agent
 created: 2026-10-05 20:34
 ---
 Фаза Close выполнена. Статус: Done.

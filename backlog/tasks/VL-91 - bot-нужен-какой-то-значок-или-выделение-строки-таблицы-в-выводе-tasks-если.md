@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-05 18:48'
-updated_date: '2026-10-05 20:58'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.7
 references: []
 priority: ''
 type: task
@@ -193,11 +193,10 @@ created: 2026-10-05 20:14
 **Примечание:** в первом прогоне упали 2 собственных новых теста (ожидание экранирования cellSafe и невалидный regex в тесте) — исправлены тесты, код соответствует плану. Отмечены все 3 AC и 3 DoD.
 **Что осталось:** ничего; статус → Review.
 ---
-author:  @agent
+author: @agent
 created: 2026-10-05 20:58
 ---
 Фаза Close выполнена. Статус: **Done**.
-
 Коммит feat: **не требовался** — `modified_files` у задачи пуст, а изменённые Фазой 3 файлы (`src/bot/rich.ts`, `src/bot/formatting.ts`, `src/bot/handlers.ts`, `src/bot/rich.test.mjs`, `src/bot/formatting.test.mjs`, `docs/user-guide.md`, `CHANGELOG.md`) параллельно меняет **активная Фаза 3 VL-90** (общие файлы: реализация `/commits` и слияние git-модулей core в `src/core/git.ts`, процессы обеих фаз запущены одновременно). Коммитить смешанный незавершённый код недопустим — эти файлы закоммитит close VL-90 (в шаблоне — проверка git status по упомянутым путям). Файл задачи VL-91 закоммичен отдельным docs(task)-коммитом.
 ---
 <!-- COMMENTS:END -->

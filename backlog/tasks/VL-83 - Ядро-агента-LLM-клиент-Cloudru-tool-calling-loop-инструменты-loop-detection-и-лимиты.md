@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-04 21:29'
-updated_date: '2026-10-05 20:13'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.7
 references: []
 priority: high
 type: ''
@@ -145,7 +145,7 @@ created: 2026-10-05 13:42
 - Сетевые ошибки стрим-фазы не уходят в non-stream фолбэк (он для 4xx/5xx-ответов) — ретраи ≤3 и ошибка по decision-4, п.3.
 - package.json без изменений (по плану): новых runtime-зависимостей нет.
 ---
-author:  @agent
+author: @agent
 created: 2026-10-05 20:13
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: 5491a1a — ядро агента: LLM-клиент Cloud.ru, tool-calling loop, инструменты, loop detection и лимиты (src/agent/llm.ts, tools.ts, loop.ts + тесты). Файлы других задач в src/agent/ (cli, mcp-client, tui) не коммитились — их закрытие идёт отдельно.

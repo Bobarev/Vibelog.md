@@ -5,13 +5,13 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-04 21:30'
-updated_date: '2026-10-05 20:30'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies:
   - VL-83
   - VL-85
-milestone: ''
+milestone: v1.7
 references: []
 priority: medium
 type: ''
@@ -124,7 +124,7 @@ created: 2026-10-05 16:34
 **Проверки:** pnpm build OK (tsc собирает .tsx); pnpm test — 560/560 (было 547, +12 tui-format, +1 --no-tui). Headless-контракт: существующие spawn-тесты cli.test.mjs (piped stdout) зелёные + новый тест --no-tui.
 **Отмечено:** AC 1-5 ✓, DoD 1-3 ✓. Визуальный smoke TUI в терминале не выполнялся (нет TTY в окружении исполнителя) — юниты + сборка по AC; ручная проверка стриминга в терминале возможна: `VIBELOG_LLM_* node dist/agent/cli.js comment VL-40`.
 ---
-author:  @agent
+author: @agent
 created: 2026-10-05 20:30
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: 0bc9d49 — TUI агента на Ink: стриминг, карточки tool calls, счётчики (tui.tsx, tui-format.ts + тесты, tsconfig jsx, ink/react в package.json). CHANGELOG.md и docs/cli-reference.md с пунктом VL-86 остаются незакоммиченными — по паттерну эпика их закоммитит VL-87 (документация агента).

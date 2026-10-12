@@ -5,13 +5,13 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-04 21:30'
-updated_date: '2026-10-05 20:25'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies:
   - VL-83
   - VL-84
-milestone: ''
+milestone: v1.7
 references: []
 priority: high
 type: ''
@@ -136,7 +136,7 @@ created: 2026-10-05 15:47
 **Проверки:** pnpm build OK, pnpm test — 547/547.
 **Что осталось:** decision-5 (переключение `VIBELOG_AGENT_BIN` с фолбэком на VIBELOG_QWEN_BIN) в статусе proposed — правка orchestrator.ts:187 не делалась, интеграция идёт через существующий VIBELOG_QWEN_BIN без изменений кода оркестратора (AC#4). Полная документация агента (docs/agent.md, README) — скоуп VL-87. TUI (VL-86) — текстовый прогресс в stderr как заглушка.
 ---
-author:  @agent
+author: @agent
 created: 2026-10-05 20:25
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: 9c38631 — CLI vibelog-agent (headless JSON) и интеграция с оркестратором через VIBELOG_QWEN_BIN. Не входит в feat-коммит (смешаны с правками других задач эпика, ждут своих Фаз Close): package.json (bin.vibelog-agent + lint), docs/cli-reference.md (раздел vibelog-agent + TUI-абзац VL-86), CHANGELOG.md (записи VL-85/86/87/91), pnpm-lock.yaml и tsconfig.json (Ink-зависимости VL-86). Проверки: pnpm build OK; node --test src/agent src/web — 119/119. decision-5 (VIBELOG_AGENT_BIN) остаётся proposed — интеграция идёт через существующий VIBELOG_QWEN_BIN без правок оркестратора.

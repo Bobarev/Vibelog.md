@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-04 21:15'
-updated_date: '2026-10-04 23:40'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.7
 references: []
 priority: ''
 type: task
@@ -319,7 +319,7 @@ created: 2026-10-04 23:30
 **Что осталось за Вами:** запущенный бот (PID 46483) исполняет старый `dist/` — в привязанном чате `/restart`, затем `/tasks`: должна прийти HTML-таблица (рамки/зебра/компакт, ID жирные) с рядами кнопок VL-N. Визуальный рендер в Telegram из этой сессии проверить не могу — если таблица всё ещё отображается сырым текстом, пришлите, пожалуйста, как выглядит сообщение после рестарта.
 git-операции не выполнялись. Статус не менял (просьбы о смене в комментарии не было).
 ---
-author:  @agent
+author: @agent
 created: 2026-10-04 23:40
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: 5c75328 — rich-вывод /tasks: HTML-таблица + callback-кнопки task:<id> (7 файлов: settings.ts, rich.ts, handlers.ts, rich.test.mjs, settings.test.mjs, docs/user-guide.md, CHANGELOG.md).

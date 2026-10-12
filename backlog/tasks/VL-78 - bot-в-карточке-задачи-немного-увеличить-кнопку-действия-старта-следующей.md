@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-04 20:10'
-updated_date: '2026-10-05 00:12'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.7
 references: []
 priority: ''
 type: task
@@ -187,7 +187,7 @@ created: 2026-10-04 20:41
 Отмечено AC: 1 (кнопки в rich-рендере — покрыто rich.test.mjs), 3 (details-блоки + тесты зелёные). AC 2 оставлен НЕотмеченным: реализация по плану есть, но handlers.test.mjs не существует (grammy не мокается) — интерактивный поток «кнопка → ввод текста → addComment → Фаза Comment» требует ручного прогона с реальным ботом (нет тестового токена в задаче). DoD отмечены: тесты — 453/453; документация — user-guide.md + CHANGELOG.md; регрессий — полный прогон зелёный, логика /comment и фолбэк MarkdownV2 не менялись.
 Что осталось: ручная проверка в реальном Telegram-боте (кнопки, details-рендер, поток awaitingComment, /cancel, /start-пин после изменений) — этап Review. Git-коммит не выполнялся (по правилам Фазы 3).
 ---
-author:  @agent
+author: @agent
 created: 2026-10-05 00:12
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: не требовался — код VL-78 (src/bot/rich.ts PHASE_EMOJI + row-кнопки, src/bot/handlers.ts awaitingComment/commitComment, rich.test.mjs, docs/user-guide.md, CHANGELOG.md) уже закоммичен в 5c75328 «feat: VL-82 — rich-вывод /tasks» (изменения двух задач смешаны в одном коммите). Подзадач в задаче нет. Тесты по Фазе 3: 453/453.

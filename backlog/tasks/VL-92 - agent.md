@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-05 20:47'
-updated_date: '2026-10-05 23:07'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.7
 references: []
 priority: ''
 type: task
@@ -147,7 +147,7 @@ created: 2026-10-05 22:09
 **Отступления от плана:** (1) суффикс разбирается и из ctx.match, а не только из слова команды — покрывает оборванную Telegram-entity (двойная доставка); (2) добавлен hears-фолбэк подсказки для неизвестных суффиксов — в чистом варианте плана `/prompt:foo` при оборванной entity молчал бы; (3) в registry.test.mjs обновлён coverage-тест (regex не понимал массивы) — без этого тест падал бы.
 **Что осталось:** ручная проверка в живом Telegram (спавн qwen/vb через бота) — автотестами не покрывается; git-стенд VL-90 параллельно менял handlers.ts/registry.ts, но к моменту правок его Фаза 3 была закоммичена (0a43d83) — конфликта не было. Коммит не выполнялся (по правилам Фазы 3).
 ---
-author:  @agent
+author: @agent
 created: 2026-10-05 23:07
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: не требовался — поле modified_files пусто, а незакоммиченный код VL-92 (src/bot/handlers.ts, commands.ts, registry.ts, src/web/orchestrator.ts, тесты, CHANGELOG.md, docs/user-guide.md, docs/agent.md) смешан в рабочем дереве с правками параллельно работающих фаз VL-93 (Comment: resume сессии по reply — свой код в handlers.ts/orchestrator.ts/commands.ts + formatting.ts/rich.ts) и VL-94 (Comment: /set и команда comment). Коммит сейчас зафиксировал бы недописанный чужой код и сломал атрибуцию — паттерн VL-91, подтверждённый 2026-10-05. Их закоммитят close VL-93/VL-94, когда рабочее дерево станет чистым. Коммит docs(task): файл задачи VL-92 (смена статуса + этот отчёт). Подзадач у VL-92 нет (type=task, фича уложилась в одну задачу).

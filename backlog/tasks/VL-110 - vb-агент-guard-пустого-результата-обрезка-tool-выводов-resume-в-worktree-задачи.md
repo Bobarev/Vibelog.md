@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-12 09:50'
-updated_date: '2026-10-12 12:27'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.7
 references: []
 priority: medium
 type: task
@@ -64,16 +64,12 @@ author: @agent
 created: 2026-10-12 11:05
 ---
 Фаза 3 (Code) выполнена вручную (исполнитель — Qwen Code, без headless-фазы; feat 8e42ecc).
-
 Реализовано C1/C2/C3 из doc-12 (раздел 6.2):
 - C2 (src/agent/loop.ts): guard пустого финала — финальный текст без tool_calls пуст/только пробелы → fail «Пустой ответ модели», is_error=true; транскрипт завершается assistant-сообщением (контракт resume VL-103).
 - C1 (src/agent/tools.ts): truncateToolOutput/TOOL_OUTPUT_MAX_CHARS=8KB — финальная обрезка вывода для модели в read_file, run_shell_command (поверх per-stream 64KB), grep_search, glob; маркер «…[вывод обрезан: … из N символов]» с подсказкой сузить запрос.
 - C3 (src/agent/session.ts + src/agent/cli.ts + src/web/orchestrator.ts): метаданные сессии <id>.meta.json (taskId/phase/cwd) пишет CLI при создании задачной сессии; startResume читает мету (loadSessionMetaSync, префикс vb: снимается) и при branch_mode возобновляет сессию в worktree задачи с VIBELOG_CWD на главный репо — инцидент VL-98 (патчи в главный репозиторий вместо worktree vb/vl-N) закрыт; при выключенном branch_mode и cwd-несовпадении в промпт дописывается предупреждение проверить git status/diff.
-
 Тесты (+18): loop 4 (пустой/whitespace-финал, регрессия, контракт resume), tools 5 (unit + интеграции обрезки), session 5 (roundtrip meta, битый JSON, path traversal, latestSession), cli 2 (мета фазы, отсутствие меты у готового промпта), orchestrator 2 (resume в worktree через git-корень с проверкой cwd и VIBELOG_CWD; предупреждение при выключенном branch_mode).
-
 Проверки: pnpm build (tsc strict) OK; pnpm test — 812 тестов, fail 0 (static.test — пре-экзистирующий флак V8-десериализации test-runner: в полном прогоне 2026-10-12 упал 1 раз, в одиночном — зелёный).
-
 Что осталось: live-проверка resume в worktree на реальном инциденте (branch-mode on + reply «Продолжи» в боте); DoD закрывается Фазой Close.
 ---
 author: @agent

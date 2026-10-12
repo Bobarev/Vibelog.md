@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-05 18:31'
-updated_date: '2026-10-05 21:30'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.7
 references: []
 priority: ''
 type: task
@@ -235,7 +235,7 @@ created: 2026-10-05 21:21
 **Проверки:** `pnpm build` OK; `pnpm test` — **617/617, 0 fail**; grep по старому порядку («Хеш | Автор…») — пусто.
 Статус не менялся (в комментарии просьбы о смене не было).
 ---
-author:  @agent
+author: @agent
 created: 2026-10-05 21:30
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: 2156708 — команда /commits (git log в Telegram-боте), слияние git-модулей core в git.ts; плюс незакоммиченный код VL-91 (пометка 🔄 активной фазы в /tasks) — он оказался в тех же файлах (handlers.ts/rich.ts/formatting.ts/user-guide.md), фаза Close VL-91 не сделала feat-коммит, поэтому закоммичен в этом же feat-коммите. Не закоммичено (чужие задачи): docs/cli-reference.md (VL-85/86), backlog/tasks/VL-75, backlog/docs/doc-5 (VL-85), backlog/tasks/VL-92.

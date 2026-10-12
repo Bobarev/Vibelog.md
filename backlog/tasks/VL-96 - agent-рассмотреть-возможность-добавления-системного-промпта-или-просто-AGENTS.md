@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-06 00:46'
-updated_date: '2026-10-06 01:52'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.7
 references: []
 priority: ''
 type: task
@@ -163,7 +163,7 @@ created: 2026-10-06 01:37
 **Проверки:** pnpm build OK; pnpm test — 692/692 (включая регрессионные VL-95/93/92 по сессиям и CLI). TUI не тронута (счётчики получают cache_read из того же mapUsage). Коммит не выполнялся (по правилам фазы).
 **Отступления от плана:** отсутствуют; реализация точь-в-точь по плану Фазы 2 (включая замену system при resume — консервативный вариант плана).
 ---
-author:  @agent
+author: @agent
 created: 2026-10-06 01:52
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: 99588ca «feat: VL-96 — системный промпт агента (AGENTS.md) и учёт cache-токенов во всех вариантах usage» (10 файлов: src/agent/system-prompt.ts + тесты, cli.ts, llm.ts, loop.ts + тесты, docs/agent.md, CHANGELOG.md). modified_files в задаче были пусты — файлы взяты из отчёта Фазы 3 и сверены с git status; чужие файлы (src/bot/*, templates/*, docs/cli-reference.md, backlog-файлы параллельных задач) в коммит не добавлялись. Подзадач-батча нет (type=task).

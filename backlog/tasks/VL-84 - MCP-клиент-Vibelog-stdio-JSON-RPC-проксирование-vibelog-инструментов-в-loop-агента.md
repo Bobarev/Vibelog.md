@@ -5,12 +5,12 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-04 21:29'
-updated_date: '2026-10-05 20:20'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies:
   - VL-83
-milestone: ''
+milestone: v1.7
 references: []
 priority: high
 type: ''
@@ -122,7 +122,7 @@ created: 2026-10-05 14:23
 - DoD «Документация обновлена» не отмечен: документация агента вынесена в VL-87 (как в VL-83).
 - Интеграция MCP в фазы оркестратора (подключение всегда, кроме prompt) — задача VL-85, здесь не трогал; package.json без изменений.
 ---
-author:  @agent
+author: @agent
 created: 2026-10-05 20:20
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: 82a3ff2 — «feat: VL-84 — MCP-клиент Vibelog: stdio JSON-RPC, проксирование vibelog-инструментов в loop агента» (src/agent/mcp-client.ts + mcp-client.test.mjs; правка loop.ts уже была в HEAD). Подзадач в VL-84 нет.

@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-12 12:46'
-updated_date: '2026-10-12 18:38'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.7
 references: []
 priority: medium
 type: task
@@ -60,16 +60,13 @@ author: @agent
 created: 2026-10-12 13:26
 ---
 Фаза 3 (Code) выполнена вручную (исполнитель — Qwen Code; feat 2980346).
-
 Реализовано по Варианту 1 (выбор Pavel 2026-10-12):
 - templates/qwen-commands/phase-close-worktree.md (новый): протокол закрытия задачи с worktree — чистка worktree (git -C, единственное исключение), git log master..{{branch}}, merge --no-ff из главного cwd; при конфликте — НЕ резолвить и НЕ abort, статус не менять, отчёт с файлами конфликта; после успеха — worktree remove + branch -d (закрывает C7 из doc-12), DoD, docs(task)-коммит backlog в главном репо, Done, отчёт.
 - src/web/phase-prompt.ts: RenderPromptOptions.closeWorktree + CLOSE_WORKTREE_FILE; подстановки {{branch}}/{{worktreeDir}}.
 - src/web/orchestrator.ts: close исключён из worktree-спавна (branchTask проверяет phase !== close); startPhase передаёт {{branch}}/{{worktreeDir}} и опцию выбора шаблона по наличию .vibelog/worktrees/<id>.
 - src/agent/cli.ts: прямой запуск close через CLI выбирает тот же шаблон; блок renderPrompt перенесён ниже объявления cwd (иначе use-before-declaration).
 - scripts/npm-smoke.mjs: все 7 шаблонов фаз + templates/agent-prompt.md проверяются в пакете; README (раздел branch-mode) описывает закрытие в веточном режиме.
-
 Проверки: pnpm build (tsc strict) OK; pnpm test — 823/823, fail 0; целевые phase-prompt/orchestrator/cli — 70/70.
-
 Что осталось: первый живой прогон /close на задаче с worktree (например, ветки vb/vl-98-patches после доводки VL-98); DoD закрывается Фазой Close.
 ---
 author: @agent

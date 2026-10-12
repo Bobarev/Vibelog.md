@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-12 16:01'
-updated_date: '2026-10-12 18:38'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.7
 references: []
 priority: medium
 type: task
@@ -54,13 +54,9 @@ author: @agent
 created: 2026-10-12 16:12
 ---
 Фаза 3 (Code) выполнена вручную (исполнитель — Qwen Code; feat 59939d9).
-
 Реализовано: core/config.ts — taskIdPattern(cwd): regex из task_prefix backlog/config.yml с escape-ом спецсимволов (префикс — данные пользователя; тест a.b+ матчится литералом), дефолт VL при отсутствии backlog/конфига или пустом префиксе. Четыре точки переведены: branchTask и phaseTaskId (spawnQwenRun), мета worktree-resume (startResume), env-фильтр меты (cli.ts) — хардкода /^VL-\d+$/i в коде не осталось (остался исторический комментарий). taskWorktreeDir/taskBranchName и шаблоны не менялись — уже генеричны.
-
 Тесты (+7): config.test.mjs (новый: обычный префикс, экранирование спецсимволов, нет конфига → VL, пустой префикс → VL); orchestrator +1 (branch-mode task_prefix ot: worktree ot-5, env OT-5, cwd фазы — worktree); cli +2 (env-путь ot-7 пишет мету OT-7; без конфига weird-7 отфильтрован). Сопутствующая правка: E2E-тест VL-114 переведён на ot-88 — общий testRoot использует task_prefix ot, и VL-88 после фикса корректно перестал считаться задачей проекта (тест и поймал регрессию).
-
 Проверки: pnpm build (tsc strict) OK; pnpm test — 841/841, fail 0.
-
 Что осталось: live-проверка на проекте с чужим префиксом; DoD закрывается Фазой Close.
 ---
 author: @agent

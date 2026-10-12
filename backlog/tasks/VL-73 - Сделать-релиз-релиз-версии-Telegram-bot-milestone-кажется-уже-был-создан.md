@@ -27,7 +27,7 @@ modified_files: []
 
 - Текущая версия пакета: 1.5.0; git-теги: v1.1.0…v1.5.0; последний релиз — v1.5.0 (npm; аннотированный тег по образцу: «v1.5.0 — первая публикация в npm», коммит f2e3e4a).
 - CHANGELOG.md накопил большую секцию [Unreleased] с записями бота (VL-34, 35, 39, 51, 53, 54, 63, 60, 55, 66/67/68, 70, 72 и др.).
-- Веха v1.6 «Telegram Bot» создана и active; параллельно есть v1.x «Workflow & Prompts» (workflow.md) и архивная v1.5.
+- Веха v1.6 «Telegram Bot» создана и active; параллельно есть v1.7 «Workflow & Prompts» (workflow.md) и архивная v1.5.
 
 ## Состав вехи v1.6 (39 задач)
 
@@ -119,7 +119,7 @@ README.md версии не содержит (проверено grep'ом) — 
 6. **Smoke npm-пакета** — `node scripts/npm-smoke.mjs` (VL-32, обязательный шаг перед publish по AGENTS.md): pack → установка в чатый /tmp → прогон CLI/init/browser + проверка содержимого пакета.
 7. **Коммит релиза** — staging ТОЛЬКО нужных файлов:
    `git add AGENTS.md CHANGELOG.md package.json backlog/tasks/VL-3[4-9]* backlog/tasks/VL-4* backlog/tasks/VL-5* backlog/tasks/VL-6* backlog/tasks/VL-7[0-3]* backlog/completed/VL-58* backlog/completed/VL-59*`
-   НЕ добавлять: backlog/milestones/workflow.md (веха v1.x, другая линия) и backlog/tasks/VL-74* (тестовая задача) — они остаются незакоммиченными.
+   НЕ добавлять: backlog/milestones/workflow.md (веха v1.7, другая линия) и backlog/tasks/VL-74* (тестовая задача) — они остаются незакоммиченными.
    Сообщение: `chore(release): v1.6.0 — Telegram Bot` (по образцу `chore(release): v1.4.0`).
 8. **Аннотированный тег** — `git tag -a v1.6.0 -m "v1.6.0 — Telegram Bot: бот, workflow-фазы через qwen, /prompt, /restart"` (образец: `git tag -l -n5 v1.5.0` → «v1.5.0 — первая публикация в npm»).
 9. **npm publish** — `npm publish` (prepublishOnly сам гоняет pnpm build; токен без 2FA — разрешено для релизной задачи).

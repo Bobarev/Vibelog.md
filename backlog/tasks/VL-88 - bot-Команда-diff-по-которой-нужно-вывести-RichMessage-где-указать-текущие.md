@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-05 16:16'
-updated_date: '2026-10-05 18:27'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.7
 references: []
 priority: ''
 type: task
@@ -265,7 +265,7 @@ created: 2026-10-05 18:20
 **Отмечены AC#1-3, DoD#1-3** — все выполнены.
 **Что осталось:** git commit/push — по правилам фазы не выполняются; ручная проверка `/diff` в Telegram-чате (по желанию Pavel).
 ---
-author:  @agent
+author: @agent
 created: 2026-10-05 18:27
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: bf53e17 — feat: VL-88 — /diff: RichMessage с незакоммиченными файлами (git status + счётчики строк). В коммит вошли: src/core/git-status.ts + тест (новые), src/bot/{rich,formatting,handlers,registry}.ts + тесты, docs/user-guide.md, строка VL-88 в CHANGELOG.md (строки VL-85/86 оставлены незакоммиченными — это чужие параллельные задачи).

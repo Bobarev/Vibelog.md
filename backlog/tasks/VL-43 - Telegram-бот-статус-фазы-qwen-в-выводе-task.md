@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-02 22:34'
-updated_date: '2026-10-04 18:42'
+updated_date: '2026-10-12 21:54'
 due_date: ''
 labels:
   - telegram-bot
   - spec
 dependencies:
   - VL-42
-milestone: v1.6
+milestone: v1.7
 references: []
 priority: medium
 type: ''
