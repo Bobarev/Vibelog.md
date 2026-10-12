@@ -64,4 +64,16 @@ describe('buildSystemPrompt (VL-96)', () => {
       assert.match(content, /Vibelog-agent/);
     });
   });
+
+  it('VL-109: базовая часть читается из templates/agent-prompt.md с правилами экономии ходов', () => {
+    withTmpCwd((dir) => {
+      const { content } = buildSystemPrompt(dir);
+      // Три правила VL-109 живут в md-шаблоне, а не в хардкоде TS
+      assert.match(content, /одна команда grep/, 'правило про одну grep-проверку якоря');
+      assert.match(content, /git status и git diff/, 'правило переориентации при «Продолжи»');
+      assert.match(content, /BSD/, 'предупреждение про BSD sed на macOS');
+      // Стабильный префикс: повторная сборка даёт тот же текст
+      assert.equal(content, buildSystemPrompt(dir).content);
+    });
+  });
 });

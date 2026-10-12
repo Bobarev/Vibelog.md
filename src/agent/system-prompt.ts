@@ -1,22 +1,34 @@
 /**
- * Системный промпт vibelog-agent (VL-96, Цель 1).
+ * Системный промпт vibelog-agent (VL-96, Цель 1; VL-109 — вынос в md).
  *
  * Собирает system-сообщение диалога: (а) встроенная базовая часть — роль
- * агента, язык, границы рабочего каталога; (б) содержимое AGENTS.md проекта
- * из cwd, если файл есть. Минимальный вариант qwen-code (решение плана VL-96):
- * AGENTS.md читается только из корня рабочего каталога, без иерархии вверх
- * по дереву — cwd агента всегда корень проекта Vibelog.
+ * агента, язык, границы рабочего каталога, правила экономии ходов; читается
+ * из templates/agent-prompt.md (правки промпта без пересборки кода, шаблоны
+ * едут с пакетом — package.json files включает templates); (б) содержимое
+ * AGENTS.md проекта из cwd, если файл есть. Минимальный вариант qwen-code
+ * (решение плана VL-96): AGENTS.md читается только из корня рабочего
+ * каталога, без иерархии вверх по дереву — cwd агента всегда корень проекта.
  *
  * Лимит вставки AGENTS.md — чтобы огромный файл не съедал контекст каждой
  * итерации loop; ошибка чтения (EACCES, EISDIR и т.п.) не роняет фазу:
- * предупреждение в stderr, промпт собирается без AGENTS.md.
+ * предупреждение в stderr, промпт собирается без AGENTS.md. Отсутствие
+ * самого шаблона agent-prompt.md — ошибка установки: throw, как renderPrompt
+ * при отсутствии шаблона фазы.
  */
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** Максимум символов AGENTS.md во вставке (обрезка с пометкой). */
 export const AGENTS_MD_MAX_CHARS = 8000;
+
+/**
+ * Путь к шаблону базовой части системного промпта. Вычисляется от
+ * расположения модуля (dist/agent/system-prompt.js → ../../templates/),
+ * как templatesDir в phase-prompt.ts.
+ */
+const agentPromptPath = fileURLToPath(new URL('../../templates/agent-prompt.md', import.meta.url));
 
 /** Результат сборки системного промпта. */
 export interface SystemPromptResult {
@@ -26,23 +38,20 @@ export interface SystemPromptResult {
   hasAgentsMd: boolean;
 }
 
-/** Встроенная базовая часть — стабильный префикс запроса каждой итерации. */
-const BASE_PROMPT = `Ты — Vibelog-agent, LLM-агент проекта Vibelog.md. Выполняешь задачи через инструменты (файлы, shell) и MCP-инструменты Vibelog.
-
-Правила:
-- Работай только внутри рабочего каталога проекта (cwd); не выходи за его пределы.
-- В shell-командах запрещены ~, $HOME, абсолютные пути и ../-переходы наружу: инструмент run_shell_command отклоняет такие команды до выполнения.
-- Применяй правки аккуратно; после изменений выполняй проверки проекта, описанные в AGENTS.md (если файл есть).
-- Не запускай grep -r / find по всему проекту без --exclude-dir=node_modules --exclude-dir=refs --exclude-dir=.git --exclude-dir=dist — такие команды таймаутят на больших каталогах; для поиска используй grep_search/glob с фильтрами.
-- Не выполняй push и другие необратимые действия, если пользователь прямо не просил.
-- Контекст проекта — в AGENTS.md ниже (если подключён).`;
-
 /**
- * Собирает системный промпт: базовая часть + AGENTS.md проекта из cwd.
- * Отсутствие AGENTS.md — норма (только базовая часть); ошибка чтения —
- * предупреждение в stderr, фаза продолжается без AGENTS.md.
+ * Собирает системный промпт: базовая часть (templates/agent-prompt.md) +
+ * AGENTS.md проекта из cwd. Отсутствие AGENTS.md — норма (только базовая
+ * часть); ошибка чтения — предупреждение в stderr, фаза продолжается без
+ * AGENTS.md. Отсутствие шаблона agent-prompt.md — throw (ошибка установки).
  */
 export function buildSystemPrompt(cwd: string): SystemPromptResult {
+  // Базовая часть — стабильный префикс запроса каждой итерации loop
+  let base: string;
+  try {
+    base = readFileSync(agentPromptPath, 'utf-8').trimEnd();
+  } catch {
+    throw new Error(`Шаблон системного промпта не найден: ${agentPromptPath}`);
+  }
   let agentsMd = '';
   let hasAgentsMd = false;
   try {
@@ -62,6 +71,6 @@ export function buildSystemPrompt(cwd: string): SystemPromptResult {
       );
     }
   }
-  const content = hasAgentsMd ? `${BASE_PROMPT}\n\n# AGENTS.md проекта\n\n${agentsMd}` : BASE_PROMPT;
+  const content = hasAgentsMd ? `${base}\n\n# AGENTS.md проекта\n\n${agentsMd}` : base;
   return { content, hasAgentsMd };
 }
