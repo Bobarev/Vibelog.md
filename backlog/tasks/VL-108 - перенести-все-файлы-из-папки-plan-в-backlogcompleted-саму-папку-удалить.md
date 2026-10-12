@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-06 23:49'
-updated_date: '2026-10-08 08:21'
+updated_date: '2026-10-12 18:28'
 due_date: ''
 labels: []
 dependencies: []
@@ -157,5 +157,10 @@ author: @agent
 created: 2026-10-08 08:21
 ---
 Фаза Close выполнена. Статус: Done. Коммит feat: 6f27c3a — «перенести планы из plan/ в backlog/completed и очистить упоминания» (в ветке vb/vl-108 worktree): 13 rename-перемещений PLAN-*.md plan/ → backlog/completed/ с сохранением git-истории (similarity 81–97%, frontmatter +21 строк на файл) + правка AGENTS.md (убраны упоминания пути plan/). Не закоммичено: файлы задач backlog/tasks/ (в режиме параллельной разработки backlog живёт в основном репозитории — статус и комментарий записаны туда через MCP, в worktree backlog не коммитится). Подзадачек нет; рабочее дерево worktree чистое.
+---
+author: @agent
+created: 2026-10-12 18:28
+---
+Фаза Close выполнена (повторное закрытие после параллельной разработки). Ветка vb/vl-108 слита в master (1 коммит: 6f27c3a «перенести планы из plan/ в backlog/completed и очистить упоминания», merge-коммит без конфликтов), worktree .vibelog/worktrees/vl-108 удалена, ветка vb/vl-108 удалена. DoD: все 3 пункта отмечены (тесты проходят — 734 tests / 0 fail; документация обновлена — AGENTS.md очищен от упоминаний plan/; нет регрессий). Статус: Done.
 ---
 <!-- COMMENTS:END -->
