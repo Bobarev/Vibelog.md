@@ -1,11 +1,11 @@
 ---
 id: VL-81
 title: Что-то ломает форматирование RichMessage при ответе на /task VL-78
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-04 21:04'
-updated_date: '2026-10-05 01:59'
+updated_date: '2026-10-12 09:46'
 due_date: ''
 labels: []
 dependencies: []
