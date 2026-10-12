@@ -13,6 +13,8 @@ import {
   formatCounters,
   formatDuration,
   formatErrorBlock,
+  formatUserMessage,
+  assembleAssistantText,
 } from '../../dist/agent/tui-format.js';
 
 describe('formatToolArgs (VL-86)', () => {
@@ -89,5 +91,33 @@ describe('formatErrorBlock (VL-86)', () => {
 
   it('пустой список — пустой блок', () => {
     assert.deepEqual(formatErrorBlock([]), []);
+  });
+});
+
+describe('formatUserMessage (VL-113)', () => {
+  it('реплика пользователя получает префикс "> "', () => {
+    assert.equal(formatUserMessage('привет'), '> привет');
+  });
+
+  it('многострочный текст не изменяется (только префикс)', () => {
+    assert.equal(formatUserMessage('строка1\nстрока2'), '> строка1\nстрока2');
+  });
+});
+
+describe('assembleAssistantText (VL-113)', () => {
+  it('пустые массив и стрим — пустая строка (no-op finishTurn)', () => {
+    assert.equal(assembleAssistantText([], ''), '');
+  });
+
+  it('непустые куски склеиваются через \\n — переносы сохраняются', () => {
+    assert.equal(assembleAssistantText(['часть 1', 'часть 2'], 'часть 3'), 'часть 1\nчасть 2\nчасть 3');
+  });
+
+  it('пустые куски отбрасываются, обрезка пустых строк по краям', () => {
+    assert.equal(assembleAssistantText(['', '  текст  ', ''], '\n\n'), 'текст');
+  });
+
+  it('только стрим без chunks', () => {
+    assert.equal(assembleAssistantText([], 'ответ\nвторая строка'), 'ответ\nвторая строка');
   });
 });

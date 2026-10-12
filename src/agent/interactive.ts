@@ -155,6 +155,10 @@ export async function runInteractiveAgent(): Promise<void> {
         // Неожиданная ошибка хода — показываем в блоке ошибок TUI, чат живёт
         tui?.onError(`Ошибка хода: ${(err as Error).message}`);
       } finally {
+        // Финализация хода (VL-113): ответ переносится в ленту чата,
+        // стрим/карточки сбрасываются — в т.ч. в ошибочном пути (частичный
+        // текст не теряется, но и не приклеивается к следующему ходу)
+        tui?.finishTurn();
         busy = false;
         tui?.setBusy(false);
       }

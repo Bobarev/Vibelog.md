@@ -85,3 +85,23 @@ export function formatCounters(c: {
 export function formatErrorBlock(lines: string[]): string[] {
   return lines.map((line) => `  ✖ ${line}`);
 }
+
+/**
+ * Реплика пользователя в ленте чата (VL-113): префикс '> ' — модель
+ * PrefixedTextMessage из qwen code. Единая точка префикса: и рендер ленты,
+ * и будущие форматы (транскрипт, экспорт) используют одну функцию.
+ */
+export function formatUserMessage(text: string): string {
+  return `> ${text}`;
+}
+
+/**
+ * Сборка завершённого ответа ассистента из кусков стрима (VL-113):
+ * непустые куски склеиваются через '\n' (переносы строк сохраняются —
+ * ответ не схлопывается в одну строку), хвостовые/головные пустые строки
+ * обрезаются. Пустые куски и пустой итог дают '' — finishTurn в таком
+ * случае ничего не добавляет в ленту (no-op).
+ */
+export function assembleAssistantText(chunks: string[], stream: string): string {
+  return [...chunks, stream].filter((s) => s.length > 0).join('\n').trim();
+}

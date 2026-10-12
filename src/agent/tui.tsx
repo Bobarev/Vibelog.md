@@ -16,14 +16,19 @@ import type { ReactElement } from 'react';
 import { Box, Text, render, useInput } from 'ink';
 import type { LlmUsage } from './llm.js';
 import {
+  assembleAssistantText,
   formatCounters,
   formatErrorBlock,
   formatToolCard,
+  formatUserMessage,
   type ToolCallView,
 } from './tui-format.js';
 
 /** Хвост стриминга: сколько последних строк текста показывать (автопрокрутка). */
 const STREAM_TAIL_LINES = 10;
+
+/** Сколько последних записей ленты чата показывать (VL-113). */
+const CHAT_VISIBLE = 30;
 
 /** Сколько последних карточек tool calls показывать. */
 const TOOL_CARDS_VISIBLE = 8;
@@ -39,12 +44,30 @@ interface ToolCardState extends ToolCallView {
   startedAt?: number;
 }
 
+/**
+ * Запись ленты чата (VL-113): завершённая реплика пользователя или
+ * ассистента. Лента переживает ходы — реплика пользователя не стирается,
+ * ответы не склеиваются между ходами.
+ */
+interface ChatEntry {
+  /** React-key: стабильный id записи (счётчик msgSeq стора). */
+  id: number;
+  /** Кто говорил. */
+  role: 'user' | 'assistant';
+  /** Текст реплики; переносы строк сохраняются (wrap-рендер). */
+  text: string;
+}
+
 /** Состояние TUI; обновляется только через TuiStore (иммутабельно). */
 interface TuiState {
   /** Завершённые куски текста модели (промежуточный текст до tool calls). */
   chunks: string[];
   /** Стриминг текущего хода (onToken, накапливается). */
   stream: string;
+  /** Лента завершённых реплик чата (VL-113): user/assistant, сквозь ходы. */
+  messages: ChatEntry[];
+  /** Счётчик id записей ленты — стабильные React-ключи. */
+  msgSeq: number;
   /** Карточки tool calls (последние вызовы). */
   tools: ToolCardState[];
   /** Накопленный usage модели (onUsage). */
@@ -66,6 +89,8 @@ function createStore() {
   let state: TuiState = {
     chunks: [],
     stream: '',
+    messages: [],
+    msgSeq: 0,
     tools: [],
     usage: null,
     turn: 0,
@@ -103,6 +128,32 @@ function StreamText({ chunks, stream }: { chunks: string[]; stream: string }): R
           {line}
         </Text>
       ))}
+    </Box>
+  );
+}
+
+/**
+ * Лента завершённых реплик чата (VL-113): реплики пользователя с префиксом
+ * '> ' (акцентный цвет, модель qwen code PrefixedTextMessage), ответы
+ * ассистента белым — с сохранением переносов строк (wrap). Пустые тексты
+ * пропускаются. Рендерится выше стрима: стрим — текущий ход «в процессе».
+ */
+function ChatHistory({ messages }: { messages: ChatEntry[] }): ReactElement | null {
+  const visible = messages.slice(-CHAT_VISIBLE).filter((m) => m.text.length > 0);
+  if (visible.length === 0) return null;
+  return (
+    <Box flexDirection="column">
+      {visible.map((m) =>
+        m.role === 'user' ? (
+          <Text key={m.id} color="cyan" wrap="wrap">
+            {formatUserMessage(m.text)}
+          </Text>
+        ) : (
+          <Text key={m.id} wrap="wrap">
+            {m.text}
+          </Text>
+        ),
+      )}
     </Box>
   );
 }
@@ -190,8 +241,18 @@ function InputLine({
     if (state.busy) return;
     if (key.return) {
       const text = state.input.trim();
-      store.update({ input: '' });
-      if (text.length > 0) onSubmit(text);
+      if (text.length > 0) {
+        // Реплика пользователя навсегда остаётся в ленте чата (VL-113):
+        // id растёт через msgSeq стора — стабильные React-ключи
+        store.update({
+          input: '',
+          msgSeq: state.msgSeq + 1,
+          messages: [...state.messages, { id: state.msgSeq + 1, role: 'user', text }],
+        });
+        onSubmit(text);
+      } else {
+        store.update({ input: '' });
+      }
       return;
     }
     if (key.backspace || key.delete) {
@@ -246,6 +307,7 @@ function AgentApp({
           {header}
         </Text>
       ) : null}
+      <ChatHistory messages={state.messages} />
       <Counters turn={state.turn} usage={state.usage} startedAt={state.startedAt} now={now} />
       <StreamText chunks={state.chunks} stream={state.stream} />
       <Box flexDirection="column">
@@ -268,6 +330,12 @@ export interface TuiHandle {
   onToolEnd(name: string, output: string, isError?: boolean): void;
   onUsage(usage: LlmUsage, turn: number): void;
   onError(text: string): void;
+  /**
+   * Завершить ход чата (VL-113): перенести собранный стрим в ленту
+   * сообщений ассистента и сбросить stream/chunks/tools — ответы ходов
+   * не склеиваются. No-op при пустом стриме (повторный вызов безопасен).
+   */
+  finishTurn(): void;
   /** Размонтировать Ink и вернуть основной буфер терминала. */
   unmount(): void;
 }
@@ -330,6 +398,25 @@ function buildHandle(
     },
     onError(text: string): void {
       store.update({ errors: [...store.get().errors, text] });
+    },
+    finishTurn(): void {
+      const state = store.get();
+      // Собрать завершённый ответ: хвост chunks + текущий стрим; пустые
+      // куски отбрасываются, переносы строк сохраняются (VL-113)
+      const text = assembleAssistantText(state.chunks, state.stream);
+      const hasText = text.length > 0;
+      store.update({
+        // Пустой ход (ошибка до первого токена) — no-op по тексту,
+        // но служебное состояние всё равно сбрасываем
+        messages: hasText
+          ? [...state.messages, { id: state.msgSeq + 1, role: 'assistant' as const, text }]
+          : state.messages,
+        msgSeq: hasText ? state.msgSeq + 1 : state.msgSeq,
+        chunks: [],
+        stream: '',
+        // Карточки tool calls предыдущего хода не должны копиться между ходами
+        tools: [],
+      });
     },
     unmount(): void {
       ink.unmount();
