@@ -102,7 +102,7 @@ tags:
 | `id` | string | ✓ | |
 | `action` | string | ✓ | add / check / uncheck / remove / list |
 | `text` | string | | Для action=add |
-| `index` | number \| number[] | | Для check/uncheck/remove; массив — пачкой |
+| `index` | number \| string \| (number\|string)[] | | Для check/uncheck/remove; массив — пачкой; строка-число (`"3"`) тоже принимается, дробь/NaN/пусто — ошибка с подсказкой формата и количеством пунктов |
 
 ### backlog_add_comment — комментарий
 
