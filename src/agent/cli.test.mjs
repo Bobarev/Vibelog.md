@@ -67,6 +67,8 @@ function llmEnv() {
     VIBELOG_LLM_BASE_URL: `http://127.0.0.1:${mock.port}/v1`,
     VIBELOG_LLM_API_KEY: 'test-key',
     VIBELOG_LLM_MODEL: 'test-model',
+    // VL-132: единообразный env-гард от реальной сети для всех spawn CLI
+    VIBELOG_SKIP_UPDATE_CHECK: 'true',
   };
   // VL-116: env фазы оркестратора (branch-mode) не должен утекать в дочерние
   // CLI-процессы — иначе сессии/мета пишутся в реальный репозиторий, а не

@@ -18,7 +18,7 @@
     "build": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
     "web:build": "pnpm --dir web build",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm build && node --test src",
+    "test": "pnpm build && node --test --import ./src/test-setup.mjs src",
     "lint": "node --check bin/vibelog.mjs && node --check bin/vibelog-agent.mjs",
     "prepublishOnly": "pnpm build"
   },

@@ -39,7 +39,8 @@ function callMcp(messages) {
     // VL-116: env фазы (VIBELOG_CWD/VIBELOG_PHASE_*) не должен утекать в
     // MCP-сервер — иначе backlog пишется в реальный репозиторий, а не в
     // /tmp-фикстуру (инцидент загрязнения 2026-10-12)
-    const env = { ...process.env };
+    // VL-132: единообразный env-гард (mcp и так в SKIP_COMMANDS, но защита не помешает)
+    const env = { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' };
     delete env.VIBELOG_CWD;
     delete env.VIBELOG_PHASE_TASK_ID;
     delete env.VIBELOG_PHASE_NAME;
