@@ -30,10 +30,17 @@ export function vibelogCliPath(): string {
  *
  * @param cwd — рабочая директория проекта (токен, backlog/, .vibelog/ ищутся отсюда)
  * @param stdio — 'inherit' в проде (пин в текущем терминале), 'pipe' в тестах
+ * @param cliPath — путь к bin/vibelog.mjs; по умолчанию — корневой dist (VL-70).
+ *   VL-107: /restart VL-N передаёт worktreeCliPath — новый процесс исполняет
+ *   dist ветки vb/vl-N, но cwd остаётся главным (токен/backlog — общие)
  * @returns дочерний процесс; событие 'spawn' — успех, 'error' — сбой запуска
  */
-export function spawnReplacementBot(cwd: string, stdio: 'inherit' | 'pipe' = 'inherit'): ChildProcess {
-  const child = spawn(process.execPath, [vibelogCliPath(), 'bot'], {
+export function spawnReplacementBot(
+  cwd: string,
+  stdio: 'inherit' | 'pipe' = 'inherit',
+  cliPath: string = vibelogCliPath()
+): ChildProcess {
+  const child = spawn(process.execPath, [cliPath, 'bot'], {
     cwd,
     stdio,
     detached: true,

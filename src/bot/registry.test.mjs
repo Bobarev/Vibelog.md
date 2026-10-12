@@ -22,10 +22,20 @@ describe('BOT_COMMANDS (VL-54)', () => {
     }
   });
 
-  it('команда set в реестре с usage /set agent/max-wall-time/max-requests (VL-94/104)', () => {
+  it('команда set в реестре с usage agent/max-wall-time/max-requests/branch-mode (VL-94/104/107)', () => {
     const set = BOT_COMMANDS.find((c) => c.command === 'set');
     assert.ok(set, 'команда set отсутствует в реестре');
-    assert.equal(set.usage, '/set agent <qwen|vb> | max-wall-time <сек> | max-requests <N>');
+    assert.equal(
+      set.usage,
+      '/set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off>'
+    );
+  });
+
+  it('команда restart в реестре упоминает VL-N и корневой dist (VL-107)', () => {
+    const restart = BOT_COMMANDS.find((c) => c.command === 'restart');
+    assert.ok(restart, 'команда restart отсутствует в реестре');
+    assert.match(restart.description, /VL-N/);
+    assert.match(restart.description, /dist/);
   });
 
   it('команды фаз в реестре с синтаксисом [:agent] (VL-94)', () => {
@@ -76,7 +86,7 @@ describe('BOT_COMMANDS (VL-54)', () => {
   it('commandsHelp() повторяет прежний хардкод help-строки /start', () => {
     assert.equal(
       commandsHelp(),
-      '/tasks, /task <id>, /docs, /doc <id>, /board, /diff, /commits [N], /create, /status, /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N>, /comment[:agent] VL-1 <текст>, /spec[:agent] <описание>, /plan[:agent] VL-<id> [комментарий], /code[:agent] VL-<id> [комментарий], /close[:agent] VL-<id>, /prompt[:agent] <текст>, /restart'
+      '/tasks, /task <id>, /docs, /doc <id>, /board, /diff, /commits [N], /create, /status, /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off>, /comment[:agent] VL-1 <текст>, /spec[:agent] <описание>, /plan[:agent] VL-<id> [комментарий], /code[:agent] VL-<id> [комментарий], /close[:agent] VL-<id>, /prompt[:agent] <текст>, /restart'
     );
   });
 });

@@ -13,7 +13,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -300,6 +300,40 @@ describe('vibelog-agent CLI (VL-85)', () => {
     // Последняя сессия — перезаписанная resume-тестом (5 сообщений) → history 4 + system + промпт
     assert.equal(msgs.length, 6);
     assert.equal(msgs.at(-1).content, 'И ещё раз');
+  });
+
+  it('VIBELOG_CWD: сессия пишется в главный репо, resume находит её оттуда (VL-107 fix)', async () => {
+    // Симуляция branch-mode: cwd процесса — «worktree» (папка без .vibelog),
+    // VIBELOG_CWD — «главный репо». Оркестратор задаёт env при запуске фазы
+    // в git-worktree; resume reply бота идёт из главного cwd — сессия должна
+    // лежать там же (инцидент agent-1791322227147).
+    const mainDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-main-'));
+    const wtDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-wt-'));
+    try {
+      const env = { ...llmEnv(), VIBELOG_CWD: mainDir };
+      llmRequests.length = 0;
+      const { code, stdout } = await runCli(['Запомни: worktree-сессия', '--no-mcp'], env, wtDir);
+      assert.equal(code, 0);
+      const parsed = JSON.parse(stdout.trim());
+      // Файл сессии — в VIBELOG_CWD (главный репо), не в cwd процесса
+      const mainFile = join(mainDir, '.vibelog', 'agent-sessions', `${parsed.session_id}.jsonl`);
+      assert.ok(existsSync(mainFile), `сессия должна быть в ${mainFile}`);
+      assert.ok(
+        !existsSync(join(wtDir, '.vibelog', 'agent-sessions', `${parsed.session_id}.jsonl`)),
+        'сессия не должна попадать в worktree-cwd'
+      );
+      // Resume из «главного cwd» (как reply бота) находит сессию
+      llmRequests.length = 0;
+      const resumed = await runCli(['Продолжи', '--resume', parsed.session_id, '--no-mcp'], llmEnv(), mainDir);
+      assert.equal(resumed.code, 0);
+      const rParsed = JSON.parse(resumed.stdout.trim());
+      assert.equal(rParsed.session_id, parsed.session_id);
+      // История дошла до LLM (system + user + assistant + новый промпт)
+      assert.equal(llmRequests[0].messages.length, 4);
+    } finally {
+      rmSync(mainDir, { recursive: true, force: true });
+      rmSync(wtDir, { recursive: true, force: true });
+    }
   });
 
   it('--resume в режиме фазы: exit 1, подсказка (VL-95)', async () => {

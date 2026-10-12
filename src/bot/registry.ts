@@ -34,14 +34,14 @@ export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'commits', description: 'Последние коммиты git (log)', usage: '/commits [N]' },
   { command: 'create', description: 'Создать задачу' },
   { command: 'status', description: 'Сменить статус задачи' },
-  { command: 'set', description: 'Настройки бота: агент и лимиты фаз', usage: '/set agent <qwen|vb> | max-wall-time <сек> | max-requests <N>' },
+  { command: 'set', description: 'Настройки бота: агент, лимиты фаз, режим веток', usage: '/set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off>' },
   { command: 'comment', description: 'Комментарий + Фаза Comment: /comment[:agent] VL-1 текст', usage: '/comment[:agent] VL-1 <текст>' },
   { command: 'spec', description: 'Фаза 1 (Spec): /spec[:agent] описание фичи', usage: '/spec[:agent] <описание>' },
   { command: 'plan', description: 'Фаза 2 (Plan): /plan[:agent] VL-<id> [комментарий]', usage: '/plan[:agent] VL-<id> [комментарий]' },
   { command: 'code', description: 'Фаза 3 (Code): /code[:agent] VL-<id> [комментарий]', usage: '/code[:agent] VL-<id> [комментарий]' },
   { command: 'close', description: 'Закрыть задачу (Фаза Close): /close[:agent] VL-<id>', usage: '/close[:agent] VL-<id>' },
   { command: 'prompt', description: 'Запрос LLM без задачи: qwen или встроенный агент (/prompt:vb)', usage: '/prompt[:agent] <текст>' },
-  { command: 'restart', description: 'Перезапустить бота: подхватит свежий dist/' },
+  { command: 'restart', description: 'Перезапустить бота: /restart [VL-N] — из ветки vb/vl-N, без аргумента — из корневого dist/' },
 ];
 
 /**

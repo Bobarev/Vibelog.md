@@ -213,6 +213,36 @@ vibelog init "Name" --skills --force  # перезаписать существ�
 vibelog init "Name" --no-skills       # не создавать команды
 ```
 
+## Telegram-бот
+
+```bash
+vibelog bot   # long-polling: /start + пин-код для привязки чата
+```
+
+Команды: `/tasks`, `/task VL-1`, `/board`, `/diff`, `/commits`, фазы `/spec`, `/plan`, `/code`, `/close`, `/comment`, `/prompt`, настройки `/set`, самоперезапуск `/restart`. Полный список — в [руководстве пользователя](backlog/docs/doc-6-Руководство-пользователя-Vibelogmd.md).
+
+### Параллельная разработка в git-ветках (VL-107)
+
+Режим для параллельной разработки нескольких задач: каждая задача получает git-ветку `vb/vl-N` и worktree `.vibelog/worktrees/vl-N`; фазы агента работают в worktree, backlog остаётся общим в главном репозитории.
+
+```bash
+# В привязанном Telegram-чате бота:
+/set branch-mode on    # включить режим (ключ branch_mode в .vibelog/bot.yml)
+/set branch-mode off   # выключить; перезапуск бота не требуется
+
+/restart VL-107        # собрать worktree ветки vb/vl-107 и перезапустить бота из неё
+/restart               # перезапуск из корневого dist/ (прежнее поведение)
+```
+
+Как работает:
+
+- При включённом режиме запуск фазы для задачи `VL-N` создаёт worktree (`git worktree add -b vb/vl-N .vibelog/worktrees/vl-N HEAD`) и запускает агента с cwd worktree; MCP-сервер настроен на главный репозиторий через `VIBELOG_CWD` — статусы и комментарии пишутся в общий `backlog/`, worktree-копия backlog не трогается.
+- `/restart VL-N` собирает worktree главным `tsc` (без сети и без `pnpm install` в worktree — рантайм-зависимости резолвятся walk-up в главный node_modules) и перезапускает бота из `…/vl-N/bin/vibelog.mjs` с cwd главного репозитория (токен и backlog общие).
+- Worktree создаётся от закоммиченного HEAD — незакоммиченные изменения главного дерева в ветку не переносятся.
+- Если ветка меняет зависимости — выполните `pnpm install` в worktree вручную.
+
+Публикация npm не затрагивается: `.vibelog/worktrees` не входит в `package.json.files` и лежит в `.gitignore`; `pnpm build` главного репо worktree не стирает (dist ветки живёт внутри worktree).
+
 ## Совместимость с Backlog.md
 
 - Формат задач: `backlog/tasks/<prefix>-<id> - <title>.md`

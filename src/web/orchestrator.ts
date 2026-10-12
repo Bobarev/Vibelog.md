@@ -19,9 +19,10 @@ import { fileURLToPath } from 'node:url';
 import { renderPrompt } from './phase-prompt.js';
 import type { Phase } from './phase-prompt.js';
 import { getTask } from '../core/store.js';
+import { ensureTaskWorktree, taskBranchName } from '../core/worktree.js';
 import { explainQwenParse, parseQwenResult } from './qwen-result.js';
 import type { QwenResult } from './qwen-result.js';
-import { loadBotSettings } from '../bot/settings.js';
+import { loadBotSettings, resolveBranchMode } from '../bot/settings.js';
 
 // Реэкспорт для обратной совместимости (VL-85): renderPrompt/Phase вынесены
 // в phase-prompt.ts — общий модуль оркестратора и CLI vibelog-agent.
@@ -202,6 +203,30 @@ function spawnQwenRun(
     return { error: 'Запуск уже выполняется' };
   }
 
+  // VL-107: режим параллельной разработки — фаза задачи спавнится в git
+  // worktree ветки vb/vl-N. runKey задач всегда вида 'VL-N'; prompt/resume
+  // (не привязаны к задаче) остаются в главном cwd — регрессий нет.
+  // ensure до спавна: ошибка (не git-репо, конфликт ветки) → фаза не
+  // стартует, сообщение уходит в чат/api как { error }.
+  let runCwd = cwd;
+  let spawnEnv: NodeJS.ProcessEnv | undefined;
+  if (resolveBranchMode(cwd) && /^VL-\d+$/i.test(runKey)) {
+    let runDir: string;
+    try {
+      runDir = ensureTaskWorktree(cwd, runKey);
+    } catch (err) {
+      return { error: (err as Error).message };
+    }
+    runCwd = runDir;
+    // MCP-сервер агента наследует cwd worktree, но backlog пишет в главный
+    // репозиторий через VIBELOG_CWD (см. cli/commands/mcp.ts)
+    spawnEnv = { ...process.env, VIBELOG_CWD: cwd };
+    prompt +=
+      `\n\nРежим параллельной разработки: работаешь в git worktree ветки ${taskBranchName(runKey)}` +
+      ` (директория ${runDir}). Backlog живёт в основном репозитории — MCP уже настроен на него.` +
+      ' Код коммить в текущую ветку; файлы backlog/ не коммить.';
+  }
+
   // VL-92: выбор бинаря по агенту. qwen — прежний путь без регрессий;
   // vb — встроенный vibelog-agent: VIBELOG_AGENT_BIN либо bin/vibelog-agent.mjs
   // относительно dist/web/ (import.meta.url). Флаги спавна не меняются —
@@ -238,8 +263,11 @@ function spawnQwenRun(
   // VL-104: лимиты фаз из bot.yml — только для vb; qwen флаги не поддерживает
   const limitFlags = agent === 'vb' ? spawnLimitFlags(cwd) : [];
   const child = spawn(bin, [prompt, ...extraArgs, ...limitFlags, '--approval-mode', 'yolo', '--output-format', 'json', ...phaseFlags], {
-    cwd,
+    // VL-107: runCwd — worktree ветки при branch_mode, иначе главный cwd;
+    // spawnEnv задаётся только в режиме веток (VIBELOG_CWD для MCP)
+    cwd: runCwd,
     stdio: 'pipe',
+    ...(spawnEnv ? { env: spawnEnv } : {}),
   });
 
   activeRuns.set(runKey, { phase, child, onExit, agent });

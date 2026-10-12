@@ -246,11 +246,17 @@ export async function main(argv: string[]): Promise<void> {
 
   const cwd = process.cwd();
 
-  // Сессии (VL-95): хранилище JSONL в .vibelog/agent-sessions (cwd проекта).
+  // Сессии (VL-95): хранилище JSONL в .vibelog/agent-sessions.
+  // VL-107 fix: в режиме веток оркестратор спавнит фазу в git-worktree
+  // (cwd=worktree), но resume (reply бота) всегда идёт из главного cwd —
+  // сессия должна лежать в ГЛАВНОМ репо, иначе resume её не находит
+  // (инцидент agent-1791322227147: файл в worktree, поиск в главном).
+  // VIBELOG_CWD задаёт оркестратор только при branch-mode (orchestrator.ts);
+  // без него (ручной запуск) — прежний cwd.
   // --resume продолжает сохранённый транскрипт; --continue — последнюю
   // сессию каталога; без флагов — новая сессия. Бот передаёт sessionId
   // с префиксом vb: — parseArgs уже снял его.
-  const sessionsDir = agentSessionsDir(cwd);
+  const sessionsDir = agentSessionsDir(process.env.VIBELOG_CWD ?? cwd);
   let sessionId: string;
   let resumedMessages: ChatMessage[] = [];
   if (opts.resume !== undefined || opts.continue) {

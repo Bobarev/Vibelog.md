@@ -41,6 +41,7 @@ import {
 import { loadBotSettings, resolveDefaultAgent, saveBotSettings } from './settings.js';
 import { commandsHelp } from './registry.js';
 import { spawnReplacementBot } from './restart.js';
+import { buildTaskWorktree, ensureTaskWorktree, taskBranchName, worktreeCliPath } from '../core/worktree.js';
 import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
 import { getRun, startPhase, startPrompt, startResume } from '../web/orchestrator.js';
 import {
@@ -53,6 +54,7 @@ import {
   parseCreateCommand,
   parsePlanCommand,
   parsePromptCommand,
+  parseRestartCommand,
   parseSetCommand,
   parseSpecCommand,
   parseStatusCommand,
@@ -544,12 +546,13 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     }
   });
 
-  // ── /set — настройки бота (VL-94/104): агент и лимиты фаз ──
+  // ── /set — настройки бота (VL-94/104/107): агент, лимиты фаз, режим веток ──
   // /set agent <qwen|vb> — агент по умолчанию для всех команд фаз и кнопок
   // действий без суффикса :<agent>. /set max-wall-time <сек> и
   // /set max-requests <N> — лимиты фазы для встроенного агента (vb):
   // оркестратор прокидывает их флагами при следующем запуске; 0 — сброс
-  // настройки (дефолт агента). Хранится в .vibelog/bot.yml.
+  // настройки (дефолт агента). /set branch-mode on|off — режим параллельной
+  // разработки в git-ветках vb/vl-N (VL-107). Хранится в .vibelog/bot.yml.
   bot.command('set', async (ctx) => {
     if (!requireBind(ctx)) return;
     const parsed = parseSetCommand((ctx.match ?? '').toString());
@@ -558,31 +561,52 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       return;
     }
     const settings = loadBotSettings(deps.cwd);
-    if (parsed.key === 'agent') {
-      settings.default_agent = parsed.value;
-      saveBotSettings(deps.cwd, settings);
-      await sendMd(
-        ctx,
-        `⚙️ Агент по умолчанию: *${parsed.value}*. Команды без суффикса :<agent> запускают его.`
-      );
-      return;
+    // Дискриминированный union (VL-94): switch сужает key → value без приведений
+    switch (parsed.key) {
+      case 'agent': {
+        settings.default_agent = parsed.value;
+        saveBotSettings(deps.cwd, settings);
+        await sendMd(
+          ctx,
+          `⚙️ Агент по умолчанию: *${parsed.value}*. Команды без суффикса :<agent> запускают его.`
+        );
+        return;
+      }
+      case 'branch-mode': {
+        // VL-107: читается оркестратором перед каждым запуском фазы —
+        // перезапуск бота не требуется
+        settings.branch_mode = parsed.value;
+        saveBotSettings(deps.cwd, settings);
+        await sendMd(
+          ctx,
+          `⚙️ Режим параллельной разработки (ветки vb/vl-N): ${parsed.value ? '*вкл*' : '*выкл*'}.`
+        );
+        return;
+      }
+      case 'max-wall-time':
+      case 'max-requests': {
+        // Числовые лимиты (VL-104): 0 — сброс (удаление ключа из bot.yml),
+        // иначе — запись; применяются при следующем запуске фазы (агент vb)
+        const key = parsed.key;
+        const field = key === 'max-wall-time' ? 'max_wall_time' : 'max_requests';
+        if (parsed.value === 0) {
+          settings[field] = undefined;
+          saveBotSettings(deps.cwd, settings);
+          await sendMd(
+            ctx,
+            `⚙️ Лимит *${key}* сброшен — используется дефолт агента (без лимита).`
+          );
+          return;
+        }
+        settings[field] = parsed.value;
+        saveBotSettings(deps.cwd, settings);
+        await sendMd(
+          ctx,
+          `⚙️ Лимит *${key}*: *${parsed.value}*. Передаётся при запуске фаз (агент vb). Сброс: \`/set ${key} 0\`.`
+        );
+        return;
+      }
     }
-    // Числовые лимиты (VL-104): 0 — сброс (удаление ключа из bot.yml),
-    // иначе — запись; применяются при следующем запуске фазы (агент vb)
-    const key = parsed.key; // 'max-wall-time' | 'max-requests'
-    const field = key === 'max-wall-time' ? 'max_wall_time' : 'max_requests';
-    if (parsed.value === 0) {
-      settings[field] = undefined;
-      saveBotSettings(deps.cwd, settings);
-      await sendMd(ctx, `⚙️ Лимит *${key}* сброшен — используется дефолт агента (без лимита).`);
-      return;
-    }
-    settings[field] = parsed.value;
-    saveBotSettings(deps.cwd, settings);
-    await sendMd(
-      ctx,
-      `⚙️ Лимит *${key}*: *${parsed.value}*. Передаётся при запуске фаз (агент vb). Сброс: \`/set ${key} 0\`.`
-    );
   });
 
   // ── /comment — комментарий + Фаза Comment (VL-35/60), агент — VL-94 ──
@@ -851,15 +875,45 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     const cmd = ctx.match?.[1] ?? 'команда';
     await sendMd(ctx, escapeMarkdownV2(`Синтаксис: /${cmd}[:agent] … (агенты: qwen, vb)`));
   });
-  // ── /restart — самоперезапуск бота (VL-70) ──
+  // ── /restart — самоперезапуск бота (VL-70/107) ──
   // Сценарий разработки: после pnpm build старый процесс исполняет старый
   // dist/. Бот рестартует САМ СЕБЯ по команде из чата: гасит polling и
   // поднимает новый vibelog bot в том же терминале — пин нового запуска
   // печатается там же, новый процесс исполняет свежий dist/. CLI
   // `vibelog restart` с pid-файлом отменён: он заменял только Ctrl+C.
+  // VL-107: /restart VL-N собирает worktree ветки vb/vl-N и запускает бота
+  // из …/vl-N/bin/vibelog.mjs (исполняет dist ветки); cwd остаётся главным —
+  // токен/backlog/.vibelog общие. Без аргумента — прежнее поведение (корневой dist).
   bot.command('restart', async (ctx) => {
     if (!requireBind(ctx)) return;
     const chatId = ctx.chat?.id;
+    const parsed = parseRestartCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    let cliPath: string | undefined;
+    if (parsed.taskId) {
+      const taskId = parsed.taskId;
+      await sendMd(ctx, `🔧 Сборка ветки ${taskBranchName(taskId)}…`);
+      // Ошибки ensure/build — в чат, процесс НЕ трогаем: бот продолжает
+      // работать из текущего dist, пользователь может исправить и повторить
+      let dir: string;
+      try {
+        dir = ensureTaskWorktree(deps.cwd, taskId);
+      } catch (err) {
+        await sendMd(ctx, `⚠️ ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      try {
+        buildTaskWorktree(deps.cwd, taskId);
+      } catch (err) {
+        await sendMd(ctx, `⚠️ ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      cliPath = worktreeCliPath(deps.cwd, taskId);
+      await sendMd(ctx, `✅ Ветка ${taskBranchName(taskId)} собрана (${dir})`);
+    }
     await sendMd(ctx, '🔄 Перезапуск бота…');
     // Порядок обязателен: два параллельных long-polling с одним токеном —
     // Telegram отвечает 409 Conflict; сначала гасим старый, потом спавним новый
@@ -868,7 +922,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     } catch {
       // polling ещё не стартовал или уже остановлен — не критично
     }
-    const child = spawnReplacementBot(deps.cwd);
+    const child = spawnReplacementBot(deps.cwd, 'inherit', cliPath);
     await new Promise<void>((resolve) => {
       child.once('spawn', () => resolve());
       child.once('error', (err) => {

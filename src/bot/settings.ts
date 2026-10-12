@@ -25,6 +25,11 @@ export interface BotSettings {
   max_wall_time?: number;
   /** Лимит LLM-запросов фазы, ходов модели (VL-104, /set max-requests). */
   max_requests?: number;
+  /**
+   * Режим параллельной разработки (VL-107, /set branch-mode): фазы задач
+   * выполняются в git worktree ветки vb/vl-N, backlog — общий в главном репо.
+   */
+  branch_mode?: boolean;
 }
 
 /**
@@ -82,6 +87,9 @@ export function loadBotSettings(cwd: string): BotSettings {
   // агент получит флаг только при валидной настройке
   const maxWallTime = readPositiveInt(raw.max_wall_time);
   const maxRequests = readPositiveInt(raw.max_requests);
+  // Режим параллельной разработки (VL-107): только строгое true; любое другое
+  // значение (false, строка, мусор) → undefined → resolveBranchMode даст false
+  const branchMode = raw.branch_mode === true ? true : undefined;
   return {
     telegram_token: typeof raw.telegram_token === 'string' ? raw.telegram_token : undefined,
     telegram_proxy: typeof raw.telegram_proxy === 'string' ? raw.telegram_proxy : undefined,
@@ -89,6 +97,7 @@ export function loadBotSettings(cwd: string): BotSettings {
     ...(defaultAgent ? { default_agent: defaultAgent } : {}),
     ...(maxWallTime !== undefined ? { max_wall_time: maxWallTime } : {}),
     ...(maxRequests !== undefined ? { max_requests: maxRequests } : {}),
+    ...(branchMode !== undefined ? { branch_mode: branchMode } : {}),
     // Пользовательские записи перекрывают дефолты; поле всегда объект —
     // handlers не пишет ?? {} (VL-82)
     task_type_styles: { ...DEFAULT_TASK_TYPE_STYLES, ...extractTaskTypeStyles(raw.task_type_styles) },
@@ -120,6 +129,9 @@ export function saveBotSettings(cwd: string, settings: BotSettings): void {
     ...(settings.default_agent ? { default_agent: settings.default_agent } : {}),
     ...(settings.max_wall_time !== undefined ? { max_wall_time: settings.max_wall_time } : {}),
     ...(settings.max_requests !== undefined ? { max_requests: settings.max_requests } : {}),
+    // branch_mode пишем всегда, когда задан (в т.ч. false — /set branch-mode off
+    // должен оставить явный ключ в bot.yml, а не терять его)
+    ...(settings.branch_mode !== undefined ? { branch_mode: settings.branch_mode } : {}),
     ...(Object.keys(userStyles).length > 0 ? { task_type_styles: userStyles } : {}),
   };
   writeFileSync(path, stringifyYaml(payload), 'utf-8');
@@ -173,4 +185,14 @@ export function resolveMaxWallTime(cwd: string): number | undefined {
  */
 export function resolveMaxRequests(cwd: string): number | undefined {
   return loadBotSettings(cwd).max_requests;
+}
+
+/**
+ * Режим параллельной разработки из bot.yml (VL-107): true — фазы задач
+ * выполняются в git worktree ветки vb/vl-N; дефолт false (прежнее поведение).
+ * Читается перед каждым запуском фазы — включение/выключение не требует
+ * перезапуска бота.
+ */
+export function resolveBranchMode(cwd: string): boolean {
+  return loadBotSettings(cwd).branch_mode === true;
 }

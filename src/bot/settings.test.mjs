@@ -18,6 +18,7 @@ import {
   resolveDefaultAgent,
   resolveMaxWallTime,
   resolveMaxRequests,
+  resolveBranchMode,
   botSettingsPath,
 } from '../../dist/bot/settings.js';
 
@@ -192,5 +193,41 @@ describe('max_wall_time/max_requests (VL-104)', () => {
     saveBotSettings(limitsRoot, { chats: [], max_wall_time: 900, max_requests: 40 });
     assert.equal(resolveMaxWallTime(limitsRoot), 900);
     assert.equal(resolveMaxRequests(limitsRoot), 40);
+  });
+});
+
+describe('branch_mode (VL-107)', () => {
+  const branchRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-branch-'));
+
+  after(() => {
+    rmSync(branchRoot, { recursive: true, force: true });
+  });
+
+  it('roundtrip save/load: branch_mode true/false', () => {
+    saveBotSettings(branchRoot, { chats: [111], branch_mode: true });
+    assert.equal(loadBotSettings(branchRoot).branch_mode, true);
+    saveBotSettings(branchRoot, { chats: [111], branch_mode: false });
+    // false пишется в файл явно (ключ сохраняется), но resolveBranchMode
+    // читает только строгое true — выключение детерминировано
+    assert.equal(loadBotSettings(branchRoot).branch_mode, undefined);
+  });
+
+  it('resolveBranchMode: без файла → false; с true → true', () => {
+    assert.equal(resolveBranchMode(join(branchRoot, 'nonexistent')), false);
+    saveBotSettings(branchRoot, { chats: [], branch_mode: true });
+    assert.equal(resolveBranchMode(branchRoot), true);
+  });
+
+  it('невалидное branch_mode в файле отброшено → false', () => {
+    const root = join(branchRoot, 'invalid');
+    mkdirSync(join(root, '.vibelog'), { recursive: true });
+    // Ямл-парсер проекта трактует YAML 1.1-буквы (yes/on) как boolean true —
+    // поэтому «битое» значение здесь строка/число, а не yes
+    writeFileSync(botSettingsPath(root), 'chats: []\nbranch_mode: foo\n', 'utf-8');
+    assert.equal(loadBotSettings(root).branch_mode, undefined);
+    assert.equal(resolveBranchMode(root), false);
+    writeFileSync(botSettingsPath(root), 'chats: []\nbranch_mode: 1\n', 'utf-8');
+    assert.equal(loadBotSettings(root).branch_mode, undefined);
+    assert.equal(resolveBranchMode(root), false);
   });
 });

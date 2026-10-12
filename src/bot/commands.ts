@@ -73,7 +73,9 @@ export type SetCommand =
   /** Лимит времени фазы в секундах; 0 — сброс настройки (VL-104). */
   | { key: 'max-wall-time'; value: number }
   /** Лимит LLM-запросов фазы (ходов модели); 0 — сброс (VL-104). */
-  | { key: 'max-requests'; value: number };
+  | { key: 'max-requests'; value: number }
+  /** Режим параллельной разработки в git-ветках vb/vl-N (VL-107). */
+  | { key: 'branch-mode'; value: boolean };
 
 /** Результат разбора /prompt (VL-66/92): запрос без задачи + агент-исполнитель. */
 export interface PromptCommand {
@@ -283,23 +285,31 @@ export function parseCloseCommand(
 
 /**
  * Разбирает /set: «agent <qwen|vb>» | «max-wall-time <сек>» |
- * «max-requests <N>» (VL-94/104). Числовые параметры — неотрицательные
- * целые: 0 — явный сброс настройки (удаление ключа в bot.yml), дробные,
- * отрицательные и пустые значения — {error} с подсказкой.
+ * «max-requests <N>» | «branch-mode <on|off>» (VL-94/104/107).
+ * Числовые параметры — неотрицательные целые: 0 — явный сброс настройки
+ * (удаление ключа в bot.yml), дробные, отрицательные и пустые значения —
+ * {error} с подсказкой. branch-mode принимает on|off|true|false (регистр
+ * не важен — значение уже в нижнем регистре).
  *
  * @param text — аргументы команды (без слова /set)
  * @returns {key, value} или {error} с подсказкой
  */
 export function parseSetCommand(text: string): SetCommand | { error: string } {
-  const hint = 'Синтаксис: /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> (0 — сброс)';
+  const hint =
+    'Синтаксис: /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> (0/пусто — сброс у числовых)';
   const trimmed = text.trim();
   if (!trimmed) return { error: hint };
   const spaceIdx = trimmed.indexOf(' ');
   const key = (spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx)).trim().toLowerCase();
   const value = (spaceIdx === -1 ? '' : trimmed.slice(spaceIdx + 1).trim()).toLowerCase();
-  if (key !== 'agent' && key !== 'max-wall-time' && key !== 'max-requests') {
+  if (
+    key !== 'agent' &&
+    key !== 'max-wall-time' &&
+    key !== 'max-requests' &&
+    key !== 'branch-mode'
+  ) {
     return {
-      error: `Неизвестный параметр: ${key}. Доступные: agent, max-wall-time, max-requests. ${hint}`,
+      error: `Неизвестный параметр: ${key}. Доступные: agent, max-wall-time, max-requests, branch-mode. ${hint}`,
     };
   }
   if (key === 'agent') {
@@ -307,6 +317,14 @@ export function parseSetCommand(text: string): SetCommand | { error: string } {
       return { error: `Неизвестный агент: ${value || '(пусто)'}. Доступные: qwen, vb. ${hint}` };
     }
     return { key: 'agent', value };
+  }
+  // Режим параллельной разработки (VL-107): on/true → true, off/false → false
+  if (key === 'branch-mode') {
+    if (value === 'on' || value === 'true') return { key: 'branch-mode', value: true };
+    if (value === 'off' || value === 'false') return { key: 'branch-mode', value: false };
+    return {
+      error: `branch-mode: ожидается on|off (true|false), получено: ${value || '(пусто)'}. ${hint}`,
+    };
   }
   // Числовые параметры (VL-104): Number('') === 0 — пустое значение отдельно
   // отсекаем, иначе «/set max-wall-time» без числа прочиталось бы как сброс.
@@ -317,6 +335,22 @@ export function parseSetCommand(text: string): SetCommand | { error: string } {
     };
   }
   return { key, value: n };
+}
+
+/**
+ * Разбирает /restart: пусто → перезапуск из корневого dist/ (VL-70);
+ * «VL-N» (без учёта регистра) → перезапуск из worktree ветки vb/vl-N (VL-107).
+ * ID нормализуется к верхнему регистру — branch/taskWorktreeDir приводят
+ * к нижнему сами, но сообщения бота и кэш работают с канонической формой.
+ *
+ * @param text — аргументы команды (без слова /restart)
+ * @returns {taskId?} или {error} с подсказкой
+ */
+export function parseRestartCommand(text: string): { taskId?: string } | { error: string } {
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+  if (/^vl-\d+$/i.test(trimmed)) return { taskId: trimmed.toUpperCase() };
+  return { error: 'Синтаксис: /restart [VL-N]' };
 }
 
 /**

@@ -16,6 +16,7 @@ import {
   richToText,
   parsePlanCommand,
   parsePromptCommand,
+  parseRestartCommand,
   parseSetCommand,
   parseSpecCommand,
 } from '../../dist/bot/commands.js';
@@ -363,6 +364,49 @@ describe('parseSetCommand (VL-94)', () => {
 
   it('VL-104: регистр ключа не важен', () => {
     assert.deepEqual(parseSetCommand('MAX-WALL-TIME 600'), { key: 'max-wall-time', value: 600 });
+  });
+
+  it('VL-107: branch-mode on|off|true|false → boolean', () => {
+    assert.deepEqual(parseSetCommand('branch-mode on'), { key: 'branch-mode', value: true });
+    assert.deepEqual(parseSetCommand('branch-mode off'), { key: 'branch-mode', value: false });
+    assert.deepEqual(parseSetCommand('branch-mode true'), { key: 'branch-mode', value: true });
+    assert.deepEqual(parseSetCommand('branch-mode false'), { key: 'branch-mode', value: false });
+    assert.deepEqual(parseSetCommand('BRANCH-MODE ON'), { key: 'branch-mode', value: true });
+  });
+
+  it('VL-107: branch-mode — мусор и пустое значение → error с подсказкой', () => {
+    for (const bad of ['branch-mode', 'branch-mode maybe', 'branch-mode 1', 'branch-mode вкл']) {
+      const r = parseSetCommand(bad);
+      assert.ok('error' in r, '"' + bad + '" → error');
+      assert.match(r.error, /branch-mode: ожидается on|off/);
+    }
+  });
+
+  it('VL-107: неизвестный параметр — подсказка включает branch-mode', () => {
+    const r = parseSetCommand('foo bar');
+    assert.ok('error' in r);
+    assert.match(r.error, /branch-mode/);
+  });
+});
+
+describe('parseRestartCommand (VL-107)', () => {
+  it('пусто → {} (перезапуск из корневого dist)', () => {
+    assert.deepEqual(parseRestartCommand(''), {});
+    assert.deepEqual(parseRestartCommand('   '), {});
+  });
+
+  it('VL-107 → { taskId: VL-107 }; регистр нормализуется', () => {
+    assert.deepEqual(parseRestartCommand('VL-107'), { taskId: 'VL-107' });
+    assert.deepEqual(parseRestartCommand('vl-7'), { taskId: 'VL-7' });
+    assert.deepEqual(parseRestartCommand(' Vl-42 '), { taskId: 'VL-42' });
+  });
+
+  it('мусор → error с подсказкой синтаксиса', () => {
+    for (const bad of ['VL-abc', 'VL-', 'vl-1 extra', 'back-1', 'VL-1.5']) {
+      const r = parseRestartCommand(bad);
+      assert.ok('error' in r, '"' + bad + '" → error');
+      assert.match(r.error, /Синтаксис: \/restart \[VL-N\]/);
+    }
   });
 });
 

@@ -72,7 +72,10 @@ export async function runInteractiveAgent(): Promise<void> {
   }
   const llm = createLlmClient();
   const tools: ToolSpec[] = listLocalTools(cwd);
-  const sessionsDir = agentSessionsDir(cwd);
+  // VL-107 fix: как в cli.ts — при запуске из worktree сессии хранятся
+  // в главном репо (VIBELOG_CWD от оркестратора), чтобы resume из бота
+  // находил их; без env — прежний cwd (ручной запуск)
+  const sessionsDir = agentSessionsDir(process.env.VIBELOG_CWD ?? cwd);
   const sessionId = createSessionId();
 
   // MCP: отказ не роняет чат — продолжаем без vibelog-инструментов (паттерн cli.ts)
