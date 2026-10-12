@@ -1,11 +1,11 @@
 ---
 id: VL-125
 title: 'orchestrator.test: стаб-спавны унаследуют VIBELOG_PHASE_* фазы — ложные падения pnpm test внутри фазы'
-status: To Do
+status: Review
 assignee: []
 reporter: ''
 created_date: '2026-10-12 19:27'
-updated_date: '2026-10-12 19:27'
+updated_date: '2026-10-12 20:02'
 due_date: ''
 labels: []
 dependencies: []
@@ -17,7 +17,9 @@ project: ''
 parent_task_id: ''
 ordinal: 0
 documentation: []
-modified_files: []
+modified_files:
+  - src/web/orchestrator.test.mjs
+  - CHANGELOG.md
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -30,9 +32,9 @@ modified_files: []
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 orchestrator.test.mjs: VIBELOG_PHASE_TASK_ID/VIBELOG_PHASE_NAME/VIBELOG_CWD удаляются из process.env тест-процесса в before() файла и восстанавливаются в after() — стаб-тесты индифферентны к окружению запускающей фазы
-- [ ] #2 проверка: прогон pnpm test при установленных VIBELOG_PHASE_TASK_ID=VL-9 и VIBELOG_PHASE_NAME=code (как внутри фазы) — orchestrator.test зелёный, включая тесты «envPhaseTaskId === null»
-- [ ] #3 pnpm test зелёный; CHANGELOG: запись
+- [x] #1 orchestrator.test.mjs: VIBELOG_PHASE_TASK_ID/VIBELOG_PHASE_NAME/VIBELOG_CWD удаляются из process.env тест-процесса в before() файла и восстанавливаются в after() — стаб-тесты индифферентны к окружению запускающей фазы
+- [x] #2 проверка: прогон pnpm test при установленных VIBELOG_PHASE_TASK_ID=VL-9 и VIBELOG_PHASE_NAME=code (как внутри фазы) — orchestrator.test зелёный, включая тесты «envPhaseTaskId === null»
+- [x] #3 pnpm test зелёный; CHANGELOG: запись
 <!-- AC:END -->
 
 ## Definition of Done
@@ -41,3 +43,12 @@ modified_files: []
 - [ ] #2 Документация обновлена
 - [ ] #3 Нет регрессий
 <!-- DOD:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author: @agent
+created: 2026-10-12 20:02
+---
+Фаза 3 (Code) выполнена вручную (исполнитель — Qwen Code; fix 5898320). Фикс минимальный и точный: три фазовых ключа (VIBELOG_PHASE_TASK_ID, VIBELOG_PHASE_NAME, VIBELOG_CWD) добавлены в УЖЕ существующий savedEnv-список в before() orchestrator.test.mjs — before сохраняет и чистит, after восстанавливает. Проверка AC#2: прогон файла с VIBELOG_PHASE_TASK_ID=VL-9 / VIBELOG_PHASE_NAME=code / VIBELOG_CWD=/tmp/x — 38/38 зелёные (до фикса те же условия давали 4 падения: env-тесты VL-114/VL-112). Полный pnpm test — 850/851, единственный fail — известный флак static.test (VL-123, в одиночном прогоне 6/6). Что осталось: DoD закрывается Фазой Close.
+---
+<!-- COMMENTS:END -->
