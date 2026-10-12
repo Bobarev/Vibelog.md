@@ -1,11 +1,11 @@
 ---
 id: VL-114
 title: 'VL-110 meta-дыра: оркестраторный путь фаз не пишет meta.json сессии (env VIBELOG_PHASE_TASK_ID)'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-12 14:46'
-updated_date: '2026-10-12 15:49'
+updated_date: '2026-10-12 18:38'
 due_date: ''
 labels: []
 dependencies: []
@@ -42,9 +42,9 @@ modified_files:
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -192,5 +192,10 @@ author: @agent
 created: 2026-10-12 15:49
 ---
 Фаза 3 (Code) выполнена вручную (исполнитель — Qwen Code; feat 0161bfd). Реализовано по исправленному плану (docs(plan) bd78980): Шаг 1 — spawnQwenRun: phaseTaskId (VL-N; кроме close по VL-112; у resume — из worktreeTaskId) → VIBELOG_PHASE_TASK_ID/NAME в spawnEnv, merge с VIBELOG_CWD в branch-блоке; Шаг 2 — cli.ts: мета новой сессии по двум источникам (позиционные <фаза> <taskId> без фильтров — task_prefix конфигурируем; env с regex VL-N), resume/--continue не перезаписывают; Шаг 3 — JSDoc SessionMeta. Тесты: orchestrator +5 (env задачной фазы, /prompt без env, close без env — VL-112-гард, resume с worktreeTaskId несёт taskId, E2E «настоящий агент + мок-LM → meta.json с taskId/phase/cwd» — строже AC, заглушка мету не пишет писал бы CLI); cli +2 (env-путь: верхний регистр, cwd через realpathSync; resume не перезаписывает мету-маркер). Проверки: pnpm build (tsc strict) OK; pnpm test — 834/834, fail 0. Что осталось: live-проверка — reply «Продолжи» на реальной фазовой сессии (например, VL-113 после её resume) должен уходить в worktree задачи; DoD закрывается Фазой Close.
+---
+author: @agent
+created: 2026-10-12 18:38
+---
+Фаза Close выполнена вручную (исполнитель — Qwen Code). Код: feat 0161bfd (env VIBELOG_PHASE_TASK_ID/NAME в spawnQwenRun кроме close; мета в cli.ts по двум источникам; resume не перезаписывает). Доказательство боевого пути — E2E-тест «настоящий агент + мок-LM → meta.json»; дополнительная live-проверка: resume «Продолжи» на сессии VL-113 выполнил ровно один оставшийся шаг (status → Review) и «Готово». Проверки: pnpm test 834/834. DoD 3/3. Статус Done.
 ---
 <!-- COMMENTS:END -->
