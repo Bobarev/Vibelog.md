@@ -29,8 +29,20 @@ export const RICH_LIMIT = 32768;
  * InputRichBlockButtons (@grammyjs/types rich.d.ts): «List of 1-8 buttons
  * to send». Больше 8 кнопок в ряду → сервер отвечает 400
  * RICH_MESSAGE_BUTTONS_TOO_MANY и rich-сообщение уходит в фолбэк.
+ * Это жёсткий лимит Telegram (верхняя граница); для UI-решений ниже
+ * см. TASK_BUTTONS_PER_ROW.
  */
 export const BUTTONS_PER_ROW = 8;
+
+/**
+ * Максимум кнопок в ряду в rich-рендере /tasks (VL-128).
+ *
+ * При 8 кнопках в ряду подписи-ID (VL-128) узкие и текст на кнопках
+ * не виден. UI-лимит меньше Telegram-лимита BUTTONS_PER_ROW=8, поэтому
+ * фикс RICH_MESSAGE_BUTTONS_TOO_MANY (VL-82) сохраняется. На /docs
+ * не распространяется — там остаётся BUTTONS_PER_ROW.
+ */
+export const TASK_BUTTONS_PER_ROW = 5;
 
 /**
  * Экранирует последовательности ``` внутри пользовательского контента.
@@ -382,8 +394,10 @@ function cellSafe(text: string): string {
  *
  * Структура: HTML-таблица <table bordered striped compact> с колонками
  * ID/Заголовок/Статус/Тип/Приоритет (ID жирный — <b>) и <tg-button-row> с кнопками
- * task:<id> под таблицей (кнопки дробятся по BUTTONS_PER_ROW=8 на ряд —
- * лимит Telegram, RICH_MESSAGE_BUTTONS_TOO_MANY). Telegram не принимает
+ * task:<id> под таблицей (кнопки дробятся по TASK_BUTTONS_PER_ROW=5 —
+ * VL-128: читаемость подписей; Telegram-лимит 8 (BUTTONS_PER_ROW)
+ * остаётся верхней границей, RICH_MESSAGE_BUTTONS_TOO_MANY не возникает).
+ * Telegram не принимает
  * кнопки внутри ячеек таблицы
  * (rich-таблицы — только inline-форматирование), поэтому колонка «кнопка»
  * реализована отдельным блоком кнопок; связь — по тексту VL-N в первом столбце.
@@ -429,14 +443,15 @@ export function renderTasksRich(
       style !== undefined && VALID_TASK_STYLES.includes(style) ? ` style="${style}"` : '';
     return `<tg-button type="callback_data"${styleAttr} data="task:${t.id}">${t.id}</tg-button>`;
   });
-  // Telegram принимает максимум 8 кнопок в одном ряду (BUTTONS_PER_ROW):
-  // при большем числе сервер отвечает 400 RICH_MESSAGE_BUTTONS_TOO_MANY
-  // и весь rich-вывод /tasks уходит в MarkdownV2-фолбэк. Дробим длинный
-  // список на несколько рядов; порядок кнопок сохраняется.
+  // В ряду /tasks максимум 5 кнопок (TASK_BUTTONS_PER_ROW, VL-128):
+  // при 8 подписи-ID узкие и текст не виден. 5 < 8 (BUTTONS_PER_ROW,
+  // лимит Telegram), поэтому RICH_MESSAGE_BUTTONS_TOO_MANY (fix VL-82)
+  // не возникает. Дробим длинный список на несколько рядов;
+  // порядок кнопок сохраняется.
   const buttonRows: string[] = [];
-  for (let i = 0; i < buttons.length; i += BUTTONS_PER_ROW) {
+  for (let i = 0; i < buttons.length; i += TASK_BUTTONS_PER_ROW) {
     buttonRows.push(
-      `<tg-button-row>\n${buttons.slice(i, i + BUTTONS_PER_ROW).join('\n')}\n</tg-button-row>`
+      `<tg-button-row>\n${buttons.slice(i, i + TASK_BUTTONS_PER_ROW).join('\n')}\n</tg-button-row>`
     );
   }
   return `${table}\n\n${buttonRows.join('\n')}`;

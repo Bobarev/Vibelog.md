@@ -532,24 +532,30 @@ describe('renderTasksRich (VL-82)', () => {
     assert.equal(renderTasksRich([], {}), '');
   });
 
-  it('больше 8 кнопок → несколько tg-button-row по ≤8 кнопок (fix RICH_MESSAGE_BUTTONS_TOO_MANY)', () => {
+  it('больше 5 кнопок → ряды по ≤5 (TASK_BUTTONS_PER_ROW, VL-128)', () => {
     const tasks = Array.from({ length: 10 }, (_, i) => task({ id: `VL-${i + 1}` }));
     const md = renderTasksRich(tasks, {});
     const rowBlocks = md.split('<tg-button-row>').slice(1);
-    assert.equal(rowBlocks.length, 2, '10 кнопок → 2 ряда (8 + 2)');
+    assert.equal(rowBlocks.length, 2, '10 кнопок → 2 ряда (5 + 5)');
     for (const block of rowBlocks) {
       const count = (block.match(/<tg-button /g) || []).length;
-      assert.ok(count >= 1 && count <= 8, `в ряду ${count} кнопок (допустимо 1-8)`);
+      assert.ok(count >= 1 && count <= 5, `в ряду ${count} кнопок (допустимо 1-5)`);
     }
     for (let i = 1; i <= 10; i++) {
       assert.ok(md.includes(`data="task:VL-${i}"`), `кнопка VL-${i} на месте`);
     }
   });
 
-  it('ровно 8 кнопок → один ряд', () => {
-    const tasks = Array.from({ length: 8 }, (_, i) => task({ id: `VL-${i + 1}` }));
+  it('ровно 5 кнопок → один ряд (VL-128)', () => {
+    const tasks = Array.from({ length: 5 }, (_, i) => task({ id: `VL-${i + 1}` }));
     const md = renderTasksRich(tasks, {});
     assert.equal((md.match(/<tg-button-row>/g) || []).length, 1);
+  });
+
+  it('6 кнопок → 2 ряда (5 + 1, VL-128)', () => {
+    const tasks = Array.from({ length: 6 }, (_, i) => task({ id: `VL-${i + 1}` }));
+    const md = renderTasksRich(tasks, {});
+    assert.equal((md.match(/<tg-button-row>/g) || []).length, 2);
   });
 
   it('VL-91: активная задача — 🔄 + фаза в ячейке ID', () => {
