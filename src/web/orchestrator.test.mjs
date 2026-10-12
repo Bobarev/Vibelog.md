@@ -14,7 +14,8 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdirSync, writeFileSync, rmSync, mkdtempSync, chmodSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, rmSync, mkdtempSync, chmodSync, readFileSync, realpathSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -682,6 +683,95 @@ describe('orchestrator (VL-28)', () => {
         else process.env[key] = value;
       }
       await new Promise((r) => llmServer.close(r));
+    }
+  });
+  // ── VL-110: resume задачной сессии в worktree её задачи ──
+
+  it('startResume: сессия задачи возобновляется в её worktree (VL-110)', async () => {
+    // Отдельный git-корень: worktree требует git-репо с коммитом
+    const wtRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-wt-'));
+    const git = (args) => spawnSync('git', ['-C', wtRoot, ...args], { encoding: 'utf-8' });
+    git(['init', '-q']);
+    git(['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+    mkdirSync(join(wtRoot, 'backlog'), { recursive: true });
+    writeFileSync(join(wtRoot, 'backlog', 'config.yml'), 'project_name: WT Test\n', 'utf-8');
+    mkdirSync(join(wtRoot, '.vibelog', 'agent-sessions'), { recursive: true });
+    writeFileSync(join(wtRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    const wtPath = join(wtRoot, '.vibelog', 'worktrees', 'vl-77');
+    // Мета сессии — как её пишет CLI задачной фазы (VL-110)
+    writeFileSync(
+      join(wtRoot, '.vibelog', 'agent-sessions', 'agent-999.meta.json'),
+      JSON.stringify({ taskId: 'VL-77', phase: 'code', cwd: wtPath }),
+      'utf-8'
+    );
+    // Своя заглушка: пишет argv, cwd процесса и VIBELOG_CWD
+    const stubWt = join(wtRoot, 'wt-stub.cjs');
+    writeFileSync(stubWt, [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      'fs.writeFileSync(process.env.VL28_STUB_MARKER, JSON.stringify({',
+      '  argv: process.argv.slice(2),',
+      '  cwd: process.cwd(),',
+      '  envCwd: process.env.VIBELOG_CWD || null,',
+      '}));',
+      "fs.writeSync(1, 'stub wt\\n');",
+      'process.exit(0);',
+      '',
+    ].join('\n'), 'utf-8');
+    chmodSync(stubWt, 0o755);
+    process.env.VIBELOG_QWEN_BIN = stubWt;
+    process.env.VL28_STUB_MARKER = join(wtRoot, 'marker-wt.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startResume(wtRoot, 'agent-999', 'продолжи работу');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('resume');
+      assert.equal(run.exitCode, 0);
+      // Worktree создан; агент спавнен в нём; VIBELOG_CWD — главный репо
+      assert.ok(existsSync(join(wtPath, '.git')), 'worktree vl-77 должна быть создана');
+      const marker = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      // realpathSync: macOS /var — симлинк на /private/var, process.cwd() физический
+      assert.equal(marker.cwd, realpathSync(wtPath), 'агент должен работать в worktree задачи');
+      assert.equal(marker.envCwd, wtRoot, 'VIBELOG_CWD — главный репозиторий');
+      // Промпт дополнен примечанием режима веток (как у фаз задач)
+      assert.ok(marker.argv[0].includes('Режим параллельной разработки'), marker.argv[0]);
+      assert.ok(marker.argv[0].includes('vb/vl-77'), marker.argv[0]);
+      assert.deepEqual(marker.argv.slice(1, 3), ['--resume', 'agent-999']);
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(wtRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('startResume: branch-mode выключен + сессия из worktree → предупреждение (VL-110)', async () => {
+    const warnRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-warn-'));
+    mkdirSync(join(warnRoot, 'backlog'), { recursive: true });
+    writeFileSync(join(warnRoot, 'backlog', 'config.yml'), 'project_name: Warn Test\n', 'utf-8');
+    mkdirSync(join(warnRoot, '.vibelog', 'agent-sessions'), { recursive: true });
+    // bot.yml БЕЗ branch_mode — resume идёт в главном cwd
+    writeFileSync(
+      join(warnRoot, '.vibelog', 'agent-sessions', 'agent-888.meta.json'),
+      JSON.stringify({ taskId: 'VL-77', phase: 'code', cwd: '/tmp/some-worktree' }),
+      'utf-8'
+    );
+    process.env.VIBELOG_QWEN_BIN = stubBin;
+    process.env.VL28_STUB_MARKER = join(warnRoot, 'marker-warn.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startResume(warnRoot, 'agent-888', 'продолжи');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('resume');
+      assert.equal(run.exitCode, 0);
+      const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      assert.ok(argv[0].includes('Внимание'), 'предупреждение о cwd-несовпадении: ' + argv[0]);
+      assert.ok(argv[0].includes('branch-mode выключен'), argv[0]);
+      assert.ok(argv[0].startsWith('продолжи'), 'исходный текст запроса сохраняется: ' + argv[0]);
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      rmSync(warnRoot, { recursive: true, force: true });
     }
   });
 });

@@ -10,6 +10,7 @@
  */
 
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ChatMessage } from './llm.js';
 
@@ -108,6 +109,54 @@ export async function latestSession(dir: string): Promise<string | null> {
     }
   }
   return latest?.id ?? null;
+}
+
+/**
+ * Метаданные сессии (VL-110): задача-владелец и cwd создания.
+ *
+ * Пишутся CLI при создании задачной сессии (режим `<фаза> <taskId>`) в
+ * `<id>.meta.json` рядом с jsonl. По ним оркестратор возобновляет сессию
+ * задачи в её worktree (инцидент VL-98: resume из главного cwd патчил
+ * главный репозиторий вместо worktree vb/vl-N). Отсутствие меты (/prompt,
+ * интерактивные и старые сессии) — не ошибка.
+ */
+export interface SessionMeta {
+  /** ID задачи-владельца (VL-N); undefined у /prompt и интерактивных сессий. */
+  taskId?: string;
+  /** Фаза сессии (spec/plan/code/close/comment). */
+  phase?: string;
+  /** Рабочая директория агента при создании сессии (worktree или главный cwd). */
+  cwd: string;
+}
+
+/**
+ * Сохраняет метаданные сессии (<id>.meta.json).
+ *
+ * @throws Error при невалидном sessionId (path traversal) либо ошибке записи
+ */
+export async function saveSessionMeta(dir: string, sessionId: string, meta: SessionMeta): Promise<void> {
+  assertSafeSessionId(sessionId);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, `${sessionId}.meta.json`), JSON.stringify(meta), 'utf-8');
+}
+
+/**
+ * Синхронное чтение метаданных сессии (VL-110).
+ *
+ * Синхронная форма нужна оркестратору: startResume — синхронная точка
+ * входа, spawnCwd должен определиться до spawn. Любая ошибка (нет файла,
+ * битый JSON, небезопасный id) — null: вызывающий продолжает по прежнему
+ * пути resume без worktree.
+ */
+export function loadSessionMetaSync(dir: string, sessionId: string): SessionMeta | null {
+  try {
+    assertSafeSessionId(sessionId);
+    const parsed: unknown = JSON.parse(readFileSync(join(dir, `${sessionId}.meta.json`), 'utf-8'));
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    return parsed as SessionMeta;
+  } catch {
+    return null;
+  }
 }
 
 /**

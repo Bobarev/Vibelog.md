@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { listLocalTools, validateArgs, miniGlobToRegex, checkShellCommandInProject } from '../../dist/agent/tools.js';
+import { listLocalTools, validateArgs, miniGlobToRegex, checkShellCommandInProject, truncateToolOutput, TOOL_OUTPUT_MAX_CHARS } from '../../dist/agent/tools.js';
 
 const TMP = '/tmp/vibelog-agent-tools-test';
 let tools;
@@ -304,5 +304,40 @@ describe('run_shell_command: команда с путями вне проект�
     const out = await byName.get('run_shell_command').handler({ command: 'ls ~' });
     assert.match(out, /Команда отклонена/);
     assert.doesNotMatch(out, /exit code/);
+  });
+});
+
+describe('truncateToolOutput — обрезка вывода для модели (VL-110)', () => {
+  it('короткий вывод — без изменений', () => {
+    const short = 'короткий вывод';
+    assert.equal(truncateToolOutput(short), short);
+  });
+
+  it('длинный вывод обрезается до лимита с пометкой и точными числами', () => {
+    const long = 'х'.repeat(TOOL_OUTPUT_MAX_CHARS + 500);
+    const out = truncateToolOutput(long);
+    assert.ok(out.startsWith('х'.repeat(100)));
+    assert.match(out, /…\[вывод обрезан/);
+    assert.ok(out.includes(`из ${long.length} символов`));
+    assert.ok(out.length < long.length);
+  });
+
+  it('read_file: файл больше лимита обрезается', async () => {
+    writeFileSync(join(TMP, 'big.txt'), 'строка данных\n'.repeat(2000), 'utf-8');
+    const out = await byName.get('read_file').handler({ path: 'big.txt' });
+    assert.match(out, /…\[вывод обрезан/);
+  });
+
+  it('run_shell_command: длинный stdout обрезается финальным лимитом', async () => {
+    const out = await byName.get('run_shell_command').handler({
+      command: `node -e "process.stdout.write('a'.repeat(20000))"`,
+    });
+    assert.match(out, /…\[вывод обрезан/);
+  });
+
+  it('grep_search: одна огромная строка-совпадение обрезается', async () => {
+    writeFileSync(join(TMP, 'grep', 'big-line.txt'), 'alpha ' + 'б'.repeat(20000), 'utf-8');
+    const out = await byName.get('grep_search').handler({ pattern: 'alpha', path: 'grep' });
+    assert.match(out, /…\[вывод обрезан/);
   });
 });

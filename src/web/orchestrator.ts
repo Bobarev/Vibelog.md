@@ -23,6 +23,7 @@ import { ensureTaskWorktree, taskBranchName } from '../core/worktree.js';
 import { explainQwenParse, parseQwenResult } from './qwen-result.js';
 import type { QwenResult } from './qwen-result.js';
 import { loadBotSettings, resolveBranchMode } from '../bot/settings.js';
+import { agentSessionsDir, loadSessionMetaSync } from '../agent/session.js';
 
 // Реэкспорт для обратной совместимости (VL-85): renderPrompt/Phase вынесены
 // в phase-prompt.ts — общий модуль оркестратора и CLI vibelog-agent.
@@ -157,8 +158,38 @@ export function startResume(
   agent: 'qwen' | 'vb' = 'qwen'
 ): StartResult {
   // Фаза 'prompt' — вне жизненного цикла задачи, шаблон не подставляется;
-  // resume поддержан для обоих агентов (VL-95: vb хранит сессии JSONL)
-  return spawnQwenRun(cwd, 'resume', 'prompt', promptText, onExit, agent, ['--resume', sessionId]);
+  // resume поддержан для обоих агентов (VL-95: vb хранит сессии JSONL).
+  //
+  // VL-110: если сессия принадлежит задаче (мета <id>.meta.json, пишет CLI
+  // при создании задачной сессии) — resume возобновляется в worktree её
+  // задачи: инцидент VL-98 — reply «Продолжи» шёл из главного cwd (runKey
+  // 'resume' вне /^VL-\d+$/i) и патч-скрипт правил главный репозиторий
+  // вместо worktree vb/vl-N. Меты нет (/prompt, старые сессии) — прежний путь.
+  let worktreeTaskId: string | undefined;
+  let note = '';
+  // Бот передаёт sessionId с префиксом vb: — для поиска меты снимаем его
+  const meta = loadSessionMetaSync(agentSessionsDir(cwd), sessionId.replace(/^vb:/, ''));
+  if (meta?.taskId && /^VL-\d+$/i.test(meta.taskId) && resolveBranchMode(cwd)) {
+    worktreeTaskId = meta.taskId.toUpperCase();
+  } else if (meta?.cwd && meta.cwd !== cwd) {
+    // Сессия создавалась в другом каталоге (worktree), а resume идёт вне
+    // режима веток — предупреждаем модель: правки уйдут не в ту копию кода
+    note =
+      `\n\nВнимание (VL-110): сессия создавалась из каталога ${meta.cwd}, ` +
+      `возобновление идёт из ${cwd} (branch-mode выключен). ` +
+      'Прежде чем править файлы — проверь git status и git diff рабочего каталога.';
+  }
+  // Фаза 'prompt' — шаблон не подставляется; промпт — сырой текст + примечание
+  return spawnQwenRun(
+    cwd,
+    'resume',
+    'prompt',
+    promptText + note,
+    onExit,
+    agent,
+    ['--resume', sessionId],
+    worktreeTaskId
+  );
 }
 
 /**
@@ -188,6 +219,8 @@ function spawnLimitFlags(cwd: string): string[] {
  *
  * @param agent — VL-92: qwen (дефолт) либо встроенный vibelog-agent
  * @param extraArgs — VL-93: доп. флаги сразу после промпта (--resume <id>)
+ * @param worktreeTaskId — VL-110: ID задачи для worktree при resume (мета
+ *   сессии); runKey задач ('VL-N') определяет worktree сам по себе
  */
 function spawnQwenRun(
   cwd: string,
@@ -196,7 +229,8 @@ function spawnQwenRun(
   prompt: string,
   onExit?: PhaseExitCallback,
   agent: 'qwen' | 'vb' = 'qwen',
-  extraArgs: string[] = []
+  extraArgs: string[] = [],
+  worktreeTaskId?: string
 ): StartResult {
   if (activeRuns.has(runKey)) {
     // Сообщение генерализовано (VL-66): подходит и фазе задачи, и /prompt
@@ -210,10 +244,12 @@ function spawnQwenRun(
   // стартует, сообщение уходит в чат/api как { error }.
   let runCwd = cwd;
   let spawnEnv: NodeJS.ProcessEnv | undefined;
-  if (resolveBranchMode(cwd) && /^VL-\d+$/i.test(runKey)) {
+  // VL-110: источник taskId для worktree — runKey задачи либо мета resume-сессии
+  const branchTask = /^VL-\d+$/i.test(runKey) ? runKey : (worktreeTaskId ?? '');
+  if (resolveBranchMode(cwd) && branchTask !== '') {
     let runDir: string;
     try {
-      runDir = ensureTaskWorktree(cwd, runKey);
+      runDir = ensureTaskWorktree(cwd, branchTask);
     } catch (err) {
       return { error: (err as Error).message };
     }
@@ -222,7 +258,7 @@ function spawnQwenRun(
     // репозиторий через VIBELOG_CWD (см. cli/commands/mcp.ts)
     spawnEnv = { ...process.env, VIBELOG_CWD: cwd };
     prompt +=
-      `\n\nРежим параллельной разработки: работаешь в git worktree ветки ${taskBranchName(runKey)}` +
+      `\n\nРежим параллельной разработки: работаешь в git worktree ветки ${taskBranchName(branchTask)}` +
       ` (директория ${runDir}). Backlog живёт в основном репозитории — MCP уже настроен на него.` +
       ' Код коммить в текущую ветку; файлы backlog/ не коммить.';
   }

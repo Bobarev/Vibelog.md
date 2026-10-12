@@ -13,7 +13,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -461,6 +461,39 @@ describe('vibelog-agent CLI (VL-85)', () => {
       assert.equal(JSON.parse(lines[2]).content, 'из non-stream фолбэка');
     } finally {
       llmHandler = null;
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+  // ── VL-110: метаданные сессии задачной фазы ──
+
+  it('фаза пишет метаданные <id>.meta.json (taskId/phase/cwd) (VL-110)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-meta-'));
+    try {
+      const { code, stdout } = await runCli(['comment', 'VL-77', '--no-mcp'], llmEnv(), projDir);
+      assert.equal(code, 0, stdout);
+      const parsed = JSON.parse(stdout.trim());
+      const meta = JSON.parse(
+        readFileSync(join(projDir, '.vibelog', 'agent-sessions', `${parsed.session_id}.meta.json`), 'utf-8')
+      );
+      assert.equal(meta.taskId, 'VL-77');
+      assert.equal(meta.phase, 'comment');
+      // realpathSync: macOS /var — симлинк на /private/var, process.cwd() физический
+      assert.equal(meta.cwd, realpathSync(projDir));
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
+  it('готовый промпт (без фазы) мету не создаёт (VL-110)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-meta0-'));
+    try {
+      const { code, stdout } = await runCli(['Просто запрос', '--no-mcp'], llmEnv(), projDir);
+      assert.equal(code, 0, stdout);
+      const parsed = JSON.parse(stdout.trim());
+      const dir = join(projDir, '.vibelog', 'agent-sessions');
+      assert.ok(existsSync(join(dir, `${parsed.session_id}.jsonl`)), 'jsonl создаётся');
+      assert.ok(!existsSync(join(dir, `${parsed.session_id}.meta.json`)), 'мета не создаётся');
+    } finally {
       rmSync(projDir, { recursive: true, force: true });
     }
   });

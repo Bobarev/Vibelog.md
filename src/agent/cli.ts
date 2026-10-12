@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { createLlmClient } from './llm.js';
 import type { ChatMessage } from './llm.js';
 import { runLoop } from './loop.js';
-import { agentSessionsDir, appendSessionMessage, createSessionId, latestSession, loadSession, saveSession } from './session.js';
+import { agentSessionsDir, appendSessionMessage, createSessionId, latestSession, loadSession, saveSession, saveSessionMeta } from './session.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { listLocalTools } from './tools.js';
 import type { ToolSpec } from './tools.js';
@@ -272,6 +272,20 @@ export async function main(argv: string[]): Promise<void> {
     log(`Сессия ${sessionId} возобновляется, сообщений в истории: ${resumedMessages.length}`);
   } else {
     sessionId = createSessionId();
+  }
+
+  // Метаданные сессии (VL-110): задача-владелец + cwd создания — по ним
+  // оркестратор возобновляет задачную сессию в её worktree (инцидент VL-98:
+  // reply «Продолжи» из главного cwd патчил главный репозиторий вместо
+  // worktree vb/vl-N). Только для новых задачных сессий (<фаза> <taskId>):
+  // resume/--continue продолжают существующую сессию, её мета уже записана.
+  if (isPhaseMode) {
+    try {
+      await saveSessionMeta(sessionsDir, sessionId, { taskId: positionals[1], phase, cwd });
+    } catch (err) {
+      // Ошибка меты не должна ронять фазу: resume просто пойдёт прежним путём
+      console.error(`Предупреждение: метаданные сессии не записаны — ${(err as Error).message}`);
+    }
   }
 
   const tools: ToolSpec[] = listLocalTools(cwd);

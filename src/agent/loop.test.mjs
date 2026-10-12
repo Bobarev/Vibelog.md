@@ -407,3 +407,37 @@ describe('runLoop onMessage и транскрипт ошибок (VL-103)', () =
     assert.match(res.messages.at(-1).content, /--max-tool-calls/);
   });
 });
+
+describe('runLoop guard пустого финального ответа (VL-110)', () => {
+  it('пустой финал без tool_calls → is_error «Пустой ответ модели»', async () => {
+    const { llm } = fakeLlm([{ text: '' }]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [] });
+    assert.equal(res.is_error, true);
+    assert.match(res.result, /Пустой ответ модели/);
+  });
+
+  it('финал из пробелов и переносов → тоже ошибка', async () => {
+    const { llm } = fakeLlm([{ text: '  \n\t ' }]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [] });
+    assert.equal(res.is_error, true);
+    assert.match(res.result, /Пустой ответ модели/);
+  });
+
+  it('непустой финал — результат без изменений (регрессия VL-83)', async () => {
+    const { llm } = fakeLlm([{ text: 'Готово!' }]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [] });
+    assert.equal(res.is_error, false);
+    assert.equal(res.result, 'Готово!');
+  });
+
+  it('транскрипт заканчивается assistant с текстом ошибки (контракт resume VL-103)', async () => {
+    const { llm } = fakeLlm([{ text: '' }]);
+    const seen = [];
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [], onMessage: (m) => seen.push(m) });
+    assert.equal(res.is_error, true);
+    assert.equal(seen.length, 1, 'fail-assistant — единственное сообщение цикла');
+    assert.equal(seen[0].role, 'assistant');
+    assert.match(seen[0].content, /Пустой ответ модели/);
+    assert.equal(res.messages.at(-1).role, 'assistant');
+  });
+});

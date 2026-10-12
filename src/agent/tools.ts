@@ -38,6 +38,28 @@ export interface ToolSpec {
 export type ValidateResult = string | null;
 
 /**
+ * Лимит tool-вывода для модели (VL-110): 8KB. Необрезанные выводы (25–34KB
+ * git ls-files, большие grep, длинные файлы) заливали контекст каждой
+ * итерации loop — ходы замедлялись до 5–15 минут, модель деградировала
+ * (инцидент VL-98: пустой финальный ответ на раздутом контексте).
+ * Per-stream обрезка run_shell_command (64KB на поток) остаётся — это
+ * финальный, более жёсткий лимит уже собранного вывода перед моделью.
+ */
+export const TOOL_OUTPUT_MAX_CHARS = 8 * 1024;
+
+/**
+ * Обрезает tool-вывод до TOOL_OUTPUT_MAX_CHARS с пометкой для модели.
+ * Короткий вывод возвращается без изменений (регрессия VL-83-тестов).
+ */
+export function truncateToolOutput(text: string): string {
+  if (text.length <= TOOL_OUTPUT_MAX_CHARS) return text;
+  return (
+    text.slice(0, TOOL_OUTPUT_MAX_CHARS) +
+    `\n…[вывод обрезан: показаны первые ${TOOL_OUTPUT_MAX_CHARS} из ${text.length} символов; чтобы получить остальное, сузь запрос — файл, диапазон строк или паттерн]`
+  );
+}
+
+/**
  * Валидация аргументов по JSON-схеме (top-level): обязательные поля и типы
  * string/number/boolean/array/object. Нарушение — строка модели вида
  * «Невалидные аргументы инструмента X: …», не исключение.
@@ -133,7 +155,7 @@ function makeReadFile(cwd: string): ToolSpec {
       const offset = typeof args.offset === 'number' && args.offset >= 0 ? Math.floor(args.offset) : 0;
       const limit = typeof args.limit === 'number' && args.limit > 0 ? Math.floor(args.limit) : lines.length;
       const slice = lines.slice(offset, offset + limit);
-      return slice.join('\n');
+      return truncateToolOutput(slice.join('\n'));
     },
   };
 }
@@ -365,7 +387,8 @@ function makeRunShellCommand(cwd: string): ToolSpec {
             ];
             if (timedOut) parts.push(`[таймаут ${timeout} мс — процесс убит по SIGKILL]`);
             if (ctx?.signal?.aborted) parts.push('[отменено пользователем]');
-            resolvePromise(parts.join('\n'));
+            // VL-110: финальная обрезка собранного вывода до 8KB для модели
+            resolvePromise(truncateToolOutput(parts.join('\n')));
           },
         );
         const onAbort = (): void => {
@@ -498,7 +521,7 @@ function makeGrepSearch(cwd: string): ToolSpec {
       }
       if (matches.length === 0) return 'Совпадений не найдено';
       const suffix = matches.length >= LIMIT ? `\n…[достигнут лимит ${LIMIT} совпадений]` : '';
-      return matches.join('\n') + suffix;
+      return truncateToolOutput(matches.join('\n') + suffix);
     },
   };
 }
@@ -521,7 +544,7 @@ function makeGlob(cwd: string): ToolSpec {
       const files = walkFiles(cwd, 10_000).filter((rel) => regex.test(rel)).slice(0, LIMIT);
       if (files.length === 0) return 'Файлы не найдены';
       const suffix = files.length >= LIMIT ? `\n…[достигнут лимит ${LIMIT} файлов]` : '';
-      return files.join('\n') + suffix;
+      return truncateToolOutput(files.join('\n') + suffix);
     },
   };
 }

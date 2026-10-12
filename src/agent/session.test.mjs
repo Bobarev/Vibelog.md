@@ -18,7 +18,9 @@ import {
   createSessionId,
   latestSession,
   loadSession,
+  loadSessionMetaSync,
   saveSession,
+  saveSessionMeta,
 } from '../../dist/agent/session.js';
 
 describe('session (VL-95)', () => {
@@ -144,5 +146,43 @@ describe('session (VL-95)', () => {
     await appendSessionMessage(sub, 'agent-app2', { role: 'user', content: 'a' });
     const loaded = await loadSession(sub, 'agent-app2');
     assert.deepEqual(loaded, [{ role: 'user', content: 'a' }]);
+  });
+});
+
+describe('метаданные сессии — meta.json (VL-110)', () => {
+  let metaDir;
+  before(() => {
+    metaDir = mkdtempSync(join(tmpdir(), 'vibelog-session-meta-'));
+  });
+  after(() => {
+    rmSync(metaDir, { recursive: true, force: true });
+  });
+
+  it('save/load roundtrip: taskId, phase, cwd', async () => {
+    await saveSessionMeta(metaDir, 'agent-1', { taskId: 'VL-77', phase: 'code', cwd: '/tmp/x' });
+    assert.deepEqual(loadSessionMetaSync(metaDir, 'agent-1'), {
+      taskId: 'VL-77',
+      phase: 'code',
+      cwd: '/tmp/x',
+    });
+  });
+
+  it('файла нет → null', () => {
+    assert.equal(loadSessionMetaSync(metaDir, 'agent-missing'), null);
+  });
+
+  it('битый JSON → null, не исключение', async () => {
+    await saveSessionMeta(metaDir, 'agent-2', { cwd: '/tmp/x' });
+    writeFileSync(join(metaDir, 'agent-2.meta.json'), '{бито', 'utf-8');
+    assert.equal(loadSessionMetaSync(metaDir, 'agent-2'), null);
+  });
+
+  it('небезопасный sessionId → null (path traversal)', () => {
+    assert.equal(loadSessionMetaSync(metaDir, '../evil'), null);
+  });
+
+  it('latestSession не видит meta.json — только .jsonl', async () => {
+    await saveSessionMeta(metaDir, 'agent-3', { cwd: '/tmp/y' });
+    assert.equal(await latestSession(metaDir), null, 'jsonl нет — meta не считается сессией');
   });
 });
