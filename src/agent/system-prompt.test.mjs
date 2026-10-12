@@ -72,6 +72,7 @@ describe('buildSystemPrompt (VL-96)', () => {
       assert.match(content, /одна команда grep/, 'правило про одну grep-проверку якоря');
       assert.match(content, /git status и git diff/, 'правило переориентации при «Продолжи»');
       assert.match(content, /BSD/, 'предупреждение про BSD sed на macOS');
+      assert.match(content, /Не выводи env целиком/, 'правило VL-115 про env и секреты');
       // Стабильный префикс: повторная сборка даёт тот же текст
       assert.equal(content, buildSystemPrompt(dir).content);
     });

@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { listLocalTools, validateArgs, miniGlobToRegex, checkShellCommandInProject, truncateToolOutput, TOOL_OUTPUT_MAX_CHARS } from '../../dist/agent/tools.js';
+import { listLocalTools, validateArgs, miniGlobToRegex, checkShellCommandInProject, truncateToolOutput, maskSecrets, TOOL_OUTPUT_MAX_CHARS } from '../../dist/agent/tools.js';
 
 const TMP = '/tmp/vibelog-agent-tools-test';
 let tools;
@@ -339,5 +339,33 @@ describe('truncateToolOutput — обрезка вывода для модели
     writeFileSync(join(TMP, 'grep', 'big-line.txt'), 'alpha ' + 'б'.repeat(20000), 'utf-8');
     const out = await byName.get('grep_search').handler({ pattern: 'alpha', path: 'grep' });
     assert.match(out, /…\[вывод обрезан/);
+  });
+});
+
+describe('maskSecrets — маскировка секретов в shell-выводе (VL-115)', () => {
+  it('VIBELOG_LLM_API_KEY=sk-... → NAME=***, соседние строки не тронуты', () => {
+    const out = maskSecrets('VIBELOG_LLM_API_KEY=sk-sl-v1-abc123\nVIBELOG_CWD=/tmp/x');
+    assert.equal(out, 'VIBELOG_LLM_API_KEY=***\nVIBELOG_CWD=/tmp/x');
+  });
+
+  it('TOKEN/SECRET/PASSWORD без учёта регистра, несколько строк', () => {
+    const out = maskSecrets('github_token=ghp-123\nAWS_SECRET_ACCESS_KEY=xyz\nDB_PASSWORD=pw\nplain=ok');
+    assert.ok(out.includes('github_token=***'), 'регистронезависимо: token');
+    assert.ok(out.includes('AWS_SECRET_ACCESS_KEY=***'), 'SECRET в составе имени');
+    assert.ok(out.includes('DB_PASSWORD=***'), 'PASSWORD');
+    assert.ok(out.includes('plain=ok'), 'обычные строки не меняются');
+  });
+
+  it('обычный вывод без секретов не меняется', () => {
+    const out = 'exit code: 0\nstdout:\nПривет\n';
+    assert.equal(maskSecrets(out), out);
+  });
+
+  it('run_shell_command: NAME=ключ в stdout маскируется', async () => {
+    const out = await byName.get('run_shell_command').handler({
+      command: `node -e "console.log('VIBELOG_LLM_API_KEY=' + 'sk-real-999')"`,
+    });
+    assert.ok(out.includes('VIBELOG_LLM_API_KEY=***'), out);
+    assert.ok(!out.includes('sk-real-999'), 'реальное значение не должно попадать в вывод');
   });
 });

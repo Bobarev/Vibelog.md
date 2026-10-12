@@ -48,6 +48,22 @@ export type ValidateResult = string | null;
 export const TOOL_OUTPUT_MAX_CHARS = 8 * 1024;
 
 /**
+ * Маскирует значения секретов в shell-выводе (VL-115): строки NAME=value,
+ * где NAME содержит API_KEY/TOKEN/SECRET/PASSWORD (без учёта регистра),
+ * заменяются на NAME=***. Инцидент VL-113: «env | grep» вывел реальный
+ * VIBELOG_LLM_API_KEY в транскрипт сессии — ключ оседал в jsonl на диске
+ * и уходил в контекст модели при resume. Применяется только к выводу
+ * run_shell_command: файловые инструменты (read_file/grep/glob) не
+ * маскируются, чтобы не искажать чтение кода и документации.
+ */
+export function maskSecrets(text: string): string {
+  return text.replace(
+    /^([A-Za-z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD)[A-Za-z0-9_]*)=(\S.*)$/gim,
+    (_line, name: string) => `${name}=***`
+  );
+}
+
+/**
  * Обрезает tool-вывод до TOOL_OUTPUT_MAX_CHARS с пометкой для модели.
  * Короткий вывод возвращается без изменений (регрессия VL-83-тестов).
  */
@@ -388,7 +404,7 @@ function makeRunShellCommand(cwd: string): ToolSpec {
             if (timedOut) parts.push(`[таймаут ${timeout} мс — процесс убит по SIGKILL]`);
             if (ctx?.signal?.aborted) parts.push('[отменено пользователем]');
             // VL-110: финальная обрезка собранного вывода до 8KB для модели
-            resolvePromise(truncateToolOutput(parts.join('\n')));
+            resolvePromise(maskSecrets(truncateToolOutput(parts.join('\n'))));
           },
         );
         const onAbort = (): void => {
