@@ -1,11 +1,11 @@
 ---
 id: VL-118
 title: Префикс задач хардкодится как VL в worktree/мете/resume — taskIdPattern по task_prefix из конфига
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-12 16:01'
-updated_date: '2026-10-12 16:12'
+updated_date: '2026-10-12 18:38'
 due_date: ''
 labels: []
 dependencies: []
@@ -43,9 +43,9 @@ modified_files:
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Comments
@@ -62,5 +62,10 @@ created: 2026-10-12 16:12
 Проверки: pnpm build (tsc strict) OK; pnpm test — 841/841, fail 0.
 
 Что осталось: live-проверка на проекте с чужим префиксом; DoD закрывается Фазой Close.
+---
+author: @agent
+created: 2026-10-12 18:38
+---
+Фаза Close выполнена вручную (исполнитель — Qwen Code). Код: feat 59939d9 (taskIdPattern(cwd) в core/config.ts — префикс из task_prefix с escape-ом, дефолт VL; 4 точки переведены с /^VL-\d+$/i). Тесты: config.test.mjs +4 (новый), orchestrator +1 (branch-mode ot-5), cli +2; E2E VL-114 переведён на ot-88 — поймал регрессию; pnpm test 841/841. DoD 3/3. Статус Done.
 ---
 <!-- COMMENTS:END -->
