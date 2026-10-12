@@ -1,11 +1,11 @@
 ---
 id: VL-116
 title: 'Тест-харнесс: утечка VIBELOG_CWD в дочерние CLI-процессы тестов (загрязнение реального backlog)'
-status: To Do
+status: Review
 assignee: []
 reporter: ''
 created_date: '2026-10-12 14:47'
-updated_date: '2026-10-12 14:47'
+updated_date: '2026-10-12 15:49'
 due_date: ''
 labels: []
 dependencies: []
@@ -17,7 +17,12 @@ project: ''
 parent_task_id: ''
 ordinal: 0
 documentation: []
-modified_files: []
+modified_files:
+  - src/agent/mcp-client.ts
+  - src/agent/mcp-client.test.mjs
+  - src/mcp/server.test.mjs
+  - src/agent/cli.test.mjs
+  - CHANGELOG.md
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -28,9 +33,9 @@ modified_files: []
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 llmEnv() в cli.test.mjs удаляет VIBELOG_CWD из env дочернего CLI; аналогично для спавновых процессов в mcp/server.test.mjs и mcp-client.test.mjs
-- [ ] #2 pnpm test, запущенный при установленном VIBELOG_CWD в окружении (как внутри фазы branch-mode), даёт столько же результатов, сколько без него — без ложных падений и без записи в реальный backlog
-- [ ] #3 CHANGELOG: запись о фиксе
+- [x] #1 llmEnv() в cli.test.mjs удаляет VIBELOG_CWD из env дочернего CLI; аналогично для спавновых процессов в mcp/server.test.mjs и mcp-client.test.mjs
+- [x] #2 pnpm test, запущенный при установленном VIBELOG_CWD в окружении (как внутри фазы branch-mode), даёт столько же результатов, сколько без него — без ложных падений и без записи в реальный backlog
+- [x] #3 CHANGELOG: запись о фиксе
 <!-- AC:END -->
 
 ## Definition of Done
@@ -39,3 +44,12 @@ modified_files: []
 - [ ] #2 Документация обновлена
 - [ ] #3 Нет регрессий
 <!-- DOD:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author: @agent
+created: 2026-10-12 15:49
+---
+Фаза 3 (Code) выполнена вручную (исполнитель — Qwen Code; fix 92a042f). Три вектора утечки env фазы в дочерние тестовые процессы закрыты: llmEnv() (cli.test.mjs) удаляет VIBELOG_CWD/VIBELOG_PHASE_TASK_ID/VIBELOG_PHASE_NAME из env дочернего CLI; callMcp() (mcp/server.test.mjs) спавнит MCP-сервер с чистым env; McpClient (src/agent/mcp-client.ts) получил опцию env и mcp-client.test передаёт чистый env. Проверка AC#2: прогоны cli/server/mcp-client тестов с VIBELOG_CWD на throwaway-каталог (/tmp/vl116-leakcheck-*) — 46/46 зелёные, ноль задач/сессий в целевом каталоге (до фикса привели бы к записи в реальный backlog). Полный pnpm test — 834/834, fail 0. Что осталось: DoD закрывается Фазой Close; при первой возможности прогнать pnpm test ИМЕННО из живой фазы branch-mode как двойную подтверждение (агент VL-113 обходился env -u).
+---
+<!-- COMMENTS:END -->

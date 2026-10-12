@@ -1,11 +1,11 @@
 ---
 id: VL-114
 title: 'VL-110 meta-дыра: оркестраторный путь фаз не пишет meta.json сессии (env VIBELOG_PHASE_TASK_ID)'
-status: Planned
+status: Review
 assignee: []
 reporter: ''
 created_date: '2026-10-12 14:46'
-updated_date: '2026-10-12 15:35'
+updated_date: '2026-10-12 15:49'
 due_date: ''
 labels: []
 dependencies: []
@@ -17,7 +17,13 @@ project: ''
 parent_task_id: ''
 ordinal: 0
 documentation: []
-modified_files: []
+modified_files:
+  - src/web/orchestrator.ts
+  - src/web/orchestrator.test.mjs
+  - src/agent/cli.ts
+  - src/agent/cli.test.mjs
+  - src/agent/session.ts
+  - CHANGELOG.md
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -28,10 +34,10 @@ modified_files: []
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 spawnQwenRun для задачных фаз (runKey VL-N, включая worktree-вариант и resume с worktreeTaskId; КРОМЕ close — по VL-112) кладёт VIBELOG_PHASE_TASK_ID и VIBELOG_PHASE_NAME в spawnEnv
-- [ ] #2 cli.ts: при создании новой сессии в фазовом режиме или при наличии VIBELOG_PHASE_TASK_ID пишется <id>.meta.json (taskId/phase/cwd); resume/--continue мету не перезаписывают
-- [ ] #3 orchestrator.test: оркестраторный спавн задачной фазы через заглушку создаёт meta.json в .vibelog/agent-sessions; cli.test: env-путь пишет мету
-- [ ] #4 pnpm test зелёный
+- [x] #1 spawnQwenRun для задачных фаз (runKey VL-N, включая worktree-вариант и resume с worktreeTaskId; КРОМЕ close — по VL-112) кладёт VIBELOG_PHASE_TASK_ID и VIBELOG_PHASE_NAME в spawnEnv
+- [x] #2 cli.ts: при создании новой сессии в фазовом режиме или при наличии VIBELOG_PHASE_TASK_ID пишется <id>.meta.json (taskId/phase/cwd); resume/--continue мету не перезаписывают
+- [x] #3 orchestrator.test: оркестраторный спавн задачной фазы через заглушку создаёт meta.json в .vibelog/agent-sessions; cli.test: env-путь пишет мету
+- [x] #4 pnpm test зелёный
 <!-- AC:END -->
 
 ## Definition of Done
@@ -181,5 +187,10 @@ author: @agent
 created: 2026-10-12 15:08
 ---
 Фаза 2 (Plan) выполнена. Тип: task. План записан в задачу: 5 файлов (src/web/orchestrator.ts — spawnEnv с VIBELOG_PHASE_TASK_ID/NAME для задачных фаз; src/agent/cli.ts — запись меты новых сессий по env, resume/--continue не перезаписывают; src/agent/session.ts — JSDoc; src/web/orchestrator.test.mjs — 4 теста incl. E2E через настоящий bin/vibelog-agent.mjs + мок-LM; src/agent/cli.test.mjs — 2 теста env-пути). Риски: close-фаза получит env (безвредно, fallback при необходимости — guard как в VL-112); внешний env фильтруется regex /^VL-\d+$/i; все пути файлов проверены ls.
+---
+author: @agent
+created: 2026-10-12 15:49
+---
+Фаза 3 (Code) выполнена вручную (исполнитель — Qwen Code; feat 0161bfd). Реализовано по исправленному плану (docs(plan) bd78980): Шаг 1 — spawnQwenRun: phaseTaskId (VL-N; кроме close по VL-112; у resume — из worktreeTaskId) → VIBELOG_PHASE_TASK_ID/NAME в spawnEnv, merge с VIBELOG_CWD в branch-блоке; Шаг 2 — cli.ts: мета новой сессии по двум источникам (позиционные <фаза> <taskId> без фильтров — task_prefix конфигурируем; env с regex VL-N), resume/--continue не перезаписывают; Шаг 3 — JSDoc SessionMeta. Тесты: orchestrator +5 (env задачной фазы, /prompt без env, close без env — VL-112-гард, resume с worktreeTaskId несёт taskId, E2E «настоящий агент + мок-LM → meta.json с taskId/phase/cwd» — строже AC, заглушка мету не пишет писал бы CLI); cli +2 (env-путь: верхний регистр, cwd через realpathSync; resume не перезаписывает мету-маркер). Проверки: pnpm build (tsc strict) OK; pnpm test — 834/834, fail 0. Что осталось: live-проверка — reply «Продолжи» на реальной фазовой сессии (например, VL-113 после её resume) должен уходить в worktree задачи; DoD закрывается Фазой Close.
 ---
 <!-- COMMENTS:END -->
