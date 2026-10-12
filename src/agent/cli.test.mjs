@@ -62,12 +62,19 @@ function startMockLlm(finalText) {
 
 /** Полный env дочернего процесса: process.env + мок-LM на эфемерном порту. */
 function llmEnv() {
-  return {
+  const env = {
     ...process.env,
     VIBELOG_LLM_BASE_URL: `http://127.0.0.1:${mock.port}/v1`,
     VIBELOG_LLM_API_KEY: 'test-key',
     VIBELOG_LLM_MODEL: 'test-model',
   };
+  // VL-116: env фазы оркестратора (branch-mode) не должен утекать в дочерние
+  // CLI-процессы — иначе сессии/мета пишутся в реальный репозиторий, а не
+  // в /tmp-проект теста (инцидент загрязнения backlog 2026-10-12)
+  delete env.VIBELOG_CWD;
+  delete env.VIBELOG_PHASE_TASK_ID;
+  delete env.VIBELOG_PHASE_NAME;
+  return env;
 }
 
 /** Запуск CLI как дочернего процесса; возвращает {code, stdout, stderr}. */

@@ -31,6 +31,12 @@ export interface McpClientOptions {
   cwd: string;
   /** Таймаут одного JSON-RPC запроса, мс (дефолт 60000). */
   requestTimeoutMs?: number;
+  /**
+   * Окружение процесса сервера (VL-116). По умолчанию наследуется от
+   * родителя; тесты чистят VIBELOG_CWD/VIBELOG_PHASE_* — иначе CLI пишет
+   * backlog/сессии в реальный репозиторий вместо /tmp-фикстуры.
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** Ожидающий JSON-RPC ответ. */
@@ -78,7 +84,7 @@ export class McpClient {
     const binArgs = options.binArgs ?? [];
     const args = [...binArgs, 'mcp', 'start'];
     // stdio:'pipe' — все три потока через pipe; stdin закрывается в close().
-    const child = spawn(bin, args, { cwd: options.cwd, stdio: 'pipe' });
+    const child = spawn(bin, args, { cwd: options.cwd, stdio: 'pipe', env: options.env });
     const client = new McpClient(child, options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS_DEFAULT);
 
     // EPIPE на stdin после смерти сервера не должен ронять процесс агента.

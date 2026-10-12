@@ -36,7 +36,13 @@ before(async () => {
     definition_of_done: [],
   }), 'utf-8');
   // Клиент спавнит реальный CLI: node bin/vibelog.mjs mcp start, cwd=/tmp-проект.
-  client = await McpClient.create({ bin: process.execPath, binArgs: [cliPath], cwd: testDir });
+  // VL-116: env фазы (VIBELOG_CWD/VIBELOG_PHASE_*) не должен утекать в
+  // MCP-сервер — иначе задачи теста пишутся в реальный backlog
+  const env = { ...process.env };
+  delete env.VIBELOG_CWD;
+  delete env.VIBELOG_PHASE_TASK_ID;
+  delete env.VIBELOG_PHASE_NAME;
+  client = await McpClient.create({ bin: process.execPath, binArgs: [cliPath], cwd: testDir, env });
 });
 
 after(async () => {

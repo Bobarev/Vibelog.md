@@ -36,8 +36,16 @@ function cleanup() {
  */
 function callMcp(messages) {
   return new Promise((resolve, reject) => {
+    // VL-116: env фазы (VIBELOG_CWD/VIBELOG_PHASE_*) не должен утекать в
+    // MCP-сервер — иначе backlog пишется в реальный репозиторий, а не в
+    // /tmp-фикстуру (инцидент загрязнения 2026-10-12)
+    const env = { ...process.env };
+    delete env.VIBELOG_CWD;
+    delete env.VIBELOG_PHASE_TASK_ID;
+    delete env.VIBELOG_PHASE_NAME;
     const proc = spawn('node', [cliPath, 'mcp', 'start'], {
       cwd: testDir,
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
