@@ -93,7 +93,10 @@ describe('orchestrator (VL-28)', () => {
     task1 = createTaskFile(testRoot, { title: 'Задача для фазы 1', status: 'Spec', priority: 'High' });
     task2 = createTaskFile(testRoot, { title: 'Задача для API-тестов', status: 'Backlog', priority: 'Low' });
 
-    for (const key of ['VIBELOG_QWEN_BIN', 'VIBELOG_AGENT_BIN', 'VL28_STUB_MARKER', 'VL28_STUB_SLEEP', 'VL28_STUB_EXIT', 'VL28_STUB_RESULT', 'VL28_STUB_RACE']) {
+    // VL-125: env фазы оркестратора (VL-114) не должен утекать в стаб-спавны
+    // теста — иначе pnpm test, запущенный агентом ВНУТРИ фазы, даёт ложные
+    // падения env-тестов (инцидент VL-117)
+    for (const key of ['VIBELOG_QWEN_BIN', 'VIBELOG_AGENT_BIN', 'VL28_STUB_MARKER', 'VL28_STUB_SLEEP', 'VL28_STUB_EXIT', 'VL28_STUB_RESULT', 'VL28_STUB_RACE', 'VIBELOG_PHASE_TASK_ID', 'VIBELOG_PHASE_NAME', 'VIBELOG_CWD']) {
       savedEnv[key] = process.env[key];
       delete process.env[key];
     }
