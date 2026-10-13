@@ -53,6 +53,12 @@ export interface CodeCommand {
   comment?: string;
   /** Агент Фазы 3: задан явно суффиксом :<agent> (VL-94). */
   agent?: AgentName;
+  /**
+   * Явное переопределение настройки code_same_session (VL-147): true —
+   * продолжить plan-сессию (--same-session), false — разово обойти включённую
+   * настройку (--no-same-session). undefined — брать настройку.
+   */
+  sameSession?: boolean;
 }
 
 /** Результат разбора /close. */
@@ -77,7 +83,9 @@ export type SetCommand =
   /** Режим параллельной разработки в git-ветках vb/vl-N (VL-107). */
   | { key: 'branch-mode'; value: boolean }
   /** Компакшн истории LLM-запроса (VL-122); по умолчанию включён. */
-  | { key: 'compact'; value: boolean };
+  | { key: 'compact'; value: boolean }
+  /** Code в сессии Plan (VL-147); по умолчанию выключен. */
+  | { key: 'code-same-session'; value: boolean };
 
 /** Результат разбора /prompt (VL-66/92): запрос без задачи + агент-исполнитель. */
 export interface PromptCommand {
@@ -241,27 +249,46 @@ export function parsePlanCommand(
 /**
  * Разбирает /code: «VL-1» или «VL-1 комментарий» (VL-80), как /plan.
  * Суффикс :<agent> выбирает агента Фазы 3 (VL-94, см. extractAgent).
+ * Флаги --same-session/--no-same-session (VL-147) вырезаются из текста ДО
+ * разбора id/комментария — иначе токен попал бы в комментарий фазы; если
+ * заданы оба — выигрывает позитивный --same-session.
  *
  * @param text — аргументы команды (без слова /code)
  * @param commandWord — слово команды с суффиксом (code:vb), как в /prompt
- * @returns {id, comment?, agent?} или {error} с подсказкой
+ * @returns {id, comment?, agent?, sameSession?} или {error} с подсказкой
  */
 export function parseCodeCommand(
   text: string,
   commandWord = ''
 ): CodeCommand | { error: string } {
-  const hint = 'Синтаксис: /code[:agent] VL-<id> [комментарий] (агенты: qwen, vb)';
+  const hint =
+    'Синтаксис: /code[:agent] VL-<id> [комментарий] [--same-session|--no-same-session] (агенты: qwen, vb)';
   const parsed = extractAgent('code', commandWord, text, hint);
   if ('error' in parsed) return parsed;
-  const trimmed = parsed.text;
+  // VL-147: --no-same-session первым — строка не содержит --same-session как
+  // подстроки (после -- сразу no), порядок защищает от двойной замены
+  let sameSession: boolean | undefined;
+  let rest = parsed.text;
+  if (rest.includes('--no-same-session')) {
+    sameSession = false;
+    rest = rest.replace(/--no-same-session/g, ' ');
+  }
+  if (rest.includes('--same-session')) {
+    sameSession = true;
+    rest = rest.replace(/--same-session/g, ' ');
+  }
+  const trimmed = rest.trim();
   if (!trimmed) return { error: hint };
+  // Ключи comment/agent/sameSession добавляем ТОЛЬКО при наличии — иначе
+  // сломаются deepEqual в тестах команд без флагов
   const agent = parsed.agent ? { agent: parsed.agent } : {};
+  const flag = sameSession !== undefined ? { sameSession } : {};
   const spaceIdx = trimmed.indexOf(' ');
-  if (spaceIdx === -1) return { id: trimmed, ...agent };
+  if (spaceIdx === -1) return { id: trimmed, ...agent, ...flag };
   const id = trimmed.slice(0, spaceIdx).trim();
   const comment = trimmed.slice(spaceIdx + 1).trim();
   if (!id) return { error: hint };
-  return comment ? { id, comment, ...agent } : { id, ...agent };
+  return comment ? { id, comment, ...agent, ...flag } : { id, ...agent, ...flag };
 }
 
 /**
@@ -287,18 +314,19 @@ export function parseCloseCommand(
 
 /**
  * Разбирает /set: «agent <qwen|vb>» | «max-wall-time <сек>» |
- * «max-requests <N>» | «branch-mode <on|off>» (VL-94/104/107).
+ * «max-requests <N>» | «branch-mode <on|off>» | «compact <on|off>» |
+ * «code-same-session <on|off>» (VL-94/104/107/122/147).
  * Числовые параметры — неотрицательные целые: 0 — явный сброс настройки
  * (удаление ключа в settings.json), дробные, отрицательные и пустые значения —
- * {error} с подсказкой. branch-mode принимает on|off|true|false (регистр
- * не важен — значение уже в нижнем регистре).
+ * {error} с подсказкой. Булевы on/off-параметры принимают on|off|true|false
+ * (регистр не важен — значение уже в нижнем регистре).
  *
  * @param text — аргументы команды (без слова /set)
  * @returns {key, value} или {error} с подсказкой
  */
 export function parseSetCommand(text: string): SetCommand | { error: string } {
   const hint =
-    'Синтаксис: /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off> (0/пусто — сброс у числовых)';
+    'Синтаксис: /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off> | code-same-session <on|off> (0/пусто — сброс у числовых)';
   const trimmed = text.trim();
   if (!trimmed) return { error: hint };
   const spaceIdx = trimmed.indexOf(' ');
@@ -309,10 +337,11 @@ export function parseSetCommand(text: string): SetCommand | { error: string } {
     key !== 'max-wall-time' &&
     key !== 'max-requests' &&
     key !== 'branch-mode' &&
-    key !== 'compact'
+    key !== 'compact' &&
+    key !== 'code-same-session'
   ) {
     return {
-      error: `Неизвестный параметр: ${key}. Доступные: agent, max-wall-time, max-requests, branch-mode, compact. ${hint}`,
+      error: `Неизвестный параметр: ${key}. Доступные: agent, max-wall-time, max-requests, branch-mode, compact, code-same-session. ${hint}`,
     };
   }
   if (key === 'agent') {
@@ -321,15 +350,20 @@ export function parseSetCommand(text: string): SetCommand | { error: string } {
     }
     return { key: 'agent', value };
   }
-  // Булевы on/off-параметры (VL-107 branch-mode, VL-122 compact): on/true → true, off/false → false
-  if (key === 'branch-mode' || key === 'compact') {
+  // Булевы on/off-параметры (VL-107 branch-mode, VL-122 compact, VL-147
+  // code-same-session): on/true → true, off/false → false
+  if (key === 'branch-mode' || key === 'compact' || key === 'code-same-session') {
     // Явные литералы ключа — дискриминированный union SetCommand не принимает
-    // суженный `key: 'branch-mode' | 'compact'` без приведения
+    // суженный `key: 'branch-mode' | 'compact' | 'code-same-session'` без приведения
     if (value === 'on' || value === 'true') {
-      return key === 'compact' ? { key: 'compact', value: true } : { key: 'branch-mode', value: true };
+      if (key === 'compact') return { key: 'compact', value: true };
+      if (key === 'code-same-session') return { key: 'code-same-session', value: true };
+      return { key: 'branch-mode', value: true };
     }
     if (value === 'off' || value === 'false') {
-      return key === 'compact' ? { key: 'compact', value: false } : { key: 'branch-mode', value: false };
+      if (key === 'compact') return { key: 'compact', value: false };
+      if (key === 'code-same-session') return { key: 'code-same-session', value: false };
+      return { key: 'branch-mode', value: false };
     }
     return {
       error: `${key}: ожидается on|off (true|false), получено: ${value || '(пусто)'}. ${hint}`,

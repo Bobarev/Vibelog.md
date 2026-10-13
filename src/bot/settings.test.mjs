@@ -19,6 +19,7 @@ import {
   resolveMaxWallTime,
   resolveMaxRequests,
   resolveBranchMode,
+  resolveCodeSameSession,
   botSettingsPath,
 } from '../../dist/bot/settings.js';
 import { saveSettingsPatch } from '../../dist/core/settings.js';
@@ -264,5 +265,46 @@ describe('compact (VL-122)', () => {
     assert.equal(loadBotSettings(root).compact, undefined);
     writeFileSync(botSettingsPath(root), JSON.stringify({ chats: [], compact: true }), 'utf-8');
     assert.equal(loadBotSettings(root).compact, undefined);
+  });
+});
+
+describe('code_same_session (VL-147)', () => {
+  const sameRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-same-'));
+
+  afterAll(() => {
+    rmSync(sameRoot, { recursive: true, force: true });
+  });
+
+  it('по умолчанию выключен: без файла/ключа → undefined/false', () => {
+    assert.equal(loadBotSettings(join(sameRoot, 'nonexistent')).code_same_session, undefined);
+    assert.equal(resolveCodeSameSession(join(sameRoot, 'nonexistent')), false);
+    // Без ключа в файле — тоже выключен (текущее поведение сохраняется, AC2)
+    saveBotSettings(sameRoot, { chats: [111] });
+    assert.equal(loadBotSettings(sameRoot).code_same_session, undefined);
+    assert.equal(resolveCodeSameSession(sameRoot), false);
+  });
+
+  it('roundtrip save/load + resolve: true/false', () => {
+    saveBotSettings(sameRoot, { chats: [111], code_same_session: true });
+    assert.equal(loadBotSettings(sameRoot).code_same_session, true);
+    assert.equal(resolveCodeSameSession(sameRoot), true);
+    // false пишется явным ключом (для /set code-same-session off), но resolve
+    // читает только строгое true — выключение детерминировано
+    saveBotSettings(sameRoot, { chats: [111], code_same_session: false });
+    assert.equal(loadBotSettings(sameRoot).code_same_session, undefined);
+    assert.ok(readFileSync(botSettingsPath(sameRoot), 'utf-8').includes('"code_same_session": false'));
+    assert.equal(resolveCodeSameSession(sameRoot), false);
+  });
+
+  it('невалидное code_same_session в файле отброшено → false', () => {
+    const root = join(sameRoot, 'invalid');
+    mkdirSync(join(root, '.vibelog'), { recursive: true });
+    // JSON хранит строгие типы — «битое» значение здесь строка/число
+    writeFileSync(botSettingsPath(root), JSON.stringify({ chats: [], code_same_session: 'foo' }), 'utf-8');
+    assert.equal(loadBotSettings(root).code_same_session, undefined);
+    assert.equal(resolveCodeSameSession(root), false);
+    writeFileSync(botSettingsPath(root), JSON.stringify({ chats: [], code_same_session: 1 }), 'utf-8');
+    assert.equal(loadBotSettings(root).code_same_session, undefined);
+    assert.equal(resolveCodeSameSession(root), false);
   });
 });

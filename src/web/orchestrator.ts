@@ -13,7 +13,7 @@
 
 import { execFile, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderPrompt, taskBlockText, taskExtraVars } from './phase-prompt.js';
@@ -22,9 +22,9 @@ import { getTask } from '../core/store.js';
 import { ensureTaskWorktree, taskBranchName, taskWorktreeDir } from '../core/worktree.js';
 import { explainQwenParse, parseQwenResult } from './qwen-result.js';
 import type { QwenResult } from './qwen-result.js';
-import { loadBotSettings, resolveBranchMode } from '../bot/settings.js';
+import { loadBotSettings, resolveBranchMode, resolveCodeSameSession } from '../bot/settings.js';
 import { taskIdPattern } from '../core/config.js';
-import { agentSessionsDir, loadSessionMetaSync } from '../agent/session.js';
+import { agentSessionsDir, findTaskPhaseSessionSync, loadSessionMetaSync, saveSessionMeta } from '../agent/session.js';
 
 // Реэкспорт для обратной совместимости (VL-85): renderPrompt/Phase вынесены
 // в phase-prompt.ts — общий модуль оркестратора и CLI vibelog-agent.
@@ -98,6 +98,9 @@ export function setSpawnEnvBaseForTests(env: NodeJS.ProcessEnv | null): void {
  * @param agent — агент-исполнитель (VL-94): qwen (дефолт) либо встроенный
  *   vibelog-agent; выбор бинаря — в spawnQwenRun (VL-92), guard-ключ фазы
  *   общий для обоих агентов — одновременно активен только один запуск фазы
+ * @param opts — VL-147: sameSession — явное переопределение настройки
+ *   code_same_session для фазы code (продолжение plan-сессии через --resume);
+ *   undefined — брать настройку из settings.json
  */
 export function startPhase(
   cwd: string,
@@ -105,7 +108,8 @@ export function startPhase(
   phase: string,
   onExit?: PhaseExitCallback,
   extraVars?: Record<string, string>,
-  agent: 'qwen' | 'vb' = 'qwen'
+  agent: 'qwen' | 'vb' = 'qwen',
+  opts?: { sameSession?: boolean }
 ): StartResult {
   // Защита HTTP-границы (VL-66): api.ts пропускает произвольный phase из
   // POST-body — без guard'а qwen получил бы шаблон prompt.md с неподставленным
@@ -142,7 +146,29 @@ export function startPhase(
   } catch (err) {
     return { error: (err as Error).message };
   }
-  return spawnQwenRun(cwd, taskId, phase as Phase, prompt, onExit, agent);
+  // VL-147: фаза code может продолжать plan-сессию агента (--resume) —
+  // экономия входных токенов за счёт кэша большого контекста. Включение —
+  // настройка code_same_session (дефолт off); явный флаг команды/API
+  // (opts.sameSession) переопределяет её в обе стороны. Источник sessionId —
+  // меты .vibelog/agent-sessions/*.meta.json (пишет CLI при старте задачной
+  // сессии; для qwen дополнительно дописывает оркестратор в finish, VL-147).
+  let extraArgs: string[] = [];
+  const sameSession = opts?.sameSession ?? resolveCodeSameSession(cwd);
+  if (phase === 'code' && sameSession) {
+    const planSessionId = findTaskPhaseSessionSync(agentSessionsDir(cwd), taskId, 'plan');
+    if (planSessionId) {
+      extraArgs = ['--resume', planSessionId];
+      prompt +=
+        '\n\nСессия продолжает фазу plan (VL-147), контекст планирования уже в истории.';
+    } else {
+      // Fallback: план-сессия не найдена (задача планировалась до VL-147,
+      // меты нет / сессия удалена) — обычный новый запуск, регрессий нет
+      console.log(
+        `[phase ${taskId}] VL-147: план-сессия не найдена — code запускается в новой сессии`
+      );
+    }
+  }
+  return spawnQwenRun(cwd, taskId, phase as Phase, prompt, onExit, agent, extraArgs);
 }
 
 /**
@@ -533,6 +559,30 @@ function spawnQwenRun(
     // (первая/последняя строка, ≥300 символов каждого края) — чтобы видеть,
     // на каком формате падает обработка без перезапуска фазы.
     const result = parseQwenResult(log) ?? undefined;
+    // VL-147: оркестратор дописывает мету сессии для ВСЕХ агентов по
+    // result.session_id — у qwen CLI меты не пишет (пишет только наш CLI
+    // vibelog-agent), иначе plan-сессии qwen недоступны findTaskPhaseSessionSync.
+    // У vb мета уже записана CLI при старте — перезапись идемпотентна
+    // (та же taskId/phase; cwd приводится к realpath, как process.cwd() child'а
+    // — иначе symlink /var→/private/var в macOS tmpdir менял бы мету, регрессия
+    // E2E VL-114). При --resume CLI мету не перезаписывает (isNewSession=false) —
+    // мета остаётся phase='plan', это корректно: возобновлённые code-запуски
+    // продолжают ту же план-сессию. Fire-and-forget: ошибка записи не роняет фазу.
+    if (result?.session_id && phaseTaskId !== '') {
+      let metaCwd = cwd;
+      try {
+        metaCwd = realpathSync(cwd);
+      } catch {
+        // каталог исчез между спавном и завершением — оставляем исходный путь
+      }
+      saveSessionMeta(agentSessionsDir(cwd), result.session_id, {
+        taskId: phaseTaskId,
+        phase,
+        cwd: metaCwd,
+      }).catch((err) => {
+        console.log(`[phase ${key}] ${ts()} мета сессии не записана: ${(err as Error).message}`);
+      });
+    }
     if (!result) {
       const outLines = log.split('\n').filter((l) => l.trim());
       const diag =

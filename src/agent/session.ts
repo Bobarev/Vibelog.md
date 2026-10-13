@@ -10,7 +10,7 @@
  */
 
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ChatMessage } from './llm.js';
 
@@ -159,6 +159,50 @@ export function loadSessionMetaSync(dir: string, sessionId: string): SessionMeta
   } catch {
     return null;
   }
+}
+
+/**
+ * Сессия задачи для фазы (VL-147): ищет в *.meta.json совпадение по
+ * meta.taskId (регистронезависимо) И meta.phase. Возвращает sessionId с
+ * максимальным mtime jsonl-файла сессии (или meta-файла, если jsonl ещё
+ * нет/пропал) — «последняя» сессия фазы. Null, если совпадений нет (нет
+ * каталога — тоже null, как у latestSession).
+ *
+ * Sync-форма нужна startPhase (sync-точка входа оркестратора): при запуске
+ * code в той же сессии, что plan (VL-147), sessionId уходит в --resume.
+ */
+export function findTaskPhaseSessionSync(dir: string, taskId: string, phase: string): string | null {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return null; // каталога ещё нет — сессий не было
+  }
+  const wanted = taskId.toUpperCase();
+  let best: { id: string; mtime: number } | null = null;
+  for (const entry of entries) {
+    if (!entry.endsWith('.meta.json')) continue;
+    const sessionId = entry.slice(0, -'.meta.json'.length);
+    // loadSessionMetaSync глотает битые меты и path-traversal — мусор пропускаем
+    const meta = loadSessionMetaSync(dir, sessionId);
+    if (!meta?.taskId || meta.taskId.toUpperCase() !== wanted || meta.phase !== phase) continue;
+    // mtime берём у jsonl (транскрипт растёт при каждом append'е сообщений);
+    // нет jsonl — mtime меты (сессия может быть только что создана)
+    let mtime: number;
+    try {
+      mtime = statSync(join(dir, `${sessionId}.jsonl`)).mtimeMs;
+    } catch {
+      try {
+        mtime = statSync(join(dir, entry)).mtimeMs;
+      } catch {
+        continue; // файл меты исчез между readdir и stat — пропуск
+      }
+    }
+    if (!best || mtime > best.mtime) {
+      best = { id: sessionId, mtime };
+    }
+  }
+  return best?.id ?? null;
 }
 
 /**

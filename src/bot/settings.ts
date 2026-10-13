@@ -41,6 +41,13 @@ export interface BotSettings {
    * усечение истории; по умолчанию включён (undefined = вкл).
    */
   compact?: boolean;
+  /**
+   * Запуск фазы code в той же сессии агента, что и plan (VL-147,
+   * /set code-same-session): code продолжает plan-сессию через --resume —
+   * экономия входных токенов за счёт кэша большого контекста. По умолчанию
+   * выключен (undefined = off, текущее поведение сохраняется).
+   */
+  code_same_session?: boolean;
 }
 
 /**
@@ -100,6 +107,9 @@ export function loadBotSettings(cwd: string): BotSettings {
   // Компакшн истории (VL-122): по умолчанию включён — читается только строгое
   // false (/set compact off); true/мусор → undefined → включён
   const compact = raw.compact === false ? false : undefined;
+  // Code в сессии Plan (VL-147): только строгое true; любое другое значение
+  // (false, строка, мусор) → undefined → resolveCodeSameSession даст false
+  const codeSameSession = raw.code_same_session === true ? true : undefined;
   return {
     chats: chats.map(Number).filter((n) => Number.isFinite(n)),
     ...(defaultAgent ? { default_agent: defaultAgent } : {}),
@@ -107,6 +117,7 @@ export function loadBotSettings(cwd: string): BotSettings {
     ...(maxRequests !== undefined ? { max_requests: maxRequests } : {}),
     ...(branchMode !== undefined ? { branch_mode: branchMode } : {}),
     ...(compact !== undefined ? { compact } : {}),
+    ...(codeSameSession !== undefined ? { code_same_session: codeSameSession } : {}),
     // Пользовательские записи перекрывают дефолты; поле всегда объект —
     // handlers не пишет ?? {} (VL-82)
     task_type_styles: { ...DEFAULT_TASK_TYPE_STYLES, ...extractTaskTypeStyles(raw.task_type_styles) },
@@ -145,6 +156,9 @@ export function saveBotSettings(cwd: string, settings: BotSettings): void {
     branch_mode: settings.branch_mode,
     // compact: false — явный ключ /set compact off (default — включён, ключ не нужен)
     compact: settings.compact,
+    // code_same_session пишем всегда, когда задан (в т.ч. false — /set
+    // code-same-session off должен оставить явный ключ в settings.json)
+    code_same_session: settings.code_same_session,
     task_type_styles: Object.keys(userStyles).length > 0 ? userStyles : undefined,
   };
   saveSettingsPatch(cwd, patch);
@@ -209,4 +223,15 @@ export function resolveMaxRequests(cwd: string): number | undefined {
  */
 export function resolveBranchMode(cwd: string): boolean {
   return loadBotSettings(cwd).branch_mode === true;
+}
+
+/**
+ * Запуск code в сессии plan из settings.json (VL-147): true — фаза code
+ * продолжает plan-сессию агента через --resume (экономия входных токенов);
+ * дефолт false (прежнее поведение). Читается перед каждым запуском фазы —
+ * /set code-same-session не требует перезапуска бота. Явный флаг команды
+ * (--same-session/--no-same-session, sameSession в API) переопределяет.
+ */
+export function resolveCodeSameSession(cwd: string): boolean {
+  return loadBotSettings(cwd).code_same_session === true;
 }

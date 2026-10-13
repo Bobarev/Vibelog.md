@@ -16,6 +16,7 @@ import {
   agentSessionsDir,
   appendSessionMessage,
   createSessionId,
+  findTaskPhaseSessionSync,
   latestSession,
   loadSession,
   loadSessionMetaSync,
@@ -184,5 +185,64 @@ describe('метаданные сессии — meta.json (VL-110)', () => {
   it('latestSession не видит meta.json — только .jsonl', async () => {
     await saveSessionMeta(metaDir, 'agent-3', { cwd: '/tmp/y' });
     assert.equal(await latestSession(metaDir), null, 'jsonl нет — meta не считается сессией');
+  });
+});
+
+describe('findTaskPhaseSessionSync (VL-147)', () => {
+  let findDir;
+  beforeAll(() => {
+    findDir = mkdtempSync(join(tmpdir(), 'vibelog-session-find-'));
+  });
+  afterAll(() => {
+    rmSync(findDir, { recursive: true, force: true });
+  });
+
+  it('находит сессию по taskId+phase; регистр taskId не важен', async () => {
+    const dir = join(findDir, 'basic');
+    await saveSessionMeta(dir, 'agent-p1', { taskId: 'VL-10', phase: 'plan', cwd: '/tmp/x' });
+    assert.equal(findTaskPhaseSessionSync(dir, 'VL-10', 'plan'), 'agent-p1');
+    assert.equal(findTaskPhaseSessionSync(dir, 'vl-10', 'plan'), 'agent-p1', 'регистронезависимо');
+  });
+
+  it('игнорирует чужую задачу и чужую фазу', async () => {
+    const dir = join(findDir, 'foreign');
+    await saveSessionMeta(dir, 'agent-other-task', { taskId: 'VL-99', phase: 'plan', cwd: '/tmp/x' });
+    await saveSessionMeta(dir, 'agent-other-phase', { taskId: 'VL-10', phase: 'code', cwd: '/tmp/x' });
+    // Чужая задача/фаза не находятся; своя (нет) — null
+    assert.equal(findTaskPhaseSessionSync(dir, 'VL-10', 'plan'), null);
+    assert.equal(findTaskPhaseSessionSync(dir, 'VL-99', 'code'), null);
+  });
+
+  it('нет совпадений / нет каталога / битая мета → null', async () => {
+    const empty = join(findDir, 'empty');
+    await saveSessionMeta(empty, 'agent-x', { cwd: '/tmp/x' }); // без taskId/phase
+    assert.equal(findTaskPhaseSessionSync(empty, 'VL-1', 'plan'), null);
+    assert.equal(findTaskPhaseSessionSync(join(findDir, 'no-such-dir'), 'VL-1', 'plan'), null);
+    // Битая мета — не исключение, а пропуск
+    const bad = join(findDir, 'bad');
+    mkdirSync(bad, { recursive: true });
+    writeFileSync(join(bad, 'agent-bad.meta.json'), '{бито', 'utf-8');
+    assert.equal(findTaskPhaseSessionSync(bad, 'VL-1', 'plan'), null);
+  });
+
+  it('при двух plan-сессиях выбирает последнюю по mtime jsonl', async () => {
+    const dir = join(findDir, 'mtime');
+    await saveSessionMeta(dir, 'agent-old', { taskId: 'VL-20', phase: 'plan', cwd: '/tmp/x' });
+    await saveSessionMeta(dir, 'agent-new', { taskId: 'VL-20', phase: 'plan', cwd: '/tmp/x' });
+    // mtime jsonl: у старой сессии отматываем в прошлое
+    await saveSession(dir, 'agent-old', [{ role: 'user', content: 'старое' }]);
+    await saveSession(dir, 'agent-new', [{ role: 'user', content: 'новое' }]);
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(join(dir, 'agent-old.jsonl'), past, past);
+    assert.equal(findTaskPhaseSessionSync(dir, 'VL-20', 'plan'), 'agent-new');
+  });
+
+  it('без jsonl mtime берётся у meta-файла', async () => {
+    const dir = join(findDir, 'meta-only');
+    await saveSessionMeta(dir, 'agent-m1', { taskId: 'VL-30', phase: 'plan', cwd: '/tmp/x' });
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(join(dir, 'agent-m1.meta.json'), past, past);
+    // jsonl нет — работает по mtime меты, сессия всё равно находится
+    assert.equal(findTaskPhaseSessionSync(dir, 'VL-30', 'plan'), 'agent-m1');
   });
 });

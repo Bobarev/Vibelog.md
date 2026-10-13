@@ -65,7 +65,12 @@ export function handleApi(
       const task = getTask(cwd, triggerMatch[1]);
       if (!task) return { status: 404, body: { error: 'Задача не найдена' } };
       const phase = typeof body?.phase === 'string' ? body.phase : '';
-      const result = startPhase(cwd, triggerMatch[1], phase);
+      // VL-147: sameSession — явное переопределение настройки code_same_session
+      // для фазы code (продолжение plan-сессии через --resume)
+      const sameSession = typeof body?.sameSession === 'boolean' ? body.sameSession : undefined;
+      const result = startPhase(cwd, triggerMatch[1], phase, undefined, undefined, 'qwen', {
+        sameSession,
+      });
       if ('error' in result) return { status: 409, body: { error: result.error } };
       return { status: 202, body: result };
     }

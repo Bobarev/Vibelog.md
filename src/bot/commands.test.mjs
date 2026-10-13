@@ -166,6 +166,43 @@ describe('parseCodeCommand (VL-53)', () => {
     assert.match(e1.error, /\/code/);
     assert.match(e1.error, /\[комментарий\]/);
   });
+
+  // ── VL-147: явные переопределения настройки code_same_session ──
+
+  it('VL-147: --same-session → sameSession:true, флаг не попадает в comment', () => {
+    assert.deepEqual(parseCodeCommand('VL-50 --same-session'), { id: 'VL-50', sameSession: true });
+    assert.deepEqual(parseCodeCommand('VL-50 --same-session делай по плану'), {
+      id: 'VL-50',
+      comment: 'делай по плану',
+      sameSession: true,
+    });
+    assert.deepEqual(parseCodeCommand('VL-50 строго по плану --same-session'), {
+      id: 'VL-50',
+      comment: 'строго по плану',
+      sameSession: true,
+    });
+  });
+
+  it('VL-147: --no-same-session → sameSession:false (разовое обход настройки)', () => {
+    assert.deepEqual(parseCodeCommand('VL-50 --no-same-session'), { id: 'VL-50', sameSession: false });
+    assert.deepEqual(parseCodeCommand('VL-50 --no-same-session без комментария'), {
+      id: 'VL-50',
+      comment: 'без комментария',
+      sameSession: false,
+    });
+  });
+
+  it('VL-147: флаги сочетаются с суффиксом агента', () => {
+    assert.deepEqual(parseCodeCommand('VL-50 --same-session', 'code:vb'), {
+      id: 'VL-50',
+      agent: 'vb',
+      sameSession: true,
+    });
+  });
+
+  it('VL-147: без флагов sameSession не появляется (регрессий нет)', () => {
+    assert.deepEqual(parseCodeCommand('VL-50 ещё что-то'), { id: 'VL-50', comment: 'ещё что-то' });
+  });
 });
 
 describe('parseCloseCommand (VL-55)', () => {
@@ -411,6 +448,33 @@ describe('parseSetCommand (VL-94)', () => {
     const empty = parseSetCommand('');
     assert.ok('error' in empty);
     assert.match(empty.error, /compact <on\|off>/);
+  });
+
+  // ── VL-147: /set code-same-session on|off ──
+
+  it('VL-147: code-same-session on|off|true|false → boolean', () => {
+    assert.deepEqual(parseSetCommand('code-same-session on'), { key: 'code-same-session', value: true });
+    assert.deepEqual(parseSetCommand('code-same-session off'), { key: 'code-same-session', value: false });
+    assert.deepEqual(parseSetCommand('code-same-session true'), { key: 'code-same-session', value: true });
+    assert.deepEqual(parseSetCommand('code-same-session false'), { key: 'code-same-session', value: false });
+    assert.deepEqual(parseSetCommand('CODE-SAME-SESSION ON'), { key: 'code-same-session', value: true });
+  });
+
+  it('VL-147: code-same-session — мусор и пустое значение → error с подсказкой', () => {
+    for (const bad of ['code-same-session', 'code-same-session maybe', 'code-same-session 1']) {
+      const r = parseSetCommand(bad);
+      assert.ok('error' in r, '"' + bad + '" → error');
+      assert.match(r.error, /code-same-session: ожидается on\|off/);
+    }
+  });
+
+  it('VL-147: подсказка и перечень параметров включают code-same-session', () => {
+    const unknown = parseSetCommand('foo bar');
+    assert.ok('error' in unknown);
+    assert.match(unknown.error, /code-same-session/);
+    const empty = parseSetCommand('');
+    assert.ok('error' in empty);
+    assert.match(empty.error, /code-same-session <on\|off>/);
   });
 });
 
