@@ -855,6 +855,15 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
       return;
     }
+    if (result.queued) {
+      // VL-146: второй close в branch-mode ждёт в очереди — процесса ещё нет;
+      // onExit уже зарегистрирован в очередь, карточка завершения придёт при старте
+      await sendMd(
+        ctx,
+        `⏳ Фаза Close (${agent}) для *${task.id}* поставлена в очередь — стартует после завершения текущего close (VL-146)`
+      );
+      return;
+    }
     await sendMd(ctx, `🚀 Фаза Close (${agent}) запущена для *${task.id}*, PID ${result.pid}`);
   });
   // ── /prompt — произвольный запрос через LLM без задачи (VL-66/92) ──
