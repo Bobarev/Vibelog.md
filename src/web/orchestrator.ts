@@ -72,6 +72,22 @@ const activeRuns = new Map<string, ActiveRun>();
 const lastRuns = new Map<string, PhaseRun>();
 
 /**
+ * Тестовый шов VL-140: заменяет process.env как базу env спавна фаз.
+ * null — прод-режим (baseEnv() === process.env). Тесты передают явный
+ * объект, чтобы спавны не зависели от глобальных мутаций process.env
+ * (включая переопределение VIBELOG_CWD/VIBELOG_PHASE_* — регрессия VL-125).
+ */
+let spawnEnvBaseOverride: NodeJS.ProcessEnv | null = null;
+
+/**
+ * Тестовый шов VL-140: задаёт базу env для spawn фаз оркестратора.
+ * null — вернуть прод-режим (process.env). Вызывать строго из тестов.
+ */
+export function setSpawnEnvBaseForTests(env: NodeJS.ProcessEnv | null): void {
+  spawnEnvBaseOverride = env;
+}
+
+/**
  * Запускает фазу для задачи (spawn qwen, fire-and-forget).
  *
  * @param cwd — рабочая директория проекта (там же лежит backlog/ и .qwen/)
@@ -263,6 +279,9 @@ function spawnQwenRun(
   // стартует, сообщение уходит в чат/api как { error }.
   let runCwd = cwd;
   let spawnEnv: NodeJS.ProcessEnv | undefined;
+  // Тестовый шов VL-140: база env спавна — process.env либо явный объект
+  // из setSpawnEnvBaseForTests (тесты больше не полагаются на глобал).
+  const baseEnv = (): NodeJS.ProcessEnv => spawnEnvBaseOverride ?? process.env;
   // VL-110: источник taskId для worktree — runKey задачи либо мета resume-сессии.
   // VL-112: close исключён — закрытие идёт в главном репо: merge ветки и
   // docs(task)-коммит backlog возможны только здесь (см. phase-close-worktree.md)
@@ -277,7 +296,7 @@ function spawnQwenRun(
     taskIdPattern(cwd).test(runKey) && phase !== 'close' ? runKey.toUpperCase() : (worktreeTaskId ?? '');
   if (phaseTaskId !== '') {
     spawnEnv = {
-      ...process.env,
+      ...baseEnv(),
       VIBELOG_PHASE_TASK_ID: phaseTaskId,
       VIBELOG_PHASE_NAME: phase,
     };
@@ -302,7 +321,7 @@ function spawnQwenRun(
       runCwd = runDir;
       // MCP-сервер агента наследует cwd worktree, но backlog пишет в главный
       // репозиторий через VIBELOG_CWD (см. cli/commands/mcp.ts)
-      spawnEnv = { ...(spawnEnv ?? process.env), VIBELOG_CWD: cwd };
+      spawnEnv = { ...(spawnEnv ?? baseEnv()), VIBELOG_CWD: cwd };
       prompt +=
         `\n\nРежим параллельной разработки: работаешь в git worktree ветки ${taskBranchName(branchTask)}` +
         ` (директория ${runDir}). Backlog живёт в основном репозитории — MCP уже настроен на него.` +
@@ -318,9 +337,9 @@ function spawnQwenRun(
   // настройка не нужна; при отсутствии ключа агент сам печатает is_error JSON.
   const bin =
     agent === 'vb'
-      ? process.env.VIBELOG_AGENT_BIN ||
+      ? baseEnv().VIBELOG_AGENT_BIN ||
         fileURLToPath(new URL('../../bin/vibelog-agent.mjs', import.meta.url))
-      : process.env.VIBELOG_QWEN_BIN || 'qwen';
+      : baseEnv().VIBELOG_QWEN_BIN || 'qwen';
   // Промпт — позиционный аргумент: флаг -p/--prompt у qwen deprecated
   // («Use the positional prompt instead»).
   // Диагностика VL-58 (таймлайн, probe тишины) остаётся.
@@ -350,7 +369,9 @@ function spawnQwenRun(
     // spawnEnv: задачный env меты сессии (VL-114) и/или VIBELOG_CWD (branch-mode)
     cwd: runCwd,
     stdio: 'pipe',
-    ...(spawnEnv ? { env: spawnEnv } : {}),
+    // VL-140: spawn ВСЕГДА получает явный env-объект (база baseEnv()), чтобы
+    // спавн не зависел от process.env в момент fork — условный spread убран.
+    env: spawnEnv ?? baseEnv(),
   });
 
   activeRuns.set(runKey, { phase, child, onExit, agent });

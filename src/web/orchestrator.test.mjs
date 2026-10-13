@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { renderPrompt, startPhase, startPrompt, startResume, getRun } from '../../dist/web/orchestrator.js';
+import { renderPrompt, startPhase, startPrompt, startResume, getRun, setSpawnEnvBaseForTests } from '../../dist/web/orchestrator.js';
 import { handleApi } from '../../dist/web/api.js';
 import { createTaskFile } from '../../dist/core/store.js';
 import { ensureTaskWorktree } from '../../dist/core/worktree.js';
@@ -74,8 +74,50 @@ async function waitDone(taskId, ms = 4000) {
   throw new Error(`waitDone: таймаут для ${taskId}`);
 }
 
+// ── VL-140: явные env-объекты вместо глобальных process.env-мутаций ──
+//
+// Накопленные патчи стабов: тесты полагались на персистентность env внутри
+// файла (один тест ставит SLEEP, следующий — только MARKER), поэтому
+// состояние копится между вызовами setStubEnv, как раньше в process.env.
+let stubEnv = {};
+
+/**
+ * Собирает явный env-базу спавнов оркестратора и передаёт в тестовый шов
+ * setSpawnEnvBaseForTests (VL-140). База — process.env MINUS ключи, которые
+ * не должны утекать в стаб-спавны: VL-125-гвард (VIBELOG_CWD/VIBELOG_PHASE_*)
+ * и VIBELOG_AGENT_BIN/VL28_STUB_* (иначе внешний прогон внутри фазы даёт
+ * ложные падения — инциденты VL-117/VL-125). patch с undefined — удаление.
+ */
+function setStubEnv(patch) {
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) delete stubEnv[k];
+    else stubEnv[k] = v;
+  }
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k === 'VIBELOG_CWD' || k === 'VIBELOG_PHASE_TASK_ID' || k === 'VIBELOG_PHASE_NAME') continue;
+    if (k === 'VIBELOG_AGENT_BIN' || k.startsWith('VL28_STUB_')) continue;
+    env[k] = v;
+  }
+  env.VIBELOG_QWEN_BIN = stubBin;
+  Object.assign(env, stubEnv);
+  setSpawnEnvBaseForTests(env);
+}
+
+/** Чтение текущего значения патча (заменяет process.env.X в assert-ах). */
+function stubEnvGet(key) {
+  if (key in stubEnv) return stubEnv[key];
+  if (key === 'VIBELOG_QWEN_BIN') return stubBin;
+  return process.env[key];
+}
+
+/** Сброс накопленных патчей к дефолту (конец тестов с кастомными bin/LLM). */
+function resetStubEnv() {
+  stubEnv = {};
+  setStubEnv({});
+}
+
 describe('orchestrator (VL-28)', () => {
-  const savedEnv = {};
   let task1; // для unit-тестов startPhase
   let task2; // для тестов handleApi
 
@@ -94,21 +136,16 @@ describe('orchestrator (VL-28)', () => {
     task1 = createTaskFile(testRoot, { title: 'Задача для фазы 1', status: 'Spec', priority: 'High' });
     task2 = createTaskFile(testRoot, { title: 'Задача для API-тестов', status: 'Backlog', priority: 'Low' });
 
-    // VL-125: env фазы оркестратора (VL-114) не должен утекать в стаб-спавны
-    // теста — иначе pnpm test, запущенный агентом ВНУТРИ фазы, даёт ложные
-    // падения env-тестов (инцидент VL-117)
-    for (const key of ['VIBELOG_QWEN_BIN', 'VIBELOG_AGENT_BIN', 'VL28_STUB_MARKER', 'VL28_STUB_SLEEP', 'VL28_STUB_EXIT', 'VL28_STUB_RESULT', 'VL28_STUB_RACE', 'VIBELOG_PHASE_TASK_ID', 'VIBELOG_PHASE_NAME', 'VIBELOG_CWD']) {
-      savedEnv[key] = process.env[key];
-      delete process.env[key];
-    }
-    process.env.VIBELOG_QWEN_BIN = stubBin;
+    // VL-140: env фазы оркестратора собирается явно (setStubEnv) — глобальные
+    // process.env-мутации убраны ради fileParallelism. VL-125-гвард встроен
+    // в setStubEnv: VIBELOG_QWEN_BIN/VL28_STUB_*/VIBELOG_PHASE_*/VIBELOG_CWD
+    // из внешнего окружения не попадают в стаб-спавны (инциденты VL-117/VL-125)
+    resetStubEnv();
   });
 
   afterAll(() => {
-    for (const [key, value] of Object.entries(savedEnv)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+    // Тестовый шов — в null (прод-режим process.env) после набора тестов
+    setSpawnEnvBaseForTests(null);
     rmSync(testRoot, { recursive: true, force: true });
   });
 
@@ -165,11 +202,10 @@ describe('orchestrator (VL-28)', () => {
 
   it('startPhase: спавн, double-trigger guard, getRun после завершения', async () => {
     const marker = join(testRoot, 'marker1.txt');
-    process.env.VL28_STUB_MARKER = marker;
+    setStubEnv({ VL28_STUB_MARKER: marker, });
     // 1200мс: под полной нагрузкой параллельного прогона меньшая пауза
     // приводила к флаки — стаб завершался до проверки running === true
-    process.env.VL28_STUB_SLEEP = '1200';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VL28_STUB_SLEEP: '1200', VL28_STUB_EXIT: '0', });
 
     const first = startPhase(testRoot, task1.id, 'spec');
     assert.equal(first.started, true);
@@ -196,9 +232,7 @@ describe('orchestrator (VL-28)', () => {
   });
 
   it('startPhase: onExit-колбэк — один раз, с exitCode и logTail (VL-48)', async () => {
-    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-vl48.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VL28_STUB_MARKER: join(testRoot, 'marker-vl48.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     const calls = [];
     const res = startPhase(testRoot, task1.id, 'spec', (run) => calls.push(run));
     assert.equal(res.started, true);
@@ -212,25 +246,24 @@ describe('orchestrator (VL-28)', () => {
   });
 
   it('startPhase: extraVars попадают в промпт (VL-60)', async () => {
-    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-vl60.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VL28_STUB_MARKER: join(testRoot, 'marker-vl60.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     const res = startPhase(testRoot, task1.id, 'comment', undefined, {
       comment: 'тест-запрос-vl60',
     });
     assert.equal(res.started, true);
     const run = await waitDone(task1.id);
     assert.equal(run.exitCode, 0);
-    const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+    const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
     // argv[0] — позиционный промпт: содержит текст комментария, {{comment}} подставлен
     assert.ok(argv.some((a) => a.includes('тест-запрос-vl60')));
     assert.ok(argv.some((a) => !a.includes('{{comment}}')));
   });
 
   it('startPhase: run.result заполнен из JSON type=result (VL-64)', async () => {
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
-    process.env.VL28_STUB_RESULT = JSON.stringify({
+    setStubEnv({
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RESULT: JSON.stringify({
       type: 'result',
       subtype: 'success',
       is_error: false,
@@ -245,6 +278,7 @@ describe('orchestrator (VL-28)', () => {
         total_tokens: 10975,
       },
       session_id: 'a470c7dd-2ca8-4510-9d81-b184f932af76',
+    }),
     });
     const calls = [];
     const res = startPhase(testRoot, task1.id, 'spec', (run) => calls.push(run));
@@ -261,11 +295,11 @@ describe('orchestrator (VL-28)', () => {
     assert.equal(calls[0].result?.result, 'понг');
   });
   it('startPhase: run.result из строки-массива [{…}] (json-адаптер qwen 0.24.x)', async () => {
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     // Реальный stdout qwen 0.24.x при --output-format json: одна строка —
     // JSON-массив всех сообщений сессии, result последним элементом
-    process.env.VL28_STUB_RESULT = JSON.stringify([
+    setStubEnv({
+      VL28_STUB_RESULT: JSON.stringify([
       { type: 'system', subtype: 'init', session_id: 'arr-1' },
       { type: 'assistant', message: { content: [{ type: 'text', text: 'понг' }] } },
       {
@@ -279,7 +313,8 @@ describe('orchestrator (VL-28)', () => {
         usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3, total_tokens: 15 },
         session_id: 'arr-1',
       },
-    ]);
+    ]),
+    });
     const res = startPhase(testRoot, task1.id, 'comment');
     assert.equal(res.started, true);
     const run = await waitDone(task1.id);
@@ -289,10 +324,11 @@ describe('orchestrator (VL-28)', () => {
   });
 
   it('startPhase: result парсится, хотя stderr вклинился в JSON-строку stdout (VL-63 reopen)', async () => {
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
-    process.env.VL28_STUB_RACE = '1';
-    process.env.VL28_STUB_RESULT = JSON.stringify({
+    setStubEnv({
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RACE: '1',
+      VL28_STUB_RESULT: JSON.stringify({
       type: 'result',
       subtype: 'success',
       is_error: false,
@@ -302,6 +338,7 @@ describe('orchestrator (VL-28)', () => {
       result: 'понг-сквозь-шум',
       usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3, total_tokens: 15 },
       session_id: 'race-1',
+    }),
     });
     const res = startPhase(testRoot, task1.id, 'comment');
     assert.equal(res.started, true);
@@ -312,7 +349,7 @@ describe('orchestrator (VL-28)', () => {
     assert.equal(run.result?.session_id, 'race-1');
     // stderr попадает в logTail (фолбэк бота), но не ломает result
     assert.match(run.logTail ?? '', /Warning: interleaved stderr/);
-    delete process.env.VL28_STUB_RACE;
+    setStubEnv({ VL28_STUB_RACE: undefined });
   });
 
   // ── VL-66/67: startPrompt — произвольный запрос через qwen без задачи ──
@@ -326,10 +363,11 @@ describe('orchestrator (VL-28)', () => {
   });
 
   it('startPrompt: спавн, getRun("prompt"), result из JSON type=result (VL-67)', async () => {
-    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-prompt.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
-    process.env.VL28_STUB_RESULT = JSON.stringify({
+    setStubEnv({
+      VL28_STUB_MARKER: join(testRoot, 'marker-prompt.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RESULT: JSON.stringify({
       type: 'result',
       subtype: 'success',
       is_error: false,
@@ -339,6 +377,7 @@ describe('orchestrator (VL-28)', () => {
       result: 'коммиты сделаны',
       usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3, total_tokens: 15 },
       session_id: 'prompt-1',
+    }),
     });
     const res = startPrompt(testRoot, 'сделай коммиты для файлов');
     assert.equal(res.started, true);
@@ -349,7 +388,7 @@ describe('orchestrator (VL-28)', () => {
     // VL-93: агент по умолчанию qwen — рендер session_id без префикса vb:
     assert.equal(run.agent, 'qwen');
     // Маркер: промпт — позиционный аргумент, запрос подставлен
-    const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+    const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
     assert.ok(argv.some((a) => a.includes('сделай коммиты для файлов')));
     assert.ok(argv.every((a) => !a.includes('{{prompt}}')));
     // Для prompt флагов нет (как у comment) — не spec/plan
@@ -357,9 +396,7 @@ describe('orchestrator (VL-28)', () => {
   });
 
   it('startPrompt: double-trigger guard по ключу "prompt" (VL-67)', async () => {
-    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-prompt2.txt');
-    process.env.VL28_STUB_SLEEP = '1200';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VL28_STUB_MARKER: join(testRoot, 'marker-prompt2.txt'), VL28_STUB_SLEEP: '1200', VL28_STUB_EXIT: '0', });
     const first = startPrompt(testRoot, 'первый запрос');
     assert.equal(first.started, true);
     const second = startPrompt(testRoot, 'второй запрос');
@@ -372,12 +409,13 @@ describe('orchestrator (VL-28)', () => {
   it('startPrompt: agent=vb спавнит VIBELOG_AGENT_BIN (VL-92)', async () => {
     // VIBELOG_QWEN_BIN указывает на заведомо несуществующий путь: если бы
     // выбор бинаря игнорировал агента, spawn упал бы и маркер не создался
-    process.env.VIBELOG_QWEN_BIN = join(testRoot, 'no-such-qwen-bin');
-    process.env.VIBELOG_AGENT_BIN = stubBin;
-    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-vb.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
-    process.env.VL28_STUB_RESULT = JSON.stringify({
+    setStubEnv({
+      VIBELOG_QWEN_BIN: join(testRoot, 'no-such-qwen-bin'),
+      VIBELOG_AGENT_BIN: stubBin,
+      VL28_STUB_MARKER: join(testRoot, 'marker-vb.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RESULT: JSON.stringify({
       type: 'result',
       subtype: 'success',
       is_error: false,
@@ -387,6 +425,7 @@ describe('orchestrator (VL-28)', () => {
       result: 'от-встроенного-агента',
       usage: { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 7 },
       session_id: 'vb-1',
+    }),
     });
     const res = startPrompt(testRoot, 'запрос к агенту', undefined, 'vb');
     assert.equal(res.started, true);
@@ -396,20 +435,21 @@ describe('orchestrator (VL-28)', () => {
     assert.equal(run.result?.result, 'от-встроенного-агента');
     // VL-93: run.agent пробрасывается — рендер session_id получает vb:
     assert.equal(run.agent, 'vb');
-    const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+    const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
     assert.ok(argv.some((a) => a.includes('запрос к агенту')));
-    process.env.VIBELOG_QWEN_BIN = stubBin;
+    setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
   });
 
   it('startPhase: agent=vb спавнит VIBELOG_AGENT_BIN (VL-94)', async () => {
     // Выбор бинаря через параметр startPhase: VIBELOG_QWEN_BIN на заведомо
     // несуществующий путь — если бы агент игнорировался, spawn упал бы
-    process.env.VIBELOG_QWEN_BIN = join(testRoot, 'no-such-qwen-bin');
-    process.env.VIBELOG_AGENT_BIN = stubBin;
-    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-phase-vb.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
-    process.env.VL28_STUB_RESULT = JSON.stringify({
+    setStubEnv({
+      VIBELOG_QWEN_BIN: join(testRoot, 'no-such-qwen-bin'),
+      VIBELOG_AGENT_BIN: stubBin,
+      VL28_STUB_MARKER: join(testRoot, 'marker-phase-vb.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RESULT: JSON.stringify({
       type: 'result',
       subtype: 'success',
       is_error: false,
@@ -419,6 +459,7 @@ describe('orchestrator (VL-28)', () => {
       result: 'фаза-от-агента',
       usage: { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 7 },
       session_id: 'vb-phase-1',
+    }),
     });
     const res = startPhase(testRoot, task1.id, 'spec', undefined, undefined, 'vb');
     assert.equal(res.started, true);
@@ -428,17 +469,18 @@ describe('orchestrator (VL-28)', () => {
     assert.equal(run.result?.result, 'фаза-от-агента');
     // VL-93/94: run.agent пробрасывается и для фаз (рендер session_id vb:)
     assert.equal(run.agent, 'vb');
-    const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+    const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
     assert.ok(argv.some((a) => a.includes(task1.id)));
-    process.env.VIBELOG_QWEN_BIN = stubBin;
+    setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
   });
 
   it('startPhase: agent=vb получает --max-wall-time/--max-requests из bot.yml (VL-104)', async () => {
-    process.env.VIBELOG_AGENT_BIN = stubBin;
-    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-limits-vb.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
-    process.env.VL28_STUB_RESULT = JSON.stringify({
+    setStubEnv({
+      VIBELOG_AGENT_BIN: stubBin,
+      VL28_STUB_MARKER: join(testRoot, 'marker-limits-vb.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RESULT: JSON.stringify({
       type: 'result',
       subtype: 'success',
       is_error: false,
@@ -448,6 +490,7 @@ describe('orchestrator (VL-28)', () => {
       result: 'фаза-с-лимитами',
       usage: { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 7 },
       session_id: 'vb-limits-1',
+    }),
     });
     // bot.yml с лимитами + выключенным компакшном — оркестратор прокидывает
     // все флага (только vb): --no-compact появляется только при явном off (VL-122)
@@ -458,7 +501,7 @@ describe('orchestrator (VL-28)', () => {
       assert.equal(res.started, true);
       const run = await waitDone(task1.id);
       assert.equal(run.exitCode, 0);
-      const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       const iWall = argv.indexOf('--max-wall-time');
       const iReq = argv.indexOf('--max-requests');
       assert.ok(iWall !== -1 && argv[iWall + 1] === '1800', 'нет --max-wall-time 1800: ' + JSON.stringify(argv));
@@ -468,22 +511,20 @@ describe('orchestrator (VL-28)', () => {
       rmSync(join(testRoot, '.vibelog', 'bot.yml'), { force: true });
     }
     // Без bot.yml флаги не передаются — поведение прежнее
-    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-limits-none.txt');
+    setStubEnv({ VL28_STUB_MARKER: join(testRoot, 'marker-limits-none.txt'), });
     const res2 = startPhase(testRoot, task1.id, 'code', undefined, undefined, 'vb');
     assert.equal(res2.started, true);
     const run2 = await waitDone(task1.id);
     assert.equal(run2.exitCode, 0);
-    const argv2 = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+    const argv2 = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
     assert.ok(!argv2.includes('--max-wall-time'), 'неожиданный --max-wall-time: ' + JSON.stringify(argv2));
     assert.ok(!argv2.includes('--max-requests'), 'неожиданный --max-requests: ' + JSON.stringify(argv2));
     assert.ok(!argv2.includes('--no-compact'), 'неожиданный --no-compact (компакшн включён по умолчанию): ' + JSON.stringify(argv2));
-    process.env.VIBELOG_QWEN_BIN = stubBin;
+    setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
   });
 
   it('startPrompt: guard общий для qwen и vb (VL-92)', async () => {
-    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-guard-vb.txt');
-    process.env.VL28_STUB_SLEEP = '1200';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VL28_STUB_MARKER: join(testRoot, 'marker-guard-vb.txt'), VL28_STUB_SLEEP: '1200', VL28_STUB_EXIT: '0', });
     // Активен qwen-промпт → /prompt:vb получает тот же guard-ответ
     const first = startPrompt(testRoot, 'запрос qwen');
     assert.equal(first.started, true);
@@ -496,11 +537,12 @@ describe('orchestrator (VL-28)', () => {
   // ── VL-93: startResume — продолжение сессии qwen по reply ──
 
   it('startResume: spawn с --resume <sessionId>, getRun("resume"), agent qwen (VL-93)', async () => {
-    process.env.VIBELOG_QWEN_BIN = stubBin;
-    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-resume.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
-    process.env.VL28_STUB_RESULT = JSON.stringify({
+    setStubEnv({
+      VIBELOG_QWEN_BIN: stubBin,
+      VL28_STUB_MARKER: join(testRoot, 'marker-resume.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RESULT: JSON.stringify({
       type: 'result',
       subtype: 'success',
       is_error: false,
@@ -510,6 +552,7 @@ describe('orchestrator (VL-28)', () => {
       result: 'сессия-продолжена',
       usage: { input_tokens: 7, output_tokens: 3, cache_read_input_tokens: 1, total_tokens: 10 },
       session_id: 'resume-1',
+    }),
     });
     const res = startResume(testRoot, '11111111-2222-3333-4444-555555555555', 'продолжай работу');
     assert.equal(res.started, true);
@@ -520,7 +563,7 @@ describe('orchestrator (VL-28)', () => {
     // Агент по умолчанию qwen — фолбэк рендера session_id без vb:
     assert.equal(run.agent, 'qwen');
     // Контракт argv: промпт, --resume <sessionId>, затем стандартные флаги
-    const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+    const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
     assert.deepEqual(argv, [
       'продолжай работу',
       '--resume',
@@ -533,9 +576,7 @@ describe('orchestrator (VL-28)', () => {
   });
 
   it('startResume: guard от двойного запуска, onExit один раз (VL-93)', async () => {
-    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-resume2.txt');
-    process.env.VL28_STUB_SLEEP = '1200';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VL28_STUB_MARKER: join(testRoot, 'marker-resume2.txt'), VL28_STUB_SLEEP: '1200', VL28_STUB_EXIT: '0', });
     let exitCalls = 0;
     let exitRunning = null;
     const first = startResume(
@@ -562,12 +603,13 @@ describe('orchestrator (VL-28)', () => {
   it('startResume: agent=vb спавнит VIBELOG_AGENT_BIN с --resume (VL-95)', async () => {
     // Выбор бинаря через параметр agent: VIBELOG_QWEN_BIN на заведомо
     // несуществующий путь — если бы агент игнорировался, spawn упал бы
-    process.env.VIBELOG_QWEN_BIN = join(testRoot, 'no-such-qwen-bin');
-    process.env.VIBELOG_AGENT_BIN = stubBin;
-    process.env.VL28_STUB_MARKER = join(testRoot, 'marker-resume-vb.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
-    process.env.VL28_STUB_RESULT = JSON.stringify({
+    setStubEnv({
+      VIBELOG_QWEN_BIN: join(testRoot, 'no-such-qwen-bin'),
+      VIBELOG_AGENT_BIN: stubBin,
+      VL28_STUB_MARKER: join(testRoot, 'marker-resume-vb.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RESULT: JSON.stringify({
       type: 'result',
       subtype: 'success',
       is_error: false,
@@ -577,6 +619,7 @@ describe('orchestrator (VL-28)', () => {
       result: 'vb-сессия-продолжена',
       usage: { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 7 },
       session_id: 'vb-resume-1',
+    }),
     });
     // Бот передаёт sessionId с префиксом vb: (extractSessionRef) — оркестратор
     // прокидывает его как есть, strip делает CLI агента (VL-95)
@@ -588,7 +631,7 @@ describe('orchestrator (VL-28)', () => {
     assert.equal(run.result?.result, 'vb-сессия-продолжена');
     // VL-95: run.agent пробрасывается и для resume-запусков vb
     assert.equal(run.agent, 'vb');
-    const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+    const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
     assert.deepEqual(argv, [
       'продолжи vb',
       '--resume',
@@ -598,7 +641,7 @@ describe('orchestrator (VL-28)', () => {
       '--output-format',
       'json',
     ]);
-    process.env.VIBELOG_QWEN_BIN = stubBin;
+    setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
   });
 
   it('startPhase отклоняет phase=prompt — только через startPrompt (VL-67)', () => {
@@ -621,8 +664,7 @@ describe('orchestrator (VL-28)', () => {
     assert.deepEqual(idle.body, { running: false });
 
     // 202 — успешный запуск, затем завершение видно в GET
-    process.env.VL28_STUB_MARKER = join(testRoot, 'marker2.txt');
-    process.env.VL28_STUB_SLEEP = '0';
+    setStubEnv({ VL28_STUB_MARKER: join(testRoot, 'marker2.txt'), VL28_STUB_SLEEP: '0', });
     const started = handleApi('POST', `/api/tasks/${task2.id}/trigger`, { phase: 'spec' }, testRoot);
     assert.equal(started.status, 202);
     assert.equal(started.body.started, true);
@@ -632,7 +674,7 @@ describe('orchestrator (VL-28)', () => {
   });
 
   it('битый bin: spawn-ошибка не крашит API, видна в logTail', async () => {
-    process.env.VIBELOG_QWEN_BIN = join(testRoot, 'no-such-bin');
+    setStubEnv({ VIBELOG_QWEN_BIN: join(testRoot, 'no-such-bin'), });
     // spawn асинхронен — API отвечает 202, ошибка уходит в лог
     const res = handleApi('POST', `/api/tasks/${task2.id}/trigger`, { phase: 'spec' }, testRoot);
     assert.equal(res.status, 202);
@@ -661,17 +703,10 @@ describe('orchestrator (VL-28)', () => {
     const llmPort = llmServer.address().port;
 
     const agentBin = join(__dirname, '..', '..', 'bin', 'vibelog-agent.mjs');
-    const saved = {};
-    for (const key of ['VIBELOG_QWEN_BIN', 'VIBELOG_LLM_BASE_URL', 'VIBELOG_LLM_API_KEY', 'VIBELOG_LLM_MODEL', 'VIBELOG_BIN']) {
-      saved[key] = process.env[key];
-    }
-    process.env.VIBELOG_QWEN_BIN = agentBin;
-    process.env.VIBELOG_LLM_BASE_URL = `http://127.0.0.1:${llmPort}/v1`;
-    process.env.VIBELOG_LLM_API_KEY = 'test';
-    process.env.VIBELOG_LLM_MODEL = 'test-model';
+    setStubEnv({ VIBELOG_QWEN_BIN: agentBin, VIBELOG_LLM_BASE_URL: `http://127.0.0.1:${llmPort}/v1`, VIBELOG_LLM_API_KEY: 'test', VIBELOG_LLM_MODEL: 'test-model' });
     // MCP-сервер недоступен намеренно: агент обязан мягко деградировать
     // (предупреждение в stderr, фаза продолжается без MCP-инструментов)
-    process.env.VIBELOG_BIN = join(testRoot, 'no-such-vibelog');
+    setStubEnv({ VIBELOG_BIN: join(testRoot, 'no-such-vibelog') });
     try {
       const res = startPhase(testRoot, task1.id, 'comment');
       assert.equal(res.started, true);
@@ -685,10 +720,8 @@ describe('orchestrator (VL-28)', () => {
       // но не ломает JSON-парсер stdout — контракт VL-63 выдержан
       assert.match(run.logTail ?? '', /MCP-инструменты недоступны/);
     } finally {
-      for (const [key, value] of Object.entries(saved)) {
-        if (value === undefined) delete process.env[key];
-        else process.env[key] = value;
-      }
+      // VL-140: патчи уходят в явный env-объект — сброс шва возвращает дефолт
+      resetStubEnv();
       await new Promise((r) => llmServer.close(r));
     }
   });
@@ -729,10 +762,7 @@ describe('orchestrator (VL-28)', () => {
       '',
     ].join('\n'), 'utf-8');
     chmodSync(stubWt, 0o755);
-    process.env.VIBELOG_QWEN_BIN = stubWt;
-    process.env.VL28_STUB_MARKER = join(wtRoot, 'marker-wt.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VIBELOG_QWEN_BIN: stubWt, VL28_STUB_MARKER: join(wtRoot, 'marker-wt.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startResume(wtRoot, 'agent-999', 'продолжи работу');
       assert.equal(res.started, true, JSON.stringify(res));
@@ -740,7 +770,7 @@ describe('orchestrator (VL-28)', () => {
       assert.equal(run.exitCode, 0);
       // Worktree создан; агент спавнен в нём; VIBELOG_CWD — главный репо
       assert.ok(existsSync(join(wtPath, '.git')), 'worktree vl-77 должна быть создана');
-      const marker = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const marker = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       // realpathSync: macOS /var — симлинк на /private/var, process.cwd() физический
       assert.equal(marker.cwd, realpathSync(wtPath), 'агент должен работать в worktree задачи');
       assert.equal(marker.envCwd, wtRoot, 'VIBELOG_CWD — главный репозиторий');
@@ -749,8 +779,8 @@ describe('orchestrator (VL-28)', () => {
       assert.ok(marker.argv[0].includes('vb/vl-77'), marker.argv[0]);
       assert.deepEqual(marker.argv.slice(1, 3), ['--resume', 'agent-999']);
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(wtRoot, { recursive: true, force: true });
     }
   });
@@ -766,21 +796,18 @@ describe('orchestrator (VL-28)', () => {
       JSON.stringify({ taskId: 'VL-77', phase: 'code', cwd: '/tmp/some-worktree' }),
       'utf-8'
     );
-    process.env.VIBELOG_QWEN_BIN = stubBin;
-    process.env.VL28_STUB_MARKER = join(warnRoot, 'marker-warn.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VIBELOG_QWEN_BIN: stubBin, VL28_STUB_MARKER: join(warnRoot, 'marker-warn.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startResume(warnRoot, 'agent-888', 'продолжи');
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone('resume');
       assert.equal(run.exitCode, 0);
-      const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.ok(argv[0].includes('Внимание'), 'предупреждение о cwd-несовпадении: ' + argv[0]);
       assert.ok(argv[0].includes('branch-mode выключен'), argv[0]);
       assert.ok(argv[0].startsWith('продолжи'), 'исходный текст запроса сохраняется: ' + argv[0]);
     } finally {
-      delete process.env.VL28_STUB_MARKER;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
       rmSync(warnRoot, { recursive: true, force: true });
     }
   });
@@ -808,16 +835,13 @@ describe('orchestrator (VL-28)', () => {
       '',
     ].join('\n'), 'utf-8');
     chmodSync(stubClose, 0o755);
-    process.env.VIBELOG_QWEN_BIN = stubClose;
-    process.env.VL28_STUB_MARKER = join(closeRoot, 'marker-close.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VIBELOG_QWEN_BIN: stubClose, VL28_STUB_MARKER: join(closeRoot, 'marker-close.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(closeRoot, 'VL-77', 'close');
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone('VL-77');
       assert.equal(run.exitCode, 0);
-      const marker = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const marker = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       // cwd — ГЛАВНЫЙ репо: close не спавнится в worktree даже при branch_mode
       assert.equal(marker.cwd, realpathSync(closeRoot), 'close должен работать в главном cwd');
       // Промпт — из phase-close-worktree.md, примечания веток нет
@@ -826,8 +850,8 @@ describe('orchestrator (VL-28)', () => {
       assert.ok(!marker.argv[0].includes('Режим параллельной разработки'), 'примечания worktree не должно быть');
       assert.equal(run.phase, 'close');
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(closeRoot, { recursive: true, force: true });
     }
   });
@@ -839,20 +863,17 @@ describe('orchestrator (VL-28)', () => {
     // branch_mode включён, но worktree vl-77 НЕТ
     mkdirSync(join(plainRoot, '.vibelog'), { recursive: true });
     writeFileSync(join(plainRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
-    process.env.VIBELOG_QWEN_BIN = stubBin;
-    process.env.VL28_STUB_MARKER = join(plainRoot, 'marker-close0.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VIBELOG_QWEN_BIN: stubBin, VL28_STUB_MARKER: join(plainRoot, 'marker-close0.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(plainRoot, 'VL-77', 'close');
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone('VL-77');
       assert.equal(run.exitCode, 0);
-      const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.ok(!argv[0].includes('merge --no-ff'), 'без worktree — обычный шаблон close');
       assert.ok(!argv[0].includes('Режим параллельной разработки'), 'worktree не создавалась — примечания нет');
     } finally {
-      delete process.env.VL28_STUB_MARKER;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
       rmSync(plainRoot, { recursive: true, force: true });
     }
   });
@@ -881,10 +902,7 @@ describe('orchestrator (VL-28)', () => {
       '',
     ].join('\n'), 'utf-8');
     chmodSync(stubCode, 0o755);
-    process.env.VIBELOG_QWEN_BIN = stubCode;
-    process.env.VL28_STUB_MARKER = join(codeRoot, 'marker-code.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VIBELOG_QWEN_BIN: stubCode, VL28_STUB_MARKER: join(codeRoot, 'marker-code.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(codeRoot, 'VL-88', 'plan');
       assert.equal(res.started, true, JSON.stringify(res));
@@ -892,12 +910,12 @@ describe('orchestrator (VL-28)', () => {
       assert.equal(run.exitCode, 0);
       const wtPath = join(codeRoot, '.vibelog', 'worktrees', 'vl-88');
       assert.ok(existsSync(join(wtPath, '.git')), 'worktree vl-88 должна быть создана для plan');
-      const marker = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const marker = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.equal(marker.cwd, realpathSync(wtPath), 'plan работает в worktree');
       assert.ok(marker.argv[0].includes('Режим параллельной разработки'), 'примечание веток присутствует');
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(codeRoot, { recursive: true, force: true });
     }
   });
@@ -928,22 +946,19 @@ describe('orchestrator (VL-28)', () => {
     const envRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-env-'));
     mkdirSync(join(envRoot, 'backlog'), { recursive: true });
     writeFileSync(join(envRoot, 'backlog', 'config.yml'), 'project_name: Env Test\n', 'utf-8');
-    process.env.VIBELOG_QWEN_BIN = writeEnvStub(envRoot, 'env-stub.cjs');
-    process.env.VL28_STUB_MARKER = join(envRoot, 'marker-env.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(envRoot, 'env-stub.cjs'), VL28_STUB_MARKER: join(envRoot, 'marker-env.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(envRoot, 'VL-88', 'code');
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone('VL-88');
       assert.equal(run.exitCode, 0);
-      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const m = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.equal(m.envPhaseTaskId, 'VL-88', 'VIBELOG_PHASE_TASK_ID передаётся без worktree');
       assert.equal(m.envPhaseName, 'code', 'VIBELOG_PHASE_NAME = фаза');
       assert.equal(m.envCwd, null, 'без branch-mode VIBELOG_CWD не задаётся');
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(envRoot, { recursive: true, force: true });
     }
   });
@@ -952,21 +967,18 @@ describe('orchestrator (VL-28)', () => {
     const envRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-env0-'));
     mkdirSync(join(envRoot, 'backlog'), { recursive: true });
     writeFileSync(join(envRoot, 'backlog', 'config.yml'), 'project_name: Env Prompt\n', 'utf-8');
-    process.env.VIBELOG_QWEN_BIN = writeEnvStub(envRoot, 'env0-stub.cjs');
-    process.env.VL28_STUB_MARKER = join(envRoot, 'marker-env0.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(envRoot, 'env0-stub.cjs'), VL28_STUB_MARKER: join(envRoot, 'marker-env0.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPrompt(envRoot, 'привет');
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone('prompt');
       assert.equal(run.exitCode, 0);
-      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const m = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.equal(m.envPhaseTaskId, null, '/prompt не задачная фаза — env нет');
       assert.equal(m.envPhaseName, null);
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(envRoot, { recursive: true, force: true });
     }
   });
@@ -975,20 +987,17 @@ describe('orchestrator (VL-28)', () => {
     const envRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-envc-'));
     mkdirSync(join(envRoot, 'backlog'), { recursive: true });
     writeFileSync(join(envRoot, 'backlog', 'config.yml'), 'project_name: Env Close\n', 'utf-8');
-    process.env.VIBELOG_QWEN_BIN = writeEnvStub(envRoot, 'envc-stub.cjs');
-    process.env.VL28_STUB_MARKER = join(envRoot, 'marker-envc.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(envRoot, 'envc-stub.cjs'), VL28_STUB_MARKER: join(envRoot, 'marker-envc.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(envRoot, 'VL-88', 'close');
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone('VL-88');
       assert.equal(run.exitCode, 0);
-      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const m = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.equal(m.envPhaseTaskId, null, 'close всегда в главном репо — env нет (VL-112)');
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(envRoot, { recursive: true, force: true });
     }
   });
@@ -1010,22 +1019,19 @@ describe('orchestrator (VL-28)', () => {
       JSON.stringify({ taskId: 'VL-77', phase: 'code', cwd: wtPath }),
       'utf-8'
     );
-    process.env.VIBELOG_QWEN_BIN = writeEnvStub(wtRoot, 'wt2-stub.cjs');
-    process.env.VL28_STUB_MARKER = join(wtRoot, 'marker-wt2.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(wtRoot, 'wt2-stub.cjs'), VL28_STUB_MARKER: join(wtRoot, 'marker-wt2.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startResume(wtRoot, 'agent-777', 'продолжи');
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone('resume');
       assert.equal(run.exitCode, 0);
-      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const m = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.equal(m.envPhaseTaskId, 'VL-77', 'resume с worktreeTaskId несёт taskId задачи');
       assert.equal(m.envPhaseName, 'prompt');
       assert.equal(m.envCwd, wtRoot, 'branch-mode: VIBELOG_CWD — главный репо');
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(wtRoot, { recursive: true, force: true });
     }
   });
@@ -1047,16 +1053,7 @@ describe('orchestrator (VL-28)', () => {
     await new Promise((r) => llmServer.listen(0, '127.0.0.1', r));
     const llmPort = llmServer.address().port;
     const agentBin = join(__dirname, '..', '..', 'bin', 'vibelog-agent.mjs');
-    const keys = ['VIBELOG_QWEN_BIN', 'VIBELOG_LLM_BASE_URL', 'VIBELOG_LLM_API_KEY', 'VIBELOG_LLM_MODEL', 'VIBELOG_BIN', 'VIBELOG_PHASE_TASK_ID', 'VIBELOG_PHASE_NAME'];
-    const saved = {};
-    for (const key of keys) saved[key] = process.env[key];
-    process.env.VIBELOG_QWEN_BIN = agentBin;
-    process.env.VIBELOG_LLM_BASE_URL = `http://127.0.0.1:${llmPort}/v1`;
-    process.env.VIBELOG_LLM_API_KEY = 'test';
-    process.env.VIBELOG_LLM_MODEL = 'test-model';
-    process.env.VIBELOG_BIN = join(testRoot, 'no-such-vibelog');
-    delete process.env.VIBELOG_PHASE_TASK_ID;
-    delete process.env.VIBELOG_PHASE_NAME;
+    setStubEnv({ VIBELOG_QWEN_BIN: agentBin, VIBELOG_LLM_BASE_URL: `http://127.0.0.1:${llmPort}/v1`, VIBELOG_LLM_API_KEY: 'test', VIBELOG_LLM_MODEL: 'test-model', VIBELOG_BIN: join(testRoot, 'no-such-vibelog') });
     try {
       const res = startPhase(testRoot, 'ot-88', 'comment');
       assert.equal(res.started, true);
@@ -1072,10 +1069,8 @@ describe('orchestrator (VL-28)', () => {
       assert.equal(meta.phase, 'comment');
       assert.equal(meta.cwd, realpathSync(testRoot));
     } finally {
-      for (const [key, value] of Object.entries(saved)) {
-        if (value === undefined) delete process.env[key];
-        else process.env[key] = value;
-      }
+      // VL-140: сброс шва — дефолтный env для последующих тестов файла
+      resetStubEnv();
       await new Promise((r) => llmServer.close(r));
     }
   });
@@ -1089,10 +1084,7 @@ describe('orchestrator (VL-28)', () => {
     writeFileSync(join(otRoot, 'backlog', 'config.yml'), 'project_name: OT Test\ntask_prefix: ot\n', 'utf-8');
     mkdirSync(join(otRoot, '.vibelog'), { recursive: true });
     writeFileSync(join(otRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
-    process.env.VIBELOG_QWEN_BIN = writeEnvStub(otRoot, 'ot-stub.cjs');
-    process.env.VL28_STUB_MARKER = join(otRoot, 'marker-ot.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(otRoot, 'ot-stub.cjs'), VL28_STUB_MARKER: join(otRoot, 'marker-ot.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(otRoot, 'ot-5', 'plan');
       assert.equal(res.started, true, JSON.stringify(res));
@@ -1100,13 +1092,13 @@ describe('orchestrator (VL-28)', () => {
       assert.equal(run.exitCode, 0);
       const wtPath = join(otRoot, '.vibelog', 'worktrees', 'ot-5');
       assert.ok(existsSync(join(wtPath, '.git')), 'worktree ot-5 создаётся при чужом префиксе');
-      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const m = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.equal(m.cwd, realpathSync(wtPath), 'фаза работает в worktree ot-5');
       assert.equal(m.envPhaseTaskId, 'OT-5', 'env несёт id по префиксу конфига');
       assert.equal(m.envCwd, otRoot, 'VIBELOG_CWD — главный репо');
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(otRoot, { recursive: true, force: true });
     }
   });
@@ -1128,23 +1120,20 @@ describe('orchestrator (VL-28)', () => {
 
   it('spec с branch_mode: worktree не создаётся, фаза идёт в главном cwd (VL-134)', async () => {
     const specRoot = makeBmRoot('vibelog-orch-vl134-spec-');
-    process.env.VIBELOG_QWEN_BIN = writeEnvStub(specRoot, 'vl134-spec-stub.cjs');
-    process.env.VL28_STUB_MARKER = join(specRoot, 'marker-vl134-spec.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(specRoot, 'vl134-spec-stub.cjs'), VL28_STUB_MARKER: join(specRoot, 'marker-vl134-spec.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(specRoot, 'VL-90', 'spec');
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone('VL-90');
       assert.equal(run.exitCode, 0);
       assert.ok(!existsSync(join(specRoot, '.vibelog', 'worktrees', 'vl-90')), 'worktree не создаётся на spec');
-      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const m = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.equal(m.cwd, realpathSync(specRoot), 'spec работает в главном cwd');
       assert.ok(!m.argv[0].includes('Режим параллельной разработки'), 'примечания веток в промпте нет');
       assert.equal(m.envCwd, null, 'VIBELOG_CWD не задаётся без worktree');
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(specRoot, { recursive: true, force: true });
     }
   });
@@ -1153,32 +1142,26 @@ describe('orchestrator (VL-28)', () => {
     const epicRoot = makeBmRoot('vibelog-orch-vl134-epic-');
     // Задача-эпик: type попадает в frontmatter и читается getTask
     const epic = createTaskFile(epicRoot, { title: 'Эпик VL-134', status: 'Planned', type: 'epic' });
-    process.env.VIBELOG_QWEN_BIN = writeEnvStub(epicRoot, 'vl134-epic-stub.cjs');
-    process.env.VL28_STUB_MARKER = join(epicRoot, 'marker-vl134-epic.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(epicRoot, 'vl134-epic-stub.cjs'), VL28_STUB_MARKER: join(epicRoot, 'marker-vl134-epic.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(epicRoot, epic.id, 'plan');
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone(epic.id);
       assert.equal(run.exitCode, 0);
       assert.ok(!existsSync(join(epicRoot, '.vibelog', 'worktrees', epic.id.toLowerCase())), 'worktree не создаётся для epic');
-      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const m = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.equal(m.cwd, realpathSync(epicRoot), 'plan эпика работает в главном cwd');
       assert.ok(!m.argv[0].includes('Режим параллельной разработки'), 'примечания веток в промпте нет');
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(epicRoot, { recursive: true, force: true });
     }
   });
 
   it('code без worktree: не создаётся, фаза идёт в главном cwd (VL-134)', async () => {
     const codeRoot = makeBmRoot('vibelog-orch-vl134-code-');
-    process.env.VIBELOG_QWEN_BIN = writeEnvStub(codeRoot, 'vl134-code-stub.cjs');
-    process.env.VL28_STUB_MARKER = join(codeRoot, 'marker-vl134-code.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(codeRoot, 'vl134-code-stub.cjs'), VL28_STUB_MARKER: join(codeRoot, 'marker-vl134-code.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       // Задача переведена в code мимо Plan — без worktree фаза идёт в главный cwd
       const res = startPhase(codeRoot, 'VL-91', 'code');
@@ -1186,12 +1169,12 @@ describe('orchestrator (VL-28)', () => {
       const run = await waitDone('VL-91');
       assert.equal(run.exitCode, 0);
       assert.ok(!existsSync(join(codeRoot, '.vibelog', 'worktrees', 'vl-91')), 'worktree не создаётся на code');
-      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const m = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.equal(m.cwd, realpathSync(codeRoot), 'code работает в главном cwd');
       assert.ok(!m.argv[0].includes('Режим параллельной разработки'), 'примечания веток в промпте нет');
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(codeRoot, { recursive: true, force: true });
     }
   });
@@ -1200,22 +1183,19 @@ describe('orchestrator (VL-28)', () => {
     const cmtRoot = makeBmRoot('vibelog-orch-vl134-cmt-');
     // Существующая worktree (задача дошла до Plan ранее) — comment работает в ней
     const wtPath = ensureTaskWorktree(cmtRoot, 'VL-92');
-    process.env.VIBELOG_QWEN_BIN = writeEnvStub(cmtRoot, 'vl134-cmt-stub.cjs');
-    process.env.VL28_STUB_MARKER = join(cmtRoot, 'marker-vl134-cmt.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(cmtRoot, 'vl134-cmt-stub.cjs'), VL28_STUB_MARKER: join(cmtRoot, 'marker-vl134-cmt.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(cmtRoot, 'VL-92', 'comment');
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone('VL-92');
       assert.equal(run.exitCode, 0);
-      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const m = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.equal(m.cwd, realpathSync(wtPath), 'comment работает в существующей worktree');
       assert.ok(m.argv[0].includes('Режим параллельной разработки'), 'примечание веток присутствует');
       assert.equal(m.envCwd, cmtRoot, 'VIBELOG_CWD — главный репозиторий');
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(cmtRoot, { recursive: true, force: true });
     }
   });

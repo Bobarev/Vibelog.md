@@ -2,7 +2,7 @@
  * Тесты VL-70 — самоперезапуск бота: spawn замещающего процесса и реестр.
  */
 
-import { afterAll, beforeAll, describe, it } from 'vitest';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,23 +20,21 @@ describe('vibelogCliPath (VL-70)', () => {
 });
 
 describe('spawnReplacementBot (VL-70)', () => {
-  // Изоляция окружения: TELEGRAM_BOT_TOKEN может быть задан глобально на машине
-  // разработчика — дочерний процесс нашёл бы его в env и ушёл в реальный
-  // long-polling: тест висел до таймаута и плодил живых ботов (поймано 2026-10-03).
-  let savedToken;
-  beforeAll(() => {
-    savedToken = process.env.TELEGRAM_BOT_TOKEN;
-    delete process.env.TELEGRAM_BOT_TOKEN;
-  });
-  afterAll(() => {
-    if (savedToken !== undefined) process.env.TELEGRAM_BOT_TOKEN = savedToken;
-  });
+  // Изоляция окружения (VL-140): TELEGRAM_BOT_TOKEN может быть задан глобально
+  // на машине разработчика — дочерний процесс нашёл бы его в env и ушёл в
+  // реальный long-polling: тест висел до таймаута и плодил живых ботов
+  // (поймано 2026-10-03). Раньше — глобальный delete process.env (гонка при
+  // fileParallelism); теперь — явный env-объект каждого спавна без токена.
+  const spawnEnv = () => {
+    const { TELEGRAM_BOT_TOKEN: _omit, ...env } = process.env;
+    return env;
+  };
 
   it('запускает новый vibelog bot; без токена — понятная ошибка в stderr', async () => {
     // tmp-каталог без .env/.vibelog: резолв токена падает — процесс бота
     // завершается с сообщением «Токен не найден» (fast-fail, без сети)
     const cwd = mkdtempSync(join(tmpdir(), 'vibelog-restart-'));
-    const child = spawnReplacementBot(cwd, 'pipe');
+    const child = spawnReplacementBot(cwd, 'pipe', undefined, spawnEnv());
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d; });
@@ -51,7 +49,7 @@ describe('spawnReplacementBot (VL-70)', () => {
 
   it('процесс создаётся (событие spawn) — detached+unref не мешают старту', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'vibelog-restart-'));
-    const child = spawnReplacementBot(cwd, 'pipe');
+    const child = spawnReplacementBot(cwd, 'pipe', undefined, spawnEnv());
     const spawned = await new Promise((resolve, reject) => {
       child.once('spawn', () => resolve(true));
       child.once('error', reject);
