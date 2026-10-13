@@ -10,7 +10,7 @@ tags:
 ---
 # MCP-справочник Vibelog.md
 
-21 инструмент MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
+22 инструмента MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
 Автоматическое подключение: `vibelog init` пишет `mcpServers` в `.qwen/settings.json`
 (ручная настройка — в [MCP-SETUP.md](../MCP-SETUP.md)).
 
@@ -129,6 +129,21 @@ tags:
 | `modifiedFiles` | string[] | Подстрока в modified_files задачи |
 | `limit` | number | 1–100 |
 
+### backlog_finish_phase — завершение фазы одним вызовом (VL-138)
+
+Атомарно по файлу: статус + отчётный комментарий + modifiedFiles + батч-отметки AC/DoD за один вызов (замена цепочки `add_comment` → `update_status` → `update_task(modifiedFiles)` → `manage_ac/dod check`).
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `id` | string | ✓ | |
+| `status` | string | | Новый статус (валидируется по конфигу; невалидный — пропускается с ошибкой в сводке) |
+| `comment` | string | | Отчётный комментарий (author фиксирован `@agent`) |
+| `modifiedFiles` | string[] | | Изменённые файлы (полная замена `modified_files`) |
+| `acChecks` | (number\|string)[] | | Индексы AC для батч-отметки (с 1, как в `manage_ac`) |
+| `dodChecks` | (number\|string)[] | | Индексы DoD для батч-отметки (с 1, как в `manage_dod`) |
+
+Частичное применение: невалидное поле (статус вне конфига, битый индекс) пропускается с понятным сообщением, вызов не падает; все валидные обновления применяются одной записью (файл атомарен). Результат — сводка вида «Статус: Review; отчёт добавлен; отмечено AC: 2, DoD: 1; файлов: 3» (+ `Ошибки: …` при наличии). Несуществующая задача — фатальная ошибка.
+
 ### backlog_ready — готовые к работе
 
 Параметров нет. Возвращает задачи, у которых все зависимости выполнены.
@@ -167,9 +182,9 @@ tags:
 
 ### milestone_archive
 
-| Параметр | Тип | Required |
-|---|---|---|
-| `name` | string | ✓ |
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `name` | string | ✓ | |
 
 ---
 
@@ -205,9 +220,9 @@ tags:
 
 ### document_search
 
-| Параметр | Тип | Required |
-|---|---|---|
-| `query` | string | ✓ |
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `query` | string | ✓ | Поисковый запрос |
 
 ---
 
@@ -230,6 +245,11 @@ tags:
 // Отметить все пункты разом (VL-135)
 { "name": "backlog_manage_dod", "arguments": {
   "id": "api-1", "action": "check", "index": "all" } }
+
+// Завершение фазы одним вызовом (VL-138)
+{ "name": "backlog_finish_phase", "arguments": {
+  "id": "api-1", "status": "Review", "comment": "Фаза 3 (Code) выполнена.",
+  "modifiedFiles": ["src/api.ts"], "acChecks": [1, 2], "dodChecks": ["1"] } }
 
 // Поиск: баги To Do с лимитом
 { "name": "backlog_search", "arguments": {

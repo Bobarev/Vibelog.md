@@ -225,7 +225,7 @@ Headless-агент печатает в stdout **ровно одну JSON-стр
 
 ### Vibelog MCP
 
-Подключается автоматически (кроме фазы `prompt` и флага `--no-mcp`): **21 инструмент** — `backlog_*` (create/list/view/update status/update task/manage ac/manage dod/add comment/update dependencies/search/ready), `milestone_*` (list/add/rename/remove/archive), `document_*` (list/view/create/update/search). Схемы — в `docs/mcp-reference.md`.
+Подключается автоматически (кроме фазы `prompt` и флага `--no-mcp`): **22 инструмента** — `backlog_*` (create/list/view/update status/update task/manage ac/manage dod/add comment/update dependencies/search/ready/finish phase), `milestone_*` (list/add/rename/remove/archive), `document_*` (list/view/create/update/search). Схемы — в `docs/mcp-reference.md`.
 
 **Отказ MCP не фатален:** если MCP-сервер недоступен, в stderr печатается предупреждение, и фаза продолжается без MCP-инструментов (локальные работают).
 
