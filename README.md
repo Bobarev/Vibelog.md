@@ -225,6 +225,8 @@ vibelog bot   # long-polling: /start + пин-код для привязки ч�
 
 Режим для параллельной разработки нескольких задач: каждая задача получает git-ветку `vb/vl-N` и worktree `.vibelog/worktrees/vl-N`; фазы агента работают в worktree, backlog остаётся общим в главном репозитории.
 
+Создание worktree (VL-134): каталог впервые создаётся только при запуске Фазы Plan — до этого (включая Spec) фазы работают в главном репозитории. Для задач типа epic worktree не создаётся ни на одной из фаз. Уже созданный worktree используется всеми последующими фазами задачи (comment/resume/code) и не пересоздаётся; фаза без worktree идёт в главном cwd.
+
 ```bash
 # В привязанном Telegram-чате бота:
 /set branch-mode on    # включить режим (ключ branch_mode в .vibelog/bot.yml)
@@ -236,7 +238,7 @@ vibelog bot   # long-polling: /start + пин-код для привязки ч�
 
 Как работает:
 
-- При включённом режиме запуск фазы для задачи `VL-N` создаёт worktree (`git worktree add -b vb/vl-N .vibelog/worktrees/vl-N HEAD`) и запускает агента с cwd worktree; MCP-сервер настроен на главный репозиторий через `VIBELOG_CWD` — статусы и комментарии пишутся в общий `backlog/`, worktree-копия backlog не трогается.
+- При включённом режиме запуск Фазы Plan для задачи `VL-N` создаёт worktree (`git worktree add -b vb/vl-N .vibelog/worktrees/vl-N HEAD`) и запускает агента с cwd worktree; остальные фазы используют уже созданный worktree, а до Plan работают в главном репозитории. MCP-сервер настроен на главный репозиторий через `VIBELOG_CWD` — статусы и комментарии пишутся в общий `backlog/`, worktree-копия backlog не трогается.
 - `/restart VL-N` собирает worktree главным `tsc` (без сети и без `pnpm install` в worktree — рантайм-зависимости резолвятся walk-up в главный node_modules) и перезапускает бота из `…/vl-N/bin/vibelog.mjs` с cwd главного репозитория (токен и backlog общие).
 - Закрытие задач с worktree идёт по отдельному шаблону (`templates/qwen-commands/phase-close-worktree.md`): сама Фаза Close запускается в главном репозитории, проверяет чистоту worktree (незакоммиченное — коммитит в ветку `vb/vl-N`), сливает ветку через `git merge --no-ff`, при конфликте — не резолвит его и не меняет статус (задача остаётся в Review с отчётом о файлах конфликта), после успешного слияния удаляет worktree и ветку. Без worktree Close идёт по обычному шаблону `phase-close.md`.
 - Worktree создаётся от закоммиченного HEAD — незакоммиченные изменения главного дерева в ветку не переносятся.
