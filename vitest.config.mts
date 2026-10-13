@@ -1,14 +1,16 @@
 import { defineConfig } from 'vitest/config';
 
 /**
- * Конфигурация Vitest (VL-133).
+ * Конфигурация Vitest (VL-133, пересмотр VL-140).
  *
  * Тесты остаются `*.test.mjs` и импортируют собранное `dist/` — поэтому
  * `pnpm test` = `pnpm build && vitest run` (сборка обязательна до тестов).
  *
- * `fileParallelism: false`: тесты используют spawn git/CLI, tmp-каталоги
- * и мок-серверы на фиксированных портах — параллелизация по файлам в первый
- * заход выключается ради стабильности (можно включить отдельной задачей).
+ * `fileParallelism: true` (VL-140): причина выключения из VL-133 устранена —
+ * тесты больше не полагаются на process.env родителя: spawn'ы получают явные
+ * env-объекты (шов setSpawnEnvBaseForTests оркестратора, env-параметр
+ * spawnReplacementBot). Мок-серверы слушают эфемерные порты (listen(0)),
+ * tmp-каталоги уникальны per-file (mkdtempSync) — параллелизм безопасен.
  *
  * `setupFiles` подключает src/test-setup.mjs — глобальный fetch-guard (VL-132),
  * запрещающий реальную сеть в тестах. В node --test guard подключался через
@@ -21,7 +23,7 @@ export default defineConfig({
     // dist/ — собранный JS (тесты его импортируют, но не тестируют как набор тестов);
     // example-backlog/ и .vibelog/ — служебные каталоги без тестов.
     exclude: ['node_modules/**', 'refs/**', 'dist/**', '.vibelog/**', 'example-backlog/**'],
-    fileParallelism: false,
+    fileParallelism: true,
     setupFiles: ['./src/test-setup.mjs'],
     // В node:test таймаутов по умолчанию не было; в vitest дефолт 5s, а тесты
     // спавнят git/CLI и ждут мок-серверы — поднимаем до разумного максимума.

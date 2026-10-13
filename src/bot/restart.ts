@@ -33,17 +33,25 @@ export function vibelogCliPath(): string {
  * @param cliPath — путь к bin/vibelog.mjs; по умолчанию — корневой dist (VL-70).
  *   VL-107: /restart VL-N передаёт worktreeCliPath — новый процесс исполняет
  *   dist ветки vb/vl-N, но cwd остаётся главным (токен/backlog — общие)
+ * @param env — VL-140: явный env замещающего процесса; по умолчанию — env
+ *   родителя (прод-поведение без изменений). Тесты передают объект без
+ *   TELEGRAM_BOT_TOKEN вместо глобального delete из process.env — иначе
+ *   fileParallelism давал бы гонки между файлами тестов.
  * @returns дочерний процесс; событие 'spawn' — успех, 'error' — сбой запуска
  */
 export function spawnReplacementBot(
   cwd: string,
   stdio: 'inherit' | 'pipe' = 'inherit',
-  cliPath: string = vibelogCliPath()
+  cliPath: string = vibelogCliPath(),
+  env?: NodeJS.ProcessEnv
 ): ChildProcess {
   const child = spawn(process.execPath, [cliPath, 'bot'], {
     cwd,
     stdio,
     detached: true,
+    // VL-140: env только при явном переданном объекте — без параметра
+    // spawn наследует process.env как раньше
+    ...(env ? { env } : {}),
   });
   child.unref();
   return child;
