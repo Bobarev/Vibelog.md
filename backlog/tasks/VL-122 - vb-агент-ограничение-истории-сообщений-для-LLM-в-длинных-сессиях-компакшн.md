@@ -5,13 +5,13 @@ status: To Do
 assignee: []
 reporter: ''
 created_date: '2026-10-12 19:13'
-updated_date: '2026-10-12 19:13'
+updated_date: '2026-10-13 07:55'
 due_date: ''
 labels: []
 dependencies: []
 milestone: ''
 references: []
-priority: medium
+priority: high
 type: task
 project: ''
 parent_task_id: ''
