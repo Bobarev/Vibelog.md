@@ -410,7 +410,7 @@ function cellSafe(text: string): string {
  * рендер ничего не сортирует и не фильтрует. Пустой список → ''.
  *
  * @param tasks — невыполненные задачи в порядке вывода
- * @param styles — маппинг тип→стиль кнопки (task_type_styles из bot.yml)
+ * @param styles — маппинг тип→стиль кнопки (task_type_styles из settings.json)
  * @param active — маппинг taskId → активная фаза агента (VL-91); пустой — без пометок
  */
 export function renderTasksRich(

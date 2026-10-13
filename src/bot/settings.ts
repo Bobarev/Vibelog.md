@@ -1,21 +1,27 @@
 /**
  * Настройки Telegram-бота (VL-34).
  *
- * Хранятся в .vibelog/bot.yml (gitignored) — отдельно от backlog/config.yml:
- * (1) токен не должен коммититься в git, (2) config.yml остаётся совместимым
- * с Backlog.md: оригинал читает конфиг switch-ом по известным ключам и
- * вычищает неизвестные поля при записи (saveConfig) — хранить токен там нельзя.
+ * Хранятся в едином .vibelog/settings.json (VL-143, gitignored) — отдельно
+ * от backlog/config.yml: (1) секреты в env-секции не должны коммититься
+ * в git, (2) config.yml остаётся совместимым с Backlog.md: оригинал читает
+ * конфиг switch-ом по известным ключам и вычищает неизвестные поля при
+ * записи (saveConfig) — хранить токен там нельзя.
+ *
+ * Файл читается/пишется через общий core-модуль settings.js: там же живут
+ * ленивая миграция legacy bot.yml/settings.yml и env-секция секретов.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { parseYaml, stringifyYaml } from '../core/yaml.js';
 import type { AgentName } from './commands.js';
+import {
+  loadSettings,
+  readSettingsEnv,
+  saveSettingsPatch,
+  settingsPath,
+} from '../core/settings.js';
 
-/** Настройки бота: токен, прокси (приоритет у env) и привязанные чаты. */
+/** Настройки бота: привязанные чаты и опции фаз (секреты — в env-секции settings.json). */
 export interface BotSettings {
-  telegram_token?: string;
-  telegram_proxy?: string;
+  /** Привязанные chat_id (команда /start в чате). */
   chats: number[];
   /** Маппинг «тип задачи → стиль кнопки» rich-вывода /tasks (VL-82). */
   task_type_styles?: Record<string, string>;
@@ -45,7 +51,7 @@ export const VALID_TASK_STYLES = ['danger', 'success', 'primary', 'link'];
 
 /**
  * Дефолтный маппинг «тип задачи → стиль кнопки» (VL-82).
- * В bot.yml не записывается — пользователь переопределяет только нужное,
+ * В settings.json не записывается — пользователь переопределяет только нужное,
  * дефолты живут в коде (иначе файл засоряется при каждом save).
  */
 export const DEFAULT_TASK_TYPE_STYLES: Record<string, string> = {
@@ -59,7 +65,7 @@ export const DEFAULT_TASK_TYPE_STYLES: Record<string, string> = {
  * Извлекает пользовательские стили типов задач из YAML-значения (VL-82).
  *
  * Принимает только объект string→string; нестроки и стили вне
- * VALID_TASK_STYLES отбрасываются — в bot.yml не должны жить значения,
+ * VALID_TASK_STYLES отбрасываются — в settings.json не должны жить значения,
  * которые Telegram отклонит.
  */
 function extractTaskTypeStyles(raw: unknown): Record<string, string> {
@@ -71,20 +77,16 @@ function extractTaskTypeStyles(raw: unknown): Record<string, string> {
   return out;
 }
 
-/** Путь к файлу настроек бота в директории проекта. */
+/** Путь к файлу настроек бота (общий settings.json, VL-143). */
 export function botSettingsPath(cwd: string): string {
-  return join(cwd, '.vibelog', 'bot.yml');
+  return settingsPath(cwd);
 }
 
 /** Читает настройки бота; отсутствующий файл → пустые настройки + дефолты стилей. */
 export function loadBotSettings(cwd: string): BotSettings {
-  const path = botSettingsPath(cwd);
-  if (!existsSync(path)) {
-    return { chats: [], task_type_styles: { ...DEFAULT_TASK_TYPE_STYLES } };
-  }
-  const raw = parseYaml(readFileSync(path, 'utf-8'));
+  const raw = loadSettings(cwd);
   const chats = Array.isArray(raw.chats) ? raw.chats : [];
-  // Валидация при чтении (VL-94): битое значение в bot.yml не должно
+  // Валидация при чтении (VL-94): битое значение в settings.json не должно
   // попадать в запуски — неизвестный агент игнорируется (дефолт qwen)
   const defaultAgent =
     raw.default_agent === 'vb' || raw.default_agent === 'qwen' ? raw.default_agent : undefined;
@@ -99,8 +101,6 @@ export function loadBotSettings(cwd: string): BotSettings {
   // false (/set compact off); true/мусор → undefined → включён
   const compact = raw.compact === false ? false : undefined;
   return {
-    telegram_token: typeof raw.telegram_token === 'string' ? raw.telegram_token : undefined,
-    telegram_proxy: typeof raw.telegram_proxy === 'string' ? raw.telegram_proxy : undefined,
     chats: chats.map(Number).filter((n) => Number.isFinite(n)),
     ...(defaultAgent ? { default_agent: defaultAgent } : {}),
     ...(maxWallTime !== undefined ? { max_wall_time: maxWallTime } : {}),
@@ -114,7 +114,7 @@ export function loadBotSettings(cwd: string): BotSettings {
 }
 
 /**
- * Положительное целое из YAML-значения (VL-104); иначе undefined.
+ * Положительное целое из значения настроек (VL-104); иначе undefined.
  * Number(null)/Number('') === 0 — не проходят проверку n > 0.
  */
 function readPositiveInt(raw: unknown): number | undefined {
@@ -122,45 +122,48 @@ function readPositiveInt(raw: unknown): number | undefined {
   return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
-/** Сохраняет настройки бота (создаёт .vibelog/ при необходимости). */
+/**
+ * Сохраняет настройки бота (создаёт .vibelog/ при необходимости).
+ *
+ * Read-modify-write через saveSettingsPatch: env-секция и git_user_name
+ * сохраняются (VL-143). Поля со значением undefined попадают в патч явно —
+ * saveSettingsPatch удалит их ключи (сброс /set max-wall-time 0 и т.п.).
+ */
 export function saveBotSettings(cwd: string, settings: BotSettings): void {
-  const path = botSettingsPath(cwd);
-  mkdirSync(dirname(path), { recursive: true });
   // task_type_styles пишем только валидные пользовательские переопределения
-  // (VL-82): дефолты в bot.yml не записываем — файл не засоряется
+  // (VL-82): дефолты в settings.json не записываем — файл не засоряется
   const userStyles = extractTaskTypeStyles(settings.task_type_styles);
-  // Явный payload: BotSettings — интерфейс без index signature,
+  // Явный патч: BotSettings — интерфейс без index signature,
   // прямое приведение к Record<string, unknown> TS отклоняет
-  const payload: Record<string, unknown> = {
-    ...(settings.telegram_token ? { telegram_token: settings.telegram_token } : {}),
-    ...(settings.telegram_proxy ? { telegram_proxy: settings.telegram_proxy } : {}),
+  const patch: Record<string, unknown> = {
     chats: settings.chats,
-    ...(settings.default_agent ? { default_agent: settings.default_agent } : {}),
-    ...(settings.max_wall_time !== undefined ? { max_wall_time: settings.max_wall_time } : {}),
-    ...(settings.max_requests !== undefined ? { max_requests: settings.max_requests } : {}),
+    default_agent: settings.default_agent,
+    max_wall_time: settings.max_wall_time,
+    max_requests: settings.max_requests,
     // branch_mode пишем всегда, когда задан (в т.ч. false — /set branch-mode off
-    // должен оставить явный ключ в bot.yml, а не терять его)
-    ...(settings.branch_mode !== undefined ? { branch_mode: settings.branch_mode } : {}),
+    // должен оставить явный ключ в settings.json, а не терять его)
+    branch_mode: settings.branch_mode,
     // compact: false — явный ключ /set compact off (default — включён, ключ не нужен)
-    ...(settings.compact !== undefined ? { compact: settings.compact } : {}),
-    ...(Object.keys(userStyles).length > 0 ? { task_type_styles: userStyles } : {}),
+    compact: settings.compact,
+    task_type_styles: Object.keys(userStyles).length > 0 ? userStyles : undefined,
   };
-  writeFileSync(path, stringifyYaml(payload), 'utf-8');
+  saveSettingsPatch(cwd, patch);
 }
 
 /**
- * Разрешает токен бота: env TELEGRAM_BOT_TOKEN → .vibelog/bot.yml.
+ * Разрешает токен бота: env TELEGRAM_BOT_TOKEN → env-секция settings.json.
  *
  * @returns токен или null, если нигде не задан
  */
 export function resolveToken(cwd: string): string | null {
   const envToken = process.env.TELEGRAM_BOT_TOKEN;
   if (envToken) return envToken;
-  return loadBotSettings(cwd).telegram_token ?? null;
+  return readSettingsEnv(cwd).TELEGRAM_BOT_TOKEN ?? null;
 }
 
 /**
- * Разрешает прокси для Telegram API: env TELEGRAM_PROXY → .vibelog/bot.yml.
+ * Разрешает прокси для Telegram API: env TELEGRAM_PROXY → env-секция
+ * settings.json.
  *
  * Нужен там, где api.telegram.org заблокирован напрямую (например, системный
  * прокси macOS на 127.0.0.1:7070): Node fetch и grammy системный прокси не
@@ -171,11 +174,11 @@ export function resolveToken(cwd: string): string | null {
 export function resolveProxy(cwd: string): string | null {
   const envProxy = process.env.TELEGRAM_PROXY;
   if (envProxy) return envProxy;
-  return loadBotSettings(cwd).telegram_proxy ?? null;
+  return readSettingsEnv(cwd).TELEGRAM_PROXY ?? null;
 }
 
 /**
- * Агент по умолчанию для запусков фаз (VL-94): bot.yml → 'qwen'.
+ * Агент по умолчанию для запусков фаз (VL-94): settings.json → 'qwen'.
  * Используется командами фаз и кнопками действий без суффикса :<agent>.
  */
 export function resolveDefaultAgent(cwd: string): AgentName {
@@ -183,7 +186,7 @@ export function resolveDefaultAgent(cwd: string): AgentName {
 }
 
 /**
- * Лимит wall-time фазы из bot.yml (VL-104): секунды; undefined — настройка
+ * Лимит wall-time фазы из settings.json (VL-104): секунды; undefined — настройка
  * не задана (оркестратор не передаёт --max-wall-time, агент берёт дефолт).
  */
 export function resolveMaxWallTime(cwd: string): number | undefined {
@@ -191,7 +194,7 @@ export function resolveMaxWallTime(cwd: string): number | undefined {
 }
 
 /**
- * Лимит LLM-запросов фазы из bot.yml (VL-104): число запросов; undefined —
+ * Лимит LLM-запросов фазы из settings.json (VL-104): число запросов; undefined —
  * настройка не задана (оркестратор не передаёт --max-requests).
  */
 export function resolveMaxRequests(cwd: string): number | undefined {
@@ -199,7 +202,7 @@ export function resolveMaxRequests(cwd: string): number | undefined {
 }
 
 /**
- * Режим параллельной разработки из bot.yml (VL-107): true — фазы задач
+ * Режим параллельной разработки из settings.json (VL-107): true — фазы задач
  * выполняются в git worktree ветки vb/vl-N; дефолт false (прежнее поведение).
  * Читается перед каждым запуском фазы — включение/выключение не требует
  * перезапуска бота.

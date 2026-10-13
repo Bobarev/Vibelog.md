@@ -21,6 +21,7 @@ import { runLoop } from './loop.js';
 import { agentSessionsDir, createSessionId, saveSession } from './session.js';
 // Загрузка .env проекта (VL-37) — общий модуль с ботом, только node:fs/path
 import { loadDotEnv } from '../bot/env.js';
+import { applySettingsEnv } from '../core/settings.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { listLocalTools } from './tools.js';
 import type { ToolSpec } from './tools.js';
@@ -56,6 +57,9 @@ export async function runInteractiveAgent(): Promise<void> {
   // .env проекта (VL-37): чат запускается человеком напрямую — VIBELOG_LLM_*
   // обычно лежат в .env. Реальное окружение приоритетнее файла (dotenv).
   loadDotEnv(cwd);
+  // Секция env settings.json (VL-143): VIBELOG_LLM_* могут жить и там;
+  // записываются только пустые ключи — реальный env и .env приоритетнее
+  applySettingsEnv(cwd);
 
   // Env-проверки ДО рендера TUI: ошибка не должна появиться в альтернативном буфере
   if (!process.env.VIBELOG_LLM_API_KEY) {

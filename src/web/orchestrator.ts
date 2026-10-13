@@ -238,10 +238,10 @@ export function startResume(
 }
 
 /**
- * Флаги лимитов фазы из bot.yml (VL-104/122): --max-wall-time, --max-requests
+ * Флаги лимитов фазы из settings.json (VL-104/122): --max-wall-time, --max-requests
  * и --no-compact (компакшн истории выключен через /set compact off), если
  * настройки заданы. Только для агента vb — qwen эти флаги не поддерживает.
- * Отсутствие/битый bot.yml — пустой массив (норма: настройки не заданы,
+ * Отсутствие/битый settings.json — пустой массив (норма: настройки не заданы,
  * флаги не передаются, поведение прежнее).
  */
 function spawnLimitFlags(cwd: string): string[] {
@@ -253,7 +253,7 @@ function spawnLimitFlags(cwd: string): string[] {
     // VL-122: компакшн включён по умолчанию — --no-compact только при явном off
     if (s.compact === false) flags.push('--no-compact');
   } catch {
-    // битый bot.yml не должен ронять запуск фазы — флаги просто не добавляются
+    // битый settings.json не должен ронять запуск фазы — флаги просто не добавляются
   }
   return flags;
 }
@@ -378,7 +378,7 @@ function spawnQwenRun(
       : [];
   // VL-93: extraArgs сразу после позиционного промпта (--resume <sessionId>);
   // порядок флагов для qwen не значим, промпт обязан быть первым
-  // VL-104: лимиты фаз из bot.yml — только для vb; qwen флаги не поддерживает
+  // VL-104: лимиты фаз из settings.json — только для vb; qwen флаги не поддерживает
   const limitFlags = agent === 'vb' ? spawnLimitFlags(cwd) : [];
   const child = spawn(bin, [prompt, ...extraArgs, ...limitFlags, '--approval-mode', 'yolo', '--output-format', 'json', ...phaseFlags], {
     // VL-107: runCwd — worktree ветки при branch_mode, иначе главный cwd;

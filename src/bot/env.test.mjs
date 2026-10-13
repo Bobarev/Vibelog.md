@@ -10,7 +10,7 @@ import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { loadDotEnv } from '../../dist/bot/env.js';
+import { loadDotEnv, fileLoadedEnvKeys } from '../../dist/bot/env.js';
 
 describe('loadDotEnv (VL-37)', () => {
   const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-env-test-'));
@@ -48,6 +48,14 @@ describe('loadDotEnv (VL-37)', () => {
     // Реальная env-переменная приоритетнее файла (стандарт dotenv)
     assert.equal(process.env.VL_TEST_PRESET, 'from-real-env');
     delete process.env.VL_TEST_EXPORTED;
+
+    // VL-143: реально записанные ключи попадают в учёт файловых ключей —
+    // по ним spawnReplacementBot стриппит env дочернего процесса
+    const tracked = fileLoadedEnvKeys();
+    assert.ok(tracked.has('VL_TEST_TOKEN'), 'записанный ключ должен быть в учёте');
+    assert.ok(tracked.has('VL_TEST_PROXY'), 'записанный ключ должен быть в учёте');
+    // Предустановленный в реальном env ключ НЕ записан из файла → не учтён
+    assert.ok(!tracked.has('VL_TEST_PRESET'), 'не записанный ключ не должен быть в учёте');
   });
 
   it('отсутствующий .env — не ошибка', () => {

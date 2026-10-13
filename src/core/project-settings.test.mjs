@@ -1,5 +1,5 @@
 /**
- * Тесты VL-45 — project-settings (кэш git_user_name в .vibelog/settings.yml).
+ * Тесты VL-45 — project-settings (кэш git_user_name в .vibelog/settings.json, VL-143).
  *
  * Каталоги — в /tmp; git-окружение изолируется через GIT_CONFIG_GLOBAL.
  */
@@ -31,8 +31,8 @@ describe('project-settings (VL-45)', () => {
     rmSync(ISO_HOME, { recursive: true, force: true });
   });
 
-  it('projectSettingsPath → .vibelog/settings.yml', () => {
-    assert.equal(projectSettingsPath('/proj'), join('/proj', '.vibelog', 'settings.yml'));
+  it('projectSettingsPath → .vibelog/settings.json (VL-143)', () => {
+    assert.equal(projectSettingsPath('/proj'), join('/proj', '.vibelog', 'settings.json'));
   });
 
   it('saveProjectSettings + loadProjectSettings roundtrip', () => {
@@ -40,7 +40,7 @@ describe('project-settings (VL-45)', () => {
     mkdirSync(dir, { recursive: true });
     saveProjectSettings(dir, { git_user_name: 'Pavel' });
 
-    assert.ok(existsSync(projectSettingsPath(dir)), 'файл settings.yml должен существовать');
+    assert.ok(existsSync(projectSettingsPath(dir)), 'файл settings.json должен существовать');
     const loaded = loadProjectSettings(dir);
     assert.equal(loaded.git_user_name, 'Pavel');
   });
@@ -51,11 +51,11 @@ describe('project-settings (VL-45)', () => {
     assert.deepEqual(loadProjectSettings(dir), {});
   });
 
-  it('loadProjectSettings: битый YAML → пустые настройки без throw', () => {
+  it('loadProjectSettings: битый JSON → пустые настройки без throw', () => {
     const dir = join(testRoot, 'broken');
     mkdirSync(join(dir, '.vibelog'), { recursive: true });
-    writeFileSync(projectSettingsPath(dir), ':::не yaml вовсе\n\t{\n', 'utf-8');
-    // parseYaml может как throw, так и вернуть мусор — важно, что не падает
+    writeFileSync(projectSettingsPath(dir), '{не json вовсе', 'utf-8');
+    // JSON.parse может как throw, так и вернуть мусор — важно, что не падает
     const loaded = loadProjectSettings(dir);
     assert.ok(loaded.git_user_name === undefined, 'битый YAML не должен давать git_user_name');
   });
