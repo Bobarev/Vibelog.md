@@ -210,6 +210,51 @@ export function completeTaskFile(cwd: string, id: string): Task {
 }
 
 /**
+ * Детектор «задача хотя бы раз была в фазе Code» (VL-144).
+ *
+ * Определяет путь reject: никогда не бывшая в Code — чистая механика
+ * (без LLM), бывшая — откат начатых изменений через фазу reject.
+ * Ложноположительное срабатывание безопасно (лишний LLM-запуск),
+ * ложноотрицательное — нет (пропуск отката), поэтому набор признаков
+ * широкий: отчёт завершённой Code-фазы, статус «кода», заполненные
+ * поля, которые фаза Code оставляет в задаче.
+ *
+ * @param task — задача
+ */
+export function wasInCode(task: Task): boolean {
+  // Отчёт завершённой Фазы 3 (Code) — прямой след выполнения кода
+  if (task.comments.some((c) => c.text.startsWith('Фаза 3 (Code)'))) return true;
+  // Код шёл (In Progress) или шёл после Code (Review)
+  if (task.status === 'In Progress' || task.status === 'Review') return true;
+  // Поля заполняются фазой Code (notes — по ходу, finalSummary — в Close,
+  // но непустой finalSummary означает, что жизненный цикл дошёл дальше Spec/Plan)
+  if (task.implementationNotes.trim() || task.finalSummary.trim()) return true;
+  return false;
+}
+
+/**
+ * Отклоняет задачу: комментарий (причина) → статус Rejected → архив (VL-144).
+ *
+ * Чистая механика без LLM: для задач, никогда не бывших в Code, откатывать
+ * нечего. Для бывших в Code LLM-откат выполняет фаза reject ДО вызова этой
+ * функции (в onExit завершения фазы) — здесь только статус и перенос файла.
+ *
+ * @param cwd — текущая рабочая директория
+ * @param id — ID задачи
+ * @param comment — причина отказа; пустой/undefined — без комментария
+ * @returns задача в статусе Rejected (до архива)
+ * @throws если задача не найдена
+ */
+export function rejectTaskFile(cwd: string, id: string, comment?: string): Task {
+  if (comment && comment.trim()) {
+    addComment(cwd, id, comment.trim());
+  }
+  const task = updateTaskFile(cwd, id, { status: 'Rejected' });
+  archiveTaskFile(cwd, id);
+  return task;
+}
+
+/**
  * Ищет файл задачи по ID и возвращает путь.
  *
  * @returns абсолютный путь к файлу или null

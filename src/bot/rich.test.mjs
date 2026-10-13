@@ -116,12 +116,24 @@ describe('renderTaskRich (VL-39)', () => {
 });
 
 describe('Кнопка следующего этапа (VL-72)', () => {
-  it('кнопки в центрированном row: next primary + comment success (VL-78)', () => {
+  it('кнопки в центрированном row: next primary + reject danger + comment success (VL-78/144)', () => {
     const md = renderTaskRich({ ...fullTask, status: 'To Do' });
     assert.match(
       md,
-      /^# VL-34 — Telegram-бот: каркас\n\n<tg-button-row align="center">\n<tg-button type="callback_data" style="primary" data="next:VL-34">▶ Spec<\/tg-button>\n<tg-button type="callback_data" style="success" data="comment:VL-34">💬 Комментарий<\/tg-button>\n<\/tg-button-row>/
+      /^# VL-34 — Telegram-бот: каркас\n\n<tg-button-row align="center">\n<tg-button type="callback_data" style="primary" data="next:VL-34">▶ Spec<\/tg-button>\n<tg-button type="callback_data" style="danger" data="reject:VL-34">✖ Reject<\/tg-button>\n<tg-button type="callback_data" style="success" data="comment:VL-34">💬 Комментарий<\/tg-button>\n<\/tg-button-row>/
     );
+  });
+
+  // ── VL-144: кнопка Reject ──
+  it('Reject-кнопка есть только для To Do', () => {
+    for (const status of ['To Do']) {
+      const md = renderTaskRich({ ...fullTask, status });
+      assert.match(md, /data="reject:VL-34">✖ Reject/, `reject-кнопка для ${status}`);
+    }
+    for (const status of ['Spec', 'Planned', 'In Progress', 'Review', 'Done', 'Blocked']) {
+      const md = renderTaskRich({ ...fullTask, status });
+      assert.doesNotMatch(md, /reject:/, `reject-кнопки не должно быть для ${status}`);
+    }
   });
 
   it('nextPhaseForStatus: маппинг статус → фаза', () => {

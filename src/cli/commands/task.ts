@@ -7,6 +7,7 @@
  * - view — просмотр задачи
  * - edit — редактировать задачу
  * - complete — завершить задачу
+ * - reject — отклонить задачу (Rejected + архив; LLM-откат — если была в Code)
  * - archive — архивировать задачу
  */
 
@@ -26,6 +27,7 @@ import { resolveGitUserName } from '../../core/project-settings.js';
 import { isReady } from '../../core/deps.js';
 import { findBacklogDir } from '../../core/paths.js';
 import { writeDraft } from '../../core/draft.js';
+import { rejectTask } from '../../web/orchestrator.js';
 import type { Task, ChecklistItem, TaskComment } from '../../core/task.js';
 
 /**
@@ -53,11 +55,13 @@ export async function runTask(
     case 'complete':
     case 'done':
       return taskComplete(positional, cwd);
+    case 'reject':
+      return taskReject(positional, cwd);
     case 'archive':
       return taskArchive(positional, cwd);
     default:
       printError(`Неизвестная подкоманда: ${subcommand}`);
-      printInfo('Доступные подкоманды: create, list, view, edit, complete, archive');
+      printInfo('Доступные подкоманды: create, list, view, edit, complete, reject, archive');
   }
 }
 
@@ -519,6 +523,44 @@ function taskComplete(positional: string[], cwd: string): void {
   try {
     completeTaskFile(cwd, id);
     printSuccess(`Задача ${id} завершена и архивирована.`);
+  } catch (err) {
+    printError((err as Error).message);
+  }
+}
+
+/**
+ * Отклоняет задачу (Rejected + архив в backlog/completed/; VL-144).
+ *
+ * Никогда не бывшая в Code — чистая механика, результат сразу.
+ * Бывшая хотя бы раз в Code — запускается LLM-откат (фаза reject):
+ * статус и архив применяются в onExit завершения фазы.
+ *
+ * vibelog task reject <id> [комментарий]
+ */
+function taskReject(positional: string[], cwd: string): void {
+  const id = positional[0];
+  if (!id) {
+    printError('Укажите ID задачи: vibelog task reject <id> [комментарий]');
+    return;
+  }
+  const comment = positional.slice(1).join(' ').trim();
+
+  try {
+    const result = rejectTask(cwd, id, comment, {
+      onExit: (run) => {
+        // Фаза отката завершена: механика (Rejected + архив) уже применена
+        // в обёртке onExit rejectTask — до этого колбэка
+        printSuccess(`Задача ${id} отклонена (Rejected) и архивирована (фаза reject, exit=${run.exitCode}).`);
+      },
+    });
+    if ('rejected' in result) {
+      // Синхронный механический путь: задача уже отклонена к моменту возврата
+      printSuccess(`Задача ${id} отклонена (Rejected) и архивирована.`);
+    } else if ('error' in result) {
+      printError(result.error);
+    } else {
+      printInfo(`Запуск отката через LLM, PID ${result.pid}; после завершения задача будет переведена в Rejected и архивирована.`);
+    }
   } catch (err) {
     printError((err as Error).message);
   }

@@ -29,7 +29,9 @@ export function defaultConfig(projectName: string, prefix: string): Record<strin
     default_status: 'To Do',
     // Spec/Planned входят в workflow-фазы (VL-69): Spec — после уточнения,
     // Planned — после декомпозиции эпика в Фазе Plan
-    statuses: ['To Do', 'Spec', 'Planned', 'In Progress', 'Review', 'Done', 'Blocked'],
+    // Rejected — статус отказа от задачи (VL-144): задача сразу архивируется,
+    // колонка нужна для фильтров/селекта и задач, чей reject упал на архиве
+    statuses: ['To Do', 'Spec', 'Planned', 'In Progress', 'Review', 'Done', 'Blocked', 'Rejected'],
     labels: [],
     priorities: ['High', 'Medium', 'Low'],
     types: [...DEFAULT_TASK_TYPES],

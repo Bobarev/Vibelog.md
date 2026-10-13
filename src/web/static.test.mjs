@@ -19,6 +19,7 @@ import { join } from 'node:path';
 
 import { serveStatic } from '../../dist/web/static.js';
 import { startWebServer } from '../../dist/web/server.js';
+import { getAssetsHtml } from '../../dist/web/assets.js';
 
 // Временный каталог — в /tmp, а не в репозитории: findBacklogDir поднимается
 // вверх по дереву, и каталог внутри проекта «находит» настоящий backlog/
@@ -139,5 +140,17 @@ describe('vibelog browser + web/dist (VL-26)', () => {
     } finally {
       server.close();
     }
+  });
+});
+
+// ── VL-144: кнопка Reject на веб-доске ──
+
+describe('assets — кнопка Reject (VL-144)', () => {
+  it('в inline HTML есть .btn-reject, fetch /reject и показ только для To Do', () => {
+    const html = getAssetsHtml();
+    assert.ok(html.includes('btn-reject'), 'CSS-класс .btn-reject');
+    assert.ok(html.includes("/reject'"), 'POST /api/tasks/<id>/reject');
+    assert.ok(html.includes("task.status === 'To Do'"), 'кнопка только для To Do');
+    assert.ok(html.includes('✖ Reject'), 'текст кнопки');
   });
 });

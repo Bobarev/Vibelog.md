@@ -67,12 +67,19 @@ vibelog task list --ready --sort priority
 # Просмотр задачи
 vibelog task view LB-1
 
+# Отклонение задачи (Rejected + перенос файла в backlog/completed/;
+# опциональный комментарий добавляется в задачу). Если задача хотя бы
+# раз была в статусе Code — предварительный откат начатых изменений
+# через LLM-фазу reject, иначе чисто механически, без LLM
+vibelog task reject LB-1 "задача больше не актуальна"
+
 # Доска задач (терминал)
 vibelog board
 
 # Веб-интерфейс (Kanban-доска, React UI из web/dist; сборка UI: pnpm web:build)
 # Перенос карточки в Spec/In Progress/Review запускает фазу qwen
 # (оркестратор VL-28; требуется qwen в PATH или VIBELOG_QWEN_BIN)
+# Карточка в To Do содержит кнопку «✖ Reject» — отклонение задачи
 vibelog browser
 
 # Поиск (флаги: --status/--type/--priority/--limit)
@@ -219,7 +226,7 @@ vibelog init "Name" --no-skills       # не создавать команды
 vibelog bot   # long-polling: /start + пин-код для привязки чата
 ```
 
-Команды: `/tasks`, `/task VL-1`, `/board`, `/diff`, `/commits`, фазы `/spec`, `/plan`, `/code`, `/close`, `/comment`, `/prompt`, настройки `/set`, самоперезапуск `/restart`. Полный список — в [руководстве пользователя](backlog/docs/doc-6-Руководство-пользователя-Vibelogmd.md).
+Команды: `/tasks`, `/task VL-1`, `/board`, `/diff`, `/commits`, фазы `/spec`, `/plan`, `/code`, `/close`, `/comment`, `/prompt`, настройки `/set`, самоперезапуск `/restart`. В карточке `/task` для задач в To Do есть кнопка «✖ Reject» (отклонение: статус Rejected + перенос в `backlog/completed/`; см. VL-144). Полный список — в [руководстве пользователя](backlog/docs/doc-6-Руководство-пользователя-Vibelogmd.md).
 
 ### Параллельная разработка в git-ветках (VL-107)
 

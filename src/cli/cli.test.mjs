@@ -11,7 +11,7 @@
 import { describe, it, beforeAll, afterAll, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync, existsSync, readFileSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync, readFileSync, mkdtempSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
@@ -111,6 +111,43 @@ describe('CLI — интеграционные тесты', () => {
     await capture(() => runCmd(['task', 'create', 'Вторая задача', '--labels', 'bug,urgent', '--priority', 'High'], runTask));
     const out = await capture(() => runCmd(['task', 'list'], runTask));
     assert.ok(out.includes('clt-2'));
+  });
+
+  // ── VL-144: vibelog task reject ──
+
+  it('task reject — механика: Rejected + completed/ + комментарий (VL-144)', async () => {
+    // clt-3 в To Do (никогда не была в Code) → синхронный механический путь
+    await capture(() => runCmd(['task', 'create', 'Отклоняемая'], runTask));
+    const out = await capture(() => runCmd(['task', 'reject', 'clt-3', 'причина', 'отказа'], runTask));
+    assert.ok(out.includes('отклонена'), `вывод reject: ${out}`);
+    assert.ok(out.includes('Rejected'), `статус в выводе: ${out}`);
+    // Файл ушёл в completed/
+    assert.ok(!existsSync(join(testDir, 'backlog', 'tasks', 'clt-3 - Отклоняемая.md')), 'файл должен уйти из tasks/');
+    const completed = readdirSync(join(testDir, 'backlog', 'completed')).filter(f => f.startsWith('clt-3'));
+    assert.equal(completed.length, 1, 'файл в completed/');
+    const content = readFileSync(join(testDir, 'backlog', 'completed', completed[0]), 'utf-8');
+    assert.ok(content.includes('Rejected'), 'статус Rejected в файле');
+    assert.ok(content.includes('причина отказа'), 'комментарий в файле');
+  });
+
+  it('task reject без ID — ошибка с подсказкой (VL-144)', async () => {
+    // printError пишет через console.error (src/cli/ui.ts), а capture
+    // перехватывает только console.log — spy'им error отдельно.
+    // ВАЖНО: mockRestore() в vitest очищает mock.calls — читаем ДО restore
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let out = '';
+    try {
+      await runCmd(['task', 'reject'], runTask);
+      out = spy.mock.calls.map((c) => c.join(' ')).join('\n');
+    } finally {
+      spy.mockRestore();
+    }
+    assert.ok(out.includes('Укажите ID задачи'), `вывод: ${out}`);
+  });
+
+  it('help task — содержит reject <id> (VL-144)', async () => {
+    const out = await capture(() => route(['task', '--help']));
+    assert.ok(out.includes('reject <id>'), `help task: ${out}`);
   });
 
   it('search — поиск задач', async () => {

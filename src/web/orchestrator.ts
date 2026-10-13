@@ -18,7 +18,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderPrompt, taskBlockText, taskExtraVars } from './phase-prompt.js';
 import type { Phase } from './phase-prompt.js';
-import { getTask } from '../core/store.js';
+import { getTask, rejectTaskFile, wasInCode } from '../core/store.js';
+import type { Task } from '../core/task.js';
 import { ensureTaskWorktree, taskBranchName, taskWorktreeDir } from '../core/worktree.js';
 import { explainQwenParse, parseQwenResult } from './qwen-result.js';
 import type { QwenResult } from './qwen-result.js';
@@ -143,6 +144,53 @@ export function startPhase(
     return { error: (err as Error).message };
   }
   return spawnQwenRun(cwd, taskId, phase as Phase, prompt, onExit, agent);
+}
+
+/**
+ * Отклоняет задачу (VL-144): статус Rejected + архив в backlog/completed/.
+ *
+ * Механика и LLM разделены:
+ * - задача НИКОГДА не бывшая в Code (wasInCode === false) — откатывать нечего,
+ *   rejectTaskFile выполняется синхронно, LLM не запускается;
+ * - бывшая хотя бы раз в Code — запускается фаза reject (LLM-откат начатых
+ *   незакоммиченных изменений), механика (статус+архив) выполняется в onExit
+ *   завершения фазы: файл задачи должен существовать, пока агент его читает.
+ *
+ * @param cwd — рабочая директория проекта
+ * @param id — ID задачи
+ * @param comment — причина отказа (комментарий в задачу + {{comment}} промпта)
+ * @param opts — onExit: вызывается после завершения LLM-фазы (и НЕ вызывается
+ *   на синхронном механическом пути — там задача уже отклонена к возврату);
+ *   agent — агент LLM-пути
+ * @returns { rejected: true, task } — механика выполнена синхронно;
+ *   StartResult — LLM-путь запущен (202) либо ошибка (не найдена/занята)
+ */
+export function rejectTask(
+  cwd: string,
+  id: string,
+  comment?: string,
+  opts?: { onExit?: PhaseExitCallback; agent?: 'qwen' | 'vb' }
+): { rejected: true; task: Task } | StartResult {
+  const task = getTask(cwd, id);
+  if (!task) {
+    return { error: `Задача не найдена: ${id}` };
+  }
+  // Никогда не была в Code → чистая механика, LLM не нужен (решение Phase 1)
+  if (!wasInCode(task)) {
+    return { rejected: true, task: rejectTaskFile(cwd, id, comment) };
+  }
+  // Была в Code → LLM-откат начатых изменений, механика — в onExit
+  return startPhase(
+    cwd,
+    id,
+    'reject',
+    (run) => {
+      rejectTaskFile(cwd, id, comment);
+      opts?.onExit?.(run);
+    },
+    { comment: comment ?? '' },
+    opts?.agent ?? 'qwen'
+  );
 }
 
 /**
@@ -393,7 +441,7 @@ function spawnQwenRun(
   // MCP-сервера), пришедшая между частями гигантской JSON-строки stdout,
   // вклинивалась в её середину и result терялся «в половине случаев».
   const phaseFlags =
-    phase === 'spec' || phase === 'plan'
+    phase === 'spec' || phase === 'plan' || phase === 'reject'
       ? ['--allowed-mcp-server-names', 'vibelog']
       : [];
   // VL-93: extraArgs сразу после позиционного промпта (--resume <sessionId>);
