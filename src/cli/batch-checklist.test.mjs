@@ -171,4 +171,53 @@ describe('VL-15 — MCP manage_ac/dod с массивами', () => {
       /Неверный индекс: 5/
     );
   });
+
+  // ============================================================
+  // VL-135 — батч-отметка: 'all', строка-массив, batch-add, дедуп
+  // ============================================================
+
+  it('batch-add: text-массив → отдельные пункты, не слияние (VL-135)', async () => {
+    const t = createTaskFile(testDir, { title: 'Батч-add' });
+    const res = await handleToolCall('backlog_manage_ac', { id: t.id, action: 'add', text: ['X1', 'X2'] }, testDir);
+    assert.match(res, /Добавлено критериев: 2 \(X1, X2\)/);
+    const task = getTask(testDir, t.id);
+    // Регресс-ловилка: раньше ['X1','X2'] сливалось в один критерий «X1,X2»
+    assert.deepEqual(task.acceptanceCriteria.map(c => c.text), ['X1', 'X2']);
+  });
+
+  it("check 'all' — все пункты списка (VL-135)", async () => {
+    const t = createTaskFile(testDir, { title: 'Все пункты' });
+    await handleToolCall('backlog_manage_ac', { id: t.id, action: 'add', text: ['Y1', 'Y2', 'Y3'] }, testDir);
+    const res = await handleToolCall('backlog_manage_ac', { id: t.id, action: 'check', index: 'all' }, testDir);
+    assert.match(res, /Отмечено пунктов: 3 \(1, 2, 3\)/);
+    const task = getTask(testDir, t.id);
+    assert.ok(task.acceptanceCriteria.every(c => c.checked), 'все пункты должны быть отмечены');
+  });
+
+  it("check со строкой-массивом '[1, 3]' (VL-135)", async () => {
+    const t = createTaskFile(testDir, { title: 'Строка-массив' });
+    await handleToolCall('backlog_manage_ac', { id: t.id, action: 'add', text: ['Z1', 'Z2', 'Z3'] }, testDir);
+    const res = await handleToolCall('backlog_manage_ac', { id: t.id, action: 'check', index: '[1, 3]' }, testDir);
+    assert.match(res, /Отмечено пунктов: 2 \(1, 3\)/);
+    const task = getTask(testDir, t.id);
+    assert.deepEqual(task.acceptanceCriteria.map(c => c.checked), [true, false, true]);
+  });
+
+  it('remove с дублями индексов — дедуп, позиции не сдвигаются дважды (VL-135)', async () => {
+    const t = createTaskFile(testDir, { title: 'Дедуп' });
+    await handleToolCall('backlog_manage_dod', { id: t.id, action: 'add', text: ['W1', 'W2', 'W3'] }, testDir);
+    const res = await handleToolCall('backlog_manage_dod', { id: t.id, action: 'remove', index: [2, 2] }, testDir);
+    assert.match(res, /Удалено пунктов: 1 \(2\)/);
+    const task = getTask(testDir, t.id);
+    assert.deepEqual(task.definitionOfDone.map(d => d.text), ['W1', 'W3']);
+  });
+
+  it('строки-массивы битого JSON → reject с подсказкой VL-120 (VL-135)', async () => {
+    const t = createTaskFile(testDir, { title: 'Битый JSON' });
+    await handleToolCall('backlog_manage_ac', { id: t.id, action: 'add', text: 'К1' }, testDir);
+    await assert.rejects(
+      handleToolCall('backlog_manage_ac', { id: t.id, action: 'check', index: '[broken' }, testDir),
+      /Неверный индекс: "\[broken".*целое число, начиная с 1/s
+    );
+  });
 });

@@ -106,8 +106,8 @@ vibelog instructions overview
 | `backlog_view_task` | Просмотр задачи по ID |
 | `backlog_update_status` | Обновить статус |
 | `backlog_update_task` | Универсальное обновление полей (title, priority, type, plan, notes, final_summary) |
-| `backlog_manage_ac` | Управление AC (add/check/uncheck/remove/list; index — номер или массив) |
-| `backlog_manage_dod` | Управление DoD (add/check/uncheck/remove/list; index — номер или массив) |
+| `backlog_manage_ac` | Управление AC (add/check/uncheck/remove/list; index — номер, массив или "all"; text — строка или массив) |
+| `backlog_manage_dod` | Управление DoD (add/check/uncheck/remove/list; index — номер, массив или "all"; text — строка или массив) |
 | `backlog_add_comment` | Добавить комментарий |
 | `backlog_update_dependencies` | Управление зависимостями (add/remove, детект циклов) |
 | `backlog_search` | Поиск с фильтрами (query, status, type, project, priority, modifiedFiles, limit) |

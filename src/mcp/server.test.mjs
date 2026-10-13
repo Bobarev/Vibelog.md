@@ -225,6 +225,68 @@ describe('MCP-сервер', () => {
     assert.ok(goodResp.result.content[0].text.includes('#2'));
   });
 
+  it('tools/call — батч-отметка (VL-135): массив, all, строка-массив', async () => {
+    // Задача с 3 AC: check [1,3] / 'all' / '[2]' — новый формат «Отмечено пунктов: N (…)»;
+    // scalar и подсказки VL-120 не регрессируют.
+    const created = await callMcp([
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_create_task', arguments: { title: 'Batch AC' } } },
+    ]);
+    const createdId = created.find(r => r.id === 2).result.content[0].text.match(/mcp-\d+/)[0];
+    const responses = await callMcp([
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id: createdId, action: 'add', text: 'К1' } } },
+      { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id: createdId, action: 'add', text: 'К2' } } },
+      { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id: createdId, action: 'add', text: 'К3' } } },
+      // два пункта за один вызов
+      { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id: createdId, action: 'check', index: [1, 3] } } },
+      // все пункты
+      { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id: createdId, action: 'check', index: 'all' } } },
+      // строка-массив
+      { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id: createdId, action: 'check', index: '[2]' } } },
+      // scalar-строка — старый формат с «#2»
+      { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id: createdId, action: 'uncheck', index: '2' } } },
+      // невалидные значения — подсказка VL-120 не регрессирует
+      { jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id: createdId, action: 'check', index: 'NaN' } } },
+      { jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id: createdId, action: 'check', index: '2.5' } } },
+      // list — состояние после батчей
+      { jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id: createdId, action: 'list' } } },
+    ]);
+    const byId = (id) => responses.find(r => r.id === id);
+
+    const arr = byId(6);
+    assert.ok(!arr.result.isError, 'check [1,3] должен пройти');
+    assert.ok(arr.result.content[0].text.includes('Отмечено пунктов: 2 (1, 3)'),
+      `неожиданный ответ батча: ${arr.result.content[0].text}`);
+
+    const all = byId(7);
+    assert.ok(!all.result.isError, "check 'all' должен пройти");
+    assert.ok(all.result.content[0].text.includes('Отмечено пунктов: 3 (1, 2, 3)'),
+      `неожиданный ответ all: ${all.result.content[0].text}`);
+
+    const strArr = byId(8);
+    assert.ok(!strArr.result.isError, `check '[2]' должен пройти: ${strArr.result.content[0].text}`);
+
+    const scalar = byId(9);
+    assert.ok(!scalar.result.isError, 'scalar uncheck "2" должен пройти');
+    assert.ok(scalar.result.content[0].text.includes('#2'),
+      `scalar-формат изменился: ${scalar.result.content[0].text}`);
+
+    for (const id of [10, 11]) {
+      const bad = byId(id);
+      assert.equal(bad.result.isError, true, `index id=${id} должен дать isError`);
+      const text = bad.result.content[0].text;
+      assert.ok(text.includes('целое число, начиная с 1'), `нет подсказки формата: ${text}`);
+      assert.ok(text.includes('пунктов чек-листа: 3'), `нет количества пунктов: ${text}`);
+    }
+
+    // list: К1 ✓ (check [1,3] + all), К2 снята scalar-uncheck, К3 ✓
+    const listText = byId(12).result.content[0].text;
+    assert.ok(/1\. ✓ К1/.test(listText), `К1 должна быть отмечена: ${listText}`);
+    assert.ok(/2\. ○ К2/.test(listText), `К2 должна быть снята: ${listText}`);
+    assert.ok(/3\. ✓ К3/.test(listText), `К3 должна быть отмечена: ${listText}`);
+  });
+
   it('Неизвестный метод → error', async () => {
     const responses = await callMcp([
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },

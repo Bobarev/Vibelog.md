@@ -157,8 +157,8 @@ export function listTools(): ToolDefinition[] {
         properties: {
           id: { type: 'string', description: 'ID задачи' },
           action: { type: 'string', enum: ['add', 'check', 'uncheck', 'remove', 'list'], description: 'Действие' },
-          text: { type: 'string', description: 'Текст критерия (для action=add)' },
-          index: { anyOf: [{ type: 'number' }, { type: 'string' }, { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] } }], description: 'Номер(а) критерия с 1; строка-число ("3") тоже принимается — массив для check/uncheck/remove' },
+          text: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }], description: 'Текст критерия (для action=add); массив строк — несколько за один вызов' },
+          index: { anyOf: [{ type: 'number' }, { type: 'string' }, { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] } }], description: 'Номер(а) критерия с 1; строка-число ("3"); массив [1,2,3] — несколько; "all" — все пункты; строка-массив "[1, 2]" тоже принимается' },
         },
         required: ['id', 'action'],
       },
@@ -171,8 +171,8 @@ export function listTools(): ToolDefinition[] {
         properties: {
           id: { type: 'string', description: 'ID задачи' },
           action: { type: 'string', enum: ['add', 'check', 'uncheck', 'remove', 'list'], description: 'Действие' },
-          text: { type: 'string', description: 'Текст критерия (для action=add)' },
-          index: { anyOf: [{ type: 'number' }, { type: 'string' }, { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] } }], description: 'Номер(а) критерия с 1; строка-число ("3") тоже принимается — массив для check/uncheck/remove' },
+          text: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }], description: 'Текст критерия (для action=add); массив строк — несколько за один вызов' },
+          index: { anyOf: [{ type: 'number' }, { type: 'string' }, { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] } }], description: 'Номер(а) критерия с 1; строка-число ("3"); массив [1,2,3] — несколько; "all" — все пункты; строка-массив "[1, 2]" тоже принимается' },
         },
         required: ['id', 'action'],
       },
@@ -611,13 +611,36 @@ function toolManageDod(args: ToolArgs, cwd: string): string {
  * принимается только строго по /^\d+$/ (после trim), а число — только целое.
  */
 function parseChecklistIndexes(raw: unknown, listLength: number): number[] {
-  const items = Array.isArray(raw) ? raw : [raw];
   const hint = (v: unknown): Error =>
     new Error(
       `Неверный индекс: ${JSON.stringify(v)}. Индекс — целое число, начиная с 1 ` +
         `(текущих пунктов чек-листа: ${listLength}). Пример: index: 2 или index: "3".`
     );
 
+  // VL-135: строка «all» — модель хочет отметить все пункты за один вызов.
+  // На пустом чек-листе отдельная подсказка (hint), а не «0 пунктов» — это тоже ошибка вызова.
+  if (typeof raw === 'string' && raw.trim() === 'all') {
+    if (listLength === 0) throw hint(raw);
+    return Array.from({ length: listLength }, (_, i) => i + 1);
+  }
+
+  // VL-135: строка-массив "[1, 2, 3]" — модель шлёт JSON-строку вместо массива
+  // (после VL-120 такой вызов падал «Неверный индекс» и тратил ход на повтор).
+  if (typeof raw === 'string' && raw.trim().startsWith('[')) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw.trim());
+    } catch {
+      // SyntaxError наружу не выпускаем — иначе модель увидит невнятную ошибку JSON
+      // вместо привычной подсказки формата (VL-120-стиль, с оригинальной строкой).
+      throw hint(raw);
+    }
+    if (!Array.isArray(parsed)) throw hint(raw);
+    // Каждый элемент проходит СУЩЕСТВУЮЩУЮ валидацию ниже (целое/строка-число, 1..length)
+    raw = parsed;
+  }
+
+  const items = Array.isArray(raw) ? raw : [raw];
   const indexes: number[] = [];
   for (const v of items) {
     let n: number;
@@ -632,7 +655,8 @@ function parseChecklistIndexes(raw: unknown, listLength: number): number[] {
     if (n < 1 || n > listLength) throw hint(v);
     indexes.push(n);
   }
-  return indexes;
+  // VL-135: дедуп — иначе remove с [2, 2] сдвинет позиции дважды
+  return [...new Set(indexes)];
 }
 
 /**
@@ -660,6 +684,18 @@ function manageChecklist(args: ToolArgs, cwd: string, field: 'acceptanceCriteria
 
     case 'add': {
       if (!args.text) throw new Error('Для action=add требуется параметр text.');
+      // VL-135: batch-add — массив строк создаёт несколько пунктов за один вызов
+      // (раньше сливалось в один критерий «B1,B2»; симметрия с батч-отметкой)
+      if (Array.isArray(args.text)) {
+        for (const t of args.text) {
+          if (typeof t !== 'string' || t.trim() === '') {
+            throw new Error('Для action=add text — строка или массив непустых строк.');
+          }
+        }
+        for (const t of args.text) list.push({ text: t, checked: false });
+        updateTaskFile(cwd, args.id as string, { [field]: list });
+        return `Добавлено критериев: ${args.text.length} (${args.text.join(', ')})`;
+      }
       list.push({ text: args.text as string, checked: false });
       updateTaskFile(cwd, args.id as string, { [field]: list });
       return `Добавлен критерий #${list.length}: ${args.text}`;
@@ -667,13 +703,22 @@ function manageChecklist(args: ToolArgs, cwd: string, field: 'acceptanceCriteria
 
     case 'check':
     case 'uncheck': {
-      // index: одиночный номер или массив; нормализация — parseChecklistIndexes (VL-120)
+      // Батч (VL-135): массив, строка-массив "[1, 2]" или «all» → новый формат ответа.
+      // Scalar (2, "2") → старый формат без изменений (регрессия VL-120, server.test.mjs).
+      const batch = Array.isArray(args.index) ||
+        (typeof args.index === 'string' && !/^\d+$/.test(args.index.trim()));
+      // index: одиночный номер или массив; нормализация — parseChecklistIndexes (VL-120/VL-135)
       const indexes = parseChecklistIndexes(args.index, list.length);
       const checked = action === 'check';
       for (const i of indexes) {
         list[i - 1].checked = checked;
       }
       updateTaskFile(cwd, args.id as string, { [field]: list });
+      if (batch) {
+        return checked
+          ? `Отмечено пунктов: ${indexes.length} (${indexes.join(', ')})`
+          : `Снято пунктов: ${indexes.length} (${indexes.join(', ')})`;
+      }
       return checked
         ? `Отмечены критерии #${indexes.join(', #')}`
         : `Сняты отметки с критериев #${indexes.join(', #')}`;
@@ -681,11 +726,14 @@ function manageChecklist(args: ToolArgs, cwd: string, field: 'acceptanceCriteria
 
     case 'remove': {
       // Несколько индексов — удаляем по убыванию, чтобы не сдвигать позиции
+      const batch = Array.isArray(args.index) ||
+        (typeof args.index === 'string' && !/^\d+$/.test(args.index.trim()));
       const indexes = parseChecklistIndexes(args.index, list.length);
       for (const i of [...indexes].sort((a, b) => b - a)) {
         list.splice(i - 1, 1);
       }
       updateTaskFile(cwd, args.id as string, { [field]: list });
+      if (batch) return `Удалено пунктов: ${indexes.length} (${indexes.join(', ')})`;
       return `Удалены критерии #${indexes.join(', #')}`;
     }
 
