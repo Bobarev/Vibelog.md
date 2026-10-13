@@ -41,6 +41,7 @@ export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'code', description: 'Фаза 3 (Code): /code[:agent] VL-<id> [комментарий]', usage: '/code[:agent] VL-<id> [комментарий]' },
   { command: 'close', description: 'Закрыть задачу (Фаза Close): /close[:agent] VL-<id>', usage: '/close[:agent] VL-<id>' },
   { command: 'prompt', description: 'Запрос LLM без задачи: qwen или встроенный агент (/prompt:vb)', usage: '/prompt[:agent] <текст>' },
+  { command: 'analyze', description: 'Анализ сессии агента — статистика, вердикт, рекомендации: /analyze vb:agent-XXX', usage: '/analyze[:agent] <session-ref>' },
   { command: 'restart', description: 'Перезапустить бота: /restart [VL-N] — из ветки vb/vl-N, без аргумента — из корневого dist/' },
 ];
 

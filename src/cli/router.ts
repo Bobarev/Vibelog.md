@@ -35,6 +35,7 @@ import { runDraft } from './commands/draft.js';
 import { runDecision } from './commands/decision.js';
 import { runBot } from './commands/bot.js';
 import { runQwenDebug } from './commands/qwen-debug.js';
+import { runAgent } from './commands/agent.js';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -91,6 +92,8 @@ export async function route(args: string[]): Promise<void> {
       return runBot(positional, flags, cwd);
     case 'qwen-debug':
       return runQwenDebug(cwd);
+    case 'agent':
+      return runAgent(subcommand, positional, flags, cwd);
     case 'doctor':
       return runDoctor(positional, flags, cwd);
     case 'milestone':
@@ -123,6 +126,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('board', colors.cyan)} [--export]                   Канбан-доска
   ${colorize('browser', colors.cyan)} [--port N] [--no-open]      Веб-интерфейс
   ${colorize('bot', colors.cyan)}                             Telegram-бот (grammy)
+  ${colorize('agent', colors.cyan)} analyze <ref>       Анализ сессии агента (статистика/вердикт)
   ${colorize('qwen-debug', colors.cyan)}                  Дебаг-прогон qwen (ping, stream-json)
   ${colorize('search', colors.cyan)} "query" [--status ...]      Поиск задач с фильтрами
   ${colorize('instructions', colors.cyan)} [topic]               Инструкции для агентов
@@ -250,6 +254,14 @@ vibelog bot
 введите его в Telegram после /start для привязки чата.
 
 Команды: /tasks, /task <id>, /board`,
+
+    agent: `
+vibelog agent analyze <session-ref>
+
+Штатный разбор сессии vibelog-agent (VL-141) — CLI-паритет /analyze бота:
+статистика jsonl (длительность, wall-убийства, прогоны «Продолжи», профиль
+tool-вызовов), вердикт «объём задачи vs тупик», рекомендации.
+  session-ref — vb:agent-XXX либо agent-XXX (только сессии vibelog-agent)`,
 
     draft: `
 vibelog draft <subcommand> [опции]

@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { renderPrompt, startPhase, startPrompt, startResume, getRun, setSpawnEnvBaseForTests } from '../../dist/web/orchestrator.js';
+import { renderPrompt, startAnalyze, startPhase, startPrompt, startResume, getRun, setSpawnEnvBaseForTests } from '../../dist/web/orchestrator.js';
 import { handleApi } from '../../dist/web/api.js';
 import { addComment, createTaskFile } from '../../dist/core/store.js';
 import { ensureTaskWorktree } from '../../dist/core/worktree.js';
@@ -1420,5 +1420,114 @@ describe('orchestrator (VL-28)', () => {
       setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(rbRoot, { recursive: true, force: true });
     }
+  });
+
+  // ── VL-141: startAnalyze — headless-разбор сессии агента без задачи ──
+
+  /** Создаёт тестовую сессию vibelog-agent (+ meta) в указанном root. */
+  function makeAgentSession(root, sessionId, meta) {
+    const dir = join(root, '.vibelog', 'agent-sessions');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `${sessionId}.jsonl`),
+      JSON.stringify({ role: 'user', content: 'привет' }) + '\n',
+      'utf-8'
+    );
+    if (meta) {
+      writeFileSync(join(dir, `${sessionId}.meta.json`), JSON.stringify(meta), 'utf-8');
+    }
+  }
+
+  it('startAnalyze: спавн, промпт содержит sessionId/путь, без {{...}} (VL-141)', async () => {
+    const anRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-an-'));
+    mkdirSync(join(anRoot, 'backlog'), { recursive: true });
+    writeFileSync(join(anRoot, 'backlog', 'config.yml'), 'project_name: An Test\n', 'utf-8');
+    makeAgentSession(anRoot, 'agent-555', { taskId: '', phase: 'code', cwd: anRoot });
+    setStubEnv({
+      VL28_STUB_MARKER: join(anRoot, 'marker-an.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RESULT: JSON.stringify({
+        type: 'result', subtype: 'success', is_error: false,
+        duration_ms: 800, duration_api_ms: 700, num_turns: 3,
+        result: 'статистика готова',
+        usage: { input_tokens: 9, output_tokens: 4, cache_read_input_tokens: 1, total_tokens: 13 },
+        session_id: 'an-1',
+      }),
+    });
+    try {
+      // session-ref с префиксом vb: — как присылает бот
+      const res = startAnalyze(anRoot, 'vb:agent-555');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('analyze-agent-555');
+      assert.equal(run.exitCode, 0);
+      assert.equal(run.phase, 'analyze');
+      assert.equal(run.result?.result, 'статистика готова');
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
+      const prompt = argv[0];
+      assert.ok(prompt.includes('agent-555'), 'sessionId в промпте');
+      assert.ok(prompt.includes('.vibelog/agent-sessions/agent-555.jsonl'), 'путь к jsonl в промпте');
+      assert.ok(prompt.includes('протокол') || prompt.includes('статистик'), 'шаблон analyze подставлен');
+      // Ни одной неподставленной подстановки {{...}}
+      assert.doesNotMatch(prompt, /\{\{[a-zA-Z]+\}\}/, 'неподставленные {{...}} в промпте');
+      // analyze — флаг vibelog-MCP для рекомендаций (VL-141)
+      assert.ok(argv.includes('--allowed-mcp-server-names'), 'analyze получает vibelog-MCP');
+    } finally {
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
+      rmSync(anRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('startAnalyze: guard по ключу analyze-<id>; разные сессии параллельны (VL-141)', async () => {
+    const gRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-ang-'));
+    mkdirSync(join(gRoot, 'backlog'), { recursive: true });
+    writeFileSync(join(gRoot, 'backlog', 'config.yml'), 'project_name: An Guard\n', 'utf-8');
+    makeAgentSession(gRoot, 'agent-601');
+    makeAgentSession(gRoot, 'agent-602');
+    setStubEnv({ VL28_STUB_MARKER: join(gRoot, 'marker-ang.txt'), VL28_STUB_SLEEP: '1500', VL28_STUB_EXIT: '0', });
+    try {
+      const first = startAnalyze(gRoot, 'agent-601');
+      assert.equal(first.started, true, JSON.stringify(first));
+      // Повторный запуск ТОЙ ЖЕ сессии — guard
+      const second = startAnalyze(gRoot, 'vb:agent-601');
+      assert.match(second.error, /уже выполняется/);
+      // Разная сессия — параллельно разрешено (другой guard-ключ)
+      const other = startAnalyze(gRoot, 'agent-602');
+      assert.equal(other.started, true, JSON.stringify(other));
+      assert.equal(getRun('analyze-agent-601').running, true);
+      assert.equal(getRun('analyze-agent-602').running, true);
+      await waitDone('analyze-agent-601');
+      await waitDone('analyze-agent-602');
+    } finally {
+      setStubEnv({ VL28_STUB_MARKER: undefined, VL28_STUB_SLEEP: '0' });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
+      rmSync(gRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('startAnalyze: нет jsonl → «Сессия не найдена» (VL-141)', () => {
+    const mRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-anm-'));
+    try {
+      const res = startAnalyze(mRoot, 'agent-999');
+      assert.match(res.error, /не найдена/);
+    } finally {
+      rmSync(mRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('startAnalyze: битый ref (UUID/VL-1/пусто) → error (VL-141)', () => {
+    const badRefs = ['vb:6e3f8a9c-1234-4abc-9def-000000000000', 'VL-1', '', 'agent-abc'];
+    for (const ref of badRefs) {
+      const res = startAnalyze(testRoot, ref);
+      assert.ok('error' in res, `ожидался error для ref "${ref}"`);
+      assert.match(res.error, /Некорректный session-ref/);
+    }
+  });
+
+  it('startPhase отклоняет phase=analyze — только через startAnalyze (VL-141)', () => {
+    const res = startPhase(testRoot, 'ot-1', 'analyze');
+    assert.ok('error' in res);
+    assert.match(res.error, /startAnalyze/);
   });
 });
