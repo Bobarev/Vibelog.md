@@ -221,7 +221,13 @@ vibelog init "Name" --no-skills       # не создавать команды
 vibelog bot   # long-polling: /start + пин-код для привязки чата
 ```
 
-Команды: `/tasks`, `/task VL-1`, `/board`, `/diff`, `/commits`, фазы `/spec`, `/plan`, `/code`, `/close`, `/comment`, `/prompt`, настройки `/set`, самоперезапуск `/restart`. Полный список — в [руководстве пользователя](backlog/docs/doc-6-Руководство-пользователя-Vibelogmd.md).
+Команды: `/tasks`, `/task VL-1`, `/board`, `/diff`, `/commits`, фазы `/spec`, `/plan`, `/code`, `/close`, `/comment`, `/prompt`, разбор сессии `/analyze vb:agent-XXX`, настройки `/set`, самоперезапуск `/restart`. Полный список — в [руководстве пользователя](backlog/docs/doc-6-Руководство-пользователя-Vibelogmd.md).
+
+Разбор сессии агента (VL-141) доступен и без бота — CLI-паритет `/analyze`:
+
+```bash
+vibelog agent analyze vb:agent-XXX   # статистика jsonl, вердикт, рекомендации
+```
 
 ### Параллельная разработка в git-ветках (VL-107)
 

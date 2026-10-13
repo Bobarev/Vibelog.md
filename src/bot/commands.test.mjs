@@ -16,6 +16,7 @@ import {
   richToText,
   parsePlanCommand,
   parsePromptCommand,
+  parseAnalyzeCommand,
   parseRestartCommand,
   parseSetCommand,
   parseSpecCommand,
@@ -258,6 +259,57 @@ describe('parsePromptCommand (VL-66/92)', () => {
       assert.match(e.error, /Синтаксис/);
       assert.match(e.error, /\/prompt/);
     }
+  });
+});
+
+describe('parseAnalyzeCommand (VL-141)', () => {
+  it('vb:agent-123 → sessionId agent-123 без agent (дефолт — из настроек)', () => {
+    assert.deepEqual(parseAnalyzeCommand('vb:agent-123'), { sessionId: 'agent-123' });
+  });
+
+  it('agent-123 без префикса vb: — тот же sessionId', () => {
+    assert.deepEqual(parseAnalyzeCommand('agent-123'), { sessionId: 'agent-123' });
+  });
+
+  it('суффикс :vb / :qwen в слове команды → agent (VL-94)', () => {
+    assert.deepEqual(parseAnalyzeCommand('vb:agent-123', 'analyze:vb'), {
+      sessionId: 'agent-123',
+      agent: 'vb',
+    });
+    assert.deepEqual(parseAnalyzeCommand('agent-123', 'analyze:qwen'), {
+      sessionId: 'agent-123',
+      agent: 'qwen',
+    });
+  });
+
+  it('пусто / пробелы → error с подсказкой', () => {
+    const e1 = parseAnalyzeCommand('');
+    const e2 = parseAnalyzeCommand('   ');
+    for (const e of [e1, e2]) {
+      assert.ok('error' in e);
+      assert.match(e.error, /Синтаксис/);
+      assert.match(e.error, /\/analyze/);
+      assert.match(e.error, /vb:agent/);
+    }
+  });
+
+  it('VL-1 (задача вместо сессии) → error с подсказкой', () => {
+    const e = parseAnalyzeCommand('VL-1');
+    assert.ok('error' in e);
+    assert.match(e.error, /Синтаксис/);
+  });
+
+  it('qwen-UUID → error: анализ только для сессий vibelog-agent', () => {
+    const e = parseAnalyzeCommand('vb:6e3f8a9c-1234-4abc-9def-000000000000');
+    assert.ok('error' in e);
+    assert.match(e.error, /Синтаксис/);
+    assert.match(e.error, /agent-/);
+  });
+
+  it('неизвестный суффикс :foo → error с агентами (как у prompt, VL-92)', () => {
+    const e = parseAnalyzeCommand('vb:agent-123', 'analyze:foo');
+    assert.ok('error' in e);
+    assert.match(e.error, /Синтаксис/);
   });
 });
 

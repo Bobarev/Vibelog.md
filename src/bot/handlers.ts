@@ -43,10 +43,11 @@ import { commandsHelp } from './registry.js';
 import { spawnReplacementBot } from './restart.js';
 import { buildTaskWorktree, ensureTaskWorktree, taskBranchName, worktreeCliPath } from '../core/worktree.js';
 import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
-import { getRun, startPhase, startPrompt, startResume } from '../web/orchestrator.js';
+import { getRun, startAnalyze, startPhase, startPrompt, startResume } from '../web/orchestrator.js';
 import {
   extractSessionRef,
   richToText,
+  parseAnalyzeCommand,
   parseCloseCommand,
   parseCodeCommand,
   parseCommitsCommand,
@@ -889,7 +890,44 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   // Фолбэк VL-94 для /<фаза>:<неизвестный агент>: как у /prompt — command-
   // хендлеры выше не сматчат 'spec:foo' (только зарегистрированные имена),
   // подсказка шлётся здесь, спавна нет
-  bot.hears(/^\/(spec|plan|code|close|comment):(\S+)/, async (ctx) => {
+  // ── /analyze — штатный разбор сессии агента по session-ref (VL-141) ──
+  // Владелец регулярно просит «проанализируй agent-XXX» (ручной цикл VL-98,
+  // VL-113, VL-117, VL-134, VL-122, VL-137): парсинг jsonl, статистика
+  // wall-убийств/прогонов, вердикт, рекомендации. Фаза analyze — headless
+  // без задачи (как /prompt); контекст (задача/фаза/cwd) — meta.json сессии.
+  // Суффикс :<agent> как у /prompt (VL-94). Активен только один анализ
+  // на сессию (guard в spawnQwenRun: ключ analyze-<sessionId>).
+  bot.command(['analyze', 'analyze:qwen', 'analyze:vb'], async (ctx) => {
+    if (!requireBind(ctx)) return;
+    // ctx.command в grammy 1.46 отсутствует — слово команды из текста (как /prompt)
+    const raw = (ctx.message?.text ?? '').trim();
+    const commandWord = raw.split(/\s+/)[0]?.replace(/^\//, '') ?? 'analyze';
+    const parsed = parseAnalyzeCommand((ctx.match ?? '').toString(), commandWord);
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    // Задачи нет — карточка не шлётся, только информационное сообщение
+    // по шаблону prompt (sendPhaseResult без taskId)
+    const notifyChat = ctx.chat?.id;
+    const onExit: PhaseExitCallback = (run) => {
+      if (notifyChat === undefined) return;
+      void sendPhaseResult(bot, notifyChat, run);
+    };
+    // Явный суффикс :<agent> перекрывает агента по умолчанию из настроек (VL-94)
+    const agent = parsed.agent ?? resolveDefaultAgent(deps.cwd);
+    const result = startAnalyze(deps.cwd, parsed.sessionId, onExit, agent);
+    if ('error' in result) {
+      // Guard «уже выполняется», некорректный session-ref, сессия не найдена
+      await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
+      return;
+    }
+    await sendMd(ctx, `🔬 Анализ сессии ${escapeMarkdownV2(parsed.sessionId)} запущен, PID ${result.pid}`);
+  });
+  // Фолбэк VL-141 для /<фаза>:<неизвестный агент>: как у /prompt — command-
+  // хендлеры выше не сматчат 'analyze:foo' (только зарегистрированные имена),
+  // подсказка шлётся здесь, спавна нет
+  bot.hears(/^\/(spec|plan|code|close|comment|analyze):(\S+)/, async (ctx) => {
     if (!requireBind(ctx)) return;
     const cmd = ctx.match?.[1] ?? 'команда';
     await sendMd(ctx, escapeMarkdownV2(`Синтаксис: /${cmd}[:agent] … (агенты: qwen, vb)`));

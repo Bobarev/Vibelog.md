@@ -215,3 +215,32 @@ describe('VL-142 — phase-2: экономия ходов', () => {
       'phase-2.md: финальный ответ только после отчёта и смены статуса');
   });
 });
+
+// ── VL-141: фаза analyze — headless-разбор сессии агента без задачи ──
+
+describe('VL-141 — фаза analyze', () => {
+  it('renderPrompt: подстановки сессии, неподставленных {{...}} не остаётся', () => {
+    const prompt = renderPrompt('analyze', '', {
+      sessionId: 'agent-123',
+      sessionPhase: 'code',
+      sessionCwd: '/tmp/proj',
+      sessionPath: '.vibelog/agent-sessions/agent-123.jsonl',
+    });
+    assert.ok(prompt.includes('agent-123'), 'sessionId подставился');
+    assert.ok(prompt.includes('.vibelog/agent-sessions/agent-123.jsonl'), 'путь к jsonl подставился');
+    assert.ok(!prompt.includes('{{'), 'неподставленных подстановок не остаться');
+  });
+
+  it('шаблон содержит детерминированный протокол и финал «Готово»', () => {
+    const text = readFileSync(join(templatesDir, 'phase-analyze.md'), 'utf-8');
+    // Протокол статистики jsonl (node-скрипт, без внешних рантаймов)
+    assert.ok(text.includes('node'), 'phase-analyze.md: статистика — node-скриптом');
+    assert.ok(!text.includes('python') || text.includes('ЗАПРЕТ'), 'внешние рантаймы запрещены');
+    // Вердикт + рекомендации с проверкой существующих задач
+    assert.ok(text.includes('вердикт'), 'phase-analyze.md: шаг вердикта');
+    assert.ok(text.includes('backlog_search'), 'phase-analyze.md: проверка открытых задач');
+    assert.ok(text.includes('НОВЫХ задач НЕ создавать'), 'phase-analyze.md: без создания задач');
+    // Терминальный вывод — одно слово
+    assert.ok(text.includes('«Готово»'), 'phase-analyze.md: финал — «Готово»');
+  });
+});

@@ -86,6 +86,14 @@ export interface PromptCommand {
   agent?: AgentName;
 }
 
+/** Результат разбора /analyze (VL-141): сессия агента для разбора + агент-исполнитель. */
+export interface AnalyzeCommand {
+  /** Голый идентификатор сессии (agent-XXX, без префикса vb:). */
+  sessionId: string;
+  /** Агент: задан явно суффиксом :<agent>; иначе — из настроек (VL-94). */
+  agent?: AgentName;
+}
+
 /** Снятие окружающих кавычек. */
 function unquote(value: string): string {
   const trimmed = value.trim();
@@ -421,6 +429,31 @@ export function parsePromptCommand(
   if ('error' in parsed) return parsed;
   if (!parsed.text) return { error: hint };
   return { text: parsed.text, ...(parsed.agent ? { agent: parsed.agent } : {}) };
+}
+
+/**
+ * Разбирает /analyze (VL-141): session-ref сессии vibelog-agent для разбора.
+ * Суффикс :<agent> выбирает агента-исполнителя (как у /prompt, VL-94).
+ * Session-ref в том же формате, что у resume: vb:agent-XXX либо голый
+ * agent-XXX (префикс vb: снимается). qwen-UUID отклоняется — у qwen-сессий
+ * нет jsonl-транскрипта для разбора.
+ *
+ * @param text — аргументы команды (без слова команды)
+ * @param commandWord — слово команды с суффиксом (analyze:vb)
+ * @returns {sessionId, agent?} или {error} с подсказкой
+ */
+export function parseAnalyzeCommand(
+  text: string,
+  commandWord = ''
+): AnalyzeCommand | { error: string } {
+  const hint = 'Синтаксис: /analyze[:agent] vb:agent-<id> (префикс vb: необязателен)';
+  const parsed = extractAgent('analyze', commandWord, text, hint);
+  if ('error' in parsed) return parsed;
+  if (!parsed.text) return { error: hint };
+  // Нормализация vb:agent-XXX → agent-XXX; UUID qwen не матчится → error
+  const bare = parsed.text.replace(/^vb:/, '');
+  if (!/^agent-\d+$/.test(bare)) return { error: hint };
+  return { sessionId: bare, ...(parsed.agent ? { agent: parsed.agent } : {}) };
 }
 
 /** Результат разбора /commits (VL-90): сколько коммитов показать. */

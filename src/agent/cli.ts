@@ -237,6 +237,15 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
 
+  // VL-141: analyze — не задачная фаза: шаблон phase-analyze.md подставляет
+  // {{sessionId}}/{{sessionCwd}} из meta.json сессии, которые CLI в режиме
+  // <фаза> <taskId> не заполняет — рендер дал бы неподставленные заглушки
+  if (isPhaseMode && positionals[0] === 'analyze') {
+    console.error('analyze запускается через vibelog agent analyze <session-ref>');
+    process.exitCode = 1;
+    return;
+  }
+
 
   // Headless: явный флаг, --output-format json (qwen) или не-TTY stdout
   const headless = opts.headless || !process.stdout.isTTY;

@@ -113,6 +113,12 @@ export function startPhase(
   if (phase === 'prompt') {
     return { error: 'Фаза prompt запускается через startPrompt' };
   }
+  // VL-141: analyze не привязан к задаче и берёт контекст из meta.json сессии
+  // — отдельным if (текст prompt-гарда не менять: orchestrator.test матчит
+  // /startPrompt/). Закрывает HTTP API (api.ts передаёт произвольный phase).
+  if (phase === 'analyze') {
+    return { error: 'Фаза analyze запускается через startAnalyze' };
+  }
   // VL-137: поля задачи (title/type/описание/план/AC/DoD/статус/файлы/последний
   // комментарий) подставляются в промпт один раз через getTask — агенту не нужен
   // первый backlog_view_task. Решение (Pavel): если задача не читается — фаза
@@ -171,6 +177,64 @@ export function startPrompt(
     return { error: (err as Error).message };
   }
   return spawnQwenRun(cwd, 'prompt', 'prompt', prompt, onExit, agent);
+}
+
+/**
+ * Запускает headless-разбор сессии агента по session-ref (VL-141, /analyze).
+ *
+ * Фаза analyze — без задачи (как prompt): контекст (задача/фаза/cwd) берётся
+ * из meta.json сессии (VL-114), runKey — 'analyze-<sessionId>'. Работает
+ * только для сессий vibelog-agent (jsonl-транскрипт): qwen-UUID отклоняется —
+ * транскрипта для разбора нет.
+ *
+ * runKey не матчит taskIdPattern → worktree не трогается, запуск идёт из
+ * главного cwd — это корректно: jsonl сессии лежит в главном репозитории
+ * (VL-107-fix: веточный запуск не нашёл бы транскрипт worktree-сессии).
+ *
+ * @param cwd — рабочая директория проекта
+ * @param sessionRef — session-ref бота: vb:agent-XXX либо голый agent-XXX
+ * @param onExit — колбэк завершения (бот шлёт информационное сообщение)
+ * @param agent — агент-исполнитель: qwen (дефолт) либо встроенный vibelog-agent
+ */
+export function startAnalyze(
+  cwd: string,
+  sessionRef: string,
+  onExit?: PhaseExitCallback,
+  agent: 'qwen' | 'vb' = 'qwen'
+): StartResult {
+  // Нормализация: бот присылает vb:agent-XXX (префикс vb: снимает resume);
+  // CLI может передать голый agent-XXX
+  const bare = sessionRef.replace(/^vb:/, '');
+  if (!/^agent-\d+$/.test(bare)) {
+    // qwen-UUID не пускаем: jsonl-транскрипта у qwen-сессий нет
+    return {
+      error: `Некорректный session-ref: ${sessionRef} (ожидается vb:agent-XXX или agent-XXX; анализ только для сессий vibelog-agent)`,
+    };
+  }
+  if (!existsSync(join(agentSessionsDir(cwd), bare + '.jsonl'))) {
+    return { error: `Сессия не найдена: ${sessionRef}` };
+  }
+  // Мета опциональна: отсутствие (старые сессии, /prompt) — не ошибка,
+  // подстановки получают заглушки
+  const meta = loadSessionMetaSync(agentSessionsDir(cwd), bare);
+  let prompt: string;
+  try {
+    prompt = renderPrompt('analyze', meta?.taskId ?? '', {
+      sessionId: bare,
+      sessionPhase: meta?.phase ?? '(неизвестна)',
+      sessionCwd: meta?.cwd ?? '(неизвестен)',
+      sessionPath: `.vibelog/agent-sessions/${bare}.jsonl`,
+    });
+  } catch (err) {
+    return { error: (err as Error).message };
+  }
+  // Компакт-блок задачи-владельца — для вердикта «объём задачи vs тупик»;
+  // задача не найдена → блок '' (analyze не должен падать из-за пропажи файла)
+  if (meta?.taskId) {
+    const taskBlock = taskBlockText(cwd, meta.taskId);
+    if (taskBlock) prompt += `\n\n${taskBlock}`;
+  }
+  return spawnQwenRun(cwd, `analyze-${bare}`, 'analyze', prompt, onExit, agent);
 }
 
 /**
@@ -382,7 +446,9 @@ function spawnQwenRun(
   // Корневая причина задержки устранена настройками памяти qwen (VL-58);
   // stream-json и VIBELOG_QWEN_EXTRA_ARGS откачены. Дебаг: vibelog qwen-debug.
   // --output-format json — для ВСЕХ фаз; --allowed-mcp-server-names vibelog —
-  // только для spec/plan: чужие серверы (chrome-devtools и др.) для планирования не нужны.
+  // только для spec/plan/analyze: чужие серверы (chrome-devtools и др.) для
+  // планирования не нужны; analyze — backlog-MCP нужен для рекомендаций
+  // (VL-141; у vb флаг игнорируется — безвреден).
   // Для prompt флагов нет (как у comment) — шаблон не требует Vibelog MCP.
   //
   // VL-63 (reopen): --json-file/--json-fd НЕ используем — в headless-режиме
@@ -393,7 +459,7 @@ function spawnQwenRun(
   // MCP-сервера), пришедшая между частями гигантской JSON-строки stdout,
   // вклинивалась в её середину и result терялся «в половине случаев».
   const phaseFlags =
-    phase === 'spec' || phase === 'plan'
+    phase === 'spec' || phase === 'plan' || phase === 'analyze'
       ? ['--allowed-mcp-server-names', 'vibelog']
       : [];
   // VL-93: extraArgs сразу после позиционного промпта (--resume <sessionId>);
