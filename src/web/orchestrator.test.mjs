@@ -536,7 +536,7 @@ describe('orchestrator (VL-28)', () => {
 
   // ── VL-93: startResume — продолжение сессии qwen по reply ──
 
-  it('startResume: spawn с --resume <sessionId>, getRun("resume"), agent qwen (VL-93)', async () => {
+  it('startResume: spawn с --resume <sessionId>, getRun("resume:<sessionId>"), agent qwen (VL-93)', async () => {
     setStubEnv({
       VIBELOG_QWEN_BIN: stubBin,
       VL28_STUB_MARKER: join(testRoot, 'marker-resume.txt'),
@@ -556,7 +556,8 @@ describe('orchestrator (VL-28)', () => {
     });
     const res = startResume(testRoot, '11111111-2222-3333-4444-555555555555', 'продолжай работу');
     assert.equal(res.started, true);
-    const run = await waitDone('resume');
+    // VL-145: resume без меты сессии живёт под ключом resume:<sessionId>
+    const run = await waitDone('resume:11111111-2222-3333-4444-555555555555');
     assert.equal(run.exitCode, 0);
     assert.equal(run.phase, 'prompt');
     assert.equal(run.result?.result, 'сессия-продолжена');
@@ -575,7 +576,7 @@ describe('orchestrator (VL-28)', () => {
     ]);
   });
 
-  it('startResume: guard от двойного запуска, onExit один раз (VL-93)', async () => {
+  it('startResume: guard от двойного запуска, onExit один раз (VL-93/145)', async () => {
     setStubEnv({ VL28_STUB_MARKER: join(testRoot, 'marker-resume2.txt'), VL28_STUB_SLEEP: '1200', VL28_STUB_EXIT: '0', });
     let exitCalls = 0;
     let exitRunning = null;
@@ -589,15 +590,88 @@ describe('orchestrator (VL-28)', () => {
       }
     );
     assert.equal(first.started, true);
-    // Пока жив — второй resume получает guard; getRun('resume') — running
-    const second = startResume(testRoot, '33333333-4444-5555-6666-777777777777', 'второй');
+    // VL-145: дубль ТОЙ ЖЕ сессии (без меты) — guard, ключ resume:<sessionId>
+    const second = startResume(testRoot, '22222222-3333-4444-5555-666666666666', 'второй');
     assert.match(second.error, /уже выполняется/);
-    assert.equal(getRun('resume').running, true);
-    const run = await waitDone('resume');
+    assert.equal(getRun('resume:22222222-3333-4444-5555-666666666666').running, true);
+    // VL-145: ЧУЖАЯ сессия при живом первом — параллельна, без guard
+    const other = startResume(testRoot, '33333333-4444-5555-6666-777777777777', 'параллельный');
+    assert.equal(other.started, true, JSON.stringify(other));
+    const run = await waitDone('resume:22222222-3333-4444-5555-666666666666');
     assert.equal(exitCalls, 1, 'onExit ровно один раз');
     assert.equal(exitRunning, false, 'onExit получает завершённый run');
     assert.equal(run.exitCode, 0);
     assert.equal(run.agent, 'qwen');
+    // параллельный запуск тоже дорабатывает — не засоряем Map последующим тестам
+    const otherRun = await waitDone('resume:33333333-4444-5555-6666-777777777777');
+    assert.equal(otherRun.exitCode, 0);
+  });
+
+  // ── VL-145: параллельный запуск разных задач/сессий ──
+
+  it('параллельные resume разных сессий без меты — оба стартуют (VL-145)', async () => {
+    setStubEnv({ VL28_STUB_MARKER: join(testRoot, 'marker-vl145-a.txt'), VL28_STUB_SLEEP: '600', VL28_STUB_EXIT: '0', });
+    const s1 = 'aaaa1111-2222-3333-4444-555555555555';
+    const s2 = 'bbbb1111-2222-3333-4444-555555555555';
+    const r1 = startResume(testRoot, s1, 'первый параллельный');
+    const r2 = startResume(testRoot, s2, 'второй параллельный');
+    assert.equal(r1.started, true, JSON.stringify(r1));
+    assert.equal(r2.started, true, JSON.stringify(r2));
+    const run1 = await waitDone(`resume:${s1}`);
+    const run2 = await waitDone(`resume:${s2}`);
+    assert.equal(run1.exitCode, 0);
+    assert.equal(run2.exitCode, 0);
+  });
+
+  it('resume задачи не блокируется фазой другой задачи (VL-145)', async () => {
+    setStubEnv({ VL28_STUB_MARKER: join(testRoot, 'marker-vl145-b.txt'), VL28_STUB_SLEEP: '600', VL28_STUB_EXIT: '0', });
+    // Свежая задача — lastRuns теста не должен пересекаться с ключами
+    // поздних handleApi-тестов (GET «запусков не было» ждёт пустого lastRuns)
+    const taskB = createTaskFile(testRoot, { title: 'VL-145: resume-задача', status: 'To Do', priority: 'Low' });
+    mkdirSync(join(testRoot, '.vibelog', 'agent-sessions'), { recursive: true });
+    // Мета резюмируемой сессии указывает на taskB — фаза живёт у task1
+    writeFileSync(
+      join(testRoot, '.vibelog', 'agent-sessions', 'agent-vl145-b.meta.json'),
+      JSON.stringify({ taskId: taskB.id, phase: 'code', cwd: testRoot }),
+      'utf-8'
+    );
+    const phase = startPhase(testRoot, task1.id, 'code');
+    assert.equal(phase.started, true, JSON.stringify(phase));
+    const resume = startResume(testRoot, 'agent-vl145-b', 'продолжи вторую');
+    assert.equal(resume.started, true, JSON.stringify(resume));
+    const runPhase = await waitDone(task1.id);
+    const runResume = await waitDone(taskB.id);
+    assert.equal(runPhase.exitCode, 0);
+    assert.equal(runResume.exitCode, 0);
+  });
+
+  it('той же задачи — guard в обе стороны: фаза↔resume (VL-145)', async () => {
+    setStubEnv({ VL28_STUB_MARKER: join(testRoot, 'marker-vl145-c.txt'), VL28_STUB_SLEEP: '600', VL28_STUB_EXIT: '0', });
+    mkdirSync(join(testRoot, '.vibelog', 'agent-sessions'), { recursive: true });
+    // Мета до ПЕРВОГО resume: без неё ключ был бы resume:<sessionId>
+    // и guard не сработал бы (это и проверяем — задачный ключ общегуард)
+    writeFileSync(
+      join(testRoot, '.vibelog', 'agent-sessions', 'agent-vl145-c1.meta.json'),
+      JSON.stringify({ taskId: task1.id, phase: 'code', cwd: testRoot }),
+      'utf-8'
+    );
+    const hint = `(${task1.id.toUpperCase()})`;
+    // 1) живая фаза задачи → resume той же задачи получает guard с её ID
+    const phase = startPhase(testRoot, task1.id, 'code');
+    assert.equal(phase.started, true, JSON.stringify(phase));
+    const blocked = startResume(testRoot, 'agent-vl145-c1', 'resume при живой фазе');
+    assert.match(blocked.error, /уже выполняется/);
+    assert.ok(blocked.error.includes(hint), `подсказка с ID задачи: ${blocked.error}`);
+    const runPhase = await waitDone(task1.id);
+    assert.equal(runPhase.exitCode, 0);
+    // 2) живой resume задачи → фаза той же задачи получает guard
+    const live = startResume(testRoot, 'agent-vl145-c1', 'живой resume');
+    assert.equal(live.started, true, JSON.stringify(live));
+    const blockedPhase = startPhase(testRoot, task1.id, 'code');
+    assert.match(blockedPhase.error, /уже выполняется/);
+    assert.ok(blockedPhase.error.includes(hint), `подсказка с ID задачи: ${blockedPhase.error}`);
+    const runResume = await waitDone(task1.id);
+    assert.equal(runResume.exitCode, 0);
   });
 
   it('startResume: agent=vb спавнит VIBELOG_AGENT_BIN с --resume (VL-95)', async () => {
@@ -625,7 +699,8 @@ describe('orchestrator (VL-28)', () => {
     // прокидывает его как есть, strip делает CLI агента (VL-95)
     const res = startResume(testRoot, 'vb:agent-1234567890', 'продолжи vb', undefined, 'vb');
     assert.equal(res.started, true);
-    const run = await waitDone('resume');
+    // VL-145: у vb-сессии без меты ключ resume:<sessionId> (vb: включается)
+    const run = await waitDone('resume:vb:agent-1234567890');
     assert.equal(run.exitCode, 0);
     // Контракт VL-63 сохранён: тот же parseQwenResult для обоих агентов
     assert.equal(run.result?.result, 'vb-сессия-продолжена');
@@ -766,7 +841,8 @@ describe('orchestrator (VL-28)', () => {
     try {
       const res = startResume(wtRoot, 'agent-999', 'продолжи работу');
       assert.equal(res.started, true, JSON.stringify(res));
-      const run = await waitDone('resume');
+      // VL-145: мета taskId VL-77 → ключ resume = задачный 'VL-77'
+      const run = await waitDone('VL-77');
       assert.equal(run.exitCode, 0);
       // Worktree создан; агент спавнен в нём; VIBELOG_CWD — главный репо
       assert.ok(existsSync(join(wtPath, '.git')), 'worktree vl-77 должна быть создана');
@@ -800,7 +876,8 @@ describe('orchestrator (VL-28)', () => {
     try {
       const res = startResume(warnRoot, 'agent-888', 'продолжи');
       assert.equal(res.started, true, JSON.stringify(res));
-      const run = await waitDone('resume');
+      // VL-145: мета taskId есть (VL-77) — ключ задачный независимо от branch-mode
+      const run = await waitDone('VL-77');
       assert.equal(run.exitCode, 0);
       const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.ok(argv[0].includes('Внимание'), 'предупреждение о cwd-несовпадении: ' + argv[0]);
@@ -1023,7 +1100,8 @@ describe('orchestrator (VL-28)', () => {
     try {
       const res = startResume(wtRoot, 'agent-777', 'продолжи');
       assert.equal(res.started, true, JSON.stringify(res));
-      const run = await waitDone('resume');
+      // VL-145: мета taskId VL-77 → ключ resume = задачный 'VL-77'
+      const run = await waitDone('VL-77');
       assert.equal(run.exitCode, 0);
       const m = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.equal(m.envPhaseTaskId, 'VL-77', 'resume с worktreeTaskId несёт taskId задачи');

@@ -166,8 +166,10 @@ export function startPrompt(
  *
  * Отличие от startPrompt: шаблон phase-prompt НЕ используется — позиционный
  * промпт = сырой текст пользователя; флаг `--resume <sessionId>` продолжает
- * ту же сессию (без --fork-session — по описанию фичи). runKey 'resume' —
- * guard от двойного запуска в общих activeRuns, getRun('resume') доступен.
+ * ту же сессию (без --fork-session — по описанию фичи). VL-145: runKey =
+ * ID задачи из меты сессии (глобальный guard той же задачи — параллельные
+ * resume РАЗНЫХ задач разрешены) либо `resume:<sessionId>`, если меты нет;
+ * getRun по тому же ключу доступен.
  * Результат парсится штатным parseQwenResult (JSON type=result) — бот шлёт
  * информационное сообщение паттерном sendPhaseResult.
  *
@@ -208,10 +210,17 @@ export function startResume(
       `возобновление идёт из ${cwd} (branch-mode выключен). ` +
       'Прежде чем править файлы — проверь git status и git diff рабочего каталога.';
   }
+  // VL-145: resume привязывается к задаче, если мета её знает; иначе — к сессии.
+  // Раньше ключ был глобальной строкой 'resume' — второй resume ЛЮБОЙ задачи
+  // получал guard «Запуск уже выполняется», хотя это разные задачи (инцидент:
+  // параллельное продолжение прерванных сессий у второй задачи из бота).
+  const taskKey =
+    meta?.taskId && taskIdPattern(cwd).test(meta.taskId) ? meta.taskId.toUpperCase() : '';
+  const runKey = taskKey !== '' ? taskKey : `resume:${sessionId}`;
   // Фаза 'prompt' — шаблон не подставляется; промпт — сырой текст + примечание
   return spawnQwenRun(
     cwd,
-    'resume',
+    runKey,
     'prompt',
     promptText + note,
     onExit,
@@ -247,7 +256,8 @@ function spawnLimitFlags(cwd: string): string[] {
  *
  * Общий хелпер startPhase/startPrompt (VL-66): guard от двойного запуска,
  * лог, probe тишины, парсер JSON-результата, onExit. runKey — ID задачи
- * либо 'prompt' (ключи общих activeRuns/lastRuns).
+ * (канонизируется в UPPER, VL-145), 'prompt' либо 'resume:<sessionId>'
+ * (ключи общих activeRuns/lastRuns).
  *
  * @param agent — VL-92: qwen (дефолт) либо встроенный vibelog-agent
  * @param extraArgs — VL-93: доп. флаги сразу после промпта (--resume <id>)
@@ -267,14 +277,23 @@ function spawnQwenRun(
   extraArgs: string[] = [],
   worktreeTaskId?: string
 ): StartResult {
-  if (activeRuns.has(runKey)) {
-    // Сообщение генерализовано (VL-66): подходит и фазе задачи, и /prompt
-    return { error: 'Запуск уже выполняется' };
+  // VL-145: канонический ключ — задачные ключи в верхнем регистре,
+  // чтобы resume (ключ из верхнего регистра меты) и фаза (raw task.id,
+  // например 'ot-5' при meta 'OT-5') совпадали в guard'е; prompt и
+  // resume:<sessionId> регистр не меняют.
+  const key = taskIdPattern(cwd).test(runKey) ? runKey.toUpperCase() : runKey;
+  if (activeRuns.has(key)) {
+    // VL-145: подсказка, какая задача занята (строка «Запуск уже выполняется»
+    // сохранена как есть — существующие тесты матчат её подстрокой)
+    const hint = taskIdPattern(cwd).test(key) ? ` (${key})` : '';
+    return { error: 'Запуск уже выполняется' + hint };
   }
 
   // VL-107: режим параллельной разработки — фаза задачи спавнится в git
-  // worktree ветки vb/vl-N. runKey задач всегда вида 'VL-N'; prompt/resume
-  // (не привязаны к задаче) остаются в главном cwd — регрессий нет.
+  // worktree ветки vb/vl-N. Ключи задач всегда вида 'VL-N' (в canonical-регистре);
+  // prompt/resume без меты задачи (не привязаны к задаче) остаются в главном
+  // cwd — регрессий нет. Resume с метой задачи (VL-145) имеет задачный ключ
+  // и живёт по общим с фазами правилам worktree.
   // ensure до спавна: ошибка (не git-репо, конфликт ветки) → фаза не
   // стартует, сообщение уходит в чат/api как { error }.
   let runCwd = cwd;
@@ -282,18 +301,19 @@ function spawnQwenRun(
   // Тестовый шов VL-140: база env спавна — process.env либо явный объект
   // из setSpawnEnvBaseForTests (тесты больше не полагаются на глобал).
   const baseEnv = (): NodeJS.ProcessEnv => spawnEnvBaseOverride ?? process.env;
-  // VL-110: источник taskId для worktree — runKey задачи либо мета resume-сессии.
+  // VL-110: источник taskId для worktree — задачный ключ (канонический, VL-145)
+  // либо мета resume-сессии.
   // VL-112: close исключён — закрытие идёт в главном репо: merge ветки и
   // docs(task)-коммит backlog возможны только здесь (см. phase-close-worktree.md)
   // VL-118: «задачная» проверка — по task_prefix конфига проекта
-  const branchTask = taskIdPattern(cwd).test(runKey) && phase !== 'close' ? runKey : (worktreeTaskId ?? '');
+  const branchTask = taskIdPattern(cwd).test(key) && phase !== 'close' ? key : (worktreeTaskId ?? '');
   // VL-114: задачный env нужен фазам задач независимо от worktree: CLI пишет
   // по нему мету сессии даже когда промпт пришёл готовым (isPhaseMode=false).
   // Close исключён (VL-112: закрытие в главном репо, его resume не должен
   // уходить в worktree); у resume taskId берётся из worktreeTaskId (мета
   // VL-110) — без меты resume остаётся на прежнем пути без env.
   const phaseTaskId =
-    taskIdPattern(cwd).test(runKey) && phase !== 'close' ? runKey.toUpperCase() : (worktreeTaskId ?? '');
+    taskIdPattern(cwd).test(key) && phase !== 'close' ? key.toUpperCase() : (worktreeTaskId ?? '');
   if (phaseTaskId !== '') {
     spawnEnv = {
       ...baseEnv(),
@@ -374,8 +394,8 @@ function spawnQwenRun(
     env: spawnEnv ?? baseEnv(),
   });
 
-  activeRuns.set(runKey, { phase, child, onExit, agent });
-  lastRuns.delete(runKey);
+  activeRuns.set(key, { phase, child, onExit, agent });
+  lastRuns.delete(key);
 
   // VL-63 (reopen): два независимых буфера. `log` — ТОЛЬКО stdout (источник
   // для parseQwenResult), `stderrLog` — только stderr (диагностика/фолбэк).
@@ -401,7 +421,7 @@ function spawnQwenRun(
       stderrTailBuf = parts.pop() ?? '';
       for (const line of parts) {
         if (line.trim()) {
-          console.log(`[phase ${runKey}] ${ts()} err| ${line.trim().slice(0, 120)}`);
+          console.log(`[phase ${key}] ${ts()} err| ${line.trim().slice(0, 120)}`);
         }
       }
       stderrLog += text;
@@ -416,7 +436,7 @@ function spawnQwenRun(
     tailBuf = parts.pop() ?? '';
     for (const line of parts) {
       if (line.trim()) {
-        console.log(`[phase ${runKey}] ${ts()} | ${line.trim().slice(0, 120)}`);
+        console.log(`[phase ${key}] ${ts()} | ${line.trim().slice(0, 120)}`);
       }
     }
     log += text;
@@ -466,7 +486,7 @@ function spawnQwenRun(
         .filter((t): t is string => Boolean(t))
         .map((t) => '    ' + t.trim().slice(0, 110));
       console.log(
-        `[phase ${runKey}] ${ts()} probe(тишина ${quietSec}с):\n` + (lines.join('\n') || '    (процесс уже завершился)')
+        `[phase ${key}] ${ts()} probe(тишина ${quietSec}с):\n` + (lines.join('\n') || '    (процесс уже завершился)')
       );
     });
   }, 60_000);
@@ -477,7 +497,7 @@ function spawnQwenRun(
     if (finished) return;
     finished = true;
     clearInterval(probe);
-    activeRuns.delete(runKey);
+    activeRuns.delete(key);
     // Последние незавершённые строки (без \n) живут в tailBuf и не попадают
     // в буферы через appendTo — дозаписываем оба потока перед парсингом
     if (tailBuf) {
@@ -502,12 +522,12 @@ function spawnQwenRun(
       const diag =
         `stdout: ${log.length} б, строк: ${outLines.length}; stderr: ${stderrLog.length} б; ` +
         explainQwenParse(log);
-      console.log(`[phase ${runKey}] ${ts()} parseQwenResult: ${diag}`);
+      console.log(`[phase ${key}] ${ts()} parseQwenResult: ${diag}`);
       if (outLines.length > 0) {
-        console.log(`[phase ${runKey}] ${ts()} stdout-хвост: …${log.slice(-400)}`);
+        console.log(`[phase ${key}] ${ts()} stdout-хвост: …${log.slice(-400)}`);
       }
       if (stderrLog.trim()) {
-        console.log(`[phase ${runKey}] ${ts()} stderr-хвост: …${stderrLog.slice(-300)}`);
+        console.log(`[phase ${key}] ${ts()} stderr-хвост: …${stderrLog.slice(-300)}`);
       }
       // Дебаг-дамп полного stdout на диск (запрос Pavel, VL-63 reopen):
       // --json-file у qwen в headless не работает (флаг игнорируется), поэтому
@@ -517,11 +537,11 @@ function spawnQwenRun(
         try {
           const dumpDir = join(cwd, '.vibelog', 'qwen-debug');
           mkdirSync(dumpDir, { recursive: true });
-          const dumpPath = join(dumpDir, `${runKey}-${Date.now()}.log`);
+          const dumpPath = join(dumpDir, `${key}-${Date.now()}.log`);
           writeFileSync(dumpPath, log, 'utf-8');
-          console.log(`[phase ${runKey}] ${ts()} дамп stdout: ${dumpPath}`);
+          console.log(`[phase ${key}] ${ts()} дамп stdout: ${dumpPath}`);
         } catch (err) {
-          console.log(`[phase ${runKey}] ${ts()} дамп stdout не удался: ${(err as Error).message}`);
+          console.log(`[phase ${key}] ${ts()} дамп stdout не удался: ${(err as Error).message}`);
         }
       }
     }
@@ -535,7 +555,7 @@ function spawnQwenRun(
       logTail: [log.trim(), stderrLog.trim()].filter(Boolean).join('\n'),
       result,
     };
-    lastRuns.set(runKey, record);
+    lastRuns.set(key, record);
     // VL-48: уведомление о завершении (бот). Fire-and-forget в try/catch:
     // сетевые ошибки Telegram не должны ронять polling оркестратора.
     try {
@@ -546,15 +566,15 @@ function spawnQwenRun(
   };
 
   child.on('exit', (code, signal) => {
-    console.log(`[phase ${runKey}] ${ts()} exit: code=${code} signal=${signal}`);
+    console.log(`[phase ${key}] ${ts()} exit: code=${code} signal=${signal}`);
   });
   child.on('error', (err) => {
     log += `${log ? '\n' : ''}Ошибка запуска: ${err.message}`;
-    console.log(`[phase ${runKey}] ${ts()} error: ${err.message}`);
+    console.log(`[phase ${key}] ${ts()} error: ${err.message}`);
     finish(null);
   });
   child.on('close', (code) => {
-    console.log(`[phase ${runKey}] ${ts()} close: code=${code}`);
+    console.log(`[phase ${key}] ${ts()} close: code=${code}`);
     finish(code);
   });
 
@@ -562,15 +582,29 @@ function spawnQwenRun(
 }
 
 /**
+ * Регистронезависимый lookup для карт запусков (VL-145): задачные ключи
+ * хранятся канонически (UPPER), а вызов getRun/taskId из API и бота может
+ * прийти в любом регистре (task.id пишется в нижнем). Прямое совпадение —
+ * затем линейный поиск по toUpperCase: карты содержат единицы записей.
+ */
+function lookupCI<V>(map: Map<string, V>, k: string): V | undefined {
+  const direct = map.get(k);
+  if (direct !== undefined) return direct;
+  const up = k.toUpperCase();
+  for (const [mk, mv] of map) if (mk.toUpperCase() === up) return mv;
+  return undefined;
+}
+
+/**
  * Состояние запуска фазы задачи.
  *
- * @param taskId — ID задачи
+ * @param taskId — ID задачи (регистр любым: ключи канонизируются, VL-145)
  * @returns текущий или последний запуск, либо null если запусков не было
  */
 export function getRun(taskId: string): PhaseRun | null {
-  const active = activeRuns.get(taskId);
+  const active = lookupCI(activeRuns, taskId);
   if (active) {
     return { running: true, phase: active.phase, pid: active.child.pid, agent: active.agent };
   }
-  return lastRuns.get(taskId) ?? null;
+  return lookupCI(lastRuns, taskId) ?? null;
 }
