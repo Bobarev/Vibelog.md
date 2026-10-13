@@ -32,7 +32,7 @@
 
 - **TypeScript-исходники** (`.ts`, strict) → `pnpm build` (`tsc`) → `dist/` (ES modules). TypeScript и `@types/node` — только devDependencies. Никаких нативных зависимостей, node-gyp, SQLite, Bun.
 - **pnpm** — менеджер пакетов, версия **10.7.1** (`packageManager: "pnpm@10.7.1"`).
-- **Сборка обязательна**: `bin/vibelog.mjs` импортирует `dist/` — после `pnpm install` и любых изменений src выполняйте `pnpm build`. `pnpm test` = build + `vitest run` (Vitest, конфиг — `vitest.config.mts`: include `src/**/*.test.mjs`, параллелизм по файлам выключен). Тесты — `*.test.mjs` (импортируют `dist/`).
+- **Сборка обязательна**: `bin/vibelog.mjs` импортирует `dist/` — после `pnpm install` и любых изменений src выполняйте `pnpm build`. `pnpm test` = build + `vitest run` (Vitest, конфиг — `vitest.config.mts`: include `src/**/*.test.mjs`, параллелизм по файлам включён (`fileParallelism: true`, VL-140)). Тесты — `*.test.mjs` (импортируют `dist/`).
 - **Перед npm publish**: гонять `node scripts/npm-smoke.mjs` (VL-32) — проверка установки из tarball (CLI/init/browser/шаблоны).
 - **Релизные задачи — publish и пуш без согласия**: если задача релизная, публикация пакета (npm publish, токен без 2FA) и пуш на gitverse разрешены в процессе выполнения задачи без дополнительного согласия пользователя (решение Pavel, 2026-10-04).
 - **Совместимость с Backlog.md** — строгая ТОЛЬКО в хранении данных: структура папок backlog/, формат md/yaml файлов, frontmatter задач. Внутренние API (core-функции, CLI-команды, веб-интерфейс) развиваются свободно — например, addComment в core допустим, хотя в оригинале его нет.
