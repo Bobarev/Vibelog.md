@@ -27,7 +27,7 @@ tags:
 
 ## 2. Аутентификация и привязка чатов
 
-- Токен: `TELEGRAM_BOT_TOKEN` (env) → `telegram_token` в настройках. Хранить в gitignored-файле (`.vibelog/bot.yml`), НЕ в backlog/config.yml: (1) config.yml коммитится → утечка токена; (2) Backlog.md saveConfig вычищает посторонние поля при записи.
+- Токен: `TELEGRAM_BOT_TOKEN` — секрет (VL-143): хранить в `.env` или в секции `env` gitignored-файла `.vibelog/settings.json` (приоритет: реальное окружение → `.env` → `env`-секция settings.json), НЕ в backlog/config.yml: (1) config.yml коммитится → утечка токена; (2) Backlog.md saveConfig вычищает посторонние поля при записи.
 - **Привязка чата через пин-код**: при старте бот генерирует 6-значный пин (node:crypto randomInt), печатает ТОЛЬКО в консоль; /start → бот просит код → верный код → chat_id в настройки. Пин однорожден на сессию. Защита: без пина любой мог бы привязать свой чат.
 
 ## 3. Grammy: middleware и ловушки
@@ -62,7 +62,7 @@ tags:
 | Проблема | Решение |
 |----------|---------|
 | Telegram заблокирован напрямую | undici ProxyAgent + TELEGRAM_PROXY env |
-| Токен в git | `.vibelog/bot.yml` gitignored + .env gitignored |
+| Токен в git | `.vibelog/settings.json` (секция `env`) gitignored + .env gitignored |
 | Чужие могли привязать чат | Пин-код из консоли запущенного бота |
 | /tasks молчит | Порядок middleware: команды до catch-all |
 | Длинное описание задачи | Rich Messages, лимит 32768 |
@@ -76,4 +76,4 @@ tags:
 - `/task <id>` — карточка задачи **Rich Message**: все секции, AC/DoD-чек-листы, комментарии (VL-39)
 - `/board` — сводка по колонкам (MarkdownV2)
 
-Запуск: `vibelog bot` (токен/прокси — из .env проекта автоматически).
+Запуск: `vibelog bot` (токен/прокси — из .env проекта или секции `env` `.vibelog/settings.json` автоматически, VL-143).
