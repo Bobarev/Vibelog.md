@@ -19,6 +19,7 @@
     "web:build": "pnpm --dir web build",
     "typecheck": "tsc --noEmit",
     "test": "pnpm build && vitest run",
+    "test:fast": "vitest run",
     "lint": "node --check bin/vibelog.mjs && node --check bin/vibelog-agent.mjs",
     "prepublishOnly": "pnpm build"
   },

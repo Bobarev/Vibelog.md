@@ -28,62 +28,93 @@ function cleanup() {
   if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
 }
 
-/**
- * Запускает MCP-сервер и отправляет JSON-RPC сообщения.
- *
- * @param {string[]} messages — массив JSON-RPC сообщений
- * @returns {Promise<object[]>} — массив ответов
- */
-function callMcp(messages) {
-  return new Promise((resolve, reject) => {
-    // VL-116: env фазы (VIBELOG_CWD/VIBELOG_PHASE_*) не должен утекать в
-    // MCP-сервер — иначе backlog пишется в реальный репозиторий, а не в
-    // /tmp-фикстуру (инцидент загрязнения 2026-10-12)
-    // VL-132: единообразный env-гард (mcp и так в SKIP_COMMANDS, но защита не помешает)
-    const env = { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' };
-    delete env.VIBELOG_CWD;
-    delete env.VIBELOG_PHASE_TASK_ID;
-    delete env.VIBELOG_PHASE_NAME;
-    const proc = spawn('node', [cliPath, 'mcp', 'start'], {
-      cwd: testDir,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+// ——— Постоянный MCP-процесс (VL-139) ———
+// Раньше каждый callMcp спавнил `node cli mcp start` (spawn ~100–400 мс на
+// каждый из десятков вызовов). Теперь сервер живёт один на весь файл:
+// beforeAll спавнит его один раз, callMcp пишет батч в тот же stdin и ждёт
+// ответы по id из stdout. Тесты остаются интеграционными (живой сервер),
+// но без N спавнов.
+let proc = null;
+let buffer = '';
+const received = [];
 
-    const responses = [];
-    let buffer = '';
-
-    proc.stdout.on('data', (chunk) => {
-      buffer += chunk.toString();
-      const lines = buffer.split('\n');
-      buffer = lines.pop(); // последняя неполная строка
-      for (const line of lines) {
-        if (line.trim()) {
-          try { responses.push(JSON.parse(line)); } catch { /* ignore */ }
-        }
-      }
-    });
-
-    proc.stderr.on('data', () => {}); // игнорируем stderr
-
-    // Отправляем все сообщения
-    for (const msg of messages) {
-      proc.stdin.write(JSON.stringify(msg) + '\n');
-    }
-    proc.stdin.end();
-
-    // Ждём завершения
-    proc.on('close', () => resolve(responses));
-    proc.on('error', reject);
-
-    // Таймаут
-    setTimeout(() => { proc.kill(); resolve(responses); }, 5000);
+/** Спавнит MCP-сервер один раз на файл (env-гард VL-116/VL-132). */
+function startServer() {
+  // VL-116: env фазы (VIBELOG_CWD/VIBELOG_PHASE_*) не должен утекать в
+  // MCP-сервер — иначе backlog пишется в реальный репозиторий, а не в
+  // тестовую фикстуру (инцидент загрязнения 2026-10-12)
+  // VL-132: единообразный env-гард (mcp и так в SKIP_COMMANDS, но защита не помешает)
+  const env = { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' };
+  delete env.VIBELOG_CWD;
+  delete env.VIBELOG_PHASE_TASK_ID;
+  delete env.VIBELOG_PHASE_NAME;
+  proc = spawn('node', [cliPath, 'mcp', 'start'], {
+    cwd: testDir,
+    env,
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
+
+  // Построчный парсинг stdout: каждая строка — один JSON-RPC ответ
+  proc.stdout.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split('\n');
+    buffer = lines.pop(); // последняя неполная строка
+    for (const line of lines) {
+      if (line.trim()) {
+        try { received.push(JSON.parse(line)); } catch { /* ignore */ }
+      }
+    }
+  });
+
+  proc.stderr.on('data', () => {}); // игнорируем stderr
+}
+
+/**
+ * Отправляет батч JSON-RPC сообщений в постоянный сервер и ждёт ответы на все id батча.
+ *
+ * Дубли id между батчами безопасны: батчи последовательны (каждый callMcp —
+ * await), а срез received.slice(start) отсекает ответы предыдущих батчей.
+ *
+ * @param {object[]} messages — массив JSON-RPC сообщений
+ * @returns {Promise<object[]>} — ответы батча в порядке появления
+ */
+async function callMcp(messages) {
+  const start = received.length; // снапшот до записи — отсекает старые ответы
+  for (const msg of messages) {
+    proc.stdin.write(JSON.stringify(msg) + '\n');
+  }
+  // Без stdin.end(): сервер живёт дальше, stdin закроется в afterAll
+  const wanted = new Set(messages.map((m) => m.id));
+  const deadline = Date.now() + 5000; // per-batch таймаут 5 с (как раньше)
+  while (Date.now() < deadline) {
+    const batch = received.slice(start);
+    if ([...wanted].every((id) => batch.some((r) => r.id === id))) {
+      return batch;
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  proc.kill(); // зависший сервер — как в старом callMcp (таймаут + kill)
+  throw new Error(`MCP: нет ответа за 5 с для ids: ${[...wanted].join(', ')}`);
 }
 
 describe('MCP-сервер', () => {
-  beforeAll(() => setup());
-  afterAll(() => cleanup());
+  beforeAll(() => {
+    setup(); // сначала фикстура (testDir — cwd сервера), потом spawn
+    startServer();
+  });
+  afterAll(async () => {
+    // Graceful exit: server.ts закрывает rl по stdin.end() и сам выходит
+    // (rl close -> process.exit(0)); если не вышел за 2 с — kill
+    if (proc) {
+      const closed = new Promise((resolve) => proc.on('close', resolve));
+      proc.stdin.end();
+      const killer = setTimeout(() => proc.kill(), 2000);
+      await closed;
+      clearTimeout(killer);
+      proc = null;
+    }
+    cleanup();
+  });
 
   it('initialize — возвращает capabilities', async () => {
     const responses = await callMcp([

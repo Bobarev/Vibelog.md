@@ -35,6 +35,29 @@ beforeAll(async () => {
     statuses: ['To Do', 'In Progress', 'Done'],
     definition_of_done: [],
   }), 'utf-8');
+  // Тихий MCP-стаб (VL-139): отвечает ТОЛЬКО на initialize, tools/list
+  // игнорирует вовсе. Нужен для детерминированного теста таймаута — на
+  // реальном сервере «таймаут 1 мс vs быстрый ответ» был гонкой и давал
+  // флак (~1 прогон из 5: Missing expected rejection).
+  writeFileSync(join(testDir, 'silent-mcp.mjs'), `
+import { createInterface } from 'node:readline';
+const rl = createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === 'initialize' && msg.id !== undefined) {
+    process.stdout.write(JSON.stringify({
+      jsonrpc: '2.0', id: msg.id,
+      result: {
+        protocolVersion: '2024-11-05',
+        capabilities: { tools: {} },
+        serverInfo: { name: 'silent-stub', version: '0.0.0' },
+      },
+    }) + '\\n');
+  }
+  // всё остальное (tools/list и пр.) — молчим: клиент получит таймаут
+});
+`, 'utf-8');
   // Клиент спавнит реальный CLI: node bin/vibelog.mjs mcp start, cwd=/tmp-проект.
   // VL-116: env фазы (VIBELOG_CWD/VIBELOG_PHASE_*) не должен утекать в
   // MCP-сервер — иначе задачи теста пишутся в реальный backlog
@@ -133,9 +156,20 @@ describe('MCP-клиент: ошибки протокола (VL-84)', () => {
   });
 
   it('таймаут запроса → reject «таймаут», клиент жив', async () => {
-    // Таймаут на один вызов: 1 мс не успевает дождаться ответа сервера.
-    await assert.rejects(client.request('tools/list', undefined, 1), /таймаут/);
-    // Клиент не завис: следующий запрос проходит (сервер отвечает быстро).
+    // VL-139: на реальном сервере «таймаут 1 мс vs быстрый ответ» — гонка
+    // (флак ~1/5 прогонов). Тихий стаб не отвечает на tools/list вовсе,
+    // таймаут детерминирован (200 мс — просто быстрый прогон).
+    const silentPath = join(testDir, 'silent-mcp.mjs');
+    const silent = await McpClient.create({ bin: process.execPath, binArgs: [silentPath], cwd: testDir });
+    try {
+      await assert.rejects(silent.request('tools/list', undefined, 200), /таймаут/);
+      // Клиент не завис: следующий запрос проходит (стаб отвечает на initialize)
+      const info = await silent.request('initialize', { protocolVersion: '2024-11-05' }, 2000);
+      assert.equal(info.serverInfo.name, 'silent-stub');
+    } finally {
+      await silent.close();
+    }
+    // И основной клиент к тому моменту жив — следующий запрос проходит.
     const defs = await client.listTools();
     assert.ok(defs.length > 0);
   });
