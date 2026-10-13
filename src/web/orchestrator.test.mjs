@@ -995,10 +995,11 @@ describe('orchestrator (VL-28)', () => {
     const envRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-envc-'));
     mkdirSync(join(envRoot, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(join(envRoot, 'backlog', 'config.yml'), 'project_name: Env Close\n', 'utf-8');
-    process.env.VIBELOG_QWEN_BIN = writeEnvStub(envRoot, 'envc-stub.cjs');
-    process.env.VL28_STUB_MARKER = join(envRoot, 'marker-envc.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    // VL-137: startPhase подставляет поля задачи и не запускает фазу без читаемой задачи
+    createTaskFile(envRoot, { id: 'VL-88', title: 'Задача close env-теста' });
+    // VL-140: env через setStubEnv — спавн берёт базу из spawnEnvBaseOverride,
+    // а не из process.env (мутации process.env в тесте уже не действуют)
+    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(envRoot, 'envc-stub.cjs'), VL28_STUB_MARKER: join(envRoot, 'marker-envc.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(envRoot, 'VL-88', 'close');
       assert.equal(res.started, true, JSON.stringify(res));
@@ -1135,10 +1136,10 @@ describe('orchestrator (VL-28)', () => {
 
   it('spec с branch_mode: worktree не создаётся, фаза идёт в главном cwd (VL-134)', async () => {
     const specRoot = makeBmRoot('vibelog-orch-vl134-spec-');
-    process.env.VIBELOG_QWEN_BIN = writeEnvStub(specRoot, 'vl134-spec-stub.cjs');
-    process.env.VL28_STUB_MARKER = join(specRoot, 'marker-vl134-spec.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    // VL-137: startPhase подставляет поля задачи и не запускает фазу без читаемой задачи
+    createTaskFile(specRoot, { id: 'VL-90', title: 'Задача spec-фазы' });
+    // VL-140: env через setStubEnv (spawn идёт из spawnEnvBaseOverride, не process.env)
+    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(specRoot, 'vl134-spec-stub.cjs'), VL28_STUB_MARKER: join(specRoot, 'marker-vl134-spec.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(specRoot, 'VL-90', 'spec');
       assert.equal(res.started, true, JSON.stringify(res));
@@ -1179,10 +1180,10 @@ describe('orchestrator (VL-28)', () => {
 
   it('code без worktree: не создаётся, фаза идёт в главном cwd (VL-134)', async () => {
     const codeRoot = makeBmRoot('vibelog-orch-vl134-code-');
-    process.env.VIBELOG_QWEN_BIN = writeEnvStub(codeRoot, 'vl134-code-stub.cjs');
-    process.env.VL28_STUB_MARKER = join(codeRoot, 'marker-vl134-code.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    // VL-137: startPhase подставляет поля задачи и не запускает фазу без читаемой задачи
+    createTaskFile(codeRoot, { id: 'VL-91', title: 'Задача code без worktree' });
+    // VL-140: env через setStubEnv (spawn идёт из spawnEnvBaseOverride, не process.env)
+    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(codeRoot, 'vl134-code-stub.cjs'), VL28_STUB_MARKER: join(codeRoot, 'marker-vl134-code.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       // Задача переведена в code мимо Plan — без worktree фаза идёт в главный cwd
       const res = startPhase(codeRoot, 'VL-91', 'code');
@@ -1238,16 +1239,14 @@ describe('orchestrator (VL-28)', () => {
       definitionOfDone: [{ text: 'DoD-1 VL-500', checked: false }],
     });
     addComment(subRoot, 'VL-500', 'Комментарий VL-500', '@user');
-    process.env.VIBELOG_QWEN_BIN = stubBin;
-    process.env.VL28_STUB_MARKER = join(subRoot, 'marker-vl137.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    // VL-140: env через setStubEnv (spawn идёт из spawnEnvBaseOverride, не process.env)
+    setStubEnv({ VIBELOG_QWEN_BIN: stubBin, VL28_STUB_MARKER: join(subRoot, 'marker-vl137.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(subRoot, 'VL-500', 'plan', undefined, { comment: 'учти риски' });
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone('VL-500');
       assert.equal(run.exitCode, 0);
-      const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       const prompt = argv.find((a) => a.includes('Задача (подставлена автоматически)'));
       assert.ok(prompt, 'промпт должен содержать блок подстановки');
       assert.ok(prompt.includes('Заголовок: Заголовок VL-500'), 'taskTitle подставлен');
@@ -1259,8 +1258,8 @@ describe('orchestrator (VL-28)', () => {
       assert.ok(prompt.includes('учти риски'), 'контракт {{comment}} VL-80 сохранён');
       assert.ok(!prompt.includes('{{taskTitle}}'), 'неподставленного {{taskTitle}} не остаётся');
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(subRoot, { recursive: true, force: true });
     }
   });
@@ -1270,22 +1269,20 @@ describe('orchestrator (VL-28)', () => {
     mkdirSync(join(epicSubRoot, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(join(epicSubRoot, 'backlog', 'config.yml'), 'project_name: VL-137 Epic\n', 'utf-8');
     createTaskFile(epicSubRoot, { id: 'VL-501', title: 'Эпик VL-501', type: 'epic' });
-    process.env.VIBELOG_QWEN_BIN = stubBin;
-    process.env.VL28_STUB_MARKER = join(epicSubRoot, 'marker-vl137-epic.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    // VL-140: env через setStubEnv (spawn идёт из spawnEnvBaseOverride, не process.env)
+    setStubEnv({ VIBELOG_QWEN_BIN: stubBin, VL28_STUB_MARKER: join(epicSubRoot, 'marker-vl137-epic.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(epicSubRoot, 'VL-501', 'code');
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone('VL-501');
       assert.equal(run.exitCode, 0);
-      const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       const prompt = argv.find((a) => a.includes('Задача (подставлена автоматически)'));
       assert.ok(prompt, 'промпт должен содержать блок подстановки');
       assert.ok(prompt.includes('тип: epic'), 'taskType подставлен как epic');
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(epicSubRoot, { recursive: true, force: true });
     }
   });
@@ -1327,23 +1324,21 @@ describe('orchestrator (VL-28)', () => {
       '',
     ].join('\n'), 'utf-8');
     chmodSync(stubRb, 0o755);
-    process.env.VIBELOG_QWEN_BIN = stubRb;
-    process.env.VL28_STUB_MARKER = join(rbRoot, 'marker-rb.txt');
-    process.env.VL28_STUB_SLEEP = '0';
-    process.env.VL28_STUB_EXIT = '0';
+    // VL-140: env через setStubEnv (spawn идёт из spawnEnvBaseOverride, не process.env)
+    setStubEnv({ VIBELOG_QWEN_BIN: stubRb, VL28_STUB_MARKER: join(rbRoot, 'marker-rb.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startResume(rbRoot, 'agent-778', 'продолжи');
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone('resume');
       assert.equal(run.exitCode, 0);
-      const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.ok(argv[0].startsWith('продолжи'), 'исходный текст запроса сохраняется');
       assert.ok(argv[0].includes('Задача VL-78: Задача resume-блока'), 'компактный блок: ' + argv[0]);
       assert.ok(argv[0].includes('статус: In Progress'), 'статус в блоке');
       assert.ok(argv[0].includes('Последний комментарий resume'), 'последний комментарий в блоке');
     } finally {
-      delete process.env.VL28_STUB_MARKER;
-      process.env.VIBELOG_QWEN_BIN = stubBin;
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(rbRoot, { recursive: true, force: true });
     }
   });
