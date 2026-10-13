@@ -12,6 +12,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getTask } from '../core/store.js';
+import type { ChecklistItem, Task } from '../core/task.js';
 
 /** Допустимые фазы. */
 export const PHASES = ['spec', 'plan', 'code', 'close', 'comment', 'prompt'] as const;
@@ -77,4 +79,91 @@ export function renderPrompt(
     }
   }
   return prompt;
+}
+
+/** Элемент чеклиста AC/DoD: объект ChecklistItem либо готовая строка формата `- [ ] #N ...`. */
+type ChecklistEntry = ChecklistItem | string;
+
+/**
+ * Нумерованный список чеклиста для подстановки в промпт фазы (VL-137).
+ *
+ * Объекты приводятся к виду `N. [x] Текст` / `N. [ ] Текст`; строки-форматы
+ * хранения нумеруются как есть (в них чекбокс уже есть).
+ *
+ * @returns '' для пустого списка — в шаблоне читается как «(нет)»
+ */
+export function formatChecklist(items: ChecklistEntry[] | undefined): string {
+  if (!items || items.length === 0) return '(нет)';
+  return items
+    .map((item, i) =>
+      typeof item === 'string' ? `${i + 1}. ${item}` : `${i + 1}. [${item.checked ? 'x' : ' '}] ${item.text}`
+    )
+    .join('\n');
+}
+
+/**
+ * Подбирает подстановки полей задачи для первого промпта фазы (VL-137).
+ *
+ * Задача читается getTask ОДИН раз на фазу — агенту не нужен первый
+ * backlog_view_task ради title/type/описания/плана/AC/DoD/статуса/файлов.
+ *
+ * Решение (Pavel, комментарий к VL-137): фолбэк-инструкции «неподставленные
+ * {{...}} → прочитай через MCP» в шаблонах НЕТ — если задача не читается на
+ * уровне кода, фаза вообще не должна запускаться (пустой блок промпт не исправит).
+ *
+ * @returns фиксированный набор ключей при успехе; null — задача не найдена
+ *   или файл битый (ошибка парсинга приравнивается к «не найдена»)
+ */
+export function taskExtraVars(cwd: string, taskId: string): Record<string, string> | null {
+  let task: Task | null;
+  try {
+    task = getTask(cwd, taskId);
+  } catch {
+    return null;
+  }
+  if (!task) return null;
+  const last = task.comments.length > 0 ? task.comments[task.comments.length - 1] : null;
+  // Порядок ключей фиксирован: renderPrompt заменяет значения по порядку
+  // replaceAll — длинные тексты (description/plan) идут первыми, чтобы
+  // редкий случай литерала {{...}} внутри них гасился последующими ключами
+  return {
+    taskDescription: task.description || '(нет)',
+    taskPlan: task.implementationPlan || '(нет)',
+    taskAC: formatChecklist(task.acceptanceCriteria),
+    taskDoD: formatChecklist(task.definitionOfDone),
+    taskModifiedFiles: task.modified_files.length > 0 ? task.modified_files.join(', ') : '(нет)',
+    taskLastComment: last ? `${last.author} (${last.created}): ${last.text}` : '(нет комментариев)',
+    taskTitle: task.title,
+    taskType: task.type || '(не определён)',
+    taskStatus: task.status,
+  };
+}
+
+/**
+ * Компактный блок состояния задачи для промпта resume (VL-137).
+ *
+ * Resume идёт по сырому тексту без renderPrompt — минимальный контекст
+ * задачи (заголовок/тип/статус/последний комментарий) конкатенируется к
+ * promptText, чтобы модель не тратила MCP-вызов на восстановление контекста
+ * при «Продолжи».
+ *
+ * @returns '' если задача не найдена/не читается — resume существующей
+ *   сессии не должен падать из-за пропажи файла задачи
+ */
+export function taskBlockText(cwd: string, taskId: string): string {
+  let task: Task | null;
+  try {
+    task = getTask(cwd, taskId);
+  } catch {
+    return '';
+  }
+  if (!task) return '';
+  const lines = [
+    `Задача ${task.id}: ${task.title} (тип: ${task.type || 'не определён'}, статус: ${task.status})`,
+  ];
+  if (task.comments.length > 0) {
+    const last = task.comments[task.comments.length - 1];
+    lines.push(`Последний комментарий: ${last.author} (${last.created}): ${last.text}`);
+  }
+  return lines.join('\n');
 }

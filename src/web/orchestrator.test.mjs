@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 import { renderPrompt, startPhase, startPrompt, startResume, getRun, setSpawnEnvBaseForTests } from '../../dist/web/orchestrator.js';
 import { handleApi } from '../../dist/web/api.js';
-import { createTaskFile } from '../../dist/core/store.js';
+import { addComment, createTaskFile } from '../../dist/core/store.js';
 import { ensureTaskWorktree } from '../../dist/core/worktree.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 
@@ -815,8 +815,10 @@ describe('orchestrator (VL-28)', () => {
 
   it('startPhase: close с worktree — спавн в главном репо + merge-шаблон (VL-112)', async () => {
     const closeRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-close-'));
-    mkdirSync(join(closeRoot, 'backlog'), { recursive: true });
+    mkdirSync(join(closeRoot, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(join(closeRoot, 'backlog', 'config.yml'), 'project_name: Close WT\n', 'utf-8');
+    // VL-137: startPhase подставляет поля задачи и не запускает фазу без читаемой задачи
+    createTaskFile(closeRoot, { id: 'VL-77', title: 'Задача close-worktree' });
     mkdirSync(join(closeRoot, '.vibelog'), { recursive: true });
     // branch_mode включён, worktree vl-77 существует (задача работала в ветке)
     writeFileSync(join(closeRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
@@ -858,8 +860,10 @@ describe('orchestrator (VL-28)', () => {
 
   it('startPhase: close без worktree — прежний шаблон, спавн в главном (VL-112)', async () => {
     const plainRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-close0-'));
-    mkdirSync(join(plainRoot, 'backlog'), { recursive: true });
+    mkdirSync(join(plainRoot, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(join(plainRoot, 'backlog', 'config.yml'), 'project_name: Close Plain\n', 'utf-8');
+    // VL-137: startPhase подставляет поля задачи и не запускает фазу без читаемой задачи
+    createTaskFile(plainRoot, { id: 'VL-77', title: 'Задача close без worktree' });
     // branch_mode включён, но worktree vl-77 НЕТ
     mkdirSync(join(plainRoot, '.vibelog'), { recursive: true });
     writeFileSync(join(plainRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
@@ -885,8 +889,10 @@ describe('orchestrator (VL-28)', () => {
     const git = (args) => spawnSync('git', ['-C', codeRoot, ...args], { encoding: 'utf-8' });
     git(['init', '-q']);
     git(['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
-    mkdirSync(join(codeRoot, 'backlog'), { recursive: true });
+    mkdirSync(join(codeRoot, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(join(codeRoot, 'backlog', 'config.yml'), 'project_name: Code WT\n', 'utf-8');
+    // VL-137: startPhase подставляет поля задачи и не запускает фазу без читаемой задачи
+    createTaskFile(codeRoot, { id: 'VL-88', title: 'Задача plan в worktree' });
     mkdirSync(join(codeRoot, '.vibelog'), { recursive: true });
     writeFileSync(join(codeRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
     const stubCode = join(codeRoot, 'code-stub.cjs');
@@ -944,8 +950,10 @@ describe('orchestrator (VL-28)', () => {
 
   it('startPhase: задачный env в spawnEnv (VL-114)', async () => {
     const envRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-env-'));
-    mkdirSync(join(envRoot, 'backlog'), { recursive: true });
+    mkdirSync(join(envRoot, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(join(envRoot, 'backlog', 'config.yml'), 'project_name: Env Test\n', 'utf-8');
+    // VL-137: startPhase подставляет поля задачи и не запускает фазу без читаемой задачи
+    createTaskFile(envRoot, { id: 'VL-88', title: 'Задача env-теста' });
     setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(envRoot, 'env-stub.cjs'), VL28_STUB_MARKER: join(envRoot, 'marker-env.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(envRoot, 'VL-88', 'code');
@@ -985,9 +993,12 @@ describe('orchestrator (VL-28)', () => {
 
   it('startPhase: close не получает задачный env (VL-112-гард, VL-114)', async () => {
     const envRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-envc-'));
-    mkdirSync(join(envRoot, 'backlog'), { recursive: true });
+    mkdirSync(join(envRoot, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(join(envRoot, 'backlog', 'config.yml'), 'project_name: Env Close\n', 'utf-8');
-    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(envRoot, 'envc-stub.cjs'), VL28_STUB_MARKER: join(envRoot, 'marker-envc.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
+    process.env.VIBELOG_QWEN_BIN = writeEnvStub(envRoot, 'envc-stub.cjs');
+    process.env.VL28_STUB_MARKER = join(envRoot, 'marker-envc.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
     try {
       const res = startPhase(envRoot, 'VL-88', 'close');
       assert.equal(res.started, true, JSON.stringify(res));
@@ -1055,6 +1066,8 @@ describe('orchestrator (VL-28)', () => {
     const agentBin = join(__dirname, '..', '..', 'bin', 'vibelog-agent.mjs');
     setStubEnv({ VIBELOG_QWEN_BIN: agentBin, VIBELOG_LLM_BASE_URL: `http://127.0.0.1:${llmPort}/v1`, VIBELOG_LLM_API_KEY: 'test', VIBELOG_LLM_MODEL: 'test-model', VIBELOG_BIN: join(testRoot, 'no-such-vibelog') });
     try {
+      // VL-137: фаза не запускается без читаемой задачи — создаём ot-88 заранее
+      createTaskFile(testRoot, { id: 'ot-88', title: 'Задача E2E-меты' });
       const res = startPhase(testRoot, 'ot-88', 'comment');
       assert.equal(res.started, true);
       const run = await waitDone('ot-88', 8000);
@@ -1080,8 +1093,10 @@ describe('orchestrator (VL-28)', () => {
     const git = (args) => spawnSync('git', ['-C', otRoot, ...args], { encoding: 'utf-8' });
     git(['init', '-q']);
     git(['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
-    mkdirSync(join(otRoot, 'backlog'), { recursive: true });
+    mkdirSync(join(otRoot, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(join(otRoot, 'backlog', 'config.yml'), 'project_name: OT Test\ntask_prefix: ot\n', 'utf-8');
+    // VL-137: startPhase подставляет поля задачи и не запускает фазу без читаемой задачи
+    createTaskFile(otRoot, { id: 'ot-5', title: 'Задача чужого префикса' });
     mkdirSync(join(otRoot, '.vibelog'), { recursive: true });
     writeFileSync(join(otRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
     setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(otRoot, 'ot-stub.cjs'), VL28_STUB_MARKER: join(otRoot, 'marker-ot.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
@@ -1120,7 +1135,10 @@ describe('orchestrator (VL-28)', () => {
 
   it('spec с branch_mode: worktree не создаётся, фаза идёт в главном cwd (VL-134)', async () => {
     const specRoot = makeBmRoot('vibelog-orch-vl134-spec-');
-    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(specRoot, 'vl134-spec-stub.cjs'), VL28_STUB_MARKER: join(specRoot, 'marker-vl134-spec.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
+    process.env.VIBELOG_QWEN_BIN = writeEnvStub(specRoot, 'vl134-spec-stub.cjs');
+    process.env.VL28_STUB_MARKER = join(specRoot, 'marker-vl134-spec.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
     try {
       const res = startPhase(specRoot, 'VL-90', 'spec');
       assert.equal(res.started, true, JSON.stringify(res));
@@ -1161,7 +1179,10 @@ describe('orchestrator (VL-28)', () => {
 
   it('code без worktree: не создаётся, фаза идёт в главном cwd (VL-134)', async () => {
     const codeRoot = makeBmRoot('vibelog-orch-vl134-code-');
-    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(codeRoot, 'vl134-code-stub.cjs'), VL28_STUB_MARKER: join(codeRoot, 'marker-vl134-code.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
+    process.env.VIBELOG_QWEN_BIN = writeEnvStub(codeRoot, 'vl134-code-stub.cjs');
+    process.env.VL28_STUB_MARKER = join(codeRoot, 'marker-vl134-code.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
     try {
       // Задача переведена в code мимо Plan — без worktree фаза идёт в главный cwd
       const res = startPhase(codeRoot, 'VL-91', 'code');
@@ -1181,6 +1202,8 @@ describe('orchestrator (VL-28)', () => {
 
   it('comment с уже созданной worktree: фаза идёт в worktree (VL-134)', async () => {
     const cmtRoot = makeBmRoot('vibelog-orch-vl134-cmt-');
+    // VL-137: startPhase подставляет поля задачи и не запускает фазу без читаемой задачи
+    createTaskFile(cmtRoot, { id: 'VL-92', title: 'Задача comment в worktree' });
     // Существующая worktree (задача дошла до Plan ранее) — comment работает в ней
     const wtPath = ensureTaskWorktree(cmtRoot, 'VL-92');
     setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(cmtRoot, 'vl134-cmt-stub.cjs'), VL28_STUB_MARKER: join(cmtRoot, 'marker-vl134-cmt.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
@@ -1197,6 +1220,131 @@ describe('orchestrator (VL-28)', () => {
       setStubEnv({ VL28_STUB_MARKER: undefined });
       setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(cmtRoot, { recursive: true, force: true });
+    }
+  });
+
+  // ── VL-137: подстановка полей задачи в первый промпт фазы ──
+
+  it('startPhase: поля задачи подставляются в промпт, {{comment}}-контракт VL-80 цел (VL-137)', async () => {
+    const subRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-vl137-'));
+    mkdirSync(join(subRoot, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(subRoot, 'backlog', 'config.yml'), 'project_name: VL-137 Sub\n', 'utf-8');
+    createTaskFile(subRoot, {
+      id: 'VL-500',
+      title: 'Заголовок VL-500',
+      description: 'Описание VL-500',
+      status: 'Planned',
+      acceptanceCriteria: [{ text: 'AC-1 VL-500', checked: true }],
+      definitionOfDone: [{ text: 'DoD-1 VL-500', checked: false }],
+    });
+    addComment(subRoot, 'VL-500', 'Комментарий VL-500', '@user');
+    process.env.VIBELOG_QWEN_BIN = stubBin;
+    process.env.VL28_STUB_MARKER = join(subRoot, 'marker-vl137.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startPhase(subRoot, 'VL-500', 'plan', undefined, { comment: 'учти риски' });
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-500');
+      assert.equal(run.exitCode, 0);
+      const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const prompt = argv.find((a) => a.includes('Задача (подставлена автоматически)'));
+      assert.ok(prompt, 'промпт должен содержать блок подстановки');
+      assert.ok(prompt.includes('Заголовок: Заголовок VL-500'), 'taskTitle подставлен');
+      assert.ok(prompt.includes('Описание VL-500'), 'taskDescription подставлен');
+      assert.ok(prompt.includes('1. [x] AC-1 VL-500'), 'taskAC нумерован и подставлен');
+      assert.ok(prompt.includes('1. [ ] DoD-1 VL-500'), 'taskDoD подставлен');
+      assert.ok(prompt.includes('Комментарий VL-500'), 'taskLastComment подставлен');
+      assert.ok(prompt.includes('статус: Planned'), 'taskStatus подставлен');
+      assert.ok(prompt.includes('учти риски'), 'контракт {{comment}} VL-80 сохранён');
+      assert.ok(!prompt.includes('{{taskTitle}}'), 'неподставленного {{taskTitle}} не остаётся');
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(subRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('startPhase: epic-задача → в блоке «тип: epic» (VL-137)', async () => {
+    const epicSubRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-vl137-epic-'));
+    mkdirSync(join(epicSubRoot, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(epicSubRoot, 'backlog', 'config.yml'), 'project_name: VL-137 Epic\n', 'utf-8');
+    createTaskFile(epicSubRoot, { id: 'VL-501', title: 'Эпик VL-501', type: 'epic' });
+    process.env.VIBELOG_QWEN_BIN = stubBin;
+    process.env.VL28_STUB_MARKER = join(epicSubRoot, 'marker-vl137-epic.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startPhase(epicSubRoot, 'VL-501', 'code');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-501');
+      assert.equal(run.exitCode, 0);
+      const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      const prompt = argv.find((a) => a.includes('Задача (подставлена автоматически)'));
+      assert.ok(prompt, 'промпт должен содержать блок подстановки');
+      assert.ok(prompt.includes('тип: epic'), 'taskType подставлен как epic');
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(epicSubRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('startPhase: задача не найдена → error, фаза НЕ запускается (VL-137, решение Pavel)', () => {
+    // Фолбэка «неподставленные {{...}} → прочитай через MCP» нет: если задача
+    // не читается на уровне кода, промпт фазы запускаться не должен
+    const res = startPhase(testRoot, 'ot-999', 'plan');
+    assert.ok(res.error, 'должна вернуться ошибка: ' + JSON.stringify(res));
+    assert.match(res.error, /не найдена/);
+    assert.equal(res.started, undefined, 'фаза не должна стартовать');
+  });
+
+  it('startResume: задачная сессия получает компактный блок задачи (VL-137)', async () => {
+    const rbRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-vl137-resume-'));
+    const git = (args) => spawnSync('git', ['-C', rbRoot, ...args], { encoding: 'utf-8' });
+    git(['init', '-q']);
+    git(['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+    mkdirSync(join(rbRoot, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(rbRoot, 'backlog', 'config.yml'), 'project_name: VL-137 Resume\n', 'utf-8');
+    createTaskFile(rbRoot, { id: 'VL-78', title: 'Задача resume-блока', status: 'In Progress' });
+    addComment(rbRoot, 'VL-78', 'Последний комментарий resume', '@user');
+    mkdirSync(join(rbRoot, '.vibelog', 'agent-sessions'), { recursive: true });
+    writeFileSync(join(rbRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    const wtPath = join(rbRoot, '.vibelog', 'worktrees', 'vl-78');
+    ensureTaskWorktree(rbRoot, 'VL-78');
+    writeFileSync(
+      join(rbRoot, '.vibelog', 'agent-sessions', 'agent-778.meta.json'),
+      JSON.stringify({ taskId: 'VL-78', phase: 'code', cwd: wtPath }),
+      'utf-8'
+    );
+    const stubRb = join(rbRoot, 'rb-stub.cjs');
+    writeFileSync(stubRb, [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      'fs.writeFileSync(process.env.VL28_STUB_MARKER, JSON.stringify(process.argv.slice(2)));',
+      "fs.writeSync(1, 'stub resume\\n');",
+      'process.exit(0);',
+      '',
+    ].join('\n'), 'utf-8');
+    chmodSync(stubRb, 0o755);
+    process.env.VIBELOG_QWEN_BIN = stubRb;
+    process.env.VL28_STUB_MARKER = join(rbRoot, 'marker-rb.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startResume(rbRoot, 'agent-778', 'продолжи');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('resume');
+      assert.equal(run.exitCode, 0);
+      const argv = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      assert.ok(argv[0].startsWith('продолжи'), 'исходный текст запроса сохраняется');
+      assert.ok(argv[0].includes('Задача VL-78: Задача resume-блока'), 'компактный блок: ' + argv[0]);
+      assert.ok(argv[0].includes('статус: In Progress'), 'статус в блоке');
+      assert.ok(argv[0].includes('Последний комментарий resume'), 'последний комментарий в блоке');
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(rbRoot, { recursive: true, force: true });
     }
   });
 });

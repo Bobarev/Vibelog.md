@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { parseQwenResult } from '../../dist/web/qwen-result.js';
 import { parseArgs } from '../../dist/agent/cli.js';
+import { createTaskFile } from '../../dist/core/store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(__dirname, '..', '..', 'dist', 'agent', 'cli.js');
@@ -101,6 +102,9 @@ describe('vibelog-agent CLI (VL-85)', () => {
     testDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-cli-'));
     mkdirSync(join(testDir, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(join(testDir, 'backlog', 'config.yml'), 'project_name: Agent Test\n', 'utf-8');
+    // VL-137: фаза CLI не запускается без читаемой задачи (подстановка полей
+    // в промпт) — фазовые тесты работают с реальной задачей VL-1
+    createTaskFile(testDir, { id: 'VL-1', title: 'Задача CLI-тестов' });
     mock = await startMockLlm('Готово');
   });
 
@@ -576,6 +580,10 @@ describe('vibelog-agent CLI (VL-85)', () => {
   it('фаза пишет метаданные <id>.meta.json (taskId/phase/cwd) (VL-110)', async () => {
     const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-meta-'));
     try {
+      // VL-137: фаза CLI не запускается без читаемой задачи — создаём VL-77
+      mkdirSync(join(projDir, 'backlog', 'tasks'), { recursive: true });
+      writeFileSync(join(projDir, 'backlog', 'config.yml'), 'project_name: Meta Test\n', 'utf-8');
+      createTaskFile(projDir, { id: 'VL-77', title: 'Задача меты сессии' });
       const { code, stdout } = await runCli(['comment', 'VL-77', '--no-mcp'], llmEnv(), projDir);
       assert.equal(code, 0, stdout);
       const parsed = JSON.parse(stdout.trim());
