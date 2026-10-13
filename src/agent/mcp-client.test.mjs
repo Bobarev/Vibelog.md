@@ -97,6 +97,27 @@ describe('MCP-клиент: tools/call (VL-84)', () => {
     assert.match(text, /целое число, начиная с 1/, `нет подсказки формата: ${text}`);
     assert.match(text, /пунктов чек-листа: 2/, `нет количества пунктов: ${text}`);
   });
+
+  it('батч-отметка manage_dod: массив, all, batch-add (VL-135)', async () => {
+    const created = await client.callTool('backlog_create_task', { title: 'DoD batch VL-135' });
+    const taskId = created.match(/mcpcli-\d+/)[0];
+    // batch-add: массив строк → отдельные пункты, не слияние «D1,D2»
+    await client.callTool('backlog_manage_dod', { id: taskId, action: 'add', text: ['D1', 'D2'] });
+    const list = await client.callTool('backlog_manage_dod', { id: taskId, action: 'list' });
+    assert.match(list, /1\. ○ D1/, `нет пункта D1: ${list}`);
+    assert.match(list, /2\. ○ D2/, `нет пункта D2: ${list}`);
+    assert.ok(!list.includes('D1,D2'), 'batch-add не должен сливать пункты в один');
+
+    // два пункта за один вызов
+    const batch = await client.callTool('backlog_manage_dod', { id: taskId, action: 'check', index: [1, 2] });
+    assert.ok(!batch.startsWith('Ошибка MCP-инструмента'), `батч [1,2] упал: ${batch}`);
+    assert.match(batch, /Отмечено пунктов: 2/, `неожиданный ответ: ${batch}`);
+
+    // 'all' — все пункты списка
+    const all = await client.callTool('backlog_manage_dod', { id: taskId, action: 'check', index: 'all' });
+    assert.ok(!all.startsWith('Ошибка MCP-инструмента'), `батч 'all' упал: ${all}`);
+    assert.match(all, /Отмечено пунктов: /, `неожиданный ответ: ${all}`);
+  });
 });
 
 describe('MCP-клиент: ошибки протокола (VL-84)', () => {
