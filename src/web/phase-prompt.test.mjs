@@ -82,6 +82,24 @@ describe('close в worktree — отдельный шаблон (VL-112)', () =>
   });
 });
 
+// ── VL-144: фаза reject ──
+
+describe('VL-144 — renderPrompt фазы reject', () => {
+  it('reject: подстановки taskId/comment/полей задачи, без неподставленных {{...}}', () => {
+    const prompt = renderPrompt('reject', 'VL-1', { ...TASK_VARS, comment: 'причина X' });
+    assert.ok(prompt.includes('VL-1'), 'taskId подставлен');
+    assert.ok(prompt.includes('причина X'), 'comment подставлен');
+    assert.ok(prompt.includes(TASK_VARS.taskDescription), 'текст задачи подставлен');
+    assert.ok(!prompt.includes('{{'), 'неподставленных подстановок не остаться');
+  });
+
+  it('reject: без {{comment}} в extraVars остаётся литерал (контракт VL-80)', () => {
+    const prompt = renderPrompt('reject', 'VL-1', TASK_VARS);
+    assert.ok(prompt.includes('{{comment}}'), 'литеральный {{comment}} сохраняется');
+    assert.ok(prompt.includes('VL-1'), 'taskId подставлен');
+  });
+});
+
 // ── VL-137: подстановка полей задачи в первый промпт фазы ──
 
 describe('VL-137 — блок подстановки задачи в шаблонах', () => {
@@ -92,6 +110,8 @@ describe('VL-137 — блок подстановки задачи в шабло�
     'phase-close.md',
     'phase-close-worktree.md',
     'phase-comment.md',
+    // VL-144: reject — откат начатых изменений для задач, бывших в Code
+    'reject.md',
   ];
 
   it('все шаблоны фаз содержат блок «Задача (подставлена автоматически)»', () => {

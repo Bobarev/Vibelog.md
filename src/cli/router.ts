@@ -187,6 +187,7 @@ vibelog task <subcommand> [опции]
   view <id> [--json]
   edit <id> [--title ...] [--status ...] [--type ...] [--parent ID] [--ac ...] [--check-ac N[,N]] [--dod ...] [--check-dod N[,N]] [--comment ...] [--assignee ...] [--remove-label ...] [--plan ...] [--notes ...] [--append-notes ...] [--final-summary ...] [--append-final-summary ...] [--clear-final-summary] [--ordinal N]
   complete <id>
+  reject <id> [комментарий]  — отклонить задачу (Rejected + completed/; если задача была в Code — предварительный откат через LLM)
   archive <id>`,
 
     board: `

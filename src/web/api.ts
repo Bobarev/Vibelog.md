@@ -10,13 +10,14 @@
  * - GET  /api/config         — конфиг проекта
  * - POST /api/tasks/:id/trigger — запуск фазы оркестратора (VL-28)
  * - GET  /api/tasks/:id/trigger — состояние запуска фазы
+ * - POST /api/tasks/:id/reject — отклонить задачу (VL-144)
  */
 
 import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile } from '../core/store.js';
 import type { CreateTaskFileInput } from '../core/store.js';
 import type { Task } from '../core/task.js';
 import { loadConfig } from '../core/config.js';
-import { startPhase, getRun } from './orchestrator.js';
+import { startPhase, getRun, rejectTask } from './orchestrator.js';
 
 /** HTTP-ответ API. */
 export interface ApiResponse {
@@ -73,6 +74,24 @@ export function handleApi(
     // GET /api/tasks/:id/trigger — состояние запуска фазы
     if (triggerMatch && method === 'GET') {
       return { status: 200, body: getRun(triggerMatch[1]) ?? { running: false } };
+    }
+
+    // POST /api/tasks/:id/reject — отклонить задачу (VL-144).
+    // Матч ДО общего getMatch ниже (иначе 'VL-N/reject' — id задачи).
+    // Никогда не бывшая в Code: синхронная механика → 200 {rejected:true}.
+    // Была в Code: запуск LLM-фазы reject → 202 {started,pid}; статус+архив
+    // применяются в onExit завершения фазы ( rejectTask сам ). Ошибка
+    // валидации/guard (задача не найдена, запуск уже выполняется) → 404/409.
+    const rejectMatch = url.match(/^\/api\/tasks\/([^/]+)\/reject$/);
+    if (rejectMatch && method === 'POST') {
+      const comment = typeof body?.comment === 'string' ? body.comment : '';
+      const result = rejectTask(cwd, rejectMatch[1], comment);
+      if ('rejected' in result) return { status: 200, body: { rejected: true } };
+      if ('error' in result) {
+        const status = result.error.startsWith('Задача не найдена') ? 404 : 409;
+        return { status, body: { error: result.error } };
+      }
+      return { status: 202, body: result };
     }
 
     // GET /api/tasks/:id

@@ -43,7 +43,7 @@ import { commandsHelp } from './registry.js';
 import { spawnReplacementBot } from './restart.js';
 import { buildTaskWorktree, ensureTaskWorktree, taskBranchName, worktreeCliPath } from '../core/worktree.js';
 import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
-import { getRun, startAnalyze, startPhase, startPrompt, startResume } from '../web/orchestrator.js';
+import { getRun, startAnalyze, startPhase, startPrompt, startResume, rejectTask } from '../web/orchestrator.js';
 import {
   extractSessionRef,
   richToText,
@@ -1073,7 +1073,54 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendDocView(bot, chatId, entry);
       return;
     }
-    if (!data.startsWith('next:')) return; // чужие callback не трогаем
+    if (!data.startsWith('next:') && !data.startsWith('reject:')) return; // чужие callback не трогаем
+    // ── Кнопка «Reject» (VL-144): data = reject:<id> ──
+    // Никогда не бывшая в Code задача отклоняется синхронно (механика:
+    // Rejected + архив), бывшая — запускает LLM-фазу reject (откат начатых
+    // изменений), механика выполняется в onExit завершения фазы.
+    if (data.startsWith('reject:')) {
+      const id = data.slice('reject:'.length).trim();
+      if (!requireBind(ctx)) {
+        await ctx
+          .answerCallbackQuery({ text: 'Бот не привязан к чату — выполните /start' })
+          .catch(() => {});
+        return;
+      }
+      const chatId = ctx.chat?.id;
+      const task = getTask(deps.cwd, id);
+      if (chatId === undefined || !task) {
+        await ctx.answerCallbackQuery({ text: `Задача ${id} не найдена.` }).catch(() => {});
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: `✖ Отклонение ${task.id}` }).catch(() => {});
+      const notifyChat = chatId;
+      const result = rejectTask(deps.cwd, id, '', {
+        onExit: (run) => {
+          // Механика (Rejected + архив) применена rejectTask ДО этого колбэка —
+          // здесь только уведомление: карточку не шлём, файла уже нет в tasks/
+          void sendText(
+            bot,
+            notifyChat,
+            `✖ Задача *${task.id}* отклонена (Rejected) и архивирована (фаза reject, exit=${run.exitCode})`
+          ).catch((err) => console.error('Уведомление об отклонении не отправлено:', err));
+        },
+        agent: resolveDefaultAgent(deps.cwd),
+      });
+      if ('rejected' in result) {
+        // Синхронный механический путь: задача уже отклонена к возврату
+        await sendMd(ctx, `✖ Задача *${task.id}* отклонена (Rejected) и архивирована.`);
+        return;
+      }
+      if ('error' in result) {
+        await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
+        return;
+      }
+      await sendMd(
+        ctx,
+        `🚀 Фаза Reject запущена для *${task.id}*, PID ${result.pid}: после завершения задача будет переведена в Rejected и архивирована`
+      );
+      return;
+    }
     const id = data.slice('next:'.length).trim();
     // answerCallbackQuery обязателен в любом исходе — иначе «часики» на кнопке
     if (!requireBind(ctx)) {

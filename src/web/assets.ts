@@ -41,6 +41,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .btn:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
 .btn-primary { background:var(--accent); color:#fff; border-color:var(--accent); }
 .btn-primary:hover { background:var(--accent2); }
+.btn-reject { background:var(--red); color:#fff; border-color:var(--red); font-size:11px; padding:2px 8px; }
+.btn-reject:hover { background:#dc2626; color:#fff; border-color:#dc2626; }
 .board { display:flex; gap:12px; padding:16px; overflow-x:auto; min-height:calc(100vh - 56px); }
 .column { min-width:260px; max-width:320px; flex:1; background:var(--bg2); border-radius:8px; border:1px solid var(--border); display:flex; flex-direction:column; }
 .column-header { padding:10px 14px; font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:.5px; color:var(--text2); border-bottom:1px solid var(--border); display:flex; justify-content:space-between; }
@@ -179,6 +181,19 @@ function createCard(task) {
     labelsHtml = task.labels.map(l => '<span class="tag">' + esc(l) + '</span>').join('');
   }
   card.innerHTML = '<div class="card-id">' + esc(task.id) + '</div><div class="card-title">' + esc(task.title) + '</div><div class="card-meta">' + priorityTag + labelsHtml + '</div>';
+  // VL-144: кнопка Reject только для To Do (по AC); клик по карточке
+  // открывает модалку — stopPropagation, затем confirm и POST reject
+  if (task.status === 'To Do') {
+    const rejectBtn = document.createElement('button');
+    rejectBtn.className = 'btn btn-reject';
+    rejectBtn.textContent = '✖ Reject';
+    rejectBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!confirm('Отклонить ' + task.id + '?')) return;
+      fetch('/api/tasks/' + task.id + '/reject', { method: 'POST' }).then(() => loadData());
+    });
+    card.appendChild(rejectBtn);
+  }
   return card;
 }
 

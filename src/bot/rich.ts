@@ -337,6 +337,15 @@ export function renderTaskRich(task: Task): string {
       `<tg-button type="callback_data" style="primary" data="next:${task.id}">${PHASE_EMOJI[next.phase]} ${next.label}</tg-button>`
     );
   }
+  // VL-144: кнопка Reject — только для To Do (по AC); стиль danger
+  // поддержан rich-форматом Telegram (валидные стили: primary/success/
+  // danger/link — те же, что task_type_styles в bot.yml, VL-82).
+  // Обработчик reject:<id> — ветка в bot.on('callback_query') handlers.ts.
+  if (task.status === 'To Do') {
+    buttons.push(
+      `<tg-button type="callback_data" style="danger" data="reject:${task.id}">✖ Reject</tg-button>`
+    );
+  }
   buttons.push(
     `<tg-button type="callback_data" style="success" data="comment:${task.id}">💬 Комментарий</tg-button>`
   );
