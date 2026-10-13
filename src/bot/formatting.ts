@@ -203,10 +203,10 @@ export function formatPhaseResult(run: PhaseRun, taskId?: string): string {
       .filter((l) => l !== '')
       .join('\n');
   }
-  // Обрезка результата: Telegram-лимит 4096 символов, экранирование
-  // удваивает длину — режем с большим запасом
-  const body =
-    res.result.length > 1500 ? res.result.slice(0, 1500) + '…' : res.result;
+  // VL-148: усечение 1500 отменено — длинный результат не теряет хвост:
+  // разбивкой на нумерованные сообщения «часть i/N» занимается слой
+  // отправки (splitNumbered в sendPhaseResult)
+  const body = res.result;
   // VL-98: ответ модели — в цитате MarkdownV2 (каждая строка с "> ",
   // спецсимволы экранируются; "> " в начале строки — валидный blockquote,
   // Bot API ≥ 7.0, серверный парсинг). Срез — до префиксации (срез по
@@ -234,6 +234,75 @@ export function formatPhaseResult(run: PhaseRun, taskId?: string): string {
   // (жалоба Pavel 2026-10-05); agent не задан — дефолт qwen
   if (res.session_id) lines.push('', '`' + (run.agent ?? 'qwen') + ':' + res.session_id + '`');
   return lines.join('\n');
+}
+
+/** Лимит длины текстового сообщения Telegram (символов UTF-8). */
+export const TELEGRAM_TEXT_LIMIT = 4096;
+
+/**
+ * Запас длины под нумерованный суффикс «часть 99/99» (VL-148).
+ *
+ * Суффикс добавляется к КАЖДОЙ части, поэтому бюджет разреза —
+ * limit минус резерв: `15` (GFM «_(часть 99/99)_») или `17`
+ * (MarkdownV2 «_часть 99\/99_» с обязательным экранированием `/`)
+ * с запасом на многозначные номера.
+ */
+export const PART_SUFFIX_RESERVE = 32;
+
+/**
+ * Разбивает длинный текст на части с нумерацией (VL-148).
+ *
+ * Общий помощник разбивки для команд бота: длинный результат /analyze
+ * (и других шаблонов sendPhaseResult) уходит несколькими последовательными
+ * сообщениями «часть i/N» вместо обрезанного одного; короткий текст
+ * (≤ limit) возвращается одним элементом без суффикса — без изменений.
+ *
+ * Разрез — только по границам строк (`\n`): внутристрочный разрез может
+ * разорвать escape-последовательность MarkdownV2 (`\x`) и Telegram
+ * ответит 400 «can't parse entities». Единственный случай жёсткого
+ * разреза — аномально длинная строка сама больше бюджета (приемлемо
+ * для строк без MarkdownV2-спецсимволов; таких в отчётах фаз нет).
+ *
+ * @param text — готовый к отправке текст (уже экранированный вызывающим)
+ * @param limit — максимальная длина части вместе с суффиксом
+ * @param fmtSuffix — суффикс нумерации (вызывающий выбирает разметку:
+ *   GFM italic для rich, экранированный MarkdownV2 для текстового фолбэка)
+ */
+export function splitNumbered(
+  text: string,
+  limit: number,
+  fmtSuffix: (i: number, n: number) => string
+): string[] {
+  if (text.length <= limit) return [text];
+  // Бюджет тела части: суффикс добавляется после разреза
+  const budget = Math.max(1, limit - PART_SUFFIX_RESERVE);
+  const chunks: string[] = [];
+  let cur = '';
+  for (const line of text.split('\n')) {
+    const candidate = cur === '' ? line : cur + '\n' + line;
+    if (candidate.length <= budget) {
+      cur = candidate;
+      continue;
+    }
+    // Текущая часть заполнена — фиксируем и начинаем новую со строки
+    if (cur !== '') {
+      chunks.push(cur);
+      cur = '';
+    }
+    if (line.length <= budget) {
+      cur = line;
+    } else {
+      // Аномально длинная строка (> бюджета): жёсткий разрез кусками budget
+      for (let pos = 0; pos < line.length; pos += budget) {
+        const piece = line.slice(pos, pos + budget);
+        if (pos + budget < line.length) chunks.push(piece);
+        else cur = piece;
+      }
+    }
+  }
+  if (cur !== '') chunks.push(cur);
+  const n = chunks.length;
+  return chunks.map((c, idx) => c + fmtSuffix(idx + 1, n));
 }
 
 /**
