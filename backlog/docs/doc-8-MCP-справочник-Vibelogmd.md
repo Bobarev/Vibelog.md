@@ -84,16 +84,16 @@ tags:
 
 Обновляет только переданные поля.
 
-| Параметр | Тип | Required |
-|---|---|---|
-| `id` | string | ✓ |
-| `title`, `description`, `priority`, `assignee`, `labels`, `milestone`, `type`, `status` | — | |
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `id` | string | ✓ | |
+| `title`, `description`, `priority`, `assignee`, `labels`, `milestone`, `type`, `status` | — | | |
 | `parentTaskId` | string | | Родительская задача; пустая строка — сброс |
-| `plan` | string | Implementation Plan (полная замена) |
-| `notes` | string | Implementation Notes (полная замена) |
-| `append_notes` | string | Дописать в конец заметок |
-| `final_summary` | string | Итоговое резюме |
-| `modifiedFiles` | string[] | Изменённые файлы (полная замена `modified_files`; Фаза 3 пишет, Фаза Close читает) |
+| `plan` | string | | Implementation Plan (полная замена) |
+| `notes` | string | | Implementation Notes (полная замена) |
+| `append_notes` | string | | Дописать в конец заметок |
+| `final_summary` | string | | Итоговое резюме |
+| `modifiedFiles` | string[] | | Изменённые файлы (полная замена `modified_files`; Фаза 3 пишет, Фаза Close читает) |
 
 ### backlog_manage_ac / backlog_manage_dod — чеклисты
 
@@ -101,8 +101,8 @@ tags:
 |---|---|---|---|
 | `id` | string | ✓ | |
 | `action` | string | ✓ | add / check / uncheck / remove / list |
-| `text` | string | | Для action=add |
-| `index` | number \| string \| (number\|string)[] | | Для check/uncheck/remove; массив — пачкой; строка-число (`"3"`) тоже принимается, дробь/NaN/пусто — ошибка с подсказкой формата и количеством пунктов |
+| `text` | string \| string[] | | Для action=add: строка — один пункт; массив непустых строк — несколько за один вызов (batch-add, ответ «Добавлено критериев: N (…)») |
+| `index` | number \| string \| (number\|string)[] | | Для check/uncheck/remove: целое с 1; строка-число (`"3"`); массив `[1,2,3]` — несколько за один вызов; строка-массив `"[1, 2]"` тоже принимается; `"all"` — все пункты списка. Валидация каждого элемента: целое ≥1 и ≤ длины, иначе ошибка со списком пунктов (дробь/NaN/пусто — с подсказкой формата). Батч-ответ: «Отмечено пунктов: N (1, 2, 3)» / «Снято пунктов» / «Удалено пунктов»; scalar-ответ — прежний («Отмечены критерии #2»). Внимание: `action:'remove', index:'all'` чистит весь чеклист |
 
 ### backlog_add_comment — комментарий
 
@@ -145,11 +145,10 @@ tags:
 
 ### milestone_add
 
-| Параметр | Тип | Required |
-|---|---|---|
-| `name` | string | ✓ |
-| `description` | string | |
-| `due_date` | string | |
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `name` | string | ✓ | |
+| `description` | string | | |
 
 ### milestone_rename
 
@@ -165,7 +164,6 @@ tags:
 |---|---|---|---|
 | `name` | string | ✓ | |
 | `task_handling` | string | | clear / keep / reassign (по умолчанию clear) |
-| `reassign_to` | string | | Целевая веха для reassign |
 
 ### milestone_archive
 
@@ -193,10 +191,10 @@ tags:
 
 | Параметр | Тип | Required | Описание |
 |---|---|---|---|
-| `title` | string | ✓ | |
+| `title` | string | ✓ | Заголовок |
 | `content` | string | ✓ | Markdown-содержимое |
 | `type` | string | | readme / guide / specification / other |
-| `tags` | string[] | | |
+| `tags` | string[] | | Теги |
 
 ### document_update
 
@@ -228,6 +226,10 @@ tags:
 // Пачка отметок AC
 { "name": "backlog_manage_ac", "arguments": {
   "id": "api-1", "action": "check", "index": [1, 2, 3] } }
+
+// Отметить все пункты разом (VL-135)
+{ "name": "backlog_manage_dod", "arguments": {
+  "id": "api-1", "action": "check", "index": "all" } }
 
 // Поиск: баги To Do с лимитом
 { "name": "backlog_search", "arguments": {
