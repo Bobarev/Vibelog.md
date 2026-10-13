@@ -47,10 +47,19 @@ export interface PhaseRun {
   result?: QwenResult;
   /** Агент запуска (VL-93): 'qwen' по умолчанию, 'vb' — встроенный агент. */
   agent?: string;
+  /** VL-146: queued=true — close ждёт в очереди branch-mode (состояние getRun). */
+  queued?: boolean;
 }
 
 /** Результат startPhase: успех или ошибка валидации/guard. */
-export type StartResult = { started: true; pid: number } | { error: string };
+export type StartResult =
+  | {
+      started: true;
+      pid: number;
+      /** VL-146: close поставлен в очередь branch-mode — процесс ещё не создан (pid 0). */
+      queued?: boolean;
+    }
+  | { error: string };
 
 /**
  * Колбэк завершения фазы (VL-48): вызывается ровно один раз при close/error
@@ -71,6 +80,26 @@ interface ActiveRun {
 const activeRuns = new Map<string, ActiveRun>();
 /** Задача → последний завершённый запуск (для getRun после close). */
 const lastRuns = new Map<string, PhaseRun>();
+
+/** Элемент очереди close-фаз (VL-146): полный запрос на запуск, ждущий освобождения. */
+interface QueuedClose {
+  cwd: string;
+  taskId: string;
+  onExit?: PhaseExitCallback;
+  extraVars?: Record<string, string>;
+  agent: 'qwen' | 'vb';
+}
+
+/**
+ * Очередь close-фаз branch-mode (VL-146): в режиме веток merge в главном
+ * репозитории требует эксклюзивного доступа — параллельные close разных
+ * задач конфликтуют по git. Очередь живёт в процессе оркестратора (бот/
+ * vibelog browser) и общая для агентов qwen/vb. Ограничение (задокументировано
+ * в README): рестарт процесса теряет ожидающие элементы — known limitation.
+ */
+const closeQueue: QueuedClose[] = [];
+/** true ⇔ close-фаза активна или стартует из очереди (guard очереди, VL-146). */
+let closeActive = false;
 
 /**
  * Тестовый шов VL-140: заменяет process.env как базу env спавна фаз.
@@ -175,7 +204,70 @@ export function startPhase(
       );
     }
   }
+  // VL-146: в branch-mode close сериализуется — merge ветки в главном репо
+  // требует эксклюзивного доступа к git, параллельные close разных задач
+  // конфликтуют. Guard общий для агентов qwen/vb; вне branch-mode — прежний путь.
+  if (phase === 'close' && resolveBranchMode(cwd)) {
+    // Канонический ключ задачи — как в spawnQwenRun (VL-145)
+    const canon = taskIdPattern(cwd).test(taskId) ? taskId.toUpperCase() : taskId;
+    // Активный запуск задачи (любой фазы) → в очередь не ставим: guard
+    // activeRuns в spawnQwenRun вернул бы ту же ошибу и при dequeue — раньше
+    // и понятнее для вызывающего
+    if (activeRuns.has(canon)) {
+      return {
+        error: 'Запуск уже выполняется' + (taskIdPattern(cwd).test(canon) ? ` (${canon})` : ''),
+      };
+    }
+    // Двойной /close одной задачи: она уже ждёт в очереди — дубликат не добавляем
+    if (closeQueue.some((e) => e.taskId.toUpperCase() === canon)) {
+      return { error: `Close уже в очереди: ${canon}` };
+    }
+    if (closeActive) {
+      closeQueue.push({ cwd, taskId, onExit, extraVars, agent });
+      return { started: true, pid: 0, queued: true };
+    }
+    closeActive = true;
+    // Drain обязателен при ЛЮБОМ исходе фазы (finally — на случай ошибки
+    // в onExit вызывающего): иначе очередь зависнет навсегда
+    const wrappedExit: PhaseExitCallback = (run) => {
+      try {
+        onExit?.(run);
+      } finally {
+        drainCloseQueue();
+      }
+    };
+    const res = spawnQwenRun(cwd, taskId, phase as Phase, prompt, wrappedExit, agent, extraArgs);
+    if ('error' in res) {
+      // Спавн не состоялся (guard и т.п.) — флаг снимается, очередь разгребается
+      closeActive = false;
+      drainCloseQueue();
+    }
+    return res;
+  }
   return spawnQwenRun(cwd, taskId, phase as Phase, prompt, onExit, agent, extraArgs);
+}
+
+/**
+ * Запускает следующий close из очереди branch-mode (VL-146).
+ *
+ * Вызывается из wrappedExit завершившейся close-фазы. Флаг closeActive
+ * снимается ДО запуска — startPhase выставит его заново при успехе (иначе
+ * ветка очереди снова поставила бы элемент в очередь). Ошибка dequeue'а
+ * (задача удалена и т.п.) — колбэку элемента с logTail-причиной и переход
+ * к следующему; рекурсия ограничена размером очереди.
+ */
+function drainCloseQueue(): void {
+  const next = closeQueue.shift();
+  if (!next) {
+    closeActive = false;
+    return;
+  }
+  closeActive = false;
+  const res = startPhase(next.cwd, next.taskId, 'close', next.onExit, next.extraVars, next.agent);
+  if ('error' in res) {
+    next.onExit?.({ running: false, phase: 'close', exitCode: 1, logTail: res.error });
+    drainCloseQueue();
+  }
 }
 
 /**
@@ -785,6 +877,11 @@ export function getRun(taskId: string): PhaseRun | null {
   const active = lookupCI(activeRuns, taskId);
   if (active) {
     return { running: true, phase: active.phase, pid: active.child.pid, agent: active.agent };
+  }
+  // VL-146: задача ждёт в очереди close (branch-mode) — отдельное состояние
+  const up = taskId.toUpperCase();
+  if (closeQueue.some((e) => e.taskId.toUpperCase() === up)) {
+    return { running: false, queued: true, phase: 'close' };
   }
   return lookupCI(lastRuns, taskId) ?? null;
 }

@@ -1692,4 +1692,133 @@ describe('orchestrator (VL-28)', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // ── VL-146: очередь close в branch-mode ──
+
+  /**
+   * Стаб qwen для очереди close: пишет в lock-файл пары `VL-N start <ts>` /
+   * `VL-N end <ts>` (taskId выцепляет из промпта — позиционный аргумент)
+   * и спит VL146_LOCK_SLEEP мс. По финальному lock-файлу тест проверяет
+   * порядок прохода очереди и непересечение интервалов (инвариант AC-3).
+   */
+  const LOCK_STUB = `#!/usr/bin/env node
+const fs = require('node:fs');
+const m = (process.argv[2] || '').match(/VL-\\d+/);
+const id = m ? m[0] : 'unknown';
+const lock = process.env.VL146_LOCK;
+fs.appendFileSync(lock, id + ' start ' + Date.now() + '\\n');
+setTimeout(() => {
+  fs.appendFileSync(lock, id + ' end ' + Date.now() + '\\n');
+  process.exit(0);
+}, Number(process.env.VL146_LOCK_SLEEP || 400));
+`;
+
+  it('close в branch-mode: второй и третий в очереди, автозапуск строго по очереди (VL-146)', async () => {
+    // Проект с branch_mode: git НЕ нужен — close не создаёт worktree (VL-112)
+    const root = mkdtempSync(join(tmpdir(), 'vibelog-vl146-'));
+    mkdirSync(join(root, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(root, 'backlog', 'config.yml'), 'project_name: VL-146 Test\n', 'utf-8');
+    mkdirSync(join(root, '.vibelog'), { recursive: true });
+    writeFileSync(
+      join(root, '.vibelog', 'settings.json'),
+      JSON.stringify({ chats: [], branch_mode: true }),
+      'utf-8'
+    );
+    for (const id of ['VL-1', 'VL-2', 'VL-3']) {
+      createTaskFile(root, { id, title: `Задача ${id} (VL-146)` });
+    }
+    const lockPath = join(root, 'close-lock.txt');
+    const lockBin = join(root, 'qwen-lock-stub.cjs');
+    writeFileSync(lockBin, LOCK_STUB, 'utf-8');
+    chmodSync(lockBin, 0o755);
+    setStubEnv({ VIBELOG_QWEN_BIN: lockBin, VL146_LOCK: lockPath, VL146_LOCK_SLEEP: '400' });
+    try {
+      // Первый close стартует сразу (очередь пуста)
+      const r1 = startPhase(root, 'VL-1', 'close');
+      assert.equal(r1.started, true, JSON.stringify(r1));
+      assert.ok(!r1.queued, 'первый close не в очереди');
+      // Второй и третий — в очередь: процесс не создан (pid 0), close не стартует (AC-1)
+      const r2 = startPhase(root, 'VL-2', 'close');
+      assert.equal(r2.started, true, JSON.stringify(r2));
+      assert.equal(r2.queued, true, 'второй close в очереди');
+      assert.equal(r2.pid, 0, 'процесс очереди ещё не создан');
+      const r3 = startPhase(root, 'VL-3', 'close');
+      assert.equal(r3.started, true, JSON.stringify(r3));
+      assert.equal(r3.queued, true, 'третий close в очереди');
+      // getRun отражает состояние очереди
+      const g2 = getRun('VL-2');
+      assert.equal(g2.running, false);
+      assert.equal(g2.queued, true, 'getRun: VL-2 в очереди close');
+      // Guard: повторный close активной задачи — ошибка, не очередь
+      const dup1 = startPhase(root, 'VL-1', 'close');
+      assert.ok('error' in dup1 && /Запуск уже выполняется \(VL-1\)/.test(dup1.error), JSON.stringify(dup1));
+      // Guard: двойной запуск задачи, уже стоящей в очереди
+      const dup2 = startPhase(root, 'VL-2', 'close');
+      assert.ok('error' in dup2 && /Close уже в очереди/.test(dup2.error), JSON.stringify(dup2));
+      // Ожидание полного прохода очереди (AC-2: автозапуск без ручного вмешательства):
+      // в lock-файле 6 строк (3 пары start/end)
+      let lines = [];
+      for (let i = 0; i < 400; i++) {
+        lines = existsSync(lockPath)
+          ? readFileSync(lockPath, 'utf-8').trim().split('\n').filter(Boolean)
+          : [];
+        if (lines.length >= 6) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      assert.equal(lines.length, 6, `ожидалось 6 строк lock-файла, получено ${lines.length}: ${lines.join(' | ')}`);
+      // Порядок: строго VL-1 → VL-2 → VL-3, парами start/end
+      const ids = lines.map((l) => l.split(' ')[0]);
+      assert.deepEqual(ids, ['VL-1', 'VL-1', 'VL-2', 'VL-2', 'VL-3', 'VL-3'], 'порядок прохода очереди');
+      // Инвариант AC-3: интервалы разных close не пересекаются — в каждый
+      // момент фазу close выполняет не более одного агента
+      const spans = [];
+      for (let i = 0; i < lines.length; i += 2) {
+        const [id1, s, t1] = lines[i].split(' ');
+        const [id2, e, t2] = lines[i + 1].split(' ');
+        assert.equal(s, 'start', `ожидалась строка start: ${lines[i]}`);
+        assert.equal(e, 'end', `ожидалась строка end: ${lines[i + 1]}`);
+        assert.equal(id1, id2, `пара start/end одной задачи: ${lines[i]} / ${lines[i + 1]}`);
+        spans.push({ id: id1, from: Number(t1), to: Number(t2) });
+      }
+      for (let i = 1; i < spans.length; i++) {
+        assert.ok(
+          spans[i - 1].to <= spans[i].from,
+          `close пересекаются: ${spans[i - 1].id} до ${spans[i - 1].to}, ${spans[i].id} с ${spans[i].from}`
+        );
+      }
+      // Стаб пишет end до close-события у parent — дожидаемся завершения VL-3
+      const done3 = await waitDone('VL-3', 8000);
+      assert.equal(done3.running, false, 'очередь вычищена, VL-3 завершена');
+    } finally {
+      setStubEnv({ VIBELOG_QWEN_BIN: undefined, VL146_LOCK: undefined, VL146_LOCK_SLEEP: undefined });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('close без branch-mode: очередь не применяется, два close идут параллельно (VL-146)', async () => {
+    // Регрессия: вне branch-mode поведение прежнее — гвард только per-task
+    const root = mkdtempSync(join(tmpdir(), 'vibelog-vl146-off-'));
+    mkdirSync(join(root, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(root, 'backlog', 'config.yml'), 'project_name: VL-146 Off Test\n', 'utf-8');
+    createTaskFile(root, { id: 'VL-4', title: 'Задача VL-4 (VL-146)' });
+    createTaskFile(root, { id: 'VL-5', title: 'Задача VL-5 (VL-146)' });
+    const lockPath = join(root, 'close-lock.txt');
+    const lockBin = join(root, 'qwen-lock-stub.cjs');
+    writeFileSync(lockBin, LOCK_STUB, 'utf-8');
+    chmodSync(lockBin, 0o755);
+    setStubEnv({ VIBELOG_QWEN_BIN: lockBin, VL146_LOCK: lockPath, VL146_LOCK_SLEEP: '400' });
+    try {
+      const a = startPhase(root, 'VL-4', 'close');
+      const b = startPhase(root, 'VL-5', 'close');
+      assert.equal(a.started, true, JSON.stringify(a));
+      assert.equal(b.started, true, JSON.stringify(b));
+      assert.ok(!a.queued && !b.queued, 'без branch-mode очередь не применяется');
+      // Обе фазы завершаются — иначе стабы остаются висеть в воркере
+      await waitDone('VL-4', 8000);
+      await waitDone('VL-5', 8000);
+    } finally {
+      setStubEnv({ VIBELOG_QWEN_BIN: undefined, VL146_LOCK: undefined, VL146_LOCK_SLEEP: undefined });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
