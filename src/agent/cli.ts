@@ -30,7 +30,7 @@ import { buildSystemPrompt } from './system-prompt.js';
 import { listLocalTools } from './tools.js';
 import type { ToolSpec } from './tools.js';
 import { McpClient, toolsAsSpecs } from './mcp-client.js';
-import { renderPrompt } from '../web/phase-prompt.js';
+import { renderPrompt, taskExtraVars } from '../web/phase-prompt.js';
 import type { TuiHandle } from './tui.js';
 
 /** Результат агента: QwenResult + type=result (контракт parseQwenResult). */
@@ -263,6 +263,17 @@ export async function main(argv: string[]): Promise<void> {
   // Промпт фазы собирается до инициализации сессий: ошибка шаблона завершает
   // CLI до создания jsonl. Блок объявлен после cwd (VL-112): выбор
   // close-worktree шаблона зависит от worktree задачи в этом cwd
+  //
+  // VL-137: поля задачи подставляются в промпт фазы теми же переменными, что
+  // в оркестраторе ({{taskTitle}} и др.). Если задача не читается — фаза не
+  // запускается: фолбэка «неподставленные {{...}} → прочитай через MCP» в
+  // шаблонах нет (решение Pavel), пустой блок модель не исправит.
+  const taskVars = isPhaseMode ? taskExtraVars(cwd, positionals[1]) : null;
+  if (isPhaseMode && !taskVars) {
+    console.error(`Задача не найдена или не читается: ${positionals[1]}`);
+    process.exitCode = 1;
+    return;
+  }
   let prompt: string;
   try {
     prompt = isPhaseMode
@@ -272,6 +283,7 @@ export async function main(argv: string[]): Promise<void> {
           {
             comment: opts.comment ?? '',
             prompt: opts.comment ?? '',
+            ...taskVars,
           },
           // VL-112: close задачи с worktree — тот же выбор шаблона, что в оркестраторе
           {

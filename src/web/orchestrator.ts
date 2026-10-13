@@ -16,7 +16,7 @@ import type { ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { renderPrompt } from './phase-prompt.js';
+import { renderPrompt, taskBlockText, taskExtraVars } from './phase-prompt.js';
 import type { Phase } from './phase-prompt.js';
 import { getTask } from '../core/store.js';
 import { ensureTaskWorktree, taskBranchName, taskWorktreeDir } from '../core/worktree.js';
@@ -97,14 +97,26 @@ export function startPhase(
   if (phase === 'prompt') {
     return { error: 'Фаза prompt запускается через startPrompt' };
   }
+  // VL-137: поля задачи (title/type/описание/план/AC/DoD/статус/файлы/последний
+  // комментарий) подставляются в промпт один раз через getTask — агенту не нужен
+  // первый backlog_view_task. Решение (Pavel): если задача не читается — фаза
+  // НЕ запускается: пустой блок {{...}} модель не исправит (фолбэк-инструкции
+  // в шаблонах нет), а незапущенная фаза не тратит ходы и не правит файлы вслепую.
+  const taskVars = taskExtraVars(cwd, taskId);
+  if (!taskVars) {
+    return { error: `Задача не найдена или не читается: ${taskId}` };
+  }
   let prompt: string;
   try {
     prompt = renderPrompt(
       phase,
       taskId,
-      // VL-112: {{branch}}/{{worktreeDir}} — подстановки для close-worktree шаблона
       {
+        // VL-137: подстановки полей задачи — после {{comment}} (контракт VL-80
+        // не трогаем: подстановки только новыми переменными, порядок merge сохранён)
         ...extraVars,
+        ...taskVars,
+        // VL-112: {{branch}}/{{worktreeDir}} — подстановки для close-worktree шаблона
         branch: taskBranchName(taskId),
         worktreeDir: `.vibelog/worktrees/${taskId.toLowerCase()}`,
       },
@@ -192,12 +204,16 @@ export function startResume(
       `возобновление идёт из ${cwd} (branch-mode выключен). ` +
       'Прежде чем править файлы — проверь git status и git diff рабочего каталога.';
   }
+  // VL-137: задачная сессия получает компактный блок состояния задачи
+  // (заголовок/тип/статус/последний комментарий) — «Продолжи» не тратит
+  // MCP-вызов на восстановление контекста. Задача не найдена → блок ''.
+  const taskBlock = worktreeTaskId ? taskBlockText(cwd, worktreeTaskId) : '';
   // Фаза 'prompt' — шаблон не подставляется; промпт — сырой текст + примечание
   return spawnQwenRun(
     cwd,
     'resume',
     'prompt',
-    promptText + note,
+    promptText + (taskBlock ? `\n\n${taskBlock}` : '') + note,
     onExit,
     agent,
     ['--resume', sessionId],
