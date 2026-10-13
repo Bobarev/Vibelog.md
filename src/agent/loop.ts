@@ -30,6 +30,22 @@ export interface LoopLimits {
   loopDetectionRepeat?: number;
   /** Сколько ходов подряд с одним и тем же промежуточным текстом считать зацикливанием намерений (VL-119, дефолт 4). */
   intentLoopRepeat?: number;
+  /**
+   * Компакшн истории (VL-122): сколько последних сообщений оставить в
+   * LLM-запросе помимо system и первого user (дефолт 50).
+   */
+  compactTailMessages?: number;
+  /**
+   * Компакшн истории (VL-122): порог срабатывания по usage-токенам последнего
+   * ответа (input_tokens + cache_read_input_tokens; дефолт 850000 = 85% окна
+   * MiMo-V2.5 1M — auto-порог doc-13 §4.0).
+   */
+  compactAtTokens?: number;
+  /**
+   * Выключить компакшн истории (VL-122): по умолчанию компакшн включён;
+   * true → payload запроса всегда полный (--no-compact).
+   */
+  compactDisabled?: boolean;
 }
 
 /** Результат фазы (совместим по полям с QwenResult CLI). */
@@ -103,6 +119,49 @@ const LOOP_DETECTION_REPEAT_DEFAULT = 3;
 // промежуточным текстом. Порог 4, а не 3 — снизить ложные срабатывания:
 // одинаковый короткий текст («Ок.») на паре ходов ещё не зацикливание.
 const INTENT_LOOP_REPEAT_DEFAULT = 4;
+// Компакшн истории (VL-122, wire-усечение по doc-13 §4.1): хвост 50 сообщений —
+// tool-вывод ≤8KB (лимит VL-110, tools.ts) → ≤400KB ≈ ≤130K токенов ≈ 13% окна
+// MiMo-V2.5 (1M) — попадает в рекомендованный doc-13 диапазон хвоста 10–15%.
+// Триггер 850K = 85% окна (auto-порог doc-13 §4.0): редкое срабатывание почти
+// не бьёт по prefix-caching (cache read MiMo дешёвый).
+const COMPACT_TAIL_DEFAULT = 50;
+const COMPACT_AT_TOKENS_DEFAULT = 850_000;
+
+/**
+ * Строит wire-копию истории для LLM-запроса (VL-122): system-сообщения +
+ * первое user-сообщение (постановка) + сообщения с липкого якоря `from`.
+ *
+ * `messages` и jsonl-транскрипт НЕ мутируются — возвращается новый массив,
+ * усекается только payload, уходящий в провайдер. Первый user в копии
+ * получает дописанную служебную заметку об усечении; число опущенных
+ * вычисляется детерминированно из якоря и не меняется между запросами
+ * (append-only префикс — prefix-caching провайдера стабилен; маркер ломает
+ * префикс ровно один раз — в момент сдвига якоря).
+ *
+ * Орфан-гард: хвост не должен начинаться с `role: 'tool'` без парного
+ * assistant(tool_calls) — провайдер отклонит payload; начало хвоста
+ * сдвигается вперёд, пока `messages[start].role === 'tool'`.
+ *
+ * Если отсекать нечего (якорь не за первым user / хвост пуст после
+ * орфан-гарда) — возвращается исходный массив без маркера.
+ */
+export function compactWireMessages(messages: ChatMessage[], from: number): ChatMessage[] {
+  // Отсекать нечего: якорь за пределами диапазона
+  if (from <= 0 || from >= messages.length) return messages;
+  // Первый user — «постановка задачи», сохраняем дословно (с заметкой)
+  const firstUserIdx = messages.findIndex((m) => m.role === 'user');
+  if (firstUserIdx === -1 || from <= firstUserIdx + 1) return messages;
+  // Орфан-гард: хвост не начинается с tool-сообщения без парного assistant
+  let start = from;
+  while (start < messages.length && messages[start].role === 'tool') start++;
+  // Хвост целиком состоит из tool-сообщений — компакшн пропускается
+  if (start >= messages.length) return messages;
+  const omitted = start - firstUserIdx - 1;
+  const note = `[История усечена: опущено ${omitted} сообщений. Полный транскрипт — в сессии.]`;
+  const head = messages.slice(0, firstUserIdx + 1);
+  head[firstUserIdx] = { role: 'user', content: `${messages[firstUserIdx].content}\n\n${note}` };
+  return [...head, ...messages.slice(start)];
+}
 
 /**
  * Выполняет tool-calling loop до финального текста модели, лимита или
@@ -119,6 +178,11 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // Лимит guard'а зацикливания намерений (VL-119): N ходов подряд с одним
   // промежуточным текстом → fail штатным путём (контракт resume VL-103).
   const intentRepeatLimit = options.limits?.intentLoopRepeat ?? INTENT_LOOP_REPEAT_DEFAULT;
+  // Компакшн истории (VL-122): хвост и порог; выключить можно --no-compact
+  // (по умолчанию включён — комментарий Pavel к задаче).
+  const compactEnabled = options.limits?.compactDisabled !== true;
+  const compactTail = options.limits?.compactTailMessages ?? COMPACT_TAIL_DEFAULT;
+  const compactAtTokens = options.limits?.compactAtTokens ?? COMPACT_AT_TOKENS_DEFAULT;
 
   const messages: ChatMessage[] = [...options.messages];
   /**
@@ -163,6 +227,11 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // сбрасывает — молчаливые tool-ходы легитимны (решение плана VL-119).
   let prevIntent: string | null = null;
   let intentStreak = 0;
+  // Стейт компакшна истории (VL-122): липкий якорь отсечения (индекс в
+  // messages; null — не срабатывал) и usage-токены последнего ответа.
+  // messages/jsonl при этом не мутируются — усекается только wire-payload.
+  let compactFrom: number | null = null;
+  let lastPromptTokens = 0;
 
   const duration = (): number => Date.now() - startedAt;
 
@@ -204,7 +273,21 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
 
     let response;
     try {
-      response = await options.llm.streamChat(messages, toolDefs, {
+      // Компакшн истории (VL-122): триггер — usage-токены последнего ответа
+      // (input + cache_read, обновляется после addUsage ниже). Якорь
+      // вычисляется/сдвигается ПЕРЕД запросом — assistant(tool_calls) и
+      // tool-результаты предыдущего хода уже в messages, хвост ровно N.
+      // Re-anchor при повторном превышении порога (сессия снова раздулась).
+      if (compactEnabled && lastPromptTokens >= compactAtTokens) {
+        compactFrom = Math.max(messages.length - compactTail, 0);
+      }
+      // Если якорь установлен — в streamChat уходит wire-копия (system +
+      // первый user со заметкой + хвост с якоря); messages остаются полными
+      // (jsonl/resume/onMessage — без изменений). Липкий якорь: между
+      // запросами префикс append-only — prefix-caching стабилен.
+      const payload =
+        compactFrom !== null ? compactWireMessages(messages, compactFrom) : messages;
+      response = await options.llm.streamChat(payload, toolDefs, {
         onToken: options.onToken,
         signal: options.signal,
       });
@@ -213,6 +296,9 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
     }
     addUsage(usage, response.usage);
     numTurns++;
+    // Порог компакшна запоминается после ответа — триггер сработает на
+    // следующей итерации, когда в messages уже дописаны assistant/tool
+    lastPromptTokens = response.usage.input_tokens + response.usage.cache_read_input_tokens;
     // Счётчики TUI (VL-86): кумулятивный usage + номер хода
     options.onUsage?.(usage, numTurns);
 

@@ -551,13 +551,16 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     }
   });
 
-  // ── /set — настройки бота (VL-94/104/107): агент, лимиты фаз, режим веток ──
+  // ── /set — настройки бота (VL-94/104/107/122): агент, лимиты фаз, режим
+  // веток, компакшн истории ──
   // /set agent <qwen|vb> — агент по умолчанию для всех команд фаз и кнопок
   // действий без суффикса :<agent>. /set max-wall-time <сек> и
   // /set max-requests <N> — лимиты фазы для встроенного агента (vb):
   // оркестратор прокидывает их флагами при следующем запуске; 0 — сброс
   // настройки (дефолт агента). /set branch-mode on|off — режим параллельной
-  // разработки в git-ветках vb/vl-N (VL-107). Хранится в .vibelog/bot.yml.
+  // разработки в git-ветках vb/vl-N (VL-107). /set compact on|off — компакшн
+  // истории LLM-запроса в длинных сессиях (VL-122; по умолчанию включён).
+  // Хранится в .vibelog/bot.yml.
   bot.command('set', async (ctx) => {
     if (!requireBind(ctx)) return;
     const parsed = parseSetCommand((ctx.match ?? '').toString());
@@ -585,6 +588,17 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         await sendMd(
           ctx,
           `⚙️ Режим параллельной разработки (ветки vb/vl-N): ${parsed.value ? '*вкл*' : '*выкл*'}.`
+        );
+        return;
+      }
+      case 'compact': {
+        // VL-122: компакшн истории LLM-запроса — по умолчанию включён;
+        // /set compact off → оркестратор передаёт --no-compact (агент vb)
+        settings.compact = parsed.value;
+        saveBotSettings(deps.cwd, settings);
+        await sendMd(
+          ctx,
+          `⚙️ Компакшн истории LLM-запроса (усечение длинных сессий): ${parsed.value ? '*вкл*' : '*выкл*'}.`
         );
         return;
       }

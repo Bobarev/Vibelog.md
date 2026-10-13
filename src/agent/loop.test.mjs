@@ -8,7 +8,7 @@
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
-import { runLoop } from '../../dist/agent/loop.js';
+import { runLoop, compactWireMessages } from '../../dist/agent/loop.js';
 import { zeroUsage } from '../../dist/agent/llm.js';
 
 /**
@@ -540,5 +540,222 @@ describe('runLoop guard по намерению (VL-119)', () => {
     // onMessage увидел это сообщение (транскрипт завершён штатно)
     assert.equal(seen.at(-1).role, 'assistant');
     assert.match(seen.at(-1).content, /Зацикливание/);
+  });
+});
+
+// ── VL-122: компакшн истории (wire-усечение LLM-запроса) ──
+
+describe('компакшн истории (VL-122)', () => {
+  /** Диалог с «прошлой» историей: system + постановка + две пары assistant/user. */
+  const history = () => [
+    { role: 'system', content: 'sys-промпт' },
+    { role: 'user', content: 'постановка задачи' },
+    { role: 'assistant', content: 'старый ответ 1' },
+    { role: 'user', content: 'старый вопрос 1' },
+    { role: 'assistant', content: 'старый ответ 2' },
+    { role: 'user', content: 'старый вопрос 2' },
+  ];
+
+  it('длинная история усекается: system + первый user со заметкой + хвост; середина отсутствует', async () => {
+    const { spec } = countingTool('t');
+    const { llm, state } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }], usage: { input_tokens: 900_000 } },
+      { text: 'итог' },
+    ]);
+    const res = await runLoop({
+      llm,
+      messages: history(),
+      tools: [spec],
+      limits: { compactTailMessages: 3 },
+    });
+    assert.equal(res.is_error, false);
+    assert.equal(res.result, 'итог');
+    // Первый запрос — полная история (компакшн ещё не сработал)
+    assert.equal(state.messages[0].length, 6);
+    assert.ok(!state.messages[0].some((m) => (m.content ?? '').includes('История усечена')));
+    // Второй запрос — усечённая wire-копия: system + первый user со заметкой + хвост
+    const wire = state.messages[1];
+    assert.equal(wire[0].role, 'system');
+    assert.equal(wire[1].role, 'user');
+    assert.match(wire[1].content, /постановка задачи/);
+    assert.match(wire[1].content, /История усечена: опущено 3 сообщений/);
+    assert.match(wire[1].content, /Полный транскрипт — в сессии/);
+    // Середина отсутствует, хвост на месте
+    assert.ok(!wire.some((m) => (m.content ?? '') === 'старый ответ 1'));
+    assert.ok(!wire.some((m) => (m.content ?? '') === 'старый вопрос 1'));
+    assert.ok(!wire.some((m) => (m.content ?? '') === 'старый ответ 2'));
+    assert.equal(wire.at(-1).role, 'tool');
+    assert.equal(wire.at(-2).role, 'assistant');
+  });
+
+  it('LoopResult.messages и onMessage — ПОЛНАЯ история; финал — assistant (контракт resume VL-103)', async () => {
+    const { spec } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }], usage: { input_tokens: 900_000 } },
+      { text: 'итог' },
+    ]);
+    const seen = [];
+    const res = await runLoop({
+      llm,
+      messages: history(),
+      tools: [spec],
+      limits: { compactTailMessages: 3 },
+      onMessage: (m) => seen.push(structuredClone(m)),
+    });
+    // Полная история: 6 исходных + assistant(tool_calls) + tool + финальный assistant
+    assert.equal(res.messages.length, 9);
+    assert.equal(res.messages.at(-1).role, 'assistant');
+    assert.equal(res.messages.at(-1).content, 'итог');
+    // Ни в messages, ни в onMessage усечения нет — jsonl сессии полон
+    assert.ok(!res.messages.some((m) => (m.content ?? '').includes('История усечена')));
+    assert.equal(seen.length, 3);
+    assert.equal(seen[0].role, 'assistant');
+    assert.equal(seen[1].role, 'tool');
+    assert.equal(seen[2].role, 'assistant');
+  });
+
+  it('порог не превышен → payload идентичен messages (без заметки)', async () => {
+    const { spec } = countingTool('t');
+    const { llm, state } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }], usage: { input_tokens: 10 } },
+      { text: 'итог' },
+    ]);
+    await runLoop({
+      llm,
+      messages: history(),
+      tools: [spec],
+      limits: { compactTailMessages: 3 },
+    });
+    // Второй запрос — полная история (6 + assistant(tool_calls) + tool = 8)
+    assert.equal(state.messages[1].length, 8);
+    assert.ok(!state.messages[1].some((m) => (m.content ?? '').includes('История усечена')));
+  });
+
+  it('орфан-гард: якорь на tool-сообщении сдвигается вперёд — хвост не начинается с tool', async () => {
+    const { spec } = countingTool('t');
+    // История с tool-сообщением на позиции 5 — якорь (len 10 − tail 5) попадает на него
+    const messages = [
+      { role: 'system', content: 'sys-промпт' },
+      { role: 'user', content: 'постановка задачи' },
+      { role: 'assistant', content: 'ответ А' },
+      { role: 'user', content: 'вопрос Б' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'p1', name: 't', arguments: { x: 0 } }] },
+      { role: 'tool', tool_call_id: 'p1', content: 'осиротевший tool' },
+      { role: 'assistant', content: 'ответ В' },
+      { role: 'user', content: 'вопрос Г' },
+    ];
+    const { llm, state } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }], usage: { input_tokens: 900_000 } },
+      { text: 'итог' },
+    ]);
+    await runLoop({ llm, messages, tools: [spec], limits: { compactTailMessages: 5 } });
+    const wire = state.messages[1];
+    // Хвост сдвинут past tool: первый хвостовой элемент — assistant «ответ В»
+    assert.equal(wire[2].role, 'assistant');
+    assert.equal(wire[2].content, 'ответ В');
+    // Осиротевший tool (tool_call_id p1 без парного assistant в wire) вырезан
+    assert.ok(!wire.some((m) => m.tool_call_id === 'p1'));
+  });
+
+  it('липкий якорь: 3-й запрос append-only расширяется от того же якоря (префикс стабилен)', async () => {
+    const { spec } = countingTool('t');
+    const { llm, state } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }], usage: { input_tokens: 900_000 } },
+      { text: '', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 2 } }], usage: { input_tokens: 10 } },
+      { text: 'итог' },
+    ]);
+    await runLoop({
+      llm,
+      messages: history(),
+      tools: [spec],
+      limits: { compactTailMessages: 3 },
+    });
+    const wire2 = state.messages[1];
+    const wire3 = state.messages[2];
+    // Префикс (system + первый user со заметкой) идентичен — маркер не меняется
+    assert.deepEqual(wire3.slice(0, 2), wire2.slice(0, 2));
+    // Второй wire — append-only префикс третьего (якорь не сдвинулся)
+    assert.deepEqual(wire3.slice(0, wire2.length), wire2);
+    assert.ok(wire3.length > wire2.length);
+  });
+
+  it('re-anchor: повторное превышение порога сдвигает якорь вперёд', async () => {
+    const { spec } = countingTool('t');
+    const { llm, state } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }], usage: { input_tokens: 900_000 } },
+      { text: '', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 2 } }], usage: { input_tokens: 900_000 } },
+      { text: 'итог' },
+    ]);
+    await runLoop({
+      llm,
+      messages: history(),
+      tools: [spec],
+      limits: { compactTailMessages: 3 },
+    });
+    const wire2 = state.messages[1];
+    const wire3 = state.messages[2];
+    // Якорь сдвинулся: 3-й wire короче первого усечённого или начинает хвост позже
+    // (после 2-го ответа len=10, новый якорь 7 → хвост из 3 последних)
+    assert.notDeepEqual(wire3.slice(0, 2), wire2.slice(0, 2));
+    // Но система и постановка со свежей заметкой сохранены
+    assert.equal(wire3[0].role, 'system');
+    assert.match(wire3[1].content, /История усечена/);
+  });
+
+  it('compactDisabled (--no-compact): порог превышен, но payload полный', async () => {
+    const { spec } = countingTool('t');
+    const { llm, state } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }], usage: { input_tokens: 900_000 } },
+      { text: 'итог' },
+    ]);
+    await runLoop({
+      llm,
+      messages: history(),
+      tools: [spec],
+      limits: { compactDisabled: true },
+    });
+    assert.equal(state.messages[1].length, 8);
+    assert.ok(!state.messages[1].some((m) => (m.content ?? '').includes('История усечена')));
+  });
+});
+
+describe('compactWireMessages (VL-122)', () => {
+  const msgs = [
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: 'постановка' },
+    { role: 'assistant', content: 'a1' },
+    { role: 'user', content: 'u1' },
+  ];
+
+  it('якорь ≤ первого user+1 → исходный массив без маркера', () => {
+    assert.equal(compactWireMessages(msgs, 0), msgs);
+    assert.equal(compactWireMessages(msgs, 1), msgs);
+    assert.equal(compactWireMessages(msgs, 2), msgs);
+  });
+
+  it('якорь за пределами массива → исходный массив', () => {
+    assert.equal(compactWireMessages(msgs, 4), msgs);
+    assert.equal(compactWireMessages(msgs, 10), msgs);
+  });
+
+  it('хвост целиком из tool-сообщений → fallback: исходный payload', () => {
+    const orphanTail = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'постановка' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'c1', name: 't', arguments: {} }] },
+      { role: 'tool', tool_call_id: 'c1', content: 't1' },
+      { role: 'tool', tool_call_id: 'c2', content: 't2' },
+    ];
+    // Якорь 3: хвост [tool, tool] целиком tool → компакшн пропускается
+    assert.equal(compactWireMessages(orphanTail, 3), orphanTail);
+  });
+
+  it('обычное усечение: копия с маркером, исходный массив не мутирован', () => {
+    const wire = compactWireMessages(msgs, 3);
+    assert.notEqual(wire, msgs);
+    assert.equal(wire.length, 3);
+    assert.match(wire[1].content, /постановка\n\n\[История усечена: опущено 1 сообщений/);
+    // Исходный массив без изменений (транскрипт/jsonl не тронуты)
+    assert.equal(msgs[1].content, 'постановка');
   });
 });

@@ -232,6 +232,27 @@ describe('vibelog-agent CLI (VL-85)', () => {
     assert.throws(() => parseArgs(['x', '--max-requests']), /требует значение/);
   });
 
+  // ── VL-122: parseArgs --compact-tail / --compact-at-tokens / --no-compact ──
+
+  it('parseArgs: --compact-tail 5 / --compact-at-tokens 1000 → opts (VL-122)', () => {
+    const opts = parseArgs(['фаза', 'VL-1', '--compact-tail', '5', '--compact-at-tokens', '1000']);
+    assert.equal(opts.compactTail, 5);
+    assert.equal(opts.compactAtTokens, 1000);
+  });
+
+  it('parseArgs: --no-compact → noCompact=true (VL-122)', () => {
+    assert.equal(parseArgs(['x', '--no-compact']).noCompact, true);
+    assert.equal(parseArgs(['x']).noCompact, undefined);
+  });
+
+  it('parseArgs: невалидные значения компакшна — throw (VL-122)', () => {
+    assert.throws(() => parseArgs(['x', '--compact-tail', '0']), /положительное целое/);
+    assert.throws(() => parseArgs(['x', '--compact-tail', 'abc']), /положительное целое/);
+    assert.throws(() => parseArgs(['x', '--compact-tail']), /требует значение/);
+    assert.throws(() => parseArgs(['x', '--compact-at-tokens', '-5']), /положительное целое/);
+    assert.throws(() => parseArgs(['x', '--compact-at-tokens']), /требует значение/);
+  });
+
   // ── VL-95: интеграция — хранение и resume сессий ──
 
   // Переменная между it: id свежей сессии из предыдущего теста
@@ -473,6 +494,83 @@ describe('vibelog-agent CLI (VL-85)', () => {
       rmSync(projDir, { recursive: true, force: true });
     }
   });
+  // ── VL-122: интеграция — компакшн истории при --resume ──
+
+  it('--resume длинной сессии: запрос усечён, jsonl полный, финал корректен (VL-122)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl122-'));
+    try {
+      // «Длинная» сессия: system + постановка + две пары assistant/user
+      const sessDir = join(projDir, '.vibelog', 'agent-sessions');
+      mkdirSync(sessDir, { recursive: true });
+      const transcript = [
+        { role: 'system', content: 'sys-промпт' },
+        { role: 'user', content: 'постановка задачи' },
+        { role: 'assistant', content: 'ответ 1' },
+        { role: 'user', content: 'вопрос 2' },
+        { role: 'assistant', content: 'ответ 2' },
+        { role: 'user', content: 'вопрос 3' },
+      ];
+      writeFileSync(
+        join(sessDir, 'agent-vl122.jsonl'),
+        transcript.map((m) => JSON.stringify(m)).join('\n') + '\n',
+        'utf-8'
+      );
+      llmRequests.length = 0;
+      let requestCount = 0;
+      llmHandler = (body, res) => {
+        requestCount++;
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        if (requestCount === 1) {
+          // Первый ответ: usage ≥ порога 100 + tool_calls → якорь компакшна
+          res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'run_shell_command', arguments: JSON.stringify({ command: 'echo vl122' }) } }] } }] })}\n\n`);
+          res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 900, completion_tokens: 5, cache_read_input_tokens: 0, total_tokens: 905 } })}\n\n`);
+        } else {
+          res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'Готово' } }] })}\n\n`);
+          res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, cache_read_input_tokens: 0, total_tokens: 15 } })}\n\n`);
+        }
+        res.write('data: [DONE]\n\n');
+        res.end();
+      };
+      const { code, stdout } = await runCli(
+        ['Продолжи', '--resume', 'agent-vl122', '--no-mcp', '--compact-tail', '2', '--compact-at-tokens', '100'],
+        llmEnv(),
+        projDir
+      );
+      assert.equal(code, 0, stdout);
+      const parsed = JSON.parse(stdout.trim());
+      assert.equal(parsed.is_error, false);
+      assert.equal(parsed.result, 'Готово');
+      // parseQwenResult (контракт оркестратора) парсит stdout
+      assert.equal(parseQwenResult(stdout)?.result, 'Готово');
+      // 1-й запрос — полная история (компакшн ещё не сработал):
+      // system + 5 истории + новый промпт = 7
+      assert.equal(llmRequests[0].messages.length, 7);
+      // 2-й запрос — усечённая wire-копия с служебной заметкой
+      const wire = llmRequests[1].messages;
+      assert.equal(wire[0].role, 'system');
+      assert.equal(wire[1].role, 'user');
+      assert.match(wire[1].content, /постановка задачи/);
+      assert.match(wire[1].content, /История усечена/);
+      // Середина отсутствует, хвост (assistant(tool_calls) + tool) на месте
+      assert.ok(!wire.some((m) => (m.content ?? '').includes('ответ 1')));
+      assert.ok(!wire.some((m) => (m.content ?? '').includes('вопрос 2')));
+      assert.equal(wire.at(-1).role, 'tool');
+      // jsonl сессии — ПОЛНАЯ история и оканчивается assistant (VL-103/110)
+      const lines = readFileSync(join(sessDir, 'agent-vl122.jsonl'), 'utf-8')
+        .split('\n')
+        .filter((l) => l.trim());
+      // saveSession перезаписывает полным: 7 стартовых + assistant(tool_calls)
+      // + tool + финальный assistant = 10
+      assert.equal(lines.length, 10);
+      assert.ok(lines.some((l) => l.includes('ответ 1')), 'полная история в jsonl');
+      assert.equal(JSON.parse(lines.at(-1)).role, 'assistant');
+      assert.equal(JSON.parse(lines.at(-1)).content, 'Готово');
+    } finally {
+      llmHandler = null;
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
   // ── VL-110: метаданные сессии задачной фазы ──
 
   it('фаза пишет метаданные <id>.meta.json (taskId/phase/cwd) (VL-110)', async () => {

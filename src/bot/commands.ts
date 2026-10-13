@@ -75,7 +75,9 @@ export type SetCommand =
   /** Лимит LLM-запросов фазы (ходов модели); 0 — сброс (VL-104). */
   | { key: 'max-requests'; value: number }
   /** Режим параллельной разработки в git-ветках vb/vl-N (VL-107). */
-  | { key: 'branch-mode'; value: boolean };
+  | { key: 'branch-mode'; value: boolean }
+  /** Компакшн истории LLM-запроса (VL-122); по умолчанию включён. */
+  | { key: 'compact'; value: boolean };
 
 /** Результат разбора /prompt (VL-66/92): запрос без задачи + агент-исполнитель. */
 export interface PromptCommand {
@@ -296,7 +298,7 @@ export function parseCloseCommand(
  */
 export function parseSetCommand(text: string): SetCommand | { error: string } {
   const hint =
-    'Синтаксис: /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> (0/пусто — сброс у числовых)';
+    'Синтаксис: /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off> (0/пусто — сброс у числовых)';
   const trimmed = text.trim();
   if (!trimmed) return { error: hint };
   const spaceIdx = trimmed.indexOf(' ');
@@ -306,10 +308,11 @@ export function parseSetCommand(text: string): SetCommand | { error: string } {
     key !== 'agent' &&
     key !== 'max-wall-time' &&
     key !== 'max-requests' &&
-    key !== 'branch-mode'
+    key !== 'branch-mode' &&
+    key !== 'compact'
   ) {
     return {
-      error: `Неизвестный параметр: ${key}. Доступные: agent, max-wall-time, max-requests, branch-mode. ${hint}`,
+      error: `Неизвестный параметр: ${key}. Доступные: agent, max-wall-time, max-requests, branch-mode, compact. ${hint}`,
     };
   }
   if (key === 'agent') {
@@ -318,12 +321,18 @@ export function parseSetCommand(text: string): SetCommand | { error: string } {
     }
     return { key: 'agent', value };
   }
-  // Режим параллельной разработки (VL-107): on/true → true, off/false → false
-  if (key === 'branch-mode') {
-    if (value === 'on' || value === 'true') return { key: 'branch-mode', value: true };
-    if (value === 'off' || value === 'false') return { key: 'branch-mode', value: false };
+  // Булевы on/off-параметры (VL-107 branch-mode, VL-122 compact): on/true → true, off/false → false
+  if (key === 'branch-mode' || key === 'compact') {
+    // Явные литералы ключа — дискриминированный union SetCommand не принимает
+    // суженный `key: 'branch-mode' | 'compact'` без приведения
+    if (value === 'on' || value === 'true') {
+      return key === 'compact' ? { key: 'compact', value: true } : { key: 'branch-mode', value: true };
+    }
+    if (value === 'off' || value === 'false') {
+      return key === 'compact' ? { key: 'compact', value: false } : { key: 'branch-mode', value: false };
+    }
     return {
-      error: `branch-mode: ожидается on|off (true|false), получено: ${value || '(пусто)'}. ${hint}`,
+      error: `${key}: ожидается on|off (true|false), получено: ${value || '(пусто)'}. ${hint}`,
     };
   }
   // Числовые параметры (VL-104): Number('') === 0 — пустое значение отдельно

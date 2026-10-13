@@ -231,3 +231,37 @@ describe('branch_mode (VL-107)', () => {
     assert.equal(resolveBranchMode(root), false);
   });
 });
+
+describe('compact (VL-122)', () => {
+  const compactRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-compact-'));
+
+  afterAll(() => {
+    rmSync(compactRoot, { recursive: true, force: true });
+  });
+
+  it('по умолчанию включён: без файла/ключа → undefined (вкл)', () => {
+    assert.equal(loadBotSettings(join(compactRoot, 'nonexistent')).compact, undefined);
+    // Без ключа compact в файле — тоже undefined
+    saveBotSettings(compactRoot, { chats: [111] });
+    assert.equal(loadBotSettings(compactRoot).compact, undefined);
+  });
+
+  it('roundtrip: compact false пишется явным ключом и читается', () => {
+    saveBotSettings(compactRoot, { chats: [111], compact: false });
+    assert.equal(loadBotSettings(compactRoot).compact, false);
+    // Ключ присутствует в файле явно (для /set compact off)
+    assert.ok(readFileSync(botSettingsPath(compactRoot), 'utf-8').includes('compact: false'));
+  });
+
+  it('невалидные значения compact в файле отброшены → включён', () => {
+    const root = join(compactRoot, 'invalid');
+    mkdirSync(join(root, '.vibelog'), { recursive: true });
+    // Читается только строгое false; строки/числа → undefined (вкл по умолчанию)
+    writeFileSync(botSettingsPath(root), 'chats: []\ncompact: foo\n', 'utf-8');
+    assert.equal(loadBotSettings(root).compact, undefined);
+    writeFileSync(botSettingsPath(root), 'chats: []\ncompact: 0\n', 'utf-8');
+    assert.equal(loadBotSettings(root).compact, undefined);
+    writeFileSync(botSettingsPath(root), 'chats: []\ncompact: true\n', 'utf-8');
+    assert.equal(loadBotSettings(root).compact, undefined);
+  });
+});

@@ -387,6 +387,31 @@ describe('parseSetCommand (VL-94)', () => {
     assert.ok('error' in r);
     assert.match(r.error, /branch-mode/);
   });
+
+  it('VL-122: compact on|off|true|false → boolean', () => {
+    assert.deepEqual(parseSetCommand('compact on'), { key: 'compact', value: true });
+    assert.deepEqual(parseSetCommand('compact off'), { key: 'compact', value: false });
+    assert.deepEqual(parseSetCommand('compact true'), { key: 'compact', value: true });
+    assert.deepEqual(parseSetCommand('compact false'), { key: 'compact', value: false });
+    assert.deepEqual(parseSetCommand('COMPACT OFF'), { key: 'compact', value: false });
+  });
+
+  it('VL-122: compact — мусор и пустое значение → error с подсказкой', () => {
+    for (const bad of ['compact', 'compact maybe', 'compact 1', 'compact вкл']) {
+      const r = parseSetCommand(bad);
+      assert.ok('error' in r, '"' + bad + '" → error');
+      assert.match(r.error, /compact: ожидается on\|off/);
+    }
+  });
+
+  it('VL-122: подсказка и перечень параметров включают compact', () => {
+    const unknown = parseSetCommand('foo bar');
+    assert.ok('error' in unknown);
+    assert.match(unknown.error, /compact/);
+    const empty = parseSetCommand('');
+    assert.ok('error' in empty);
+    assert.match(empty.error, /compact <on\|off>/);
+  });
 });
 
 describe('parseRestartCommand (VL-107)', () => {

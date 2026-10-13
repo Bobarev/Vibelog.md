@@ -449,9 +449,10 @@ describe('orchestrator (VL-28)', () => {
       usage: { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 7 },
       session_id: 'vb-limits-1',
     });
-    // bot.yml с лимитами — оркестратор прокидывает оба флага (только vb)
+    // bot.yml с лимитами + выключенным компакшном — оркестратор прокидывает
+    // все флага (только vb): --no-compact появляется только при явном off (VL-122)
     mkdirSync(join(testRoot, '.vibelog'), { recursive: true });
-    writeFileSync(join(testRoot, '.vibelog', 'bot.yml'), 'chats: []\nmax_wall_time: 1800\nmax_requests: 50\n', 'utf-8');
+    writeFileSync(join(testRoot, '.vibelog', 'bot.yml'), 'chats: []\nmax_wall_time: 1800\nmax_requests: 50\ncompact: false\n', 'utf-8');
     try {
       const res = startPhase(testRoot, task1.id, 'code', undefined, undefined, 'vb');
       assert.equal(res.started, true);
@@ -462,6 +463,7 @@ describe('orchestrator (VL-28)', () => {
       const iReq = argv.indexOf('--max-requests');
       assert.ok(iWall !== -1 && argv[iWall + 1] === '1800', 'нет --max-wall-time 1800: ' + JSON.stringify(argv));
       assert.ok(iReq !== -1 && argv[iReq + 1] === '50', 'нет --max-requests 50: ' + JSON.stringify(argv));
+      assert.ok(argv.includes('--no-compact'), 'нет --no-compact при compact: false: ' + JSON.stringify(argv));
     } finally {
       rmSync(join(testRoot, '.vibelog', 'bot.yml'), { force: true });
     }
@@ -474,6 +476,7 @@ describe('orchestrator (VL-28)', () => {
     const argv2 = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
     assert.ok(!argv2.includes('--max-wall-time'), 'неожиданный --max-wall-time: ' + JSON.stringify(argv2));
     assert.ok(!argv2.includes('--max-requests'), 'неожиданный --max-requests: ' + JSON.stringify(argv2));
+    assert.ok(!argv2.includes('--no-compact'), 'неожиданный --no-compact (компакшн включён по умолчанию): ' + JSON.stringify(argv2));
     process.env.VIBELOG_QWEN_BIN = stubBin;
   });
 

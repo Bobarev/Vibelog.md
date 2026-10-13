@@ -68,6 +68,12 @@ export interface CliOptions {
   maxWallTimeSec?: number;
   /** --max-requests N: лимит LLM-запросов фазы (ходов; без лимита, VL-104). */
   maxRequests?: number;
+  /** --compact-tail N: хвост истории для LLM-запроса при компакшне (VL-122, дефолт 50). */
+  compactTail?: number;
+  /** --compact-at-tokens N: порог компакшна по usage-токенам (VL-122, дефолт 850000). */
+  compactAtTokens?: number;
+  /** --no-compact: отключить компакшн истории (VL-122; по умолчанию включён). */
+  noCompact?: boolean;
   /** --resume <sessionId>: продолжить сохранённую сессию (VL-95; vb: префикс снят). */
   resume?: string;
   /** --continue: продолжить последнюю сессию текущего каталога (VL-95). */
@@ -89,6 +95,9 @@ const USAGE = `Использование:
   --max-tool-calls <N>     — лимит tool-calls loop (дефолт 100)
   --max-wall-time <сек>    — лимит времени фазы (дефолт 900)
   --max-requests <N>       — лимит LLM-запросов фазы (ходов; без лимита)
+  --compact-tail <N>       — компакшн истории: хвост LLM-запроса (дефолт 50, VL-122)
+  --compact-at-tokens <N>  — компакшн истории: порог по usage-токенам (дефолт 850000, VL-122)
+  --no-compact             — отключить компакшн истории (VL-122; по умолчанию включён)
   --resume <sessionId>     — продолжить сохранённую сессию (VL-95; префикс vb: игнорируется)
   --continue               — продолжить последнюю сессию текущего каталога (VL-95)
   --help, -h               — эта справка
@@ -146,6 +155,22 @@ export function parseArgs(argv: string[]): CliOptions {
         throw new Error(`--max-requests: ожидается положительное целое, получено: ${raw}`);
       }
       opts.maxRequests = n;
+    } else if (arg === '--compact-tail') {
+      const raw = takeValue(arg, argv[++i]);
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new Error(`--compact-tail: ожидается положительное целое, получено: ${raw}`);
+      }
+      opts.compactTail = n;
+    } else if (arg === '--compact-at-tokens') {
+      const raw = takeValue(arg, argv[++i]);
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new Error(`--compact-at-tokens: ожидается положительное целое, получено: ${raw}`);
+      }
+      opts.compactAtTokens = n;
+    } else if (arg === '--no-compact') {
+      opts.noCompact = true;
     } else if (arg === '--resume') {
       // Бот передаёт sessionId с префиксом vb: (extractSessionRef) — снимаем:
       // файл сессии хранится как <id>.jsonl без префикса
@@ -435,6 +460,9 @@ export async function main(argv: string[]): Promise<void> {
       ...(opts.maxToolCalls !== undefined ? { maxToolCalls: opts.maxToolCalls } : {}),
       ...(opts.maxWallTimeSec !== undefined ? { maxWallTimeMs: opts.maxWallTimeSec * 1000 } : {}),
       ...(opts.maxRequests !== undefined ? { maxRequests: opts.maxRequests } : {}),
+      ...(opts.compactTail !== undefined ? { compactTailMessages: opts.compactTail } : {}),
+      ...(opts.compactAtTokens !== undefined ? { compactAtTokens: opts.compactAtTokens } : {}),
+      ...(opts.noCompact ? { compactDisabled: true } : {}),
     },
     onToken: tuiHandle
       ? (t: string) => { tuiHandle.onToken(t); }

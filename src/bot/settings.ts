@@ -30,6 +30,11 @@ export interface BotSettings {
    * выполняются в git worktree ветки vb/vl-N, backlog — общий в главном репо.
    */
   branch_mode?: boolean;
+  /**
+   * Компакшн истории LLM-запроса (VL-122, /set compact): false — выключает
+   * усечение истории; по умолчанию включён (undefined = вкл).
+   */
+  compact?: boolean;
 }
 
 /**
@@ -90,6 +95,9 @@ export function loadBotSettings(cwd: string): BotSettings {
   // Режим параллельной разработки (VL-107): только строгое true; любое другое
   // значение (false, строка, мусор) → undefined → resolveBranchMode даст false
   const branchMode = raw.branch_mode === true ? true : undefined;
+  // Компакшн истории (VL-122): по умолчанию включён — читается только строгое
+  // false (/set compact off); true/мусор → undefined → включён
+  const compact = raw.compact === false ? false : undefined;
   return {
     telegram_token: typeof raw.telegram_token === 'string' ? raw.telegram_token : undefined,
     telegram_proxy: typeof raw.telegram_proxy === 'string' ? raw.telegram_proxy : undefined,
@@ -98,6 +106,7 @@ export function loadBotSettings(cwd: string): BotSettings {
     ...(maxWallTime !== undefined ? { max_wall_time: maxWallTime } : {}),
     ...(maxRequests !== undefined ? { max_requests: maxRequests } : {}),
     ...(branchMode !== undefined ? { branch_mode: branchMode } : {}),
+    ...(compact !== undefined ? { compact } : {}),
     // Пользовательские записи перекрывают дефолты; поле всегда объект —
     // handlers не пишет ?? {} (VL-82)
     task_type_styles: { ...DEFAULT_TASK_TYPE_STYLES, ...extractTaskTypeStyles(raw.task_type_styles) },
@@ -132,6 +141,8 @@ export function saveBotSettings(cwd: string, settings: BotSettings): void {
     // branch_mode пишем всегда, когда задан (в т.ч. false — /set branch-mode off
     // должен оставить явный ключ в bot.yml, а не терять его)
     ...(settings.branch_mode !== undefined ? { branch_mode: settings.branch_mode } : {}),
+    // compact: false — явный ключ /set compact off (default — включён, ключ не нужен)
+    ...(settings.compact !== undefined ? { compact: settings.compact } : {}),
     ...(Object.keys(userStyles).length > 0 ? { task_type_styles: userStyles } : {}),
   };
   writeFileSync(path, stringifyYaml(payload), 'utf-8');
