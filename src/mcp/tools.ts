@@ -350,6 +350,23 @@ export function listTools(): ToolDefinition[] {
         required: ['query'],
       },
     },
+    // === Завершение фазы (VL-138) ===
+    {
+      name: 'backlog_finish_phase',
+      description: 'Завершение фазы одним вызовом: статус + отчётный комментарий + modifiedFiles + батч-отметки AC/DoD. Все поля опциональны кроме id. Невалидные поля пропускаются с понятным сообщением в сводке (частичное применение), вызов не падает. Пример сводки: «Статус: Review; отчёт добавлен; отмечено AC: 2, DoD: 1; файлов: 3».',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'ID задачи' },
+          status: { type: 'string', description: 'Новый статус (валидируется по конфигу; невалидный — пропускается с ошибкой в сводке)' },
+          comment: { type: 'string', description: 'Отчётный комментарий (author фиксирован @agent)' },
+          modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Изменённые файлы (полная замена modified_files)' },
+          acChecks: { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] }, description: 'Индексы AC для отметки (с 1; батч-отметка, как в manage_ac)' },
+          dodChecks: { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] }, description: 'Индексы DoD для отметки (с 1; батч-отметка, как в manage_dod)' },
+        },
+        required: ['id'],
+      },
+    },
   ];
 }
 
@@ -380,6 +397,8 @@ export async function handleToolCall(name: string, args: ToolArgs, cwd: string):
       return toolManageDod(args, cwd);
     case 'backlog_add_comment':
       return toolAddComment(args, cwd);
+    case 'backlog_finish_phase':
+      return toolFinishPhase(args, cwd);
     case 'backlog_update_dependencies':
       return toolUpdateDependencies(args, cwd);
     case 'backlog_search':
@@ -759,6 +778,117 @@ function toolAddComment(args: ToolArgs, cwd: string): string {
   updateTaskFile(cwd, args.id as string, { comments });
 
   return `Комментарий добавлен к задаче ${args.id} (${comment.author})`;
+}
+
+/**
+ * Завершение фазы одним вызовом (VL-138).
+ *
+ * Схлопывает «бумажную» цепочку фазы (add_comment → update_status →
+ * update_task(modifiedFiles) → manage_ac/dod check) в один вызов —
+ * экономия ~4–6 ходов на задачу в профиле code.
+ *
+ * Частичное применение (по AC 1): невалидное поле НЕ записывается, а идёт
+ * ошибкой в сводку — остальные поля применяются. Все ошибки валидации
+ * собираются ДО единственной записи, файл пишется ОДНИМ updateTaskFile,
+ * поэтому «полуприменённого» состояния файла не бывает.
+ */
+function toolFinishPhase(args: ToolArgs, cwd: string): string {
+  const id = args.id as string;
+  // Отсутствие задачи — фатально (не частичная ошибка): продолжать некуда
+  const task = getTask(cwd, id);
+  if (!task) throw new Error(`Задача ${id} не найдена.`);
+
+  const errors: string[] = [];
+  const updates: Partial<Task> = {};
+  // Фактически применённые действия — каждый элемент сводки отражает запись,
+  // а не переданный параметр (неприменённое поле не «светится» в сводке)
+  let statusPart = 'Статус: не менялся';
+  let commentPart = 'отчёт: нет';
+  let acCount = 0;
+  let dodCount = 0;
+  let filesPart = 'файлов: не менялись';
+  let anyField = false;
+
+  // Статус валидируется по конфигу: невалидный → ошибка в сводку, поле пропускается
+  if (args.status !== undefined) {
+    anyField = true;
+    // loadConfig типизирует statuses как unknown (YAML-конфиг) — приводим к string[]
+    const statuses = (loadConfig(cwd).statuses as string[]) || [];
+    if (typeof args.status !== 'string' || !statuses.includes(args.status)) {
+      errors.push(`Невалидный статус ${JSON.stringify(args.status)}. Допустимые: ${statuses.join(', ')}`);
+    } else {
+      updates.status = args.status;
+      statusPart = `Статус: ${args.status}`;
+    }
+  }
+
+  // modifiedFiles — полная замена modified_files (как в toolUpdateTask)
+  if (args.modifiedFiles !== undefined) {
+    anyField = true;
+    if (!Array.isArray(args.modifiedFiles)) {
+      errors.push('modifiedFiles — массив строк (например: ["src/a.ts"]).');
+    } else {
+      const files = args.modifiedFiles as string[];
+      updates.modified_files = files;
+      filesPart = `файлов: ${files.length}`;
+    }
+  }
+
+  // Батч-отметка AC: индексы через parseChecklistIndexes (VL-120/VL-135-подсказки),
+  // ошибка одного батча не мешает применить остальные поля
+  if (args.acChecks !== undefined) {
+    anyField = true;
+    const list = (task.acceptanceCriteria || []) as ChecklistItem[];
+    try {
+      for (const i of parseChecklistIndexes(args.acChecks, list.length)) {
+        if (!list[i - 1].checked) acCount++;
+        list[i - 1].checked = true;
+      }
+      updates.acceptanceCriteria = list;
+    } catch (e) {
+      errors.push(`acChecks: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // Батч-отметка DoD — та же семантика, что и у AC
+  if (args.dodChecks !== undefined) {
+    anyField = true;
+    const list = (task.definitionOfDone || []) as ChecklistItem[];
+    try {
+      for (const i of parseChecklistIndexes(args.dodChecks, list.length)) {
+        if (!list[i - 1].checked) dodCount++;
+        list[i - 1].checked = true;
+      }
+      updates.definitionOfDone = list;
+    } catch (e) {
+      errors.push(`dodChecks: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // Отчётный комментарий: author фиксирован @agent (поле author в схему не входит)
+  if (args.comment !== undefined) {
+    anyField = true;
+    if (typeof args.comment !== 'string' || args.comment.trim() === '') {
+      errors.push('comment — пустая строка.');
+    } else {
+      updates.comments = [...(task.comments || []), {
+        author: '@agent',
+        created: formatNow(),
+        text: args.comment as string,
+      }];
+      commentPart = 'отчёт добавлен';
+    }
+  }
+
+  // Единственная запись: все валидные обновления применяются одним вызовом
+  if (Object.keys(updates).length > 0) {
+    updateTaskFile(cwd, id, updates);
+  }
+
+  const summary = `${statusPart}; ${commentPart}; отмечено AC: ${acCount}, DoD: ${dodCount}; ${filesPart}` +
+    (anyField ? '' : '; ничего не менялось') +
+    (errors.length > 0 ? `; Ошибки: ${errors.join(' | ')}` : '');
+  return summary;
 }
 
 /**

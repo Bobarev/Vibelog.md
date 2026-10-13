@@ -30,7 +30,8 @@ Definition of Done (DoD): {{taskDoD}}
      backlog_update_status {"id": "{{taskId}}", "status": "Done"}
 
 4. Отметь реально выполненные AC/DoD:
-   списки: backlog_manage_ac / backlog_manage_dod c action "list"; отметка: action "check", index N.
+   списки: backlog_manage_ac / backlog_manage_dod c action "list"; проверяй пункты.
+   Отдельными вызовами action "check" НЕ помечай — индексы реально выполненных пунктов передай в acChecks/dodChecks вызова backlog_finish_phase (шаг 6); списки по-прежнему читай через manage_ac/manage_dod (action "list").
    Не отмечай «задним числом» — невыполненные пункты оставь незакрытыми и упомяни в отчёте.
 
 5. Если type=task и менялся код — закоммичи изменения в текущую ветку, чтобы владелец увидел диффы сразу (в режиме worktree это ветка задачи; без worktree — текущая ветка репозитория):
@@ -39,15 +40,13 @@ Definition of Done (DoD): {{taskDoD}}
    git commit -m "feat: {{taskId}} — <краткое описание сути>"
    Только файлы этой задачи (код, тесты, шаблоны); файлы backlog/ НЕ коммит; никогда git add -A; не push. Если изменений нет — пропусти шаг.
 
-6. Если type=task и в Фазе менялись файлы вне backlog/ — запиши затронутые файлы в задачу через backlog_update_task (поле modifiedFiles) — для отчёта и проверок Фазы Close:
-   backlog_update_task {"id": "{{taskId}}", "modifiedFiles": ["src/foo.ts", "docs/bar.md"]}
-   Включай только явные пути к файлам ВНЕ backlog/ (код, тесты, шаблоны, docs); файлы задач в backlog/ не включай. Если ничего не менял — пропусти шаг.
-
-7. Оставь отчёт комментарием в формате markdown (упомяни хэш feat-коммита из шага 5):
-   backlog_add_comment {"id": "{{taskId}}", "comment": "Фаза 3 (Code) выполнена. Изменено: <файлы>, коммит <хэш>. Проверки: <список выполненных>. Что осталось: ...", "author": "@agent"}
-
-8. Смени статус (только для type=task):
-   backlog_update_status {"id": "{{taskId}}", "status": "Review"}
+6. Заверши фазу ОДНИМ вызовом backlog_finish_phase — отчёт комментарием + modifiedFiles + статус + батч-отметки AC/DoD (упомяни хэш feat-коммита из шага 5):
+   backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза 3 (Code) выполнена. Изменено: <файлы>, коммит <хэш>. Проверки: <список выполненных>. Что осталось: ...", "modifiedFiles": ["src/foo.ts", "docs/bar.md"], "acChecks": [<индексы выполненных AC из шага 4>], "dodChecks": [<индексы выполненного DoD из шага 4>], "status": "Review"}
+   - type=task: передавай modifiedFiles (только явные пути ВНЕ backlog/ — код, тесты, шаблоны, docs; файлы задач в backlog/ не включай; если ничего не менял — поле опусти) и status "Review".
+   - type=epic: передавай только comment (и acChecks/dodChecks, если отмечал); status эпик НЕ получает — Done ставится в шаге 3, когда все дети Done.
+   - acChecks/dodChecks — только если есть реально выполненные пункты; пустой список — поле опусти.
+   - Отдельные backlog_update_task (modifiedFiles), backlog_add_comment и backlog_update_status для завершения фазы НЕ вызывай.
+   - НЕ вызывай backlog_view_task повторно после вызова.
 
 ## Экономия ходов
 
@@ -67,4 +66,4 @@ Definition of Done (DoD): {{taskDoD}}
 
 ## Финал
 
-После последнего шага (смена статуса) ответь ровно одно слово — «Готово». Не повторяй отчёт, не добавляй анализ и выводы, не выполняй дополнительных действий — терминальный вывод не нужен.
+После последнего шага (завершение фазы вызовом backlog_finish_phase) ответь ровно одно слово — «Готово». Не повторяй отчёт, не добавляй анализ и выводы, не выполняй дополнительных действий — терминальный вывод не нужен.

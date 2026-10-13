@@ -95,14 +95,14 @@ describe('MCP-сервер', () => {
     assert.ok(responses[0].result.capabilities.tools);
   });
 
-  it('tools/list — возвращает 21 инструмент', async () => {
+  it('tools/list — возвращает 22 инструмента', async () => {
     const responses = await callMcp([
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
       { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
     ]);
     const listResp = responses.find(r => r.id === 2);
     assert.ok(listResp);
-    assert.equal(listResp.result.tools.length, 21);
+    assert.equal(listResp.result.tools.length, 22);
     const names = listResp.result.tools.map(t => t.name);
     // Существующие
     assert.ok(names.includes('backlog_create_task'));
@@ -117,6 +117,8 @@ describe('MCP-сервер', () => {
     assert.ok(names.includes('backlog_manage_dod'));
     assert.ok(names.includes('backlog_add_comment'));
     assert.ok(names.includes('backlog_update_dependencies'));
+    // VL-138
+    assert.ok(names.includes('backlog_finish_phase'));
   });
 
   it('tools/call — backlog_create_task создаёт задачу', async () => {
@@ -285,6 +287,142 @@ describe('MCP-сервер', () => {
     assert.ok(/1\. ✓ К1/.test(listText), `К1 должна быть отмечена: ${listText}`);
     assert.ok(/2\. ○ К2/.test(listText), `К2 должна быть снята: ${listText}`);
     assert.ok(/3\. ✓ К3/.test(listText), `К3 должна быть отмечена: ${listText}`);
+  });
+
+  // ============================================================
+  // VL-138 — backlog_finish_phase: завершение фазы одним вызовом
+  // ============================================================
+  describe('tools/call — backlog_finish_phase (VL-138)', () => {
+    // Статусы тест-фикстуры: ['To Do', 'In Progress', 'Done'] — другие брать нельзя
+    async function createTask(title) {
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_create_task', arguments: { title } } },
+      ]);
+      const resp = responses.find(r => r.id === 2);
+      return resp.result.content[0].text.match(/mcp-\d+/)[0];
+    }
+
+    it('только status + comment → сводка и запись в файл задачи', async () => {
+      const id = await createTask('Finish: status+comment');
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, status: 'Done', comment: 'Фаза завершена' } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      assert.ok(!fin.result.isError, `вызов не должен падать: ${fin.result.content[0].text}`);
+      const text = fin.result.content[0].text;
+      assert.ok(text.includes('Статус: Done'), `нет статуса в сводке: ${text}`);
+      assert.ok(text.includes('отчёт добавлен'), `нет отчёта в сводке: ${text}`);
+
+      const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
+      assert.equal(data.status, 'Done', 'статус должен записаться в файл');
+      assert.equal(data.comments.length, 1, 'комментарий должен записаться в файл');
+      assert.equal(data.comments[0].author, '@agent');
+      assert.ok(data.comments[0].text.includes('Фаза завершена'));
+    });
+
+    it('acChecks: [1, "2"] → батч-отметка AC, в сводке AC: 2', async () => {
+      const id = await createTask('Finish: acChecks');
+      await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id, action: 'add', text: 'К1' } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id, action: 'add', text: 'К2' } } },
+      ]);
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, acChecks: [1, '2'] } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id, action: 'list' } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      assert.ok(!fin.result.isError, `вызов не должен падать: ${fin.result.content[0].text}`);
+      assert.ok(fin.result.content[0].text.includes('AC: 2'), `нет AC: 2 в сводке: ${fin.result.content[0].text}`);
+
+      const listText = responses.find(r => r.id === 3).result.content[0].text;
+      assert.ok(/1\. ✓ К1/.test(listText), `К1 должна быть отмечена: ${listText}`);
+      assert.ok(/2\. ✓ К2/.test(listText), `К2 должна быть отмечена: ${listText}`);
+    });
+
+    it('modifiedFiles → modified_files в файле задачи', async () => {
+      const id = await createTask('Finish: modifiedFiles');
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, modifiedFiles: ['src/a.ts'] } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      assert.ok(!fin.result.isError, `вызов не должен падать: ${fin.result.content[0].text}`);
+      assert.ok(fin.result.content[0].text.includes('файлов: 1'), `нет файлов: 1 в сводке: ${fin.result.content[0].text}`);
+
+      const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
+      assert.deepEqual(data.modified_files, ['src/a.ts']);
+    });
+
+    it('невалидный статус → вызов НЕ падает, ошибка в сводке, comment применяется', async () => {
+      const id = await createTask('Finish: bogus status');
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, status: 'Bogus', comment: 'Отчёт несмотря на ошибку' } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      // Частичное применение: ошибка валидации — не isError, а текст в сводке
+      assert.ok(!fin.result.isError, `невалидный статус не должен ронять вызов: ${fin.result.content[0].text}`);
+      const text = fin.result.content[0].text;
+      assert.ok(text.includes('Ошибки'), `нет блока Ошибки: ${text}`);
+      assert.ok(text.includes('Невалидный статус'), `нет сообщения о статусе: ${text}`);
+
+      const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
+      assert.equal(data.status, 'To Do', 'невалидный статус не должен записаться');
+      assert.equal(data.comments.length, 1, 'comment должен примениться несмотря на ошибку статуса');
+      assert.ok(data.comments[0].text.includes('Отчёт несмотря на ошибку'));
+    });
+
+    it('вызов только с {id} → успешен, сводка «ничего не менялось»', async () => {
+      const id = await createTask('Finish: только id');
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      assert.ok(!fin.result.isError, `вызов только с id должен быть успешным: ${fin.result.content[0].text}`);
+      assert.ok(fin.result.content[0].text.includes('ничего не менялось'),
+        `нет пометки о пропуске: ${fin.result.content[0].text}`);
+    });
+
+    it('невалидный индекс acChecks → ошибка в сводке, остальные поля применены', async () => {
+      const id = await createTask('Finish: невалидный индекс');
+      await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id, action: 'add', text: 'К1' } } },
+      ]);
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, acChecks: ['NaN'], status: 'Done' } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id, action: 'list' } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      assert.ok(!fin.result.isError, `ошибка индекса не должна ронять вызов: ${fin.result.content[0].text}`);
+      const text = fin.result.content[0].text;
+      assert.ok(text.includes('Ошибки') && text.includes('acChecks'), `нет ошибки acChecks: ${text}`);
+      assert.ok(text.includes('Статус: Done'), `валидные поля должны примениться: ${text}`);
+
+      // AC не отмечен (индекс не применился), статус — применён
+      const listText = responses.find(r => r.id === 3).result.content[0].text;
+      assert.ok(/1\. ○ К1/.test(listText), `К1 не должна отмечаться: ${listText}`);
+    });
+
+    it('id несуществующей задачи → isError «не найдена»', async () => {
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id: 'mcp-0', status: 'Done' } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      assert.equal(fin.result.isError, true, 'несуществующая задача — фатальная ошибка');
+      assert.ok(fin.result.content[0].text.includes('не найдена'),
+        `нет сообщения «не найдена»: ${fin.result.content[0].text}`);
+    });
   });
 
   it('Неизвестный метод → error', async () => {
