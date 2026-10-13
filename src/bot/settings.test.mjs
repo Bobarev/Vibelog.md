@@ -1,5 +1,5 @@
 /**
- * Тесты VL-34 — настройки бота (.vibelog/bot.yml).
+ * Тесты VL-34/VL-143 — настройки бота (.vibelog/settings.json).
  *
  * Каталоги — в /tmp (findBacklogDir поднимается вверх по дереву).
  */
@@ -21,8 +21,9 @@ import {
   resolveBranchMode,
   botSettingsPath,
 } from '../../dist/bot/settings.js';
+import { saveSettingsPatch } from '../../dist/core/settings.js';
 
-describe('settings (VL-34)', () => {
+describe('settings (VL-34, VL-143)', () => {
   const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-test-'));
   const savedEnv = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -33,36 +34,37 @@ describe('settings (VL-34)', () => {
   });
 
   it('roundtrip save/load', () => {
-    saveBotSettings(testRoot, { telegram_token: 'tok-123', chats: [111, 222] });
+    saveBotSettings(testRoot, { chats: [111, 222] });
     assert.ok(existsSync(botSettingsPath(testRoot)));
     const loaded = loadBotSettings(testRoot);
-    assert.equal(loaded.telegram_token, 'tok-123');
     assert.deepEqual(loaded.chats, [111, 222]);
   });
 
   it('отсутствующий файл → пустые настройки', () => {
     const empty = loadBotSettings(join(testRoot, 'nonexistent-sub'));
-    assert.equal(empty.telegram_token, undefined);
     assert.deepEqual(empty.chats, []);
+    assert.equal(empty.default_agent, undefined);
   });
 
-  it('resolveToken: env приоритетнее файла', () => {
+  it('resolveToken: env приоритетнее env-секции settings.json (VL-143)', () => {
+    // Токен живёт в env-секции (telegram_token больше не топ-уровневое поле)
+    saveSettingsPatch(testRoot, { env: { TELEGRAM_BOT_TOKEN: 'tok-123' } });
     process.env.TELEGRAM_BOT_TOKEN = 'from-env';
     assert.equal(resolveToken(testRoot), 'from-env');
     delete process.env.TELEGRAM_BOT_TOKEN;
     assert.equal(resolveToken(testRoot), 'tok-123');
   });
 
-  it('resolveProxy: env → файл → null (VL-37)', () => {
+  it('resolveProxy: env → env-секция settings.json → null (VL-37/VL-143)', () => {
     const savedProxy = process.env.TELEGRAM_PROXY;
     try {
       process.env.TELEGRAM_PROXY = 'http://127.0.0.1:7070';
       assert.equal(resolveProxy(testRoot), 'http://127.0.0.1:7070');
       delete process.env.TELEGRAM_PROXY;
-      // Файл без telegram_proxy → null
+      // Env-секция без TELEGRAM_PROXY → null
       assert.equal(resolveProxy(testRoot), null);
-      // С telegram_proxy в файле
-      saveBotSettings(testRoot, { telegram_token: 'tok-123', telegram_proxy: 'http://127.0.0.1:1080', chats: [] });
+      // С TELEGRAM_PROXY в env-секции
+      saveSettingsPatch(testRoot, { env: { TELEGRAM_PROXY: 'http://127.0.0.1:1080' } });
       assert.equal(resolveProxy(testRoot), 'http://127.0.0.1:1080');
     } finally {
       if (savedProxy === undefined) delete process.env.TELEGRAM_PROXY;
@@ -78,7 +80,7 @@ describe('task_type_styles (VL-82)', () => {
     rmSync(stylesRoot, { recursive: true, force: true });
   });
 
-  it('отсутствующий bot.yml → дефолты (4 записи)', () => {
+  it('отсутствующий settings.json → дефолты (4 записи)', () => {
     const loaded = loadBotSettings(join(stylesRoot, 'nonexistent'));
     assert.deepEqual(loaded.task_type_styles, {
       bug: 'danger',
@@ -146,7 +148,7 @@ describe('default_agent (VL-94)', () => {
     const root = join(agentRoot, 'invalid');
     // botSettingsPath указывает внутрь .vibelog/ — каталог создаём явно
     mkdirSync(join(root, '.vibelog'), { recursive: true });
-    writeFileSync(botSettingsPath(root), 'chats: []\ndefault_agent: foo\n', 'utf-8');
+    writeFileSync(botSettingsPath(root), JSON.stringify({ chats: [], default_agent: 'foo' }), 'utf-8');
     assert.equal(loadBotSettings(root).default_agent, undefined);
     assert.equal(resolveDefaultAgent(root), 'qwen');
   });
@@ -174,12 +176,12 @@ describe('max_wall_time/max_requests (VL-104)', () => {
     assert.equal(loaded.max_requests, undefined);
   });
 
-  it('битые значения в bot.yml игнорируются', () => {
+  it('битые значения в settings.json игнорируются', () => {
     const root = join(limitsRoot, 'invalid');
     mkdirSync(join(root, '.vibelog'), { recursive: true });
     writeFileSync(
       botSettingsPath(root),
-      'chats: []\nmax_wall_time: abc\nmax_requests: -5\n',
+      JSON.stringify({ chats: [], max_wall_time: 'abc', max_requests: -5 }),
       'utf-8',
     );
     const loaded = loadBotSettings(root);
@@ -221,12 +223,11 @@ describe('branch_mode (VL-107)', () => {
   it('невалидное branch_mode в файле отброшено → false', () => {
     const root = join(branchRoot, 'invalid');
     mkdirSync(join(root, '.vibelog'), { recursive: true });
-    // Ямл-парсер проекта трактует YAML 1.1-буквы (yes/on) как boolean true —
-    // поэтому «битое» значение здесь строка/число, а не yes
-    writeFileSync(botSettingsPath(root), 'chats: []\nbranch_mode: foo\n', 'utf-8');
+    // JSON хранит строгие типы — «битое» значение здесь строка/число
+    writeFileSync(botSettingsPath(root), JSON.stringify({ chats: [], branch_mode: 'foo' }), 'utf-8');
     assert.equal(loadBotSettings(root).branch_mode, undefined);
     assert.equal(resolveBranchMode(root), false);
-    writeFileSync(botSettingsPath(root), 'chats: []\nbranch_mode: 1\n', 'utf-8');
+    writeFileSync(botSettingsPath(root), JSON.stringify({ chats: [], branch_mode: 1 }), 'utf-8');
     assert.equal(loadBotSettings(root).branch_mode, undefined);
     assert.equal(resolveBranchMode(root), false);
   });
@@ -250,18 +251,18 @@ describe('compact (VL-122)', () => {
     saveBotSettings(compactRoot, { chats: [111], compact: false });
     assert.equal(loadBotSettings(compactRoot).compact, false);
     // Ключ присутствует в файле явно (для /set compact off)
-    assert.ok(readFileSync(botSettingsPath(compactRoot), 'utf-8').includes('compact: false'));
+    assert.ok(readFileSync(botSettingsPath(compactRoot), 'utf-8').includes('"compact": false'));
   });
 
   it('невалидные значения compact в файле отброшены → включён', () => {
     const root = join(compactRoot, 'invalid');
     mkdirSync(join(root, '.vibelog'), { recursive: true });
     // Читается только строгое false; строки/числа → undefined (вкл по умолчанию)
-    writeFileSync(botSettingsPath(root), 'chats: []\ncompact: foo\n', 'utf-8');
+    writeFileSync(botSettingsPath(root), JSON.stringify({ chats: [], compact: 'foo' }), 'utf-8');
     assert.equal(loadBotSettings(root).compact, undefined);
-    writeFileSync(botSettingsPath(root), 'chats: []\ncompact: 0\n', 'utf-8');
+    writeFileSync(botSettingsPath(root), JSON.stringify({ chats: [], compact: 0 }), 'utf-8');
     assert.equal(loadBotSettings(root).compact, undefined);
-    writeFileSync(botSettingsPath(root), 'chats: []\ncompact: true\n', 'utf-8');
+    writeFileSync(botSettingsPath(root), JSON.stringify({ chats: [], compact: true }), 'utf-8');
     assert.equal(loadBotSettings(root).compact, undefined);
   });
 });

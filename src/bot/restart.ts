@@ -16,6 +16,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { fileLoadedEnvKeys } from '../core/settings.js';
 
 /**
  * Абсолютный путь к CLI vibelog (bin/vibelog.mjs) из dist/bot/restart.js.
@@ -23,6 +24,26 @@ import { fileURLToPath } from 'node:url';
  */
 export function vibelogCliPath(): string {
   return fileURLToPath(new URL('../../bin/vibelog.mjs', import.meta.url));
+}
+
+/**
+ * Окружение замещающего процесса по умолчанию (VL-143).
+ *
+ * `process.env` родителя минус «файловые» ключи — те, что записали loadDotEnv
+ * и applySettingsEnv при старте родителя. Без стриппинга дочерний loadDotEnv
+ * по dotenv-семантике не перезаписывал бы унаследованные СТАРЫЕ значения —
+ * изменения .env/settings.json не применялись даже при рестарте (баг VL-143).
+ * Ключи, реально заданные в shell-окружении, не регистрируются файловыми
+ * и наследуются как есть.
+ */
+function defaultReplacementEnv(): NodeJS.ProcessEnv {
+  const strip = fileLoadedEnvKeys();
+  if (strip.size === 0) return { ...process.env };
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && !strip.has(key)) env[key] = value;
+  }
+  return env;
 }
 
 /**
@@ -34,9 +55,10 @@ export function vibelogCliPath(): string {
  *   VL-107: /restart VL-N передаёт worktreeCliPath — новый процесс исполняет
  *   dist ветки vb/vl-N, но cwd остаётся главным (токен/backlog — общие)
  * @param env — VL-140: явный env замещающего процесса; по умолчанию — env
- *   родителя (прод-поведение без изменений). Тесты передают объект без
- *   TELEGRAM_BOT_TOKEN вместо глобального delete из process.env — иначе
- *   fileParallelism давал бы гонки между файлами тестов.
+ *   родителя БЕЗ файловых ключей (.env / env-секция settings.json), чтобы
+ *   дочерний процесс перечитал оба файла свежо (фикс бага рестарта VL-143).
+ *   Тесты передают объект без TELEGRAM_BOT_TOKEN вместо глобального delete
+ *   из process.env — иначе fileParallelism давал бы гонки между файлами тестов.
  * @returns дочерний процесс; событие 'spawn' — успех, 'error' — сбой запуска
  */
 export function spawnReplacementBot(
@@ -49,9 +71,9 @@ export function spawnReplacementBot(
     cwd,
     stdio,
     detached: true,
-    // VL-140: env только при явном переданном объекте — без параметра
-    // spawn наследует process.env как раньше
-    ...(env ? { env } : {}),
+    // VL-143: дефолт — process.env минус файловые ключи (см. defaultReplacementEnv);
+    // явный env используется в тестах и не стриппируется
+    env: env ?? defaultReplacementEnv(),
   });
   child.unref();
   return child;

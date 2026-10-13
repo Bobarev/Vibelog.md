@@ -9,6 +9,7 @@ import { Bot } from 'grammy';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { resolveProxy, resolveToken } from '../../bot/settings.js';
 import { loadDotEnv } from '../../bot/env.js';
+import { applySettingsEnv } from '../../core/settings.js';
 import { generatePin } from '../../bot/pin.js';
 import { registerHandlers } from '../../bot/handlers.js';
 import { syncCommands } from '../../bot/registry.js';
@@ -28,10 +29,13 @@ export async function runBot(
   // .env корня проекта загружается сам — запуск просто "vibelog bot",
   // без node --env-file (VL-37, просьба Pavel)
   loadDotEnv(cwd);
+  // Секция env settings.json (VL-143): заполняет только пустые ключи —
+  // реальный env и .env приоритетнее (порядок вызовов критичен)
+  applySettingsEnv(cwd);
   const token = resolveToken(cwd);
   if (!token) {
     console.error(
-      'Токен Telegram-бота не найден. Задайте TELEGRAM_BOT_TOKEN или telegram_token в .vibelog/bot.yml'
+      'Токен Telegram-бота не найден. Задайте TELEGRAM_BOT_TOKEN в .env или в секции env .vibelog/settings.json'
     );
     return;
   }

@@ -474,7 +474,7 @@ describe('orchestrator (VL-28)', () => {
     setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
   });
 
-  it('startPhase: agent=vb получает --max-wall-time/--max-requests из bot.yml (VL-104)', async () => {
+  it('startPhase: agent=vb получает --max-wall-time/--max-requests из settings.json (VL-104)', async () => {
     setStubEnv({
       VIBELOG_AGENT_BIN: stubBin,
       VL28_STUB_MARKER: join(testRoot, 'marker-limits-vb.txt'),
@@ -492,10 +492,10 @@ describe('orchestrator (VL-28)', () => {
       session_id: 'vb-limits-1',
     }),
     });
-    // bot.yml с лимитами + выключенным компакшном — оркестратор прокидывает
+    // settings.json с лимитами + выключенным компакшном — оркестратор прокидывает
     // все флага (только vb): --no-compact появляется только при явном off (VL-122)
     mkdirSync(join(testRoot, '.vibelog'), { recursive: true });
-    writeFileSync(join(testRoot, '.vibelog', 'bot.yml'), 'chats: []\nmax_wall_time: 1800\nmax_requests: 50\ncompact: false\n', 'utf-8');
+    writeFileSync(join(testRoot, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], max_wall_time: 1800, max_requests: 50, compact: false }), 'utf-8');
     try {
       const res = startPhase(testRoot, task1.id, 'code', undefined, undefined, 'vb');
       assert.equal(res.started, true);
@@ -508,9 +508,9 @@ describe('orchestrator (VL-28)', () => {
       assert.ok(iReq !== -1 && argv[iReq + 1] === '50', 'нет --max-requests 50: ' + JSON.stringify(argv));
       assert.ok(argv.includes('--no-compact'), 'нет --no-compact при compact: false: ' + JSON.stringify(argv));
     } finally {
-      rmSync(join(testRoot, '.vibelog', 'bot.yml'), { force: true });
+      rmSync(join(testRoot, '.vibelog', 'settings.json'), { force: true });
     }
-    // Без bot.yml флаги не передаются — поведение прежнее
+    // Без settings.json флаги не передаются — поведение прежнее
     setStubEnv({ VL28_STUB_MARKER: join(testRoot, 'marker-limits-none.txt'), });
     const res2 = startPhase(testRoot, task1.id, 'code', undefined, undefined, 'vb');
     assert.equal(res2.started, true);
@@ -811,7 +811,7 @@ describe('orchestrator (VL-28)', () => {
     mkdirSync(join(wtRoot, 'backlog'), { recursive: true });
     writeFileSync(join(wtRoot, 'backlog', 'config.yml'), 'project_name: WT Test\n', 'utf-8');
     mkdirSync(join(wtRoot, '.vibelog', 'agent-sessions'), { recursive: true });
-    writeFileSync(join(wtRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    writeFileSync(join(wtRoot, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], branch_mode: true }), 'utf-8');
     const wtPath = join(wtRoot, '.vibelog', 'worktrees', 'vl-77');
     // VL-134: worktree создаётся впервые только на фазе plan — resume предсоздаёт
     // её явно, чтобы проверить семантику «работа в worktree при её наличии»
@@ -866,7 +866,7 @@ describe('orchestrator (VL-28)', () => {
     mkdirSync(join(warnRoot, 'backlog'), { recursive: true });
     writeFileSync(join(warnRoot, 'backlog', 'config.yml'), 'project_name: Warn Test\n', 'utf-8');
     mkdirSync(join(warnRoot, '.vibelog', 'agent-sessions'), { recursive: true });
-    // bot.yml БЕЗ branch_mode — resume идёт в главном cwd
+    // settings.json БЕЗ branch_mode — resume идёт в главном cwd
     writeFileSync(
       join(warnRoot, '.vibelog', 'agent-sessions', 'agent-888.meta.json'),
       JSON.stringify({ taskId: 'VL-77', phase: 'code', cwd: '/tmp/some-worktree' }),
@@ -898,7 +898,7 @@ describe('orchestrator (VL-28)', () => {
     createTaskFile(closeRoot, { id: 'VL-77', title: 'Задача close-worktree' });
     mkdirSync(join(closeRoot, '.vibelog'), { recursive: true });
     // branch_mode включён, worktree vl-77 существует (задача работала в ветке)
-    writeFileSync(join(closeRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    writeFileSync(join(closeRoot, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], branch_mode: true }), 'utf-8');
     mkdirSync(join(closeRoot, '.vibelog', 'worktrees', 'vl-77'), { recursive: true });
     // Своя заглушка: пишет argv и cwd процесса
     const stubClose = join(closeRoot, 'close-stub.cjs');
@@ -943,7 +943,7 @@ describe('orchestrator (VL-28)', () => {
     createTaskFile(plainRoot, { id: 'VL-77', title: 'Задача close без worktree' });
     // branch_mode включён, но worktree vl-77 НЕТ
     mkdirSync(join(plainRoot, '.vibelog'), { recursive: true });
-    writeFileSync(join(plainRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    writeFileSync(join(plainRoot, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], branch_mode: true }), 'utf-8');
     setStubEnv({ VIBELOG_QWEN_BIN: stubBin, VL28_STUB_MARKER: join(plainRoot, 'marker-close0.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(plainRoot, 'VL-77', 'close');
@@ -971,7 +971,7 @@ describe('orchestrator (VL-28)', () => {
     // VL-137: startPhase подставляет поля задачи и не запускает фазу без читаемой задачи
     createTaskFile(codeRoot, { id: 'VL-88', title: 'Задача plan в worktree' });
     mkdirSync(join(codeRoot, '.vibelog'), { recursive: true });
-    writeFileSync(join(codeRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    writeFileSync(join(codeRoot, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], branch_mode: true }), 'utf-8');
     const stubCode = join(codeRoot, 'code-stub.cjs');
     writeFileSync(stubCode, [
       '#!/usr/bin/env node',
@@ -1099,7 +1099,7 @@ describe('orchestrator (VL-28)', () => {
     mkdirSync(join(wtRoot, 'backlog'), { recursive: true });
     writeFileSync(join(wtRoot, 'backlog', 'config.yml'), 'project_name: WT Env\n', 'utf-8');
     mkdirSync(join(wtRoot, '.vibelog', 'agent-sessions'), { recursive: true });
-    writeFileSync(join(wtRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    writeFileSync(join(wtRoot, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], branch_mode: true }), 'utf-8');
     const wtPath = join(wtRoot, '.vibelog', 'worktrees', 'vl-77');
     // VL-134: resume идёт в worktree только если она уже есть — предсоздаём
     ensureTaskWorktree(wtRoot, 'VL-77');
@@ -1177,7 +1177,7 @@ describe('orchestrator (VL-28)', () => {
     // VL-137: startPhase подставляет поля задачи и не запускает фазу без читаемой задачи
     createTaskFile(otRoot, { id: 'ot-5', title: 'Задача чужого префикса' });
     mkdirSync(join(otRoot, '.vibelog'), { recursive: true });
-    writeFileSync(join(otRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    writeFileSync(join(otRoot, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], branch_mode: true }), 'utf-8');
     setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(otRoot, 'ot-stub.cjs'), VL28_STUB_MARKER: join(otRoot, 'marker-ot.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
     try {
       const res = startPhase(otRoot, 'ot-5', 'plan');
@@ -1199,7 +1199,7 @@ describe('orchestrator (VL-28)', () => {
 
   // ── VL-134: worktree создаётся впервые только на фазе plan; для epic — никогда ──
 
-  /** Минимальный git-проект с branch_mode: git init + backlog/config.yml + bot.yml. */
+  /** Минимальный git-проект с branch_mode: git init + backlog/config.yml + settings.json. */
   const makeBmRoot = (prefix) => {
     const root = mkdtempSync(join(tmpdir(), prefix));
     const git = (args) => spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -1208,7 +1208,7 @@ describe('orchestrator (VL-28)', () => {
     mkdirSync(join(root, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(join(root, 'backlog', 'config.yml'), 'project_name: VL-134 Test\n', 'utf-8');
     mkdirSync(join(root, '.vibelog'), { recursive: true });
-    writeFileSync(join(root, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    writeFileSync(join(root, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], branch_mode: true }), 'utf-8');
     return root;
   };
 
@@ -1384,7 +1384,7 @@ describe('orchestrator (VL-28)', () => {
     createTaskFile(rbRoot, { id: 'VL-78', title: 'Задача resume-блока', status: 'In Progress' });
     addComment(rbRoot, 'VL-78', 'Последний комментарий resume', '@user');
     mkdirSync(join(rbRoot, '.vibelog', 'agent-sessions'), { recursive: true });
-    writeFileSync(join(rbRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    writeFileSync(join(rbRoot, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], branch_mode: true }), 'utf-8');
     const wtPath = join(rbRoot, '.vibelog', 'worktrees', 'vl-78');
     ensureTaskWorktree(rbRoot, 'VL-78');
     writeFileSync(

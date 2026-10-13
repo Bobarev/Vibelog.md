@@ -4,11 +4,12 @@
 
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { vibelogCliPath, spawnReplacementBot } from '../../dist/bot/restart.js';
+import { loadDotEnv } from '../../dist/bot/env.js';
 import { BOT_COMMANDS } from '../../dist/bot/registry.js';
 
 describe('vibelogCliPath (VL-70)', () => {
@@ -55,6 +56,81 @@ describe('spawnReplacementBot (VL-70)', () => {
       child.once('error', reject);
     });
     assert.equal(spawned, true);
+  });
+});
+
+describe('фикс бага рестарта (VL-143): замещающий процесс без файловых ключей', () => {
+  it('дефолтный env НЕ наследует ключи, записанные loadDotEnv', async () => {
+    // Сценарий бага: родитель записал KEY из .env в process.env → дочерний
+    // loadDotEnv по dotenv-семантике не перезаписывает унаследованное старое
+    // значение → изменения .env не применяются никогда. Фикс: дефолтный env
+    // замещающего процесса = process.env минус файловые ключи.
+    const cwd = mkdtempSync(join(tmpdir(), 'vibelog-restart-strip-'));
+    const KEY = 'VL143_RESTART_FILE_KEY';
+    const saved = process.env[KEY];
+    try {
+      delete process.env[KEY];
+      writeFileSync(join(cwd, '.env'), `${KEY}=from-file\n`, 'utf-8');
+      loadDotEnv(cwd); // записывает KEY и регистрирует его как файловый
+      assert.equal(process.env[KEY], 'from-file');
+
+      // Заглушка вместо bin/vibelog.mjs: печатает env-ключ дочернего процесса
+      const stub = join(cwd, 'stub-print-env.mjs');
+      writeFileSync(
+        stub,
+        `console.log(process.env[${JSON.stringify(KEY)}] ?? 'UNSET');\n`,
+        'utf-8'
+      );
+
+      // Без явного env → дефолтный env со стриппингом файловых ключей
+      const child = spawnReplacementBot(cwd, 'pipe', stub);
+      let stdout = '';
+      child.stdout.on('data', (d) => { stdout += d; });
+      const code = await new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', (c) => resolve(c));
+      });
+      assert.equal(code, 0, `заглушка завершилась с кодом: ${code}; stdout=${stdout}`);
+      assert.equal(
+        stdout.trim(),
+        'UNSET',
+        'дочерний процесс не должен унаследовать файловый ключ из .env'
+      );
+    } finally {
+      if (saved === undefined) delete process.env[KEY];
+      else process.env[KEY] = saved;
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shell-ключи (не файловые) наследуются дочерним процессом', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'vibelog-restart-keep-'));
+    const KEY = 'VL143_RESTART_SHELL_KEY';
+    const saved = process.env[KEY];
+    try {
+      // Ключ задан в реальном окружении (не через loadDotEnv) — не файловый,
+      // стриппингу не подлежит
+      process.env[KEY] = 'from-shell';
+      const stub = join(cwd, 'stub-print-env.mjs');
+      writeFileSync(
+        stub,
+        `console.log(process.env[${JSON.stringify(KEY)}] ?? 'UNSET');\n`,
+        'utf-8'
+      );
+      const child = spawnReplacementBot(cwd, 'pipe', stub);
+      let stdout = '';
+      child.stdout.on('data', (d) => { stdout += d; });
+      const code = await new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', (c) => resolve(c));
+      });
+      assert.equal(code, 0, `заглушка завершилась с кодом: ${code}; stdout=${stdout}`);
+      assert.equal(stdout.trim(), 'from-shell', 'shell-ключ должен наследоваться');
+    } finally {
+      if (saved === undefined) delete process.env[KEY];
+      else process.env[KEY] = saved;
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });
 

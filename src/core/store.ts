@@ -150,7 +150,7 @@ export function updateTaskFile(cwd: string, id: string, updates: Partial<Task>):
 /**
  * Добавляет комментарий к задаче через штатное сохранение (VL-35).
  *
- * Автор по умолчанию — user.name из кэша .vibelog/settings.yml (заполняется
+ * Автор по умолчанию — user.name из кэша .vibelog/settings.json (заполняется
  * при init) или git config проекта: однопользовательская
  * система, привязанный чат бота и CLI принадлежат одному пользователю.
  * Формат файла не меняется — совместимость с Backlog.md сохраняется.
@@ -158,7 +158,7 @@ export function updateTaskFile(cwd: string, id: string, updates: Partial<Task>):
  * @param cwd — рабочая директория проекта
  * @param id — ID задачи
  * @param text — текст комментария
- * @param author — автор; по умолчанию кэш settings.yml → git config → '@agent'
+ * @param author — автор; по умолчанию кэш settings.json → git config → '@agent'
  * @returns обновлённая задача
  * @throws если задача не найдена
  */

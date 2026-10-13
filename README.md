@@ -229,7 +229,7 @@ vibelog bot   # long-polling: /start + пин-код для привязки ч�
 
 ```bash
 # В привязанном Telegram-чате бота:
-/set branch-mode on    # включить режим (ключ branch_mode в .vibelog/bot.yml)
+/set branch-mode on    # включить режим (ключ branch_mode в .vibelog/settings.json)
 /set branch-mode off   # выключить; перезапуск бота не требуется
 
 /restart VL-107        # собрать worktree ветки vb/vl-107 и перезапустить бота из неё

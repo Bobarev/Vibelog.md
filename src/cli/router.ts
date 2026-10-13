@@ -245,8 +245,8 @@ vibelog config <subcommand> [опции]
     bot: `
 vibelog bot
 
-Запускает Telegram-бота (long polling). Токен: TELEGRAM_BOT_TOKEN или
-telegram_token в .vibelog/bot.yml. При старте в консоль печатается пин-код —
+Запускает Telegram-бота (long polling). Токен: TELEGRAM_BOT_TOKEN в .env
+или в секции env .vibelog/settings.json. При старте в консоль печатается пин-код —
 введите его в Telegram после /start для привязки чата.
 
 Команды: /tasks, /task <id>, /board`,

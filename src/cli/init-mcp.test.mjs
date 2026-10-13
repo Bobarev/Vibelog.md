@@ -116,17 +116,20 @@ describe('VL-6 — init MCP-настройка', () => {
     assert.ok(out.includes('--no-mcp'), `help должен содержать --no-mcp: ${out}`);
   });
 
-  // --- VL-44: кэш git_user_name в .vibelog/settings.yml ---
+  // --- VL-44/VL-143: кэш git_user_name в .vibelog/settings.json ---
 
-  /** Читает git_user_name из settings.yml (undefined, если файла/поля нет). */
+  /** Читает git_user_name из settings.json (undefined, если файла/поля нет). */
   function readCachedGitUser() {
-    const p = join(testDir, '.vibelog', 'settings.yml');
+    const p = join(testDir, '.vibelog', 'settings.json');
     if (!existsSync(p)) return undefined;
-    const m = readFileSync(p, 'utf-8').match(/^git_user_name:\s*(.+)$/m);
-    return m ? m[1].trim() : undefined;
+    try {
+      return JSON.parse(readFileSync(p, 'utf-8')).git_user_name;
+    } catch {
+      return undefined;
+    }
   }
 
-  it('init создаёт .vibelog/settings.yml с git_user_name (VL-44)', () => {
+  it('init создаёт .vibelog/settings.json с git_user_name (VL-44/VL-143)', () => {
     fresh();
     spawnSync('git', ['init'], { cwd: testDir, stdio: 'pipe' });
     spawnSync('git', ['config', 'user.name', 'Test User'], { cwd: testDir, stdio: 'pipe' });

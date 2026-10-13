@@ -2,7 +2,7 @@
  * Обработчики Telegram-команд бота (VL-34).
  *
  * Пин-флоу привязки: /start → бот просит код → код печатается в консоль
- * запущенного vibelog bot → верный код привязывает chat_id (в .vibelog/bot.yml).
+ * запущенного vibelog bot → верный код привязывает chat_id (в .vibelog/settings.json).
  * Все данные читаются через core-функции — формат backlog/ не меняется.
  */
 
@@ -379,7 +379,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       const run = getRun(t.id);
       if (run?.running === true && run.phase) active[t.id] = run.phase;
     }
-    // Стили кнопок по типу задачи — task_type_styles из .vibelog/bot.yml (VL-82)
+    // Стили кнопок по типу задачи — task_type_styles из .vibelog/settings.json (VL-82)
     await sendTasksView(
       bot,
       chatId,
@@ -560,7 +560,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   // настройки (дефолт агента). /set branch-mode on|off — режим параллельной
   // разработки в git-ветках vb/vl-N (VL-107). /set compact on|off — компакшн
   // истории LLM-запроса в длинных сессиях (VL-122; по умолчанию включён).
-  // Хранится в .vibelog/bot.yml.
+  // Хранится в .vibelog/settings.json.
   bot.command('set', async (ctx) => {
     if (!requireBind(ctx)) return;
     const parsed = parseSetCommand((ctx.match ?? '').toString());
@@ -604,7 +604,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       }
       case 'max-wall-time':
       case 'max-requests': {
-        // Числовые лимиты (VL-104): 0 — сброс (удаление ключа из bot.yml),
+        // Числовые лимиты (VL-104): 0 — сброс (удаление ключа из settings.json),
         // иначе — запись; применяются при следующем запуске фазы (агент vb)
         const key = parsed.key;
         const field = key === 'max-wall-time' ? 'max_wall_time' : 'max_requests';

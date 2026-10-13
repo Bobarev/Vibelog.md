@@ -479,7 +479,7 @@ function taskEdit(positional: string[], flags: FlagValues, cwd: string): void {
   }
 
   // Комментарий — через addComment (VL-35); автор дефолтится из кэша
-  // settings.yml (VL-44), затем git config
+  // settings.json (VL-44), затем git config
   let commentAdded = false;
   if (flags.comment) {
     const author = getFlag(flags, 'comment-author', '') || resolveGitUserName(cwd);

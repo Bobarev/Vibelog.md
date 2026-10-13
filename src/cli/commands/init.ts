@@ -76,7 +76,7 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
     // Кэш git user.name (VL-44): чтобы addComment не спавнил git-процесс
     // на каждый комментарий. .vibelog/ в .gitignore — кэш машинный.
     saveProjectSettings(cwd, { git_user_name: getGitUserName(cwd) });
-    printSuccess('Кэш git user.name записан: .vibelog/settings.yml');
+    printSuccess('Кэш git user.name записан: .vibelog/settings.json');
     printInfo('Теперь вы можете создавать задачи: vibelog task create "Название"');
   }
 
@@ -85,7 +85,7 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
   // поведение), но имя пользователя могло смениться — свежий git config.
   if (existing && force) {
     saveProjectSettings(cwd, { git_user_name: getGitUserName(cwd) });
-    printSuccess('Кэш git user.name обновлён: .vibelog/settings.yml');
+    printSuccess('Кэш git user.name обновлён: .vibelog/settings.json');
   }
 
   // --- Команды Qwen Code (--skills) ---
