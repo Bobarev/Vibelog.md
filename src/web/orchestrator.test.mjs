@@ -25,6 +25,7 @@ import { handleApi } from '../../dist/web/api.js';
 import { addComment, createTaskFile } from '../../dist/core/store.js';
 import { ensureTaskWorktree } from '../../dist/core/worktree.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
+import { agentSessionsDir, saveSessionMeta } from '../../dist/agent/session.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1529,5 +1530,166 @@ describe('orchestrator (VL-28)', () => {
     const res = startPhase(testRoot, 'ot-1', 'analyze');
     assert.ok('error' in res);
     assert.match(res.error, /startAnalyze/);
+  });
+
+  // ── VL-147: фаза code в той же сессии агента, что и plan (--resume) ──
+
+  /** Минимальный проект (без git/веток): backlog/config.yml + задача. */
+  const makeSameRoot = (prefix, taskId) => {
+    const root = mkdtempSync(join(tmpdir(), prefix));
+    mkdirSync(join(root, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(root, 'backlog', 'config.yml'), 'project_name: VL-147 Test\n', 'utf-8');
+    createTaskFile(root, { id: taskId, title: `Задача ${taskId} (VL-147)` });
+    return root;
+  };
+
+  /** pre-seed меты plan-сессии задачи в agent-sessions/<root>. */
+  const seedPlanSession = (root, sessionId, taskId) => {
+    saveSessionMetaSyncTest(root, sessionId, { taskId, phase: 'plan', cwd: root });
+  };
+
+  // saveSessionMeta — async; тестовый шов — синхронная запись через writeFileSync
+  const saveSessionMetaSyncTest = (root, sessionId, meta) => {
+    const dir = agentSessionsDir(root);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${sessionId}.meta.json`), JSON.stringify(meta), 'utf-8');
+  };
+
+  it('code + sameSession=true: в argv есть --resume <planSessionId> (VL-147)', async () => {
+    const root = makeSameRoot('vibelog-orch-vl147-on-', 'VL-1470');
+    seedPlanSession(root, 'agent-plan-1470', 'VL-1470');
+    setStubEnv({ VL28_STUB_MARKER: join(root, 'marker-vl147-on.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
+    try {
+      const res = startPhase(root, 'VL-1470', 'code', undefined, undefined, 'qwen', { sameSession: true });
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-1470');
+      assert.equal(run.exitCode, 0);
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
+      const resumeIdx = argv.indexOf('--resume');
+      assert.ok(resumeIdx !== -1, 'в argv есть --resume: ' + JSON.stringify(argv));
+      assert.equal(argv[resumeIdx + 1], 'agent-plan-1470', 'после --resume — sessionId plan-сессии');
+      // Примечание о продолжении plan в промпте (контекст планирования в истории)
+      const prompt = argv.find((a) => a.includes('Фаза 3'));
+      assert.ok(prompt?.includes('VL-147'), 'примечание VL-147 в промпте');
+    } finally {
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('дефолт (настройка off): --resume НЕТ (VL-147, AC2)', async () => {
+    const root = makeSameRoot('vibelog-orch-vl147-off-', 'VL-1471');
+    // Мета plan-сессии есть, но режим выключен — спавн без --resume
+    seedPlanSession(root, 'agent-plan-1471', 'VL-1471');
+    setStubEnv({ VL28_STUB_MARKER: join(root, 'marker-vl147-off.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
+    try {
+      const res = startPhase(root, 'VL-1471', 'code');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-1471');
+      assert.equal(run.exitCode, 0);
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
+      assert.ok(!argv.includes('--resume'), 'без настройки --resume не передаётся: ' + JSON.stringify(argv));
+    } finally {
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('настройка code_same_session=true: --resume ЕСТЬ без явного флага (VL-147)', async () => {
+    const root = makeSameRoot('vibelog-orch-vl147-set-', 'VL-1472');
+    seedPlanSession(root, 'agent-plan-1472', 'VL-1472');
+    mkdirSync(join(root, '.vibelog'), { recursive: true });
+    writeFileSync(join(root, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], code_same_session: true }), 'utf-8');
+    setStubEnv({ VL28_STUB_MARKER: join(root, 'marker-vl147-set.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
+    try {
+      const res = startPhase(root, 'VL-1472', 'code');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-1472');
+      assert.equal(run.exitCode, 0);
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
+      const resumeIdx = argv.indexOf('--resume');
+      assert.ok(resumeIdx !== -1, 'настройка включает --resume: ' + JSON.stringify(argv));
+      assert.equal(argv[resumeIdx + 1], 'agent-plan-1472');
+    } finally {
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('sameSession=false при включённой настройке: --resume НЕТ (VL-147, переопределение)', async () => {
+    const root = makeSameRoot('vibelog-orch-vl147-override-', 'VL-1473');
+    seedPlanSession(root, 'agent-plan-1473', 'VL-1473');
+    mkdirSync(join(root, '.vibelog'), { recursive: true });
+    writeFileSync(join(root, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], code_same_session: true }), 'utf-8');
+    setStubEnv({ VL28_STUB_MARKER: join(root, 'marker-vl147-override.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
+    try {
+      // --no-same-session: явный флаг разово обходит включённую настройку
+      const res = startPhase(root, 'VL-1473', 'code', undefined, undefined, 'qwen', { sameSession: false });
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-1473');
+      assert.equal(run.exitCode, 0);
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
+      assert.ok(!argv.includes('--resume'), 'явный false перекрывает настройку: ' + JSON.stringify(argv));
+    } finally {
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('настройка on, но план-сессия не найдена: fallback без --resume (VL-147)', async () => {
+    const root = makeSameRoot('vibelog-orch-vl147-fb-', 'VL-1474');
+    mkdirSync(join(root, '.vibelog'), { recursive: true });
+    writeFileSync(join(root, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], code_same_session: true }), 'utf-8');
+    setStubEnv({ VL28_STUB_MARKER: join(root, 'marker-vl147-fb.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0', });
+    try {
+      // Мета plan-сессии отсутствует — обычный новый запуск (регрессий нет)
+      const res = startPhase(root, 'VL-1474', 'code');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-1474');
+      assert.equal(run.exitCode, 0, 'fallback-запуск завершается успехом');
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
+      assert.ok(!argv.includes('--resume'), 'без план-сессии --resume не передаётся: ' + JSON.stringify(argv));
+    } finally {
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('finish() дописывает мету сессии qwen по result.session_id (VL-147)', async () => {
+    const root = makeSameRoot('vibelog-orch-vl147-meta-', 'VL-1475');
+    // Стаб печатает JSON type=result с session_id — finish() должен дописать
+    // <id>.meta.json с taskId/phase (источник для findTaskPhaseSessionSync)
+    setStubEnv({
+      VL28_STUB_MARKER: join(root, 'marker-vl147-meta.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RESULT: JSON.stringify({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 1,
+        duration_api_ms: 1, num_turns: 1, result: 'готово',
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, total_tokens: 2 },
+        session_id: 'qwen-sess-1475',
+      }),
+    });
+    try {
+      const res = startPhase(root, 'VL-1475', 'plan');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-1475');
+      assert.equal(run.exitCode, 0);
+      // saveSessionMeta в finish() — fire-and-forget: ждём появления файла
+      const metaPath = join(agentSessionsDir(root), 'qwen-sess-1475.meta.json');
+      for (let i = 0; i < 80 && !existsSync(metaPath); i++) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      assert.ok(existsSync(metaPath), `нет meta.json: ${metaPath}`);
+      const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
+      assert.equal(meta.taskId, 'VL-1475');
+      assert.equal(meta.phase, 'plan');
+      // cwd в мете — realpath (как process.cwd() child'а; /var→/private/var в tmpdir macOS)
+      assert.equal(meta.cwd, realpathSync(root));
+    } finally {
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VL28_STUB_RESULT: undefined });
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

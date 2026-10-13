@@ -603,6 +603,18 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         );
         return;
       }
+      case 'code-same-session': {
+        // VL-147: фаза code продолжает plan-сессию агента (--resume) —
+        // читается оркестратором при каждом запуске, перезапуск не нужен;
+        // разовое переопределение — флаги /code --same-session|--no-same-session
+        settings.code_same_session = parsed.value;
+        saveBotSettings(deps.cwd, settings);
+        await sendMd(
+          ctx,
+          `⚙️ Фаза Code в сессии Plan: ${parsed.value ? '*вкл*' : '*выкл*'}.`
+        );
+        return;
+      }
       case 'max-wall-time':
       case 'max-requests': {
         // Числовые лимиты (VL-104): 0 — сброс (удаление ключа из settings.json),
@@ -797,7 +809,10 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       'code',
       onExit,
       { comment: parsed.comment ?? '' },
-      agent
+      agent,
+      // VL-147: явный флаг --same-session/--no-same-session переопределяет
+      // настройку code_same_session; undefined — брать настройку
+      { sameSession: parsed.sameSession }
     );
     if ('error' in result) {
       // Guard «уже выполняется» и прочие ошибки валидации startPhase
