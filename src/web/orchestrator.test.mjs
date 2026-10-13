@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { renderPrompt, startPhase, startPrompt, startResume, getRun } from '../../dist/web/orchestrator.js';
 import { handleApi } from '../../dist/web/api.js';
 import { createTaskFile } from '../../dist/core/store.js';
+import { ensureTaskWorktree } from '../../dist/core/worktree.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -701,6 +702,9 @@ describe('orchestrator (VL-28)', () => {
     mkdirSync(join(wtRoot, '.vibelog', 'agent-sessions'), { recursive: true });
     writeFileSync(join(wtRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
     const wtPath = join(wtRoot, '.vibelog', 'worktrees', 'vl-77');
+    // VL-134: worktree создаётся впервые только на фазе plan — resume предсоздаёт
+    // её явно, чтобы проверить семантику «работа в worktree при её наличии»
+    ensureTaskWorktree(wtRoot, 'VL-77');
     // Мета сессии — как её пишет CLI задачной фазы (VL-110)
     writeFileSync(
       join(wtRoot, '.vibelog', 'agent-sessions', 'agent-999.meta.json'),
@@ -850,8 +854,9 @@ describe('orchestrator (VL-28)', () => {
     }
   });
 
-  it('startPhase: code с branch_mode — спавн в worktree (регресс VL-112)', async () => {
-    // Регрессия: исключение close не должно задеть остальные фазы задач
+  it('startPhase: plan с branch_mode — спавн в worktree (регресс VL-112, VL-134)', async () => {
+    // Регрессия: исключение close не должно задеть остальные фазы задач.
+    // VL-134: первое создание worktree происходит на фазе plan (раньше была code)
     const codeRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-code-'));
     const git = (args) => spawnSync('git', ['-C', codeRoot, ...args], { encoding: 'utf-8' });
     git(['init', '-q']);
@@ -878,14 +883,14 @@ describe('orchestrator (VL-28)', () => {
     process.env.VL28_STUB_SLEEP = '0';
     process.env.VL28_STUB_EXIT = '0';
     try {
-      const res = startPhase(codeRoot, 'VL-88', 'code');
+      const res = startPhase(codeRoot, 'VL-88', 'plan');
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone('VL-88');
       assert.equal(run.exitCode, 0);
       const wtPath = join(codeRoot, '.vibelog', 'worktrees', 'vl-88');
-      assert.ok(existsSync(join(wtPath, '.git')), 'worktree vl-88 должна быть создана для code');
+      assert.ok(existsSync(join(wtPath, '.git')), 'worktree vl-88 должна быть создана для plan');
       const marker = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
-      assert.equal(marker.cwd, realpathSync(wtPath), 'code работает в worktree');
+      assert.equal(marker.cwd, realpathSync(wtPath), 'plan работает в worktree');
       assert.ok(marker.argv[0].includes('Режим параллельной разработки'), 'примечание веток присутствует');
     } finally {
       delete process.env.VL28_STUB_MARKER;
@@ -995,6 +1000,8 @@ describe('orchestrator (VL-28)', () => {
     mkdirSync(join(wtRoot, '.vibelog', 'agent-sessions'), { recursive: true });
     writeFileSync(join(wtRoot, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
     const wtPath = join(wtRoot, '.vibelog', 'worktrees', 'vl-77');
+    // VL-134: resume идёт в worktree только если она уже есть — предсоздаём
+    ensureTaskWorktree(wtRoot, 'VL-77');
     writeFileSync(
       join(wtRoot, '.vibelog', 'agent-sessions', 'agent-777.meta.json'),
       JSON.stringify({ taskId: 'VL-77', phase: 'code', cwd: wtPath }),
@@ -1084,7 +1091,7 @@ describe('orchestrator (VL-28)', () => {
     process.env.VL28_STUB_SLEEP = '0';
     process.env.VL28_STUB_EXIT = '0';
     try {
-      const res = startPhase(otRoot, 'ot-5', 'code');
+      const res = startPhase(otRoot, 'ot-5', 'plan');
       assert.equal(res.started, true, JSON.stringify(res));
       const run = await waitDone('ot-5');
       assert.equal(run.exitCode, 0);
@@ -1098,6 +1105,115 @@ describe('orchestrator (VL-28)', () => {
       delete process.env.VL28_STUB_MARKER;
       process.env.VIBELOG_QWEN_BIN = stubBin;
       rmSync(otRoot, { recursive: true, force: true });
+    }
+  });
+
+  // ── VL-134: worktree создаётся впервые только на фазе plan; для epic — никогда ──
+
+  /** Минимальный git-проект с branch_mode: git init + backlog/config.yml + bot.yml. */
+  const makeBmRoot = (prefix) => {
+    const root = mkdtempSync(join(tmpdir(), prefix));
+    const git = (args) => spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
+    git(['init', '-q']);
+    git(['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+    mkdirSync(join(root, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(root, 'backlog', 'config.yml'), 'project_name: VL-134 Test\n', 'utf-8');
+    mkdirSync(join(root, '.vibelog'), { recursive: true });
+    writeFileSync(join(root, '.vibelog', 'bot.yml'), 'chats: []\nbranch_mode: true\n', 'utf-8');
+    return root;
+  };
+
+  it('spec с branch_mode: worktree не создаётся, фаза идёт в главном cwd (VL-134)', async () => {
+    const specRoot = makeBmRoot('vibelog-orch-vl134-spec-');
+    process.env.VIBELOG_QWEN_BIN = writeEnvStub(specRoot, 'vl134-spec-stub.cjs');
+    process.env.VL28_STUB_MARKER = join(specRoot, 'marker-vl134-spec.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startPhase(specRoot, 'VL-90', 'spec');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-90');
+      assert.equal(run.exitCode, 0);
+      assert.ok(!existsSync(join(specRoot, '.vibelog', 'worktrees', 'vl-90')), 'worktree не создаётся на spec');
+      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      assert.equal(m.cwd, realpathSync(specRoot), 'spec работает в главном cwd');
+      assert.ok(!m.argv[0].includes('Режим параллельной разработки'), 'примечания веток в промпте нет');
+      assert.equal(m.envCwd, null, 'VIBELOG_CWD не задаётся без worktree');
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(specRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('plan для epic: worktree не создаётся, фаза идёт в главном cwd (VL-134)', async () => {
+    const epicRoot = makeBmRoot('vibelog-orch-vl134-epic-');
+    // Задача-эпик: type попадает в frontmatter и читается getTask
+    const epic = createTaskFile(epicRoot, { title: 'Эпик VL-134', status: 'Planned', type: 'epic' });
+    process.env.VIBELOG_QWEN_BIN = writeEnvStub(epicRoot, 'vl134-epic-stub.cjs');
+    process.env.VL28_STUB_MARKER = join(epicRoot, 'marker-vl134-epic.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startPhase(epicRoot, epic.id, 'plan');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone(epic.id);
+      assert.equal(run.exitCode, 0);
+      assert.ok(!existsSync(join(epicRoot, '.vibelog', 'worktrees', epic.id.toLowerCase())), 'worktree не создаётся для epic');
+      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      assert.equal(m.cwd, realpathSync(epicRoot), 'plan эпика работает в главном cwd');
+      assert.ok(!m.argv[0].includes('Режим параллельной разработки'), 'примечания веток в промпте нет');
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(epicRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('code без worktree: не создаётся, фаза идёт в главном cwd (VL-134)', async () => {
+    const codeRoot = makeBmRoot('vibelog-orch-vl134-code-');
+    process.env.VIBELOG_QWEN_BIN = writeEnvStub(codeRoot, 'vl134-code-stub.cjs');
+    process.env.VL28_STUB_MARKER = join(codeRoot, 'marker-vl134-code.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      // Задача переведена в code мимо Plan — без worktree фаза идёт в главный cwd
+      const res = startPhase(codeRoot, 'VL-91', 'code');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-91');
+      assert.equal(run.exitCode, 0);
+      assert.ok(!existsSync(join(codeRoot, '.vibelog', 'worktrees', 'vl-91')), 'worktree не создаётся на code');
+      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      assert.equal(m.cwd, realpathSync(codeRoot), 'code работает в главном cwd');
+      assert.ok(!m.argv[0].includes('Режим параллельной разработки'), 'примечания веток в промпте нет');
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(codeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('comment с уже созданной worktree: фаза идёт в worktree (VL-134)', async () => {
+    const cmtRoot = makeBmRoot('vibelog-orch-vl134-cmt-');
+    // Существующая worktree (задача дошла до Plan ранее) — comment работает в ней
+    const wtPath = ensureTaskWorktree(cmtRoot, 'VL-92');
+    process.env.VIBELOG_QWEN_BIN = writeEnvStub(cmtRoot, 'vl134-cmt-stub.cjs');
+    process.env.VL28_STUB_MARKER = join(cmtRoot, 'marker-vl134-cmt.txt');
+    process.env.VL28_STUB_SLEEP = '0';
+    process.env.VL28_STUB_EXIT = '0';
+    try {
+      const res = startPhase(cmtRoot, 'VL-92', 'comment');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-92');
+      assert.equal(run.exitCode, 0);
+      const m = JSON.parse(readFileSync(process.env.VL28_STUB_MARKER, 'utf-8'));
+      assert.equal(m.cwd, realpathSync(wtPath), 'comment работает в существующей worktree');
+      assert.ok(m.argv[0].includes('Режим параллельной разработки'), 'примечание веток присутствует');
+      assert.equal(m.envCwd, cmtRoot, 'VIBELOG_CWD — главный репозиторий');
+    } finally {
+      delete process.env.VL28_STUB_MARKER;
+      process.env.VIBELOG_QWEN_BIN = stubBin;
+      rmSync(cmtRoot, { recursive: true, force: true });
     }
   });
 });

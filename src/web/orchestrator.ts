@@ -280,20 +280,31 @@ function spawnQwenRun(
     };
   }
   if (resolveBranchMode(cwd) && branchTask !== '') {
-    let runDir: string;
-    try {
-      runDir = ensureTaskWorktree(cwd, branchTask);
-    } catch (err) {
-      return { error: (err as Error).message };
+    // VL-134: worktree создаётся впервые только на фазе plan; для epic — никогда.
+    // Остальные фазы (spec/code/comment/resume) используют worktree ТОЛЬКО если
+    // он уже существует (ensure идемпотентен); иначе — главный cwd.
+    const wtDir = taskWorktreeDir(cwd, branchTask);
+    const wtExists = existsSync(wtDir);
+    const taskType = (getTask(cwd, branchTask)?.type ?? '').toLowerCase();
+    // Вход в блок: готовый worktree либо первое создание (plan, не epic).
+    // Иначе блок пропускается целиком: runCwd = главный cwd, VIBELOG_CWD не
+    // задаётся, «Режим параллельной разработки» не добавляется в промпт.
+    if (wtExists || (phase === 'plan' && taskType !== 'epic')) {
+      let runDir: string;
+      try {
+        runDir = ensureTaskWorktree(cwd, branchTask);
+      } catch (err) {
+        return { error: (err as Error).message };
+      }
+      runCwd = runDir;
+      // MCP-сервер агента наследует cwd worktree, но backlog пишет в главный
+      // репозиторий через VIBELOG_CWD (см. cli/commands/mcp.ts)
+      spawnEnv = { ...(spawnEnv ?? process.env), VIBELOG_CWD: cwd };
+      prompt +=
+        `\n\nРежим параллельной разработки: работаешь в git worktree ветки ${taskBranchName(branchTask)}` +
+        ` (директория ${runDir}). Backlog живёт в основном репозитории — MCP уже настроен на него.` +
+        ' Код коммить в текущую ветку; файлы backlog/ не коммить.';
     }
-    runCwd = runDir;
-    // MCP-сервер агента наследует cwd worktree, но backlog пишет в главный
-    // репозиторий через VIBELOG_CWD (см. cli/commands/mcp.ts)
-    spawnEnv = { ...(spawnEnv ?? process.env), VIBELOG_CWD: cwd };
-    prompt +=
-      `\n\nРежим параллельной разработки: работаешь в git worktree ветки ${taskBranchName(branchTask)}` +
-      ` (директория ${runDir}). Backlog живёт в основном репозитории — MCP уже настроен на него.` +
-      ' Код коммить в текущую ветку; файлы backlog/ не коммить.';
   }
 
   // VL-92: выбор бинаря по агенту. qwen — прежний путь без регрессий;
