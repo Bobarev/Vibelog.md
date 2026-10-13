@@ -24,6 +24,13 @@ export default defineConfig({
     // example-backlog/ и .vibelog/ — служебные каталоги без тестов.
     exclude: ['node_modules/**', 'refs/**', 'dist/**', '.vibelog/**', 'example-backlog/**'],
     fileParallelism: true,
+    // isolate: false (VL-139): workers переиспользуются между тестовыми файлами
+    // вместо спавна нового процесса на каждый файл (52 spawn'а ~159 мс каждый,
+    // ожидание −8…10 с по профилю 2026-10-13). Безопасно, опираясь на
+    // VL-125 (тесты чистят env после себя) и VL-140 (tmp уникальны per-file,
+    // мок-серверы на эфемерных портах, spawn'ы получают явные env-объекты) —
+    // состояние между файлами в одном worker не утекает.
+    isolate: false,
     setupFiles: ['./src/test-setup.mjs'],
     // В node:test таймаутов по умолчанию не было; в vitest дефолт 5s, а тесты
     // спавнят git/CLI и ждут мок-серверы — поднимаем до разумного максимума.
