@@ -7,8 +7,9 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { vibelogCliPath, spawnReplacementBot } from '../../dist/bot/restart.js';
+import { vibelogCliPath, rootCliPath, spawnReplacementBot } from '../../dist/bot/restart.js';
 import { loadDotEnv } from '../../dist/bot/env.js';
 import { BOT_COMMANDS } from '../../dist/bot/registry.js';
 
@@ -16,6 +17,32 @@ describe('vibelogCliPath (VL-70)', () => {
   it('указывает на существующий bin/vibelog.mjs', () => {
     const p = vibelogCliPath();
     assert.match(p, /bin\/vibelog\.mjs$/);
+    assert.ok(existsSync(p), `файл CLI не найден: ${p}`);
+  });
+});
+
+describe('rootCliPath (VL-151): возврат в main после /restart VL-N', () => {
+  it('строится от cwd, а не от import.meta.url текущего процесса', () => {
+    // Симуляция бага VL-151: процесс живёт в worktree-dist, его
+    // vibelogCliPath() указывает на worktree CLI. rootCliPath(tmp) при этом
+    // обязан резолвиться от переданного cwd — пути не совпадают.
+    const cwd = mkdtempSync(join(tmpdir(), 'vibelog-rootcli-'));
+    try {
+      const p = rootCliPath(cwd);
+      assert.equal(p, join(cwd, 'bin', 'vibelog.mjs'));
+      // cwd — tmp вне дерева процесса → rootCliPath и vibelogCliPath различны
+      assert.notEqual(p, vibelogCliPath(), 'rootCliPath не должен зависеть от import.meta.url');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('корневой CLI от cwd проекта существует', () => {
+    // Смоук: для реального корня проекта (src/bot/restart.test.mjs → ../..
+    // после отбрасывания имени файла остаётся src/bot/) путь указывает на
+    // существующий bin/vibelog.mjs
+    const projectRoot = fileURLToPath(new URL('../..', import.meta.url));
+    const p = rootCliPath(projectRoot);
     assert.ok(existsSync(p), `файл CLI не найден: ${p}`);
   });
 });
