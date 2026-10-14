@@ -14,6 +14,7 @@ import {
   formatTaskDetail,
   formatPhaseRun,
   formatPhaseResult,
+  splitNumbered,
   formatBoard,
   formatDiffList,
   formatCommitsList,
@@ -201,14 +202,14 @@ describe('formatPhaseResult (VL-63/VL-65)', () => {
     assert.ok(text.includes('Фича \\_x\\_ и \\(скобки\\)\\!'), 'escapeMarkdownV2 применён');
   });
 
-  it('длинный result обрезан до 1500 символов', () => {
+  it('длинный result не обрезается — полный текст в цитате (VL-148)', () => {
     const run = { ...okRun, result: { ...okRun.result, result: 'x'.repeat(2000) } };
     const text = formatPhaseResult(run);
     const bodyLine = text.split('\n')[1];
-    // 'x' не экранируется — длина = префикс '> ' (2) + 1500 + '…' (VL-98: цитата)
-    assert.equal(bodyLine.length, 1503);
+    // VL-148: усечение 1500 отменено — разбивкой занимается sendPhaseResult
+    assert.equal(bodyLine.length, 2002); // '> ' + 2000 x (VL-98: цитата)
     assert.ok(bodyLine.startsWith('> '), 'префикс цитаты');
-    assert.ok(bodyLine.endsWith('…'));
+    assert.ok(!text.includes('…'), 'нет многоточия-усечения');
   });
 
   it('фолбэк: logTail экранирован для MarkdownV2 (VL-63 фикс)', () => {
@@ -387,5 +388,50 @@ describe('formatCommitsList (VL-90)', () => {
   it('строки соединяются через \n', () => {
     const text = formatCommitsList(commits);
     assert.equal(text.split('\n').length, 2);
+  });
+});
+
+describe('splitNumbered (VL-148)', () => {
+  // Суффикс как в sendPhaseResult (MarkdownV2-вариант)
+  const fmt = (i, n) => `\n\n_часть ${i}/${n}_`;
+  const stripSuffix = (p) => p.replace(/\n\n_часть \d+\/\d+_$/, '');
+
+  it('короткий текст — одна часть без суффикса', () => {
+    assert.deepEqual(splitNumbered('привет', 100, fmt), ['привет']);
+  });
+
+  it('длинный текст: части ≤ limit, нумерация 1..N, содержимое не теряется', () => {
+    const text = Array.from({ length: 400 }, (_, i) => `строка ${i}`).join('\n');
+    const parts = splitNumbered(text, 300, fmt);
+    assert.ok(parts.length > 1, 'больше одной части');
+    for (const [idx, p] of parts.entries()) {
+      assert.ok(p.length <= 300, `часть ${idx + 1} длиной ${p.length} ≤ 300`);
+      assert.ok(
+        p.endsWith(`_часть ${idx + 1}/${parts.length}_`),
+        `суффикс «часть ${idx + 1}/${parts.length}» на месте`
+      );
+    }
+    // Склейка тел частей (без суффиксов) восстанавливает оригинал
+    const joined = parts.map(stripSuffix).join('\n');
+    assert.equal(joined, text);
+  });
+
+  it('разрез только по границам строк — тело части кратно строкам', () => {
+    // Строки по 40 символов через \n → модуль 41
+    const text = Array.from({ length: 100 }, () => 'y'.repeat(40)).join('\n');
+    const parts = splitNumbered(text, 200, fmt);
+    assert.ok(parts.length > 1);
+    for (const p of parts) {
+      const body = stripSuffix(p);
+      assert.equal((body.length + 1) % 41, 0, 'тело части состоит из целых строк');
+    }
+  });
+
+  it('сверхдлинная строка — жёсткий разрез без потери символов', () => {
+    const text = 'z'.repeat(500);
+    const parts = splitNumbered(text, 200, fmt);
+    assert.ok(parts.length > 1);
+    for (const p of parts) assert.ok(p.length <= 200, 'часть в лимите');
+    assert.equal(parts.map(stripSuffix).join(''), text, 'символы не потеряны');
   });
 });

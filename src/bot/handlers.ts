@@ -24,6 +24,8 @@ import {
   formatDocumentDetail,
   formatPhaseResult,
   formatPhaseRun,
+  splitNumbered,
+  TELEGRAM_TEXT_LIMIT,
   formatTaskDetail,
   formatTaskList,
 } from './formatting.js';
@@ -244,12 +246,29 @@ async function sendCommitsView(
 async function sendPhaseResult(bot: Bot, chatId: number, run: PhaseRun, taskId?: string): Promise<void> {
   try {
     const rich = renderPhaseResultRich(run, taskId);
-    for (const part of chunkRich(rich)) {
-      await bot.api.sendRichMessage(chatId, { markdown: part });
+    const richParts = chunkRich(rich);
+    // VL-148: гигантские отчёты (>32768 rich-лимита) нумеруем «часть i/N»
+    // (GFM italic) и шлём последовательно; одиночная часть — без суффикса
+    for (let i = 0; i < richParts.length; i++) {
+      const suffix =
+        richParts.length > 1 ? `\n\n_(часть ${i + 1}/${richParts.length})_` : '';
+      await bot.api.sendRichMessage(chatId, { markdown: richParts[i] + suffix });
     }
   } catch (err) {
     console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
-    await sendText(bot, chatId, formatPhaseResult(run, taskId));
+    // VL-148: длинный результат разбивается на несколько последовательных
+    // сообщений с нумерацией «часть i/N» (MarkdownV2: `/` → `\/`); короткий
+    // уходит одним сообщением без изменений. Общий помощник splitNumbered —
+    // другие команды (sendTaskView, sendDiffView и др.) подключают позже
+    // отдельной задачей
+    const parts = splitNumbered(
+      formatPhaseResult(run, taskId),
+      TELEGRAM_TEXT_LIMIT,
+      (i, n) => `\n\n_часть ${i}\\/${n}_`
+    );
+    for (const part of parts) {
+      await sendText(bot, chatId, part);
+    }
   }
 }
 

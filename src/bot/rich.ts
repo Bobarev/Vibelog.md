@@ -604,8 +604,10 @@ export function renderPhaseResultRich(run: PhaseRun, taskId?: string): string {
     const cut = tail.length > 800 ? tail.slice(0, 800) + '…' : tail;
     return [status, '', '**Данные результата недоступны**', '```', fenceSafe(cut), '```'].join('\n');
   }
-  const body =
-    res.result.length > 1500 ? res.result.slice(0, 1500) + '…' : res.result;
+  // VL-148: усечение 1500 отменено — лимит rich 32768 покрывает почти все
+  // отчёты; гигантские разбивает chunkRich при отправке (с нумерацией
+  // «часть i/N», sendPhaseResult)
+  const body = res.result;
   // VL-98: ответ модели — GFM-цитата (каждая строка с "> "), без
   // экранирования — рендер GFM
   const quoted = body

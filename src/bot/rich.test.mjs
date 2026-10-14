@@ -437,12 +437,13 @@ describe('renderPhaseResultRich (VL-71)', () => {
     assert.match(md, /Количество запросов:\*\* 1/);
   });
 
-  it('result длиннее 1500 символов — обрезка с многоточием', () => {
+  it('result длиннее 1500 символов — без усечения (VL-148)', () => {
     const md = renderPhaseResultRich({
       ...okRun,
       result: { ...okRun.result, result: 'а'.repeat(1600) },
     });
-    assert.match(md, /а{1500}…/);
+    assert.ok(md.includes('а'.repeat(1600)), 'полный текст без обрезки');
+    assert.ok(!md.includes('…'), 'нет многоточия-усечения');
   });
 
   it('единый формат сессии: vb:<id> и qwen:<uuid> (VL-93)', () => {
