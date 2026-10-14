@@ -12,9 +12,7 @@
     "types": [
       "node"
     ],
-    "allowJs": false,
-    "jsx": "react-jsx",
-    "jsxImportSource": "react"
+    "allowJs": false
   },
   "include": [
     "src/**/*"
