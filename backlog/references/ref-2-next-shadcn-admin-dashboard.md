@@ -9,6 +9,7 @@ tags:
   - react
   - shadcn
 created_date: 2026-10-14
-linked_tasks: []
+linked_tasks:
+  - VL-156
 ---
 Админ-дашборд на shadcn — референс веб-UI (react, drag-and-drop, kanban)
