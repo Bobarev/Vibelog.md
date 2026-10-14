@@ -31,6 +31,13 @@ import {
   updateDocument, searchDocuments,
 } from '../core/document.js';
 import type { UpdateDocumentInput } from '../core/document.js';
+import {
+  listReferences, getReference, writeReference,
+  updateReference, removeReference, searchReferences,
+  cloneReferenceRepo, syncReferenceRepos, linkReferenceTask,
+  REFERENCE_TYPES,
+} from '../core/reference.js';
+import type { UpdateReferenceInput } from '../core/reference.js';
 import { findBacklogDir } from '../core/paths.js';
 import type { Task, TaskComment, ChecklistItem } from '../core/task.js';
 
@@ -145,6 +152,8 @@ export function listTools(): ToolDefinition[] {
           final_summary: { type: 'string', description: 'Итоговое резюме (записывает в ## Final Summary)' },
           // VL-97: без записи modified_files close-шаг не мог собрать feat-коммит (инцидент VL-94)
           modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Изменённые файлы (полная замена modified_files)' },
+          // VL-152: поле references задачи (связь с reference_*); двусторонняя связь — через reference_link
+          references: { type: 'array', items: { type: 'string' }, description: 'ID references задачи (полная замена references)' },
         },
         required: ['id'],
       },
@@ -367,6 +376,86 @@ export function listTools(): ToolDefinition[] {
         required: ['id'],
       },
     },
+    // === References — метаданные о внешних источниках (VL-152) ===
+    {
+      name: 'reference_list',
+      description: 'Список references (внешних источников знаний) с опциональными фильтрами type/tags.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          type: { type: 'string', enum: REFERENCE_TYPES, description: 'Фильтр по типу (repo/url/file/doc/spec)' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Фильтр по меткам (все указанные должны совпасть)' },
+        },
+      },
+    },
+    {
+      name: 'reference_add',
+      description: 'Добавить reference (внешний источник знаний). Для type=repo по умолчанию САМ клонирует репозиторий в backlog/references/data/<dir> (идемпотентно: если каталог есть — пропуск).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Заголовок reference' },
+          type: { type: 'string', enum: REFERENCE_TYPES, description: 'Тип: repo/url/file/doc/spec' },
+          url: { type: 'string', description: 'URL (для repo/url)' },
+          path: { type: 'string', description: 'Путь (для file/doc/spec; для repo — каталог клона относительно data/)' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Метки' },
+          description: { type: 'string', description: 'Markdown-описание (тело)' },
+          clone: { type: 'boolean', description: 'Клонировать ли repo (default=true; false — только метаданные)' },
+        },
+        required: ['title', 'type'],
+      },
+    },
+    {
+      name: 'reference_view',
+      description: 'Показать reference: метаданные, linked_tasks и тело.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'ID reference (ref-N)' },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'reference_search',
+      description: 'Поиск references по запросу (substring по id/title/url/path/tags/телу).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Поисковый запрос' },
+        },
+        required: ['query'],
+      },
+    },
+    {
+      name: 'reference_remove',
+      description: 'Удалить reference (метаданные). Клон в data/ не удаляется.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'ID reference (ref-N)' },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'reference_link',
+      description: 'Двусторонняя связь reference ↔ задача: обновляет reference.linked_tasks И task.references.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          referenceId: { type: 'string', description: 'ID reference (ref-N)' },
+          taskId: { type: 'string', description: 'ID задачи (VL-N)' },
+          action: { type: 'string', enum: ['add', 'remove'], description: 'Добавить (default) или удалить связь' },
+        },
+        required: ['referenceId', 'taskId'],
+      },
+    },
+    {
+      name: 'reference_sync',
+      description: 'Клонировать отсутствующие репозитории для всех references type=repo в backlog/references/data/.',
+      inputSchema: { type: 'object', properties: {} },
+    },
   ];
 }
 
@@ -425,6 +514,20 @@ export async function handleToolCall(name: string, args: ToolArgs, cwd: string):
       return toolDocumentUpdate(args, cwd);
     case 'document_search':
       return toolDocumentSearch(args, cwd);
+    case 'reference_list':
+      return toolReferenceList(args, cwd);
+    case 'reference_add':
+      return toolReferenceAdd(args, cwd);
+    case 'reference_view':
+      return toolReferenceView(args, cwd);
+    case 'reference_search':
+      return toolReferenceSearch(args, cwd);
+    case 'reference_remove':
+      return toolReferenceRemove(args, cwd);
+    case 'reference_link':
+      return toolReferenceLink(args, cwd);
+    case 'reference_sync':
+      return toolReferenceSync(args, cwd);
     default:
       throw new Error(`Неизвестный инструмент: ${name}`);
   }
@@ -582,6 +685,9 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
   // VL-97: прокидываем modified_files — поле есть в core (Task-input/сериализация),
   // но было недоступно ни в MCP, ни в CLI, поэтому всегда оставалось пустым
   if (args.modifiedFiles !== undefined) updates.modified_files = args.modifiedFiles as string[];
+
+  // VL-152: поле references (связь с reference_*); двусторонняя связь — reference_link
+  if (args.references !== undefined) updates.references = args.references as string[];
 
   // Секции тела
   if (args.plan !== undefined) updates.implementationPlan = args.plan as string;
@@ -1118,4 +1224,75 @@ function toolDocumentSearch(args: ToolArgs, cwd: string): string {
   if (!backlogDir) throw new Error('Backlog не найден.');
   const entries = searchDocuments(backlogDir, args.query as string);
   return JSON.stringify(entries.map(e => e.document), null, 2);
+}
+
+// ============================================================
+// References — метаданные о внешних источниках (VL-152)
+// ============================================================
+
+function toolReferenceList(args: ToolArgs, cwd: string): string {
+  let entries = listReferences(cwd);
+  if (args.type !== undefined) {
+    const t = String(args.type).toLowerCase();
+    entries = entries.filter(e => e.reference.type === t);
+  }
+  if (Array.isArray(args.tags) && (args.tags as string[]).length > 0) {
+    const tags = (args.tags as string[]).map(t => String(t).toLowerCase());
+    entries = entries.filter(e =>
+      tags.every(t => e.reference.tags.some(rt => String(rt).toLowerCase() === t))
+    );
+  }
+  return JSON.stringify(entries.map(e => e.reference), null, 2);
+}
+
+function toolReferenceAdd(args: ToolArgs, cwd: string): string {
+  const ref = writeReference(cwd, {
+    title: args.title as string,
+    type: args.type as string,
+    url: args.url as string | undefined,
+    path: args.path as string | undefined,
+    tags: args.tags as string[] | undefined,
+    content: args.description as string | undefined,
+  });
+  // Клонирование: clone default=true для type=repo; false — только метаданные
+  let cloneMessage = '';
+  if (ref.type === 'repo' && ref.url && args.clone !== false) {
+    const res = cloneReferenceRepo(cwd, ref);
+    cloneMessage = '\n' + res.message;
+  }
+  return `Reference ${ref.id} создан: ${ref.title} (${ref.type})${cloneMessage}`;
+}
+
+function toolReferenceView(args: ToolArgs, cwd: string): string {
+  const entry = getReference(cwd, args.id as string);
+  if (!entry) throw new Error(`Reference ${args.id} не найден.`);
+  return JSON.stringify({
+    ...entry.reference,
+    body: entry.body,
+    path: entry.path,
+  }, null, 2);
+}
+
+function toolReferenceSearch(args: ToolArgs, cwd: string): string {
+  const entries = searchReferences(cwd, args.query as string);
+  return JSON.stringify(entries.map(e => e.reference), null, 2);
+}
+
+function toolReferenceRemove(args: ToolArgs, cwd: string): string {
+  const ok = removeReference(cwd, args.id as string);
+  if (!ok) throw new Error(`Reference ${args.id} не найден (или файл не удалось удалить).`);
+  return `Reference ${args.id} удалён (клон в data/ сохранён).`;
+}
+
+function toolReferenceLink(args: ToolArgs, cwd: string): string {
+  const action = (args.action as 'add' | 'remove') || 'add';
+  linkReferenceTask(cwd, args.referenceId as string, args.taskId as string, action);
+  return action === 'add'
+    ? `Reference ${args.referenceId} связан с задачей ${args.taskId} (linked_tasks ↔ task.references).`
+    : `Связь Reference ${args.referenceId} ↔ задача ${args.taskId} удалена.`;
+}
+
+function toolReferenceSync(_args: ToolArgs, cwd: string): string {
+  const result = syncReferenceRepos(cwd);
+  return JSON.stringify(result, null, 2);
 }

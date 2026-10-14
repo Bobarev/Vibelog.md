@@ -106,9 +106,10 @@ export function ensureTaskWorktree(cwd: string, taskId: string): string {
     throw new Error(`Не удалось создать worktree для ${taskId}: ${detail}`);
   }
 
-  // Дев-зависимости worktree: node_modules и refs не в git (см. .gitignore)
-  // и в worktree отсутствуют — без них pnpm test/build и compat-тесты
-  // (refs/Backlog.md) в ветке не работают. Симлинки на главные каталоги:
+  // Дев-зависимости worktree: node_modules и клоны references не в git
+  // (см. .gitignore: backlog/references/data/) и в worktree отсутствуют —
+  // без них pnpm test/build и compat-тесты (backlog/references/data/Backlog.md)
+  // в ветке не работают. Симлинки на главные каталоги:
   // пакетный менеджер и git их игнорируют, обновления main сразу видны.
   linkWorktreeDeps(dir, cwd);
 
@@ -117,24 +118,28 @@ export function ensureTaskWorktree(cwd: string, taskId: string): string {
 }
 
 /**
- * Создаёт симлинки node_modules и refs из главного репо в worktree.
+ * Создаёт симлинки node_modules и клонов references из главного репо в worktree.
  *
  * Идемпотентно: существующие файлы/каталоги/симлинки не трогаются —
  * повторный ensure или worktree с реальным node_modules (после pnpm install)
- * не ломаются. Если в главном репо каталога нет (свежий клон без refs) —
+ * не ломаются. Если в главном репо каталога нет (свежий клон без references) —
  * симлинк не создаётся.
  *
+ * Пути относительные: backlog/references/data (VL-152, раньше refs/) —
+ * для вложенного пути создаются родительские каталоги worktree перед symlink.
+ *
  * @param dir — путь worktree задачи
- * @param cwd — корень главного репозитория (там лежат node_modules/refs)
+ * @param cwd — корень главного репозитория (там лежат node_modules/backlog/references/data)
  */
 function linkWorktreeDeps(dir: string, cwd: string): void {
-  for (const name of ['node_modules', 'refs']) {
+  for (const name of ['node_modules', join('backlog', 'references', 'data')]) {
     const target = join(cwd, name);
     const link = join(dir, name);
     // lstat — битый симлинк (наследие) тоже считаем «занятым» и не трогаем
     const linkTaken = existsSync(link) || (lstatSync(link, { throwIfNoEntry: false })?.isSymbolicLink() ?? false);
     if (!existsSync(target) || linkTaken) continue;
     try {
+      mkdirSync(dirname(link), { recursive: true });
       symlinkSync(target, link, 'dir');
     } catch {
       // гонка/отсутствие прав не должна ронять ensure — тесты сообщат сами

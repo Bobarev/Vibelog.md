@@ -25,9 +25,16 @@ Vibelog.md реализует MCP-сервер поверх stdio (JSON-RPC 2.0)
 | `milestone_rename` | Переименовать веху (обновляет задачи) |
 | `milestone_remove` | Удалить веху (clear / keep / reassign задач) |
 | `milestone_archive` | Архивировать веху |
+| `reference_list` | Список references (фильтры type/tags) |
+| `reference_add` | Добавить reference; для repo клонирует в backlog/references/data/ |
+| `reference_view` | Показать reference (метаданные, linked_tasks, тело) |
+| `reference_search` | Поиск references по запросу |
+| `reference_remove` | Удалить reference (клон в data/ сохраняется) |
+| `reference_link` | Двусторонняя связь reference ↔ задача (linked_tasks ↔ task.references) |
+| `reference_sync` | Доклонировать отсутствующие репозитории (type=repo) |
 
-Всего 16 инструментов. Поле `type` (bug, feature, ...) поддерживают
-create / list / update.
+Всего 29 инструментов. Полный список с параметрами — в [MCP-справочнике](backlog/docs/doc-8-MCP-справочник-Vibelogmd.md).
+Поле `type` (bug, feature, ...) поддерживают create / list / update.
 
 ## Настройка в Qwen Code
 

@@ -11,6 +11,7 @@ ID: {{taskId}}; тип: {{taskType}}; статус: {{taskStatus}}
 Критерии приёмки (AC): {{taskAC}}
 Definition of Done (DoD): {{taskDoD}}
 Изменённые файлы: {{taskModifiedFiles}}
+References: {{taskReferences}}
 Последний комментарий: {{taskLastComment}}
 
 ## Шаги
@@ -31,16 +32,22 @@ Definition of Done (DoD): {{taskDoD}}
 
 4. Отметь реально выполненные AC/DoD:
    списки: backlog_manage_ac / backlog_manage_dod c action "list"; проверяй пункты.
-   Отдельными вызовами action "check" НЕ помечай — индексы реально выполненных пунктов передай в acChecks/dodChecks вызова backlog_finish_phase (шаг 6); списки по-прежнему читай через manage_ac/manage_dod (action "list").
+   Отдельными вызовами action "check" НЕ помечай — индексы реально выполненных пунктов передай в acChecks/dodChecks вызова backlog_finish_phase (шаг 7); списки по-прежнему читай через manage_ac/manage_dod (action "list").
    Не отмечай «задним числом» — невыполненные пункты оставь незакрытыми и упомяни в отчёте.
 
-5. Если type=task и менялся код — закоммичи изменения в текущую ветку, чтобы владелец увидел диффы сразу (в режиме worktree это ветка задачи; без worktree — текущая ветка репозитория):
+5. References (внешние источники знаний, VL-152):
+   - Использовал новые внешние источники (URL, репозитории, файлы, документацию)? Добавь их: reference_add {"title": "...", "type": "url|repo|file|doc|spec", "url": "..."} и свяжи: reference_link {"referenceId": "ref-N", "taskId": "{{taskId}}"}.
+   - Использовал уже существующие references (блок References из задачи)? Просто свяжи их через reference_link {"referenceId": "ref-N", "taskId": "{{taskId}}"} (если ещё не связаны).
+   - Обнови поле references задачи: backlog_update_task {"id": "{{taskId}}", "references": ["ref-N", ..."]} (полная замена списка).
+   - Если источники не использовались — шаг пропусти.
+
+6. Если type=task и менялся код — закоммичи изменения в текущую ветку, чтобы владелец увидел диффы сразу (в режиме worktree это ветка задачи; без worktree — текущая ветка репозитория):
    git status --porcelain
    git add <явные пути изменённых файлов кода>
    git commit -m "feat: {{taskId}} — <краткое описание сути>"
    Только файлы этой задачи (код, тесты, шаблоны); файлы backlog/ НЕ коммит; никогда git add -A; не push. Если изменений нет — пропусти шаг.
 
-6. Заверши фазу ОДНИМ вызовом backlog_finish_phase — отчёт комментарием + modifiedFiles + статус + батч-отметки AC/DoD (упомяни хэш feat-коммита из шага 5):
+7. Заверши фазу ОДНИМ вызовом backlog_finish_phase — отчёт комментарием + modifiedFiles + статус + батч-отметки AC/DoD (упомяни хэш feat-коммита из шага 6):
    backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза 3 (Code) выполнена. Изменено: <файлы>, коммит <хэш>. Проверки: <список выполненных>. Что осталось: ...", "modifiedFiles": ["src/foo.ts", "docs/bar.md"], "acChecks": [<индексы выполненных AC из шага 4>], "dodChecks": [<индексы выполненного DoD из шага 4>], "status": "Review"}
    - type=task: передавай modifiedFiles (только явные пути ВНЕ backlog/ — код, тесты, шаблоны, docs; файлы задач в backlog/ не включай; если ничего не менял — поле опусти) и status "Review".
    - type=epic: передавай только comment (и acChecks/dodChecks, если отмечал); status эпик НЕ получает — Done ставится в шаге 3, когда все дети Done.

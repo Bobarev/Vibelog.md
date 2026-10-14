@@ -11,6 +11,7 @@ ID: {{taskId}}; тип: {{taskType}}; статус: {{taskStatus}}
 Критерии приёмки (AC): {{taskAC}}
 Definition of Done (DoD): {{taskDoD}}
 Изменённые файлы: {{taskModifiedFiles}}
+References: {{taskReferences}}
 Последний комментарий: {{taskLastComment}}
 
 ## Задача фазы
@@ -27,6 +28,14 @@ Plan — единственная фаза, которая создаёт нов
 Если вместо комментария остался неподставленный {{comment}} (запуск без комментария) — просто продолжай по шагам.
 
 2. Изучи релевантные файлы через bash (grep/sed). НЕ читай файлы целиком > 200 строк; один файл > 2 раз подряд — признак цикла. Изучи референсы (если задача на них ссылается).
+
+References (внешние источники знаний, поле References из блока задачи):
+- Для каждого ID (ref-N) вызови reference_view {"id": "<ref-N>"}.
+- type=repo — читай код/документацию в backlog/references/data/<dir>/ (grep/sed).
+- type=url — fetch URL через web_fetch, если инструмент доступен.
+- type=file — прочитай файл через sed/grep.
+- Используй найденные источники в плане, ссылайся на них («как в ref-N / backlog/references/data/<dir>/»).
+- Если в ходе изучения нашёл новый релевантный источник — добавь через reference_add и свяжи с задачей через reference_link {"referenceId": ..., "taskId": "{{taskId}}"}.
 
 3. Если type=task — план пишется в эту же задачу:
 

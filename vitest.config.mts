@@ -19,10 +19,10 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['src/**/*.test.mjs'],
-    // refs/ — исходники оригинала Backlog.md (читаются compat-тестами, не гоняются);
-    // dist/ — собранный JS (тесты его импортируют, но не тестируют как набор тестов);
-    // example-backlog/ и .vibelog/ — служебные каталоги без тестов.
-    exclude: ['node_modules/**', 'refs/**', 'dist/**', '.vibelog/**', 'example-backlog/**'],
+    // backlog/references/data/ — клоны референсных репозиториев (VL-152, читаются
+    // compat-тестами, не гоняются); dist/ — собранный JS (тесты его импортируют,
+    // но не тестируют как набор тестов); example-backlog/ и .vibelog/ — служебные каталоги без тестов.
+    exclude: ['node_modules/**', 'backlog/references/data/**', 'dist/**', '.vibelog/**', 'example-backlog/**'],
     fileParallelism: true,
     // isolate: false (VL-139): workers переиспользуются между тестовыми файлами
     // вместо спавна нового процесса на каждый файл (52 spawn'а ~159 мс каждый,

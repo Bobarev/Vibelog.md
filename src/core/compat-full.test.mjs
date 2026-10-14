@@ -26,7 +26,7 @@ import { listTools } from '../../dist/mcp/tools.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const BACKLOG = 'refs/Backlog.md';
+const BACKLOG = 'backlog/references/data/Backlog.md';
 const AVAILABLE = existsSync(join(BACKLOG, 'backlog', 'tasks'));
 
 function skipIfUnavailable() {
@@ -177,9 +177,9 @@ describe('Совместимость: конфиг', () => {
 // ============================================================
 
 describe('Совместимость: MCP-инструменты', () => {
-  it('Vibelog.md имеет 22 инструмента с правильными именами', () => {
+  it('Vibelog.md имеет 29 инструментов с правильными именами', () => {
     const tools = listTools();
-    assert.equal(tools.length, 22);
+    assert.equal(tools.length, 29);
 
     const expected = [
       'backlog_create_task',
@@ -208,6 +208,14 @@ describe('Совместимость: MCP-инструменты', () => {
       'document_search',
       // v1.7 (VL-138)
       'backlog_finish_phase',
+      // v1.8 (VL-152 references)
+      'reference_list',
+      'reference_add',
+      'reference_view',
+      'reference_search',
+      'reference_remove',
+      'reference_link',
+      'reference_sync',
     ];
 
     const actual = tools.map(t => t.name);
