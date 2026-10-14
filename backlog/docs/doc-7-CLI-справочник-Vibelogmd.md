@@ -196,6 +196,34 @@ vibelog doc <subcommand> [опции]
 
 ---
 
+## reference
+
+```
+vibelog reference <subcommand> [опции]
+
+  list [--type repo|url|file|doc|spec] [--tags a,b] [--json]
+  add <title> [--type T] [--url ...] [--path ...] [--tags ...] [-d desc] [--no-clone]
+  view <id>
+  search <query>
+  link <refId> <taskId> [--remove]
+  remove <id>
+  sync
+```
+
+Управление референсами (VL-152) — внешние источники знаний: репозитории, URL, файлы, документация, спецификации. Метаданные — `backlog/references/<id>-<title>.md` (в git), клоны репозиториев — `backlog/references/data/` (в .gitignore).
+
+| Команда | Описание |
+|---|---|
+| `list` | Список референсов с фильтрами по типу и меткам |
+| `add` | Создать референс; `type=repo` по умолчанию **сам клонирует** репозиторий в `data/<dir>` (идемпотентно: уже существующий клон пропускается); `--no-clone` — только метаданные |
+| `view` | Метаданные + linked_tasks + описание |
+| `search` | Поиск по id/title/url/tags/body |
+| `link` | Двусторонняя связь референс ↔ задача (`linked_tasks` ↔ `task.references`); `--remove` — разорвать |
+| `remove` | Удалить метаданные (клон в `data/` сохраняется) |
+| `sync` | Доклонировать отсутствующие репозитории для всех `type=repo` (для разработчиков, склонировавших проект без `data/`) |
+
+---
+
 ## config
 
 ```
@@ -245,7 +273,7 @@ vibelog decision <subcommand> [опции]
 vibelog doctor [--json]
 ```
 
-Диагностика: Node.js >= 20, `vibelog` в PATH, симлинк/pnpm shim, MCP-инструменты (21), `backlog/`, конфиг, round-trip с Backlog.md. `--json` — структурированный результат.
+Диагностика: Node.js >= 20, `vibelog` в PATH, симлинк/pnpm shim, MCP-инструменты (29), `backlog/`, конфиг, round-trip с Backlog.md. `--json` — структурированный результат.
 
 ---
 

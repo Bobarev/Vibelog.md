@@ -27,7 +27,8 @@ Node.js 20+, macOS 10.15 Catalina + Qwen Code. Runtime-зависимость �
 10. [Доска и веб-интерфейс](#10-доска-и-веб-интерфейс)
 11. [Telegram-бот](#11-telegram-бот)
 12. [Форматы файлов](#12-форматы-файлов)
-13. [Диагностика](#13-диагностика)
+13. [Референсы](#13-референсы-vl-152)
+14. [Диагностика](#14-диагностика)
 
 Справочники: [CLI](cli-reference.md) · [MCP](mcp-reference.md) · [Best practices](best-practices.md) · [MCP-подключение](../MCP-SETUP.md)
 
@@ -468,7 +469,7 @@ Worktree выбран вместо `dist/VL-N`: `package.json.files` включ�
 
 Идентификатор сессии выводится с префиксом агента — единый формат `<agent>:<session_id>` (VL-93): `qwen:<session_id>` у qwen, `vb:<session_id>` у встроенного vibelog-agent (VL-92); по reply на информационное сообщение возобновляется сессия любого агента (VL-95, раздел «Resume сессии по reply»).
 
-Сырой JSON-лог в чат больше не шлётся. Если результат недоступен (ошибка запуска qwen, обрыв), информационное сообщение содержит статус, строку «Данные результата недоступны» и хвост лога (до 800 символов) в тройных backticks — без экранирования MarkdownV2. Парсер понимает оба формата вывода qwen: NDJSON-поток и строку-массив `[{…}]` (json-адаптер qwen 0.24.x). Если result не распознан, в консоль сервера печатается расширенная диагностика: сводка `parseQwenResult` по stdout, размеры потоков stdout/stderr, хвосты обоих (в таймлайне консоли строки stderr помечены `err|`), а полный stdout дампится в `.vibelog/qwen-debug/<id>-<время>.log` (gitignored) — по дампу видно точный формат вывода qwen без перезапуска фазы. stdout и stderr копятся в раздельных буферах: предупреждения qwen и логи MCP-серверов не могут вклиниваться в JSON-строку результата. Флаги `--json-file`/`--json-fd` в headless-режиме qwen 0.24.x не работают (проверено: файл остаётся пустым) — JSON по-прежнему идёт в stdout через `--output-format json`.
+Сырой JSON-лог в чат больше не шлётся. Если результат недоступен (ошибка запуска qwen, обрыв), информационное сообщение содержит статус, строку «Данные результата недоступны» и хвост лога (до 800 символов) в тройных backticks — без экранирования MarkdownV2. Парсер понимает оба формата вывода qwen: NDJSON-поток и строку-массив `[{…}]` (json-адаптер qwen 0.24.x). Если result не распознан, в консоль сервера печатается расширенная диагностика: сводка `parseQwenResult` по stdout, размеры потоков stdout/stderr, хвосты обоих (в таймлайне консоли строки stderr помечены `err|`), а полный stdout дампится в `.vibelog/qwen-debug/<id>-<время>.log` (gitignored) — по дампу видно точный формат вывода qwen без перезапуска фазы. stdout и stderr копятся в раздельных буферах: предупреждения qwen и логи MCP-серверов не могут вклиниваться в JSON-строку результата. Флаги `--json-file`/`--json-fd` в headless-режиме qwen 24.x не работают (проверено: файл остаётся пустым) — JSON по-прежнему идёт в stdout через `--output-format json`.
 
 ### Разбивка длинных сообщений фаз (VL-148)
 
@@ -478,7 +479,7 @@ Worktree выбран вместо `dist/VL-N`: `package.json.files` включ�
 - Общий помощник разбивки — `splitNumbered` (`src/bot/formatting.ts`); к другим командам бота (`/task`, `/diff`, `/commits`) подключается позже отдельной задачей.
 
 ---
-## 11. Форматы файлов
+## 12. Форматы файлов
 
 Все сущности — markdown с YAML-фронтматтером. Совместимо с Backlog.md.
 
@@ -542,14 +543,37 @@ status: accepted
 
 ---
 
-## 13. Диагностика
+## 13. Референсы (VL-152)
+
+Референсы — внешние источники знаний: репозитории, URL, файлы, документация, спецификации. Метаданные — `backlog/references/<id>-<title>.md` (в git), клоны репозиториев — `backlog/references/data/` (в .gitignore).
+
+```bash
+vibelog reference list                        # все референсы
+vibelog reference list --type repo --tags mcp # фильтры
+vibelog reference add "vibe-kanban" --type repo --url https://github.com/BloopAI/vibe-kanban.git
+vibelog reference view ref-1                  # метаданные + linked_tasks + описание
+vibelog reference search "drag"               # поиск по id/title/url/tags/телу
+vibelog reference link ref-1 VL-152           # двусторонняя связь с задачей
+vibelog reference remove ref-1                # удалить метаданные (клон в data/ остаётся)
+vibelog reference sync                        # доклонировать отсутствующие репозитории
+```
+
+Типы: `repo`, `url`, `file`, `doc`, `spec`. `add --type repo` **сам клонирует** репозиторий в `data/<dir>` (идемпотентно: существующий клон пропускается; `--no-clone` — только метаданные). `sync` доклонирует отсутствующие — для разработчиков, склонировавших проект без `data/` (папка в .gitignore).
+
+Связь с задачей двусторонняя: `linked_tasks` референса ↔ `references` задачи (`vibelog reference link` или MCP `reference_link`).
+
+**Интеграция с фазами**: Plan-фаза читает `references` задачи через `reference_view` и использует источники в плане; Code-фаза добавляет новые (`reference_add`) и связывает использованные (`reference_link`), записывая их в задачу. База знаний растёт с каждой задачей — следующая похожая задача находит проверенные источники сразу. Подробнее: [Референсные проекты](doc-3-Референсные-проекты-backlogreferences.md) (doc-3).
+
+---
+
+## 14. Диагностика
 
 ```bash
 vibelog doctor          # проверка окружения
 vibelog doctor --json   # структурированный результат
 ```
 
-Проверяет: Node.js >= 20, `vibelog` в PATH, симлинк/pnpm shim, число MCP-инструментов (21), `backlog/`, конфиг, round-trip с Backlog.md.
+Проверяет: Node.js >= 20, `vibelog` в PATH, симлинк/pnpm shim, число MCP-инструментов (29), `backlog/`, конфиг, round-trip с Backlog.md.
 
 Если Qwen Code не видит новые MCP-инструменты — MCP-сервер закэширован: перезапустите Qwen Code.
 

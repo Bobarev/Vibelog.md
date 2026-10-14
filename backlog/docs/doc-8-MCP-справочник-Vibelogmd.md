@@ -10,7 +10,7 @@ tags:
 ---
 # MCP-справочник Vibelog.md
 
-22 инструмента MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
+29 инструментов MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
 Автоматическое подключение: `vibelog init` пишет `mcpServers` в `.qwen/settings.json`
 (ручная настройка — в [MCP-SETUP.md](../MCP-SETUP.md)).
 
@@ -94,6 +94,7 @@ tags:
 | `append_notes` | string | | Дописать в конец заметок |
 | `final_summary` | string | | Итоговое резюме |
 | `modifiedFiles` | string[] | | Изменённые файлы (полная замена `modified_files`; Фаза 3 пишет, Фаза Close читает) |
+| `references` | string[] | | ID референсов задачи (полная замена поля `references`; VL-152, использует фаза Code) |
 
 ### backlog_manage_ac / backlog_manage_dod — чеклисты
 
@@ -101,8 +102,8 @@ tags:
 |---|---|---|---|
 | `id` | string | ✓ | |
 | `action` | string | ✓ | add / check / uncheck / remove / list |
-| `text` | string \| string[] | | Для action=add: строка — один пункт; массив непустых строк — несколько за один вызов (batch-add, ответ «Добавлено критериев: N (…)») |
-| `index` | number \| string \| (number\|string)[] | | Для check/uncheck/remove: целое с 1; строка-число (`"3"`); массив `[1,2,3]` — несколько за один вызов; строка-массив `"[1, 2]"` тоже принимается; `"all"` — все пункты списка. Валидация каждого элемента: целое ≥1 и ≤ длины, иначе ошибка со списком пунктов (дробь/NaN/пусто — с подсказкой формата). Батч-ответ: «Отмечено пунктов: N (1, 2, 3)» / «Снято пунктов» / «Удалено пунктов»; scalar-ответ — прежний («Отмечены критерии #2»). Внимание: `action:'remove', index:'all'` чистит весь чеклист |
+| `text` | string \\| string[] | | Для action=add: строка — один пункт; массив непустых строк — несколько за один вызов (batch-add, ответ «Добавлено критериев: N (…)») |
+| `index` | number \\| string \\| (number\\|string)[] | | Для check/uncheck/remove: целое с 1; строка-число (`"3"`); массив `[1,2,3]` — несколько за один вызов; строка-массив `"[1, 2]"` тоже принимается; `"all"` — все пункты списка. Валидация каждого элемента: целое ≥1 и ≤ длины, иначе ошибка со списком пунктов (дробь/NaN/пусто — с подсказкой формата). Батч-ответ: «Отмечено пунктов: N (1, 2, 3)» / «Снято пунктов» / «Удалено пунктов»; scalar-ответ — прежний («Отмечены критерии #2»). Внимание: `action:'remove', index:'all'` чистит весь чеклист |
 
 ### backlog_add_comment — комментарий
 
@@ -139,8 +140,8 @@ tags:
 | `status` | string | | Новый статус (валидируется по конфигу; невалидный — пропускается с ошибкой в сводке) |
 | `comment` | string | | Отчётный комментарий (author фиксирован `@agent`) |
 | `modifiedFiles` | string[] | | Изменённые файлы (полная замена `modified_files`) |
-| `acChecks` | (number\|string)[] | | Индексы AC для батч-отметки (с 1, как в `manage_ac`) |
-| `dodChecks` | (number\|string)[] | | Индексы DoD для батч-отметки (с 1, как в `manage_dod`) |
+| `acChecks` | (number\\|string)[] | | Индексы AC для батч-отметки (с 1, как в `manage_ac`) |
+| `dodChecks` | (number\\|string)[] | | Индексы DoD для батч-отметки (с 1, как в `manage_dod`) |
 
 Частичное применение: невалидное поле (статус вне конфига, битый индекс) пропускается с понятным сообщением, вызов не падает; все валидные обновления применяются одной записью (файл атомарен). Результат — сводка вида «Статус: Review; отчёт добавлен; отмечено AC: 2, DoD: 1; файлов: 3» (+ `Ошибки: …` при наличии). Несуществующая задача — фатальная ошибка.
 
@@ -226,6 +227,63 @@ tags:
 
 ---
 
+## Референсы (references, VL-152)
+
+Внешние источники знаний: репозитории, URL, файлы, документация, спецификации. Метаданные — `backlog/references/<id>-<title>.md` (в git), клоны репозиториев — `backlog/references/data/` (в .gitignore). Типы: `repo`, `url`, `file`, `doc`, `spec`. Двусторонняя связь с задачами: `reference.linked_tasks` ↔ `task.references` (Plan-фаза читает источники задачи, Code-фаза добавляет новые).
+
+### reference_list — список референсов
+
+| Параметр | Тип | Описание |
+|---|---|---|
+| `type` | string | Фильтр по типу (repo / url / file / doc / spec) |
+| `tags` | string[] | Фильтр по меткам |
+
+### reference_add — создать референс
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `title` | string | ✓ | Заголовок |
+| `type` | string | ✓ | repo / url / file / doc / spec |
+| `url` | string | | URL источника |
+| `path` | string | | Локальный путь (относительно backlog/) |
+| `tags` | string[] | | Метки |
+| `description` | string | | Описание (тело документа) |
+| `clone` | boolean | | Для type=repo: клонировать репозиторий в `data/<dir>` (по умолчанию true; идемпотентно — существующий клон пропускается) |
+
+### reference_view — метаданные + описание
+
+| Параметр | Тип | Required |
+|---|---|---|
+| `id` | string | ✓ |
+
+Возвращает метаданные, linked_tasks и тело документа.
+
+### reference_search — поиск
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `query` | string | ✓ | Substring по id / title / url / tags / body |
+
+### reference_remove — удалить метаданные
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `id` | string | ✓ | Клон в `data/` сохраняется |
+
+### reference_link — двусторонняя связь с задачей
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `referenceId` | string | ✓ | |
+| `taskId` | string | ✓ | |
+| `action` | string | ✓ | add / remove — правит `linked_tasks` референса И `references` задачи |
+
+### reference_sync — доклонировать отсутствующие репозитории
+
+Параметров нет. Обходит все references type=repo, клонирует отсутствующие (для разработчиков, склонировавших проект без `data/`). Возвращает {cloned, skipped, failed}.
+
+---
+
 ## Примеры вызовов
 
 ```json
@@ -257,4 +315,17 @@ tags:
 
 // Задачи, готовые к работе
 { "name": "backlog_ready", "arguments": {} }
+
+// Референсы (VL-152): добавить репозиторий с клонированием
+{ "name": "reference_add", "arguments": {
+  "title": "vibe-kanban", "type": "repo",
+  "url": "https://github.com/BloopAI/vibe-kanban.git", "tags": ["orchestration"] } }
+
+// Связать референс с задачей
+{ "name": "reference_link", "arguments": {
+  "referenceId": "ref-3", "taskId": "VL-100", "action": "add" } }
+
+// Записать использованные источники в задачу (фаза Code)
+{ "name": "backlog_update_task", "arguments": {
+  "id": "VL-100", "references": ["ref-3", "ref-4"] } }
 ```
