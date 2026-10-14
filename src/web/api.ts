@@ -8,6 +8,8 @@
  * - PATCH /api/tasks/:id     — обновить задачу
  * - DELETE /api/tasks/:id    — архивировать задачу
  * - GET  /api/config         — конфиг проекта
+ * - GET  /api/settings       — настройки бота/settings.json без секретов (VL-156)
+ * - PUT  /api/settings       — патч настроек с валидацией (VL-156)
  * - POST /api/tasks/:id/trigger — запуск фазы оркестратора (VL-28)
  * - GET  /api/tasks/:id/trigger — состояние запуска фазы
  * - POST /api/tasks/:id/reject — отклонить задачу (VL-144)
@@ -17,6 +19,8 @@ import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile } f
 import type { CreateTaskFileInput } from '../core/store.js';
 import type { Task } from '../core/task.js';
 import { loadConfig } from '../core/config.js';
+import { loadBotSettings, saveBotSettings } from '../bot/settings.js';
+import type { BotSettings } from '../bot/settings.js';
 import { startPhase, getRun, rejectTask } from './orchestrator.js';
 
 /** HTTP-ответ API. */
@@ -50,6 +54,27 @@ export function handleApi(
     if (method === 'GET' && url === '/api/config') {
       const config = loadConfig(cwd);
       return { status: 200, body: config };
+    }
+
+    // GET /api/settings — настройки для веб-страницы (VL-156).
+    // loadBotSettings отдаёт ТОЛЬКО валидированные несекретные поля; env-секция
+    // (TELEGRAM_BOT_TOKEN и др.) сюда не попадает — секреты не должны утекать
+    // в браузер даже на localhost.
+    if (method === 'GET' && url === '/api/settings') {
+      return { status: 200, body: { settings: loadBotSettings(cwd) } };
+    }
+
+    // PUT /api/settings — патч настроек, зеркало валидации команды /set (VL-156).
+    // Неизвестный ключ или битое значение → 400, файл не меняется: веб не должен
+    // писать в settings.json мусор, который проигнорирует бот. Запись через
+    // saveBotSettings (read-modify-write) сохраняет env-секцию и chats (VL-143).
+    if (method === 'PUT' && url === '/api/settings') {
+      const validated = validateSettingsPatch(body);
+      if ('error' in validated) return { status: 400, body: { error: validated.error } };
+      const settings = loadBotSettings(cwd);
+      Object.assign(settings, validated.patch);
+      saveBotSettings(cwd, settings);
+      return { status: 200, body: { settings: loadBotSettings(cwd) } };
     }
 
     // POST /api/tasks — тело приходит из HTTP без гарантий типов
@@ -123,4 +148,62 @@ export function handleApi(
   } catch (err) {
     return { status: 500, body: { error: (err as Error).message } };
   }
+}
+
+/**
+ * Валидация патча настроек из PUT /api/settings (VL-156) — зеркало команды /set.
+ *
+ * Правила (как в bot/handlers.ts и loadBotSettings):
+ * - default_agent: только 'qwen' | 'vb';
+ * - max_wall_time / max_requests: положительное целое; 0 или null — явный
+ *   сброс (undefined → saveBotSettings удалит ключ, дефолт агента);
+ * - branch_mode / compact / code_same_session: строго boolean;
+ * - неизвестные ключи → 400: веб не пишет в settings.json то, что бот
+ *   проигнорирует или сломает.
+ *
+ * @returns patch — валидированные поля для Object.assign в BotSettings,
+ *   либо error — текст ошибки (HTTP 400, файл не меняется)
+ */
+function validateSettingsPatch(
+  body: Record<string, unknown> | null
+): { patch: Partial<BotSettings> } | { error: string } {
+  const patch: Partial<BotSettings> = {};
+  for (const [key, value] of Object.entries(body ?? {})) {
+    switch (key) {
+      case 'default_agent':
+        // Discriminated union как в /set: известные значения фиксируем
+        if (value !== 'qwen' && value !== 'vb') {
+          return { error: `default_agent: ожидается 'qwen' или 'vb', получено ${JSON.stringify(value)}` };
+        }
+        patch.default_agent = value;
+        break;
+      case 'max_wall_time':
+      case 'max_requests': {
+        // 0/null — сброс (undefined удалит ключ); иначе положительное целое.
+        // Number(null) === 0 и Number('') === 0 — оба идут в сброс
+        if (value === null || value === 0) {
+          patch[key] = undefined;
+          break;
+        }
+        const n = Number(value);
+        if (!Number.isInteger(n) || n <= 0) {
+          return { error: `${key}: ожидается положительное целое (или 0/null — сброс), получено ${JSON.stringify(value)}` };
+        }
+        patch[key] = n;
+        break;
+      }
+      case 'branch_mode':
+      case 'compact':
+      case 'code_same_session':
+        // Строго boolean: строка 'true' или мусор → 400, а не молчаливый off
+        if (typeof value !== 'boolean') {
+          return { error: `${key}: ожидается boolean, получено ${JSON.stringify(value)}` };
+        }
+        patch[key] = value;
+        break;
+      default:
+        return { error: `Неизвестный ключ настройки: ${key}` };
+    }
+  }
+  return { patch };
 }
