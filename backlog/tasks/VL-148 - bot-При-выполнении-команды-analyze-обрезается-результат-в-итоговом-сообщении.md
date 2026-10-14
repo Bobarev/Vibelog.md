@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-14 00:29'
-updated_date: '2026-10-14 08:22'
+updated_date: '2026-10-14 22:59'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.8
 references: []
 priority: ''
 type: task
@@ -24,6 +24,7 @@ modified_files:
   - src/bot/formatting.test.mjs
   - src/bot/rich.test.mjs
   - README.md
+lessons: []
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->

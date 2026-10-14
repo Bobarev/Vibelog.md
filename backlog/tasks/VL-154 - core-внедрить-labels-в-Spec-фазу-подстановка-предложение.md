@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-14 11:04'
-updated_date: '2026-10-14 15:51'
+updated_date: '2026-10-14 22:59'
 due_date: ''
 labels:
   - core
   - cli
   - docs
 dependencies: []
-milestone: ''
+milestone: v1.8
 references: []
 priority: high
 type: ''
@@ -25,6 +25,7 @@ modified_files:
   - src/web/phase-prompt.test.mjs
   - src/mcp/v11.test.mjs
   - templates/qwen-commands/phase-1.md
+lessons: []
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->

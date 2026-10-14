@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-13 11:21'
-updated_date: '2026-10-13 16:01'
+updated_date: '2026-10-14 22:59'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.8
 references: []
 priority: high
 type: task
@@ -24,6 +24,7 @@ modified_files:
   - src/bot/restart.test.mjs
   - src/cli/cli.test.mjs
   - vitest.config.mts
+lessons: []
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->

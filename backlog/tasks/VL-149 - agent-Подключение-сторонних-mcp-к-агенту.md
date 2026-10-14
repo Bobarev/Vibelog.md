@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-14 08:23'
-updated_date: '2026-10-14 09:09'
+updated_date: '2026-10-14 22:59'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.8
 references: []
 priority: ''
 type: task
@@ -25,6 +25,7 @@ modified_files:
   - src/agent/external-mcp.test.mjs
   - src/agent/mcp-client.test.mjs
   - MCP-SETUP.md
+lessons: []
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->

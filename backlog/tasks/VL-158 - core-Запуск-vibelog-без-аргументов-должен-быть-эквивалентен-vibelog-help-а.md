@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-14 21:28'
-updated_date: '2026-10-14 22:22'
+updated_date: '2026-10-14 22:59'
 due_date: ''
 labels:
   - core
   - cli
   - agent
 dependencies: []
-milestone: ''
+milestone: v1.8
 references: []
 priority: ''
 type: task

@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-13 15:25'
-updated_date: '2026-10-13 17:59'
+updated_date: '2026-10-14 22:59'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.8
 references: []
 priority: ''
 type: task
@@ -20,6 +20,7 @@ documentation: []
 modified_files:
   - src/web/orchestrator.ts
   - src/web/orchestrator.test.mjs
+lessons: []
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -228,15 +229,11 @@ author: @agent
 created: 2026-10-13 17:59
 ---
 Фаза Close выполнена. Ветка vb/vl-145 слита в master (1 коммит: 98c15c6; merge-коммит 5a5cc6e), worktree удалена, ветка удалена.
-
 **Особенности этого закрытия:**
 - В master уже лежало незавершённое слияние vb/vl-142 с конфликтами (CHANGELOG.md, src/web/phase-prompt.test.mjs) — разрешено по указанию пользователя: сохранены записи обеих сторон (VL-142 + VL-137 в CHANGELOG, обе группы тестов в phase-prompt.test.mjs), merge vb/vl-142 завершён (cc86894).
 - Слияние vb/vl-145 дало конфликт src/web/orchestrator.ts (VL-137 taskBlock × VL-145 taskKey/runKey в startResume) — сохранены обе части; семантический конфликт в тесте: новый тест VL-137 (компактный блок resume) ожидал ключ 'resume', переведён на 'VL-78' по мете сессии.
-
 **Проверки после merge:** pnpm build ✅ · pnpm test ✅ (52 файла / 879 тестов) · pnpm lint ✅. Промежуточные падения флаковые (тайминги параллельного прогона) — по отдельности и в полном перепрогоне зелёные.
-
 **Документация:** CHANGELOG.md — запись VL-145 в Unreleased (коммит 5d6b349, docs: VL-145); doc-6 обновлён ранее в Фазе 3.
-
 **DoD:** 3/3 отмечены (тесты проходят, документация обновлена, нет регрессий). AC #4 — выполнен (build/test/lint ✅, 6+3 теста, CHANGELOG и doc-6 ✅). Статус: Done.
 ---
 <!-- COMMENTS:END -->

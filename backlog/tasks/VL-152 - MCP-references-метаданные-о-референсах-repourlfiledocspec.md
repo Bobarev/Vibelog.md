@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-14 09:56'
-updated_date: '2026-10-14 14:50'
+updated_date: '2026-10-14 22:59'
 due_date: ''
 labels:
   - core
@@ -13,7 +13,7 @@ labels:
   - cli
   - refs
 dependencies: []
-milestone: ''
+milestone: v1.8
 references: []
 priority: high
 type: ''
@@ -49,6 +49,7 @@ modified_files:
   - src/web/phase-prompt.ts
   - templates/qwen-commands/phase-2.md
   - templates/qwen-commands/phase-3.md
+lessons: []
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -260,15 +261,12 @@ author: @agent
 created: 2026-10-14 14:50
 ---
 Фаза Close выполнена. Ветка vb/vl-152 слита в master (1 коммит ebd1146, --no-ff), сборка и тесты после merge зелёные (1006 passed / 5 skipped + после миграции compat-тесты ожили: 29 passed). Worktree удалена (--force: только untracked-симлинки node_modules/refs), ветка удалена.
-
 Пост-merge шаги в главном репо (выполнены здесь, т.к. в ветке были недоступны):
 - refs/ перенесён в backlog/references/data/ (mv); .gitignore и vitest.config.mts уже указывали на новый путь после merge.
 - Созданы 12 metadata-файлов ref-1..ref-12 (Backlog.md, next-shadcn-admin-dashboard, vibe-kanban, typescript-sdk, mastra, pi, gemini-cli, opencode, cline, hermes-agent, openclaw, qwen-code) через `vibelog reference add --type repo --no-clone`; `vibelog reference sync` подтверждён (клонировано 0, пропущено 12, ошибок 0). AC8 отмечен.
 - Документация: doc-3 (пути refs/ → backlog/references/, вместо clone-refs.mjs — `vibelog reference sync`, id референсов), doc-6 (раздел «13. Референсы» + счётчик 29), doc-7 (секция `vibelog reference ...`), doc-8 (7 инструментов reference_*, поле references в backlog_update_task, 22→29). AC14 отмечен.
 - CHANGELOG.md — запись в Unreleased.
-
 Docs-коммиты: 0ee4bd9 (CHANGELOG + doc-3/6/7/8), 4893e18 (переименование doc-3 + metadata ref-1..ref-12).
-
 DoD: тесты проходят ✓, нет регрессий ✓, документация обновлена ✓ — отмечены все 3 пункта.
 ---
 <!-- COMMENTS:END -->

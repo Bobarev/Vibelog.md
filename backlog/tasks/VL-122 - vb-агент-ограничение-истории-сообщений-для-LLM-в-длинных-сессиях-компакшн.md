@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-12 19:13'
-updated_date: '2026-10-13 12:49'
+updated_date: '2026-10-14 22:59'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.8
 references: []
 priority: high
 type: task
@@ -31,6 +31,7 @@ modified_files:
   - src/bot/registry.test.mjs
   - src/web/orchestrator.ts
   - src/web/orchestrator.test.mjs
+lessons: []
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->

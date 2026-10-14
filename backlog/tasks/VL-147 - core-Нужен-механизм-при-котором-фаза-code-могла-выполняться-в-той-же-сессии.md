@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-13 18:20'
-updated_date: '2026-10-13 23:03'
+updated_date: '2026-10-14 22:59'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.8
 references: []
 priority: ''
 type: task
@@ -29,6 +29,7 @@ modified_files:
   - src/bot/handlers.ts
   - src/web/api.ts
   - README.md
+lessons: []
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->

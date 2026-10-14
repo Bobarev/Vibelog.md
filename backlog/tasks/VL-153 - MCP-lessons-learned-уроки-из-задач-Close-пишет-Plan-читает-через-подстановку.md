@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-14 10:52'
-updated_date: '2026-10-14 19:58'
+updated_date: '2026-10-14 22:59'
 due_date: ''
 labels:
   - core
@@ -13,7 +13,7 @@ labels:
   - cli
   - lessons
 dependencies: []
-milestone: ''
+milestone: v1.8
 references: []
 priority: high
 type: ''

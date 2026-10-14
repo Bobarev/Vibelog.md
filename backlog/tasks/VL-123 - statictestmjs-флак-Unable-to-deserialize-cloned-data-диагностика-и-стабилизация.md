@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-12 19:13'
-updated_date: '2026-10-14 00:29'
+updated_date: '2026-10-14 22:59'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.8
 references: []
 priority: low
 type: task
@@ -19,6 +19,7 @@ ordinal: 0
 documentation: []
 modified_files:
   - package.json
+lessons: []
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
