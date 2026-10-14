@@ -170,12 +170,12 @@ describe('VL-137 — taskExtraVars/taskBlockText', () => {
     return root;
   };
 
-  it('taskExtraVars: задача читается → 10 ключей с нумерованными AC и последним комментарием', () => {
+  it('taskExtraVars: задача читается → 11 подстановок с нумерованными AC и последним комментарием', () => {
     const root = makeRoot();
     try {
       const vars = taskExtraVars(root, 'VL-901');
       assert.ok(vars, 'vars должны подобраться');
-      assert.equal(Object.keys(vars).length, 10, 'ровно 10 подстановок');
+      assert.equal(Object.keys(vars).length, 11, 'ровно 11 подстановок');
       assert.equal(vars.taskTitle, 'Заголовок VL-901');
       assert.equal(vars.taskType, 'task');
       assert.equal(vars.taskStatus, 'Planned');
@@ -185,6 +185,7 @@ describe('VL-137 — taskExtraVars/taskBlockText', () => {
       assert.ok(vars.taskDoD.includes('1. [ ] Пункт DoD'), `taskDoD: ${vars.taskDoD}`);
       assert.equal(vars.taskModifiedFiles, 'src/a.ts, docs/b.md');
       assert.equal(vars.taskReferences, '(нет)', 'references по умолчанию пустые');
+      assert.equal(vars.availableLabels, '', 'конфиг без labels → пустая строка (VL-154)');
       assert.ok(vars.taskLastComment.includes('Текст последнего комментария'), `taskLastComment: ${vars.taskLastComment}`);
       assert.ok(vars.taskLastComment.includes('@user'), 'автор комментария в подстановке');
     } finally {
@@ -222,6 +223,55 @@ describe('VL-137 — taskExtraVars/taskBlockText', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// VL-154: {{availableLabels}} — labels из backlog/config.yml для Spec-фазы
+describe('VL-154 — availableLabels', () => {
+  /** Мини-проект с config.yml; labelsIn — YAML-фрагмент labels или ''. */
+  const makeRoot = (labelsIn) => {
+    const root = mkdtempSync(join(tmpdir(), 'vl154-labels-'));
+    mkdirSync(join(root, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(root, 'backlog', 'config.yml'), `project_name: VL-154\n${labelsIn}`, 'utf-8');
+    createTaskFile(root, { id: 'VL-902', title: 'Задача VL-154', status: 'To Do' });
+    return root;
+  };
+
+  it('config с labels → строка через запятую', () => {
+    const root = makeRoot('labels:\n  - core\n  - mcp\n');
+    try {
+      const vars = taskExtraVars(root, 'VL-902');
+      assert.ok(vars, 'vars подбираются');
+      assert.equal(vars.availableLabels, 'core, mcp', 'labels из конфига через запятую');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('config без labels → пустая строка (fallback)', () => {
+    const root = makeRoot('');
+    try {
+      assert.equal(taskExtraVars(root, 'VL-902').availableLabels, '', 'нет labels в конфиге → пусто');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('битый config.yml → пустая строка (fallback, фаза не падает)', () => {
+    const root = makeRoot('labels: [oops\n  bad');
+    try {
+      assert.equal(taskExtraVars(root, 'VL-902').availableLabels, '', 'битый YAML → пусто, не исключение');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('шаблон phase-1 содержит {{availableLabels}}; renderPrompt без остатков', () => {
+    const text = readFileSync(join(templatesDir, 'phase-1.md'), 'utf-8');
+    assert.ok(text.includes('{{availableLabels}}'), 'phase-1.md: блок «Доступные labels»');
+    const prompt = renderPrompt('spec', 'VL-902', { ...TASK_VARS, availableLabels: 'core, mcp' });
+    assert.ok(prompt.includes('Доступные labels: core, mcp'), 'labels подставились в промпт');
+    assert.ok(!prompt.includes('{{availableLabels}}'), 'неподставленного {{availableLabels}} не остаётся');
   });
 });
 

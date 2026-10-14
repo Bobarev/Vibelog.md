@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTask } from '../core/store.js';
+import { loadConfig } from '../core/config.js';
 import type { ChecklistItem, Task } from '../core/task.js';
 
 /** Допустимые фазы. */
@@ -138,6 +139,18 @@ export function taskExtraVars(cwd: string, taskId: string): Record<string, strin
     taskLastComment: last ? `${last.author} (${last.created}): ${last.text}` : '(нет комментариев)',
     // VL-152: references задачи (внешние источники) — Plan читает их, Code дописывает
     taskReferences: task.references && task.references.length > 0 ? task.references.join(', ') : '(нет)',
+    // VL-154: labels из backlog/config.yml — Spec классифицирует задачу по
+    // готовому списку, не тратя ход на backlog_config. Любая ошибка чтения
+    // конфига (нет backlog, нет config.yml, битый YAML) → пустая строка:
+    // фаза не должна падать из-за отсутствующих labels
+    availableLabels: (() => {
+      try {
+        const labels = loadConfig(cwd).labels;
+        return Array.isArray(labels) ? labels.join(', ') : '';
+      } catch {
+        return '';
+      }
+    })(),
     taskTitle: task.title,
     taskType: task.type || '(не определён)',
     taskStatus: task.status,

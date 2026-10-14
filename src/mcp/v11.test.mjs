@@ -78,6 +78,17 @@ describe('MCP v1.1 — инструменты', () => {
     assert.equal(task.priority, 'High');
   });
 
+  // VL-154: Spec ставит labels через backlog_update_task — контракт инструмента
+  it('update_task: labels принимает массив и пишет в frontmatter', async () => {
+    const t = createTaskFile(testDir, { title: 'С labels' });
+    await handleToolCall('backlog_update_task', { id: t.id, labels: ['core', 'mcp'] }, testDir);
+    const task = getTask(testDir, t.id);
+    assert.deepStrictEqual(task.labels, ['core', 'mcp']);
+    // Round-trip: после перечитывания файла из disk labels не теряются (AC7)
+    const reparsed = markdownToTask(taskToMarkdown(task));
+    assert.deepStrictEqual(reparsed.labels, ['core', 'mcp']);
+  });
+
   it('update_task: plan пишет в Implementation Plan, описание не затирается', async () => {
     const t = createTaskFile(testDir, { title: 'С планом', description: 'Описание' });
     await handleToolCall('backlog_update_task', { id: t.id, plan: '1. Шаг' }, testDir);
