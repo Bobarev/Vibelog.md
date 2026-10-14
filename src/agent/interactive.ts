@@ -26,6 +26,7 @@ import { buildSystemPrompt } from './system-prompt.js';
 import { listLocalTools } from './tools.js';
 import type { ToolSpec } from './tools.js';
 import { McpClient, toolsAsSpecs } from './mcp-client.js';
+import { closeExternalMcpClients, connectExternalMcpServers } from './external-mcp.js';
 import { renderInteractiveTui } from './tui.js';
 import type { InteractiveTuiHandle } from './tui.js';
 
@@ -82,17 +83,29 @@ export async function runInteractiveAgent(): Promise<void> {
   const sessionsDir = agentSessionsDir(process.env.VIBELOG_CWD ?? cwd);
   const sessionId = createSessionId();
 
-  // MCP: отказ не роняет чат — продолжаем без vibelog-инструментов (паттерн cli.ts)
-  let mcp: McpClient | null = null;
+  // MCP: отказ не роняет чат — продолжаем без vibelog-инструментов (паттерн cli.ts).
+  // VL-149: mcpClients — встроенный + внешние серверы из settings.json mcpServers.
+  const mcpClients: McpClient[] = [];
   let externalTools: ToolSpec[] = [];
   try {
-    mcp = await McpClient.create({ cwd });
+    const mcp = await McpClient.create({ cwd });
+    mcpClients.push(mcp);
     externalTools = toolsAsSpecs(mcp, await mcp.listTools());
   } catch (err) {
     console.error(
       `Предупреждение: MCP-инструменты недоступны — ${(err as Error).message}; чат продолжится без них`,
     );
-    mcp = null;
+  }
+  // Внешние серверы (VL-149): каждый подключается независимо, отказ одного
+  // не мешает остальным и не роняет чат (fail-safe внутри connect)
+  try {
+    const ext = await connectExternalMcpServers(cwd);
+    mcpClients.push(...ext.clients);
+    externalTools.push(...ext.specs);
+  } catch (err) {
+    console.error(
+      `Предупреждение: внешние MCP-серверы недоступны — ${(err as Error).message}; чат продолжится без них`,
+    );
   }
 
   const systemPrompt = buildSystemPrompt(cwd);
@@ -104,13 +117,8 @@ export async function runInteractiveAgent(): Promise<void> {
 
   /** Закрыть MCP (если открыт) и завершить процесс. */
   const shutdown = async (code: number): Promise<void> => {
-    if (mcp) {
-      try {
-        await mcp.close();
-      } catch {
-        // сервер уже завершился — закрывать нечего
-      }
-    }
+    // closeExternalMcpClients (VL-149): закрывает всех — встроенный и внешние
+    await closeExternalMcpClients(mcpClients);
     process.exit(code);
   };
 

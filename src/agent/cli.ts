@@ -30,6 +30,7 @@ import { buildSystemPrompt } from './system-prompt.js';
 import { listLocalTools } from './tools.js';
 import type { ToolSpec } from './tools.js';
 import { McpClient, toolsAsSpecs } from './mcp-client.js';
+import { closeExternalMcpClients, connectExternalMcpServers } from './external-mcp.js';
 import { renderPrompt, taskExtraVars } from '../web/phase-prompt.js';
 import type { TuiHandle } from './tui.js';
 
@@ -369,19 +370,35 @@ export async function main(argv: string[]): Promise<void> {
   // MCP: phase!=='prompt' (шаблон prompt не требует Vibelog MCP) и не --no-mcp.
   // В режиме готового промпта фаза неизвестна — MCP подключаем (оркестратор
   // шлёт сюда промпты фаз, которым MCP нужен); отказ не роняет фазу.
-  let mcp: McpClient | null = null;
+  // VL-149: mcpClients — все подключённые клиенты (встроенный + внешние из
+  // .vibelog/settings.json mcpServers) — закрываются единым циклом.
+  const mcpClients: McpClient[] = [];
   let externalTools: ToolSpec[] = [];
   const wantMcp = !opts.noMcp && phase !== 'prompt';
   if (wantMcp) {
     try {
-      mcp = await McpClient.create({ cwd });
+      const mcp = await McpClient.create({ cwd });
+      mcpClients.push(mcp);
       externalTools = toolsAsSpecs(mcp, await mcp.listTools());
       log(`MCP: подключено инструментов — ${externalTools.length}`);
     } catch (err) {
       console.error(
         `Предупреждение: MCP-инструменты недоступны — ${(err as Error).message}; фаза продолжится без них`
       );
-      mcp = null;
+    }
+    // Внешние серверы (VL-149): подключаются после vibelog-MCP, отказ
+    // одного сервера не роняет фазу и не мешает остальным (fail-safe внутри)
+    try {
+      const ext = await connectExternalMcpServers(cwd);
+      mcpClients.push(...ext.clients);
+      externalTools.push(...ext.specs);
+      if (ext.clients.length > 0) {
+        log(`MCP: внешних серверов подключено — ${ext.clients.length}, их инструментов — ${ext.specs.length}`);
+      }
+    } catch (err) {
+      console.error(
+        `Предупреждение: внешние MCP-серверы недоступны — ${(err as Error).message}; фаза продолжится без них`
+      );
     }
   }
 
@@ -396,9 +413,10 @@ export async function main(argv: string[]): Promise<void> {
     // Альтернативный буфер TUI нужно вернуть терминалу до exit (VL-86)
     tui?.unmount();
     void (async () => {
-      if (mcp) {
+      // Закрыть всех MCP-клиентов (VL-149: встроенный + внешние)
+      for (const c of mcpClients) {
         try {
-          await mcp.close();
+          await c.close();
         } catch {
           // сервер уже завершился — закрывать нечего
         }
@@ -519,12 +537,9 @@ export async function main(argv: string[]): Promise<void> {
   // stdout остаётся чистым (контракт parseQwenResult VL-63)
   tui?.unmount();
 
-  if (mcp) {
-    try {
-      await mcp.close();
-    } catch {
-      // фаза уже отработала — ошибка закрытия не должна ломать вывод
-    }
+  if (mcpClients.length > 0) {
+    // closeExternalMcpClients (VL-149): close идемпотентен, ошибки игнорируются
+    await closeExternalMcpClients(mcpClients);
   }
 
   // Дожидаемся цепочки append'ов (VL-103): fail-сообщения дописываются в

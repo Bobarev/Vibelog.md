@@ -212,3 +212,27 @@ describe('toolsAsSpecs: проксирование в loop (VL-84)', () => {
     assert.match(failText, /^MCP-вызов backlog_list_tasks не выполнен: MCP-клиент закрыт/);
   });
 });
+
+describe('MCP-клиент: внешняя команда command/commandArgs (VL-149)', () => {
+  it('command задан — спавнится произвольный сервер (без vibelog mcp start)', async () => {
+    // silent-mcp.mjs уже написан в beforeAll: отвечает только на initialize.
+    // create резолвится после handshake — значит, спавн по command отработал.
+    const c = await McpClient.create({
+      command: process.execPath,
+      commandArgs: [join(testDir, 'silent-mcp.mjs')],
+      cwd: testDir,
+    });
+    try {
+      assert.equal(c.exitCode, null, 'внешний сервер должен быть жив');
+    } finally {
+      await c.close();
+    }
+  });
+
+  it('command с несуществующим бинарником → reject «MCP-сервер не запущен»', async () => {
+    await assert.rejects(
+      McpClient.create({ command: '/nonexistent/mcp-server-xyz', cwd: testDir }),
+      /MCP-сервер не запущен/,
+    );
+  });
+});
