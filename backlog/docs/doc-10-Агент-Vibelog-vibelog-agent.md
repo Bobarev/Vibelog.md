@@ -183,6 +183,16 @@ VIBELOG_QWEN_BIN=$(pwd)/bin/vibelog-agent.mjs vibelog browser
 
 **Resume vb-сессии по reply (VL-95):** reply на информационное сообщение бота с `vb:<session_id>` возобновляет сессию агента — `startResume` оркестратора получает агента из `extractSessionRef` и спавнит `bin/vibelog-agent.mjs` с `--resume <sessionId>` (sessionId с префиксом `vb:` — strip делает CLI агента). Сессии хранятся JSONL в `.vibelog/agent-sessions/` (раздел 3.1); resume-запуск перезаписывает файл старыми + новыми сообщениями. Поведение qwen-resume не менялось (VL-93).
 
+### Labels в Spec-фазе (VL-154)
+
+Фаза Spec расставляет labels новым задачам (старые задачи без labels не мигрируются — метки появятся только у новых задач, созданных с этой версией workflow):
+
+- **Подстановка:** в промпт phase-1 подставляется блок «Доступные labels: {{availableLabels}}» — переменная заполняется `taskExtraVars` (`src/web/phase-prompt.ts`) из поля `labels` в `backlog/config.yml` через `loadConfig` (та же механика подстановки, что полей задачи VL-137); fallback — пустая строка, если конфиг недоступен или labels в нём нет.
+- **Выбор:** Spec выбирает 1–3 labels из списка, отражающих область задачи (напр. MCP → [core, mcp]; веб → [web]), и передаёт их в `backlog_update_task` (параметр `labels: string[]`) вместе с title/type/acceptanceCriteria.
+- **Новые labels:** если ни один label из списка не подходит — Spec предлагает новый label в комментарии отчёта по форме «Предлагаю добавить label X (обоснование). Создайте: vibelog config set labels ...». Автоматически labels **не создаются** — `vibelog config set labels` выполняет пользователь.
+- **Кто расставляет:** только Spec (фаза уточнения видит задачу первой, классифицирует без чтения кода). Plan и Code labels не трогают.
+- Round-trip с Backlog.md сохранён: поле `labels` есть в оригинале, core читает/пишет его без изменений формата (в т.ч. одиночная строка → массив).
+
 ### Контракт stdout
 
 Headless-агент печатает в stdout **ровно одну JSON-строку** формата `parseQwenResult` (`src/web/qwen-result.ts` — парсит последнюю валидную JSON-строку лога с `type=result`):
