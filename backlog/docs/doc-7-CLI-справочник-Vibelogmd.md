@@ -224,6 +224,34 @@ vibelog reference <subcommand> [опции]
 
 ---
 
+## lesson
+
+```
+vibelog lesson <subcommand> [опции]
+
+  list [--status active|outdated|superseded] [--tags a,b]
+  create <title> [--tags a,b] [--source-tasks VL-1,VL-2] [-d content]
+  view <id>
+  search <query>
+  link <lessonId> <taskId> [--remove]
+  supersede <oldId> <newId>
+```
+
+Управление уроками из опыта задач (VL-153) — workflow-уроки, предотвращающие повторение ошибок. Файлы — `backlog/lessons/lesson-N-<slug>.md` (YAML-фронтматтер + markdown-тело «Проблема / Решение / Пример»).
+
+| Команда | Описание |
+|---|---|
+| `list` | Список lessons; фильтры `--status`, `--tags` (все указанные метки должны совпасть) |
+| `create` | Создать lesson; id генерируется (`lesson-N`), даты — сегодня; `--source-tasks` — откуда урок |
+| `view` | Метаданные + linked_tasks + тело урока |
+| `search` | Substring-поиск по id/title/tags/телу |
+| `link` | Двусторонняя связь lesson ↔ задача (`linked_tasks` ↔ `task.lessons`); `--remove` — разорвать |
+| `supersede` | Пометить `oldId` как заменённый `newId`: старый → `superseded`, новый получает `supersedes: oldId` |
+
+Формулировка урока — императив, конкретика, 1 предложение («Тесты со spawn медленные — запускай батчами по 10»). Close-фаза создаёт/обновляет lessons автоматически (шаг 6.5), Plan получает их в промпт через `{{taskLessons}}` по tags задачи.
+
+---
+
 ## config
 
 ```
@@ -273,7 +301,7 @@ vibelog decision <subcommand> [опции]
 vibelog doctor [--json]
 ```
 
-Диагностика: Node.js >= 20, `vibelog` в PATH, симлинк/pnpm shim, MCP-инструменты (29), `backlog/`, конфиг, round-trip с Backlog.md. `--json` — структурированный результат.
+Диагностика: Node.js >= 20, `vibelog` в PATH, симлинк/pnpm shim, MCP-инструменты (36), `backlog/`, конфиг, round-trip с Backlog.md. `--json` — структурированный результат.
 
 ---
 

@@ -10,7 +10,7 @@ tags:
 ---
 # MCP-справочник Vibelog.md
 
-29 инструментов MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
+36 инструментов MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
 Автоматическое подключение: `vibelog init` пишет `mcpServers` в `.qwen/settings.json`
 (ручная настройка — в [MCP-SETUP.md](../MCP-SETUP.md)).
 
@@ -95,6 +95,7 @@ tags:
 | `final_summary` | string | | Итоговое резюме |
 | `modifiedFiles` | string[] | | Изменённые файлы (полная замена `modified_files`; Фаза 3 пишет, Фаза Close читает) |
 | `references` | string[] | | ID референсов задачи (полная замена поля `references`; VL-152, использует фаза Code) |
+| `lessons` | string[] | | ID lessons задачи (полная замена поля `lessons`; VL-153, связывают фазы Close/Code) |
 
 ### backlog_manage_ac / backlog_manage_dod — чеклисты
 
@@ -102,8 +103,8 @@ tags:
 |---|---|---|---|
 | `id` | string | ✓ | |
 | `action` | string | ✓ | add / check / uncheck / remove / list |
-| `text` | string \\| string[] | | Для action=add: строка — один пункт; массив непустых строк — несколько за один вызов (batch-add, ответ «Добавлено критериев: N (…)») |
-| `index` | number \\| string \\| (number\\|string)[] | | Для check/uncheck/remove: целое с 1; строка-число (`"3"`); массив `[1,2,3]` — несколько за один вызов; строка-массив `"[1, 2]"` тоже принимается; `"all"` — все пункты списка. Валидация каждого элемента: целое ≥1 и ≤ длины, иначе ошибка со списком пунктов (дробь/NaN/пусто — с подсказкой формата). Батч-ответ: «Отмечено пунктов: N (1, 2, 3)» / «Снято пунктов» / «Удалено пунктов»; scalar-ответ — прежний («Отмечены критерии #2»). Внимание: `action:'remove', index:'all'` чистит весь чеклист |
+| `text` | string \\\\| string[] | | Для action=add: строка — один пункт; массив непустых строк — несколько за один вызов (batch-add, ответ «Добавлено критериев: N (…)») |
+| `index` | number \\\\| string \\\\| (number\\\\|string)[] | | Для check/uncheck/remove: целое с 1; строка-число (`"3"`); массив `[1,2,3]` — несколько за один вызов; строка-массив `"[1, 2]"` тоже принимается; `"all"` — все пункты списка. Валидация каждого элемента: целое ≥1 и ≤ длины, иначе ошибка со списком пунктов (дробь/NaN/пусто — с подсказкой формата). Батч-ответ: «Отмечено пунктов: N (1, 2, 3)» / «Снято пунктов» / «Удалено пунктов»; scalar-ответ — прежний («Отмечены критерии #2»). Внимание: `action:'remove', index:'all'` чистит весь чеклист |
 
 ### backlog_add_comment — комментарий
 
@@ -128,6 +129,7 @@ tags:
 | `query` | string | Substring по id/title/description/меткам (необязателен) |
 | `status`, `type`, `project`, `priority` | string | Фильтры полей (AND) |
 | `modifiedFiles` | string[] | Подстрока в modified_files задачи |
+| `hasLessons` | boolean | Задачи с (true) / без (false) связанных lessons (VL-153) |
 | `limit` | number | 1–100 |
 
 ### backlog_finish_phase — завершение фазы одним вызовом (VL-138)
@@ -140,8 +142,8 @@ tags:
 | `status` | string | | Новый статус (валидируется по конфигу; невалидный — пропускается с ошибкой в сводке) |
 | `comment` | string | | Отчётный комментарий (author фиксирован `@agent`) |
 | `modifiedFiles` | string[] | | Изменённые файлы (полная замена `modified_files`) |
-| `acChecks` | (number\\|string)[] | | Индексы AC для батч-отметки (с 1, как в `manage_ac`) |
-| `dodChecks` | (number\\|string)[] | | Индексы DoD для батч-отметки (с 1, как в `manage_dod`) |
+| `acChecks` | (number\\\\|string)[] | | Индексы AC для батч-отметки (с 1, как в `manage_ac`) |
+| `dodChecks` | (number\\\\|string)[] | | Индексы DoD для батч-отметки (с 1, как в `manage_dod`) |
 
 Частичное применение: невалидное поле (статус вне конфига, битый индекс) пропускается с понятным сообщением, вызов не падает; все валидные обновления применяются одной записью (файл атомарен). Результат — сводка вида «Статус: Review; отчёт добавлен; отмечено AC: 2, DoD: 1; файлов: 3» (+ `Ошибки: …` при наличии). Несуществующая задача — фатальная ошибка.
 
@@ -161,10 +163,10 @@ tags:
 
 ### milestone_add
 
-| Параметр | Тип | Required | Описание |
-|---|---|---|---|
-| `name` | string | ✓ | |
-| `description` | string | | |
+| Параметр | Тип | Required |
+|---|---|---|
+| `name` | string | ✓ |
+| `description` | string | |
 
 ### milestone_rename
 
@@ -183,9 +185,9 @@ tags:
 
 ### milestone_archive
 
-| Параметр | Тип | Required | Описание |
-|---|---|---|---|
-| `name` | string | ✓ | |
+| Параметр | Тип | Required |
+|---|---|---|
+| `name` | string | ✓ |
 
 ---
 
@@ -284,6 +286,66 @@ tags:
 
 ---
 
+## Lessons learned (lessons, VL-153)
+
+Workflow-уроки из опыта задач — предотвращают повторение ошибок. Файлы — `backlog/lessons/lesson-N-<slug>.md` (YAML-фронтматтер: id, title, status, tags, source_tasks, linked_tasks, created_date, updated_date, supersedes; тело — «Проблема / Решение / Пример»). Статусы: `active` (по умолчанию) / `outdated` / `superseded`.
+
+Отличие от других сущностей: references — внешние источники; decisions — архитектурные решения («почему X, не Y»); docs — документация проекта; **lessons — workflow-уроки**, которые эволюционируют независимо от замороженных задач. Двусторонняя связь с задачами: `lesson.linked_tasks` ↔ `task.lessons`. Plan-фаза получает активные lessons по tags/labels задачи в промпт через `{{taskLessons}}` (0 дополнительных ходов модели); Close-фаза пишет уроки автоматически (шаг 6.5), Code связывает применённые.
+
+### lesson_list — список lessons
+
+| Параметр | Тип | Описание |
+|---|---|---|
+| `status` | string | Фильтр: active / outdated / superseded |
+| `tags` | string[] | Фильтр по меткам (все указанные должны совпасть) |
+
+### lesson_create — создать lesson
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `title` | string | ✓ | Заголовок (императив, 1 предложение) |
+| `tags` | string[] | | Метки |
+| `sourceTasks` | string[] | | Откуда урок (ID задач) |
+| `content` | string | | Тело (Проблема / Решение / Пример) |
+
+id генерируется (`lesson-N`), даты — сегодня.
+
+### lesson_view — метаданные + тело
+
+| Параметр | Тип | Required |
+|---|---|---|
+| `id` | string | ✓ |
+
+### lesson_update — обновить lesson
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `id` | string | ✓ | |
+| `title`, `status`, `tags`, `sourceTasks`, `linkedTasks`, `content` | | | Только переданные поля; смена title переименовывает файл |
+
+### lesson_search_lessons — поиск
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `query` | string | ✓ | Substring по id / title / tags / телу |
+
+### lesson_link — двусторонняя связь с задачей
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `lessonId` | string | ✓ | |
+| `taskId` | string | ✓ | |
+| `action` | string | | add (по умолчанию) / remove — правит `linked_tasks` lesson И `lessons` задачи |
+
+### lesson_supersede — заменить lesson
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `oldId` | string | ✓ | Заменяемый lesson → статус `superseded` |
+| `newId` | string | ✓ | Новый lesson → `supersedes: oldId`, статус `active` |
+
+---
+
 ## Примеры вызовов
 
 ```json
@@ -328,4 +390,13 @@ tags:
 // Записать использованные источники в задачу (фаза Code)
 { "name": "backlog_update_task", "arguments": {
   "id": "VL-100", "references": ["ref-3", "ref-4"] } }
+
+// Lessons (VL-153): создать урок и связать с задачей
+{ "name": "lesson_create", "arguments": {
+  "title": "Тесты со spawn медленные — запускай батчами по 10",
+  "tags": ["core", "tests"], "sourceTasks": ["VL-153"] } }
+
+// Записать связанные lessons в задачу (фазы Close/Code)
+{ "name": "backlog_update_task", "arguments": {
+  "id": "VL-153", "lessons": ["lesson-1"] } }
 ```
