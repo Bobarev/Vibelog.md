@@ -46,7 +46,7 @@ pnpm link --global
 | [Руководство пользователя](backlog/docs/doc-6-Руководство-пользователя-Vibelogmd.md) | Полный обзор: команды, флаги, форматы файлов, примеры |
 | [Best practices и производительность](backlog/docs/doc-9-Best-practices-и-производительность-Vibelogmd.md) | Workflow с Qwen Code, dogfooding, сценарии «было/стало» |
 | [CLI-справочник](backlog/docs/doc-7-CLI-справочник-Vibelogmd.md) | Все команды, подкоманды и флаги |
-| [MCP-справочник](backlog/docs/doc-8-MCP-справочник-Vibelogmd.md) | 22 MCP-инструмент: параметры и примеры вызовов |
+| [MCP-справочник](backlog/docs/doc-8-MCP-справочник-Vibelogmd.md) | 29 MCP-инструмент: параметры и примеры вызовов |
 | [MCP-подключение](MCP-SETUP.md) | Подключение Vibelog MCP к Qwen Code |
 | [Агент Vibelog](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md) | Собственный LLM-агент: headless-замена qwen в фазах, TUI, лимиты, замер токенов |
 
@@ -104,7 +104,7 @@ vibelog instructions overview
 
 ## MCP-инструменты
 
-22 инструмента для подключения к AI-агентам (Qwen Code, Claude Code и др.).
+29 инструментов для подключения к AI-агентам (Qwen Code, Claude Code и др.).
 Автоматическая настройка: `vibelog init` пишет `mcpServers` в `.qwen/settings.json`
 (см. [MCP-SETUP.md](MCP-SETUP.md)).
 

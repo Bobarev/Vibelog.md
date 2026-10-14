@@ -136,6 +136,8 @@ export function taskExtraVars(cwd: string, taskId: string): Record<string, strin
     taskDoD: formatChecklist(task.definitionOfDone),
     taskModifiedFiles: task.modified_files.length > 0 ? task.modified_files.join(', ') : '(нет)',
     taskLastComment: last ? `${last.author} (${last.created}): ${last.text}` : '(нет комментариев)',
+    // VL-152: references задачи (внешние источники) — Plan читает их, Code дописывает
+    taskReferences: task.references && task.references.length > 0 ? task.references.join(', ') : '(нет)',
     taskTitle: task.title,
     taskType: task.type || '(не определён)',
     taskStatus: task.status,

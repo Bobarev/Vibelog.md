@@ -1,7 +1,7 @@
 node_modules/
 dist/
-# Референсные проекты клонируются локально, см. scripts/clone-refs.mjs
-refs/
+# Клоны референсных репозиториев (VL-152), см. vibelog reference sync
+backlog/references/data/
 # Секреты (токены) — не коммитить
 .env
 .vibelog/

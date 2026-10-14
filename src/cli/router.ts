@@ -36,6 +36,7 @@ import { runDecision } from './commands/decision.js';
 import { runBot } from './commands/bot.js';
 import { runQwenDebug } from './commands/qwen-debug.js';
 import { runAgent } from './commands/agent.js';
+import { runReference } from './commands/reference.js';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -100,6 +101,8 @@ export async function route(args: string[]): Promise<void> {
       return runMilestone(subcommand, positional, flags, cwd);
     case 'doc':
       return runDoc(subcommand, positional, flags, cwd);
+    case 'reference':
+      return runReference(subcommand, positional, flags, cwd);
     case 'config':
       return runConfig(subcommand, positional, flags, cwd);
     case 'draft':
@@ -133,6 +136,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('mcp', colors.cyan)} start                        MCP-сервер (JSON-RPC)
   ${colorize('milestone', colors.cyan)} add|list|rename|...      Управление вехами
   ${colorize('doc', colors.cyan)} create|list|...          Документы (spec/guide)
+  ${colorize('reference', colors.cyan)} list|add|...          Референсы (repo/url/file/doc/spec)
   ${colorize('config', colors.cyan)} get|set|list             Конфиг проекта
   ${colorize('draft', colors.cyan)} create|promote|...       Черновики задач
   ${colorize('decision', colors.cyan)} create|list|...         Решения (ADR)
@@ -238,6 +242,22 @@ vibelog doc <subcommand> [опции]
   view <id>
   update <id> [--title ...] [--type ...] [--tags ...]
   search <query>`,
+
+    reference: `
+vibelog reference <subcommand> [опции]
+
+Внешние источники знаний (VL-152). Метаданные: backlog/references/<id>-<slug>.md;
+клоны репозиториев: backlog/references/data/ (в .gitignore).
+
+Подкоманды:
+  list [--type repo|url|file|doc|spec] [--tags a,b] [--json]
+  add <title> [--type T] [--url ...] [--path ...] [--tags ...] [-d desc] [--no-clone]
+      (type=repo по умолчанию клонирует в data/<dir>; --no-clone — только метаданные)
+  view <id>
+  search <query>
+  link <refId> <taskId> [--remove]   — двусторонняя связь: linked_tasks ↔ task.references
+  remove <id>                        — удаляет метаданные; клон в data/ сохраняется
+  sync                               — доклонировать отсутствующие репозитории (type=repo)`,
 
     config: `
 vibelog config <subcommand> [опции]

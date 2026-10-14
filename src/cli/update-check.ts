@@ -2,7 +2,7 @@
  * Проверка обновлений Vibelog.md (VL-101).
  *
  * Механизм по мотивам автообновления Qwen Code
- * (refs/qwen-code/packages/cli/src/ui/utils/updateCheck.ts):
+ * (backlog/references/data/qwen-code/packages/cli/src/ui/utils/updateCheck.ts):
  * `npm view <pkg> version --json` → сравнение с текущей версией.
  *
  * Отличия от оригинала (по уточнению Spec и плану):

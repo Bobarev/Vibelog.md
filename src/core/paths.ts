@@ -116,6 +116,26 @@ export function milestonesDir(backlogDir: string): string {
 }
 
 /**
+ * Возвращает путь к директории references (VL-152).
+ *
+ * Метаданные референсов — markdown-файлы вида <id>-<slug>.md;
+ * коммитятся в git, как и задачи.
+ */
+export function referencesDir(backlogDir: string): string {
+  return join(backlogDir, 'references');
+}
+
+/**
+ * Возвращает путь к каталогу клонов репозиториев references (VL-152).
+ *
+ * data/ — внутри references/, но в .gitignore: клоны локальные,
+ * метаданные (сами .md) — в git.
+ */
+export function referencesDataDir(backlogDir: string): string {
+  return join(backlogDir, 'references', 'data');
+}
+
+/**
  * Возвращает путь к файлу конфига.
  *
  * Приоритет:

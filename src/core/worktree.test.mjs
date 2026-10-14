@@ -133,31 +133,31 @@ describe('ensureTaskWorktree — интеграция с реальным git (V
     assert.throws(() => ensureTaskWorktree(root, 'VL-5'), /worktree на ветке vb\/other/);
   });
 
-  it('симлинки node_modules/refs из главного репо в worktree (VL-107 fix)', () => {
+  it('симлинки node_modules и references-клонов из главного репо в worktree (VL-107 fix, VL-152)', () => {
     const { root } = makeRepo('vibelog-worktree-links-');
     repos.push(root);
     // Каталоги-dev в главном репо (в реальном проекте — gitignored)
     mkdirSync(join(root, 'node_modules', 'dummy-pkg'), { recursive: true });
-    mkdirSync(join(root, 'refs', 'Backlog.md', 'backlog'), { recursive: true });
+    mkdirSync(join(root, 'backlog', 'references', 'data', 'Backlog.md', 'backlog'), { recursive: true });
     const dir = ensureTaskWorktree(root, 'VL-8');
     // Симлинки созданы и указывают на каталоги главного репо
-    for (const name of ['node_modules', 'refs']) {
+    for (const name of ['node_modules', join('backlog', 'references', 'data')]) {
       const link = join(dir, name);
       assert.ok(lstatSync(link).isSymbolicLink(), `${name} — симлинк в worktree`);
       assert.equal(readlinkSync(link), join(root, name));
     }
-    // Контент доступен через симлинк (тесты worktree так и читают refs)
-    assert.ok(existsSync(join(dir, 'refs', 'Backlog.md', 'backlog')));
+    // Контент доступен через симлинк (compat-тесты читают references/data)
+    assert.ok(existsSync(join(dir, 'backlog', 'references', 'data', 'Backlog.md', 'backlog')));
     // Идемпотентность: повторный ensure не падает на существующих симлинках
     assert.equal(ensureTaskWorktree(root, 'VL-8'), dir);
   });
 
-  it('без node_modules/refs в главном репо — симлинки не создаются (VL-107 fix)', () => {
+  it('без node_modules/references в главном репо — симлинки не создаются (VL-107 fix)', () => {
     const { root } = makeRepo('vibelog-worktree-nolinks-');
     repos.push(root);
     const dir = ensureTaskWorktree(root, 'VL-9');
     assert.ok(!existsSync(join(dir, 'node_modules')), 'node_modules не создан из пустоты');
-    assert.ok(!existsSync(join(dir, 'refs')), 'refs не создан из пустоты');
+    assert.ok(!existsSync(join(dir, 'backlog', 'references', 'data')), 'references/data не создан из пустоты');
   });
 });
 

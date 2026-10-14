@@ -40,6 +40,7 @@ const TASK_VARS = {
   taskDoD: '(нет)',
   taskModifiedFiles: '(нет)',
   taskLastComment: '(нет комментариев)',
+  taskReferences: '(нет)',
   taskTitle: 'Тестовая задача',
   taskType: 'task',
   taskStatus: 'Planned',
@@ -125,6 +126,13 @@ describe('VL-137 — блок подстановки задачи в шабло�
     }
   });
 
+  it('phase-2 и phase-3 содержат {{taskReferences}} (VL-152: Plan читает, Code добавляет)', () => {
+    for (const file of ['phase-2.md', 'phase-3.md']) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      assert.ok(text.includes('{{taskReferences}}'), `${file}: подстановка {{taskReferences}}`);
+    }
+  });
+
   it('фолбэк-инструкция «неподставленные {{...}} → прочитай через MCP» удалена (решение Pavel)', () => {
     for (const file of phaseTemplates) {
       const text = readFileSync(join(templatesDir, file), 'utf-8');
@@ -162,12 +170,12 @@ describe('VL-137 — taskExtraVars/taskBlockText', () => {
     return root;
   };
 
-  it('taskExtraVars: задача читается → 9 ключей с нумерованными AC и последним комментарием', () => {
+  it('taskExtraVars: задача читается → 10 ключей с нумерованными AC и последним комментарием', () => {
     const root = makeRoot();
     try {
       const vars = taskExtraVars(root, 'VL-901');
       assert.ok(vars, 'vars должны подобраться');
-      assert.equal(Object.keys(vars).length, 9, 'ровно 9 подстановок');
+      assert.equal(Object.keys(vars).length, 10, 'ровно 10 подстановок');
       assert.equal(vars.taskTitle, 'Заголовок VL-901');
       assert.equal(vars.taskType, 'task');
       assert.equal(vars.taskStatus, 'Planned');
@@ -176,6 +184,7 @@ describe('VL-137 — taskExtraVars/taskBlockText', () => {
       assert.ok(vars.taskAC.includes('1. [x] Первый критерий'), `taskAC: ${vars.taskAC}`);
       assert.ok(vars.taskDoD.includes('1. [ ] Пункт DoD'), `taskDoD: ${vars.taskDoD}`);
       assert.equal(vars.taskModifiedFiles, 'src/a.ts, docs/b.md');
+      assert.equal(vars.taskReferences, '(нет)', 'references по умолчанию пустые');
       assert.ok(vars.taskLastComment.includes('Текст последнего комментария'), `taskLastComment: ${vars.taskLastComment}`);
       assert.ok(vars.taskLastComment.includes('@user'), 'автор комментария в подстановке');
     } finally {

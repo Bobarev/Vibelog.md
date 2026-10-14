@@ -66,7 +66,7 @@ vibelog task complete <id>
 
 ## Контекст: оригинал Backlog.md
 
-Референс — `refs/Backlog.md` (исходники TypeScript/Bun: читать можно, запускать нельзя). Изучай их `src/` для семантики; проверка совместимости — статическая (сравнение форматов файлов).
+Референс — `backlog/references/data/Backlog.md` (исходники TypeScript/Bun: читать можно, запускать нельзя). Изучай их `src/` для семантики; проверка совместимости — статическая (сравнение форматов файлов).
 
 ## Проверка в браузере (chrome-devtools MCP)
 
@@ -80,7 +80,7 @@ vibelog task complete <id>
 ## Ссылки
 
 - Оригинал: https://github.com/MrLesk/Backlog.md
-- Локально: `refs/Backlog.md`
+- Локально: `backlog/references/data/Backlog.md`
 
 <!-- VIBELOG:SKILLS:BEGIN -->
 ## Команды Vibelog

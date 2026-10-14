@@ -1,7 +1,7 @@
 /**
  * Тесты совместимости с реальными файлами Backlog.md.
  *
- * Читает задачи из refs/Backlog.md/backlog/
+ * Читает задачи из backlog/references/data/Backlog.md/backlog/
  * и проверяет, что наш парсер корректно их обрабатывает.
  *
  * Дублирующие проверки парсинга tasks/, round-trip и конфига удалены
@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { parseFrontmatter } from '../../dist/core/frontmatter.js';
 import { taskFilename } from '../../dist/core/task.js';
 
-const BACKLOG_ROOT = 'refs/Backlog.md';
+const BACKLOG_ROOT = 'backlog/references/data/Backlog.md';
 const TASKS_DIR = join(BACKLOG_ROOT, 'backlog', 'tasks');
 const COMPLETED_DIR = join(BACKLOG_ROOT, 'backlog', 'completed');
 
