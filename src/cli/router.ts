@@ -37,6 +37,7 @@ import { runBot } from './commands/bot.js';
 import { runQwenDebug } from './commands/qwen-debug.js';
 import { runAgent } from './commands/agent.js';
 import { runReference } from './commands/reference.js';
+import { runLesson } from './commands/lesson.js';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -103,6 +104,8 @@ export async function route(args: string[]): Promise<void> {
       return runDoc(subcommand, positional, flags, cwd);
     case 'reference':
       return runReference(subcommand, positional, flags, cwd);
+    case 'lesson':
+      return runLesson(subcommand, positional, flags, cwd);
     case 'config':
       return runConfig(subcommand, positional, flags, cwd);
     case 'draft':
@@ -137,6 +140,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('milestone', colors.cyan)} add|list|rename|...      Управление вехами
   ${colorize('doc', colors.cyan)} create|list|...          Документы (spec/guide)
   ${colorize('reference', colors.cyan)} list|add|...          Референсы (repo/url/file/doc/spec)
+  ${colorize('lesson', colors.cyan)} list|create|...         Уроки из задач (lessons learned)
   ${colorize('config', colors.cyan)} get|set|list             Конфиг проекта
   ${colorize('draft', colors.cyan)} create|promote|...       Черновики задач
   ${colorize('decision', colors.cyan)} create|list|...         Решения (ADR)
@@ -258,6 +262,20 @@ vibelog reference <subcommand> [опции]
   link <refId> <taskId> [--remove]   — двусторонняя связь: linked_tasks ↔ task.references
   remove <id>                        — удаляет метаданные; клон в data/ сохраняется
   sync                               — доклонировать отсутствующие репозитории (type=repo)`,
+
+    lesson: `
+vibelog lesson <subcommand> [опции]
+
+Уроки из задач (lessons learned, VL-153). Метаданные: backlog/lessons/lesson-N-<slug>.md.
+Урок эволюционирует вне замороженной задачи: устаревает, заменяется (supersede).
+
+Подкоманды:
+  list [--status active|outdated|superseded] [--tags a,b] [--json]
+  create <title> [--tags ...] [--source-tasks VL-1,VL-2] [-d desc]
+  view <id>
+  search <query>
+  link <lessonId> <taskId> [--remove]  — двусторонняя связь: linked_tasks ↔ task.lessons
+  supersede <oldId> <newId>            — newId заменяет oldId (oldId → superseded)`,
 
     config: `
 vibelog config <subcommand> [опции]

@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTask } from '../core/store.js';
 import { loadConfig } from '../core/config.js';
+import { loadLessonsForTask } from '../core/lesson.js';
 import type { ChecklistItem, Task } from '../core/task.js';
 
 /** Допустимые фазы. */
@@ -139,6 +140,17 @@ export function taskExtraVars(cwd: string, taskId: string): Record<string, strin
     taskLastComment: last ? `${last.author} (${last.created}): ${last.text}` : '(нет комментариев)',
     // VL-152: references задачи (внешние источники) — Plan читает их, Code дописывает
     taskReferences: task.references && task.references.length > 0 ? task.references.join(', ') : '(нет)',
+    // VL-153: lessons learned по tags задачи — Plan читает их без дополнительного
+    // MCP-вызова. Ошибка чтения (нет backlog, битый lesson-файл) → '(нет)':
+    // фаза не должна падать из-за отсутствия lessons.
+    taskLessons: (() => {
+      try {
+        const lessons = loadLessonsForTask(cwd, taskId);
+        return lessons.length > 0 ? lessons.join('\n') : '(нет)';
+      } catch {
+        return '(нет)';
+      }
+    })(),
     // VL-154: labels из backlog/config.yml — Spec классифицирует задачу по
     // готовому списку, не тратя ход на backlog_config. Любая ошибка чтения
     // конфига (нет backlog, нет config.yml, битый YAML) → пустая строка:

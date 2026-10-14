@@ -136,6 +136,18 @@ export function referencesDataDir(backlogDir: string): string {
 }
 
 /**
+ * Возвращает путь к директории lessons (VL-153).
+ *
+ * Уроки (lessons learned) — workflow-опыт из закрытых задач: markdown-файлы
+ * <id>-<slug>.md с YAML-фронтматтером. Расширение формата Vibelog.md:
+ * Backlog.md не знает про lessons и игнорирует директорию backlog/lessons/ —
+ * round-trip сохраняется.
+ */
+export function lessonsDir(backlogDir: string): string {
+  return join(backlogDir, 'lessons');
+}
+
+/**
  * Возвращает путь к файлу конфига.
  *
  * Приоритет:

@@ -38,6 +38,11 @@ import {
   REFERENCE_TYPES,
 } from '../core/reference.js';
 import type { UpdateReferenceInput } from '../core/reference.js';
+import {
+  listLessons, getLesson, createLessonFile,
+  updateLesson, searchLessons, linkLesson, supersedeLesson,
+} from '../core/lesson.js';
+import type { UpdateLessonInput } from '../core/lesson.js';
 import { findBacklogDir } from '../core/paths.js';
 import type { Task, TaskComment, ChecklistItem } from '../core/task.js';
 
@@ -154,6 +159,8 @@ export function listTools(): ToolDefinition[] {
           modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Изменённые файлы (полная замена modified_files)' },
           // VL-152: поле references задачи (связь с reference_*); двусторонняя связь — через reference_link
           references: { type: 'array', items: { type: 'string' }, description: 'ID references задачи (полная замена references)' },
+          // VL-153: поле lessons задачи (связь с lesson_*); двусторонняя связь — через lesson_link
+          lessons: { type: 'array', items: { type: 'string' }, description: 'ID lessons задачи (полная замена lessons)' },
         },
         required: ['id'],
       },
@@ -224,6 +231,7 @@ export function listTools(): ToolDefinition[] {
           project: { type: 'string', description: 'Фильтр по проекту' },
           priority: { type: 'string', description: 'Фильтр по приоритету' },
           modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Фильтр по подстроке в modified_files задачи' },
+          hasLessons: { type: 'boolean', description: 'Фильтр по наличию lessons у задачи (true — есть, false — нет)' },
           limit: { type: 'number', minimum: 1, maximum: 100, description: 'Максимум результатов' },
         },
       },
@@ -456,6 +464,97 @@ export function listTools(): ToolDefinition[] {
       description: 'Клонировать отсутствующие репозитории для всех references type=repo в backlog/references/data/.',
       inputSchema: { type: 'object', properties: {} },
     },
+    // === Lessons learned — уроки из задач (VL-153) ===
+    {
+      name: 'lesson_list',
+      description: 'Список lessons (уроков из задач) с опциональными фильтрами status/tags.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          status: { type: 'string', description: 'Фильтр по статусу (active|outdated|superseded)' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Фильтр по меткам (все указанные должны совпасть)' },
+        },
+      },
+    },
+    {
+      name: 'lesson_create',
+      description: 'Создать lesson (урок из опыта задач). Императив, конкретика, 1 предложение в title.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Заголовок-урок (императив, 1 предложение)' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Метки (для подбора по tags в Plan)' },
+          sourceTasks: { type: 'array', items: { type: 'string' }, description: 'Задачи-источники урока (VL-N)' },
+          content: { type: 'string', description: 'Markdown-тело (Проблема / Решение / Пример)' },
+        },
+        required: ['title'],
+      },
+    },
+    {
+      name: 'lesson_view',
+      description: 'Показать lesson: метаданные, linked_tasks и тело.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'ID lesson (lesson-N)' },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'lesson_update',
+      description: 'Обновить lesson: поля и/или тело. updated_date обновляется автоматически.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'ID lesson (lesson-N)' },
+          title: { type: 'string', description: 'Новый заголовок (переименовывает файл)' },
+          status: { type: 'string', enum: ['active', 'outdated', 'superseded'], description: 'Статус' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Метки (полная замена)' },
+          sourceTasks: { type: 'array', items: { type: 'string' }, description: 'Задачи-источники (полная замена)' },
+          linkedTasks: { type: 'array', items: { type: 'string' }, description: 'Задачи, где применялся (полная замена)' },
+          supersedes: { type: 'string', description: 'ID заменённого lesson (пустая строка — сброс)' },
+          content: { type: 'string', description: 'Тело (markdown, полная замена)' },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'lesson_search_lessons',
+      description: 'Поиск lessons по запросу (substring по id/title/tags/телу).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Поисковый запрос' },
+        },
+        required: ['query'],
+      },
+    },
+    {
+      name: 'lesson_link',
+      description: 'Двусторонняя связь lesson ↔ задача: обновляет lesson.linked_tasks И task.lessons.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          lessonId: { type: 'string', description: 'ID lesson (lesson-N)' },
+          taskId: { type: 'string', description: 'ID задачи (VL-N)' },
+          action: { type: 'string', enum: ['add', 'remove'], description: 'Добавить (default) или удалить связь' },
+        },
+        required: ['lessonId', 'taskId'],
+      },
+    },
+    {
+      name: 'lesson_supersede',
+      description: 'Пометить lesson как заменённый: newId заменяет oldId (oldId → superseded, newId → active с supersedes).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          oldId: { type: 'string', description: 'ID заменяемого lesson (lesson-N)' },
+          newId: { type: 'string', description: 'ID нового lesson (lesson-N)' },
+        },
+        required: ['oldId', 'newId'],
+      },
+    },
   ];
 }
 
@@ -528,6 +627,20 @@ export async function handleToolCall(name: string, args: ToolArgs, cwd: string):
       return toolReferenceLink(args, cwd);
     case 'reference_sync':
       return toolReferenceSync(args, cwd);
+    case 'lesson_list':
+      return toolLessonList(args, cwd);
+    case 'lesson_create':
+      return toolLessonCreate(args, cwd);
+    case 'lesson_view':
+      return toolLessonView(args, cwd);
+    case 'lesson_update':
+      return toolLessonUpdate(args, cwd);
+    case 'lesson_search_lessons':
+      return toolLessonSearch(args, cwd);
+    case 'lesson_link':
+      return toolLessonLink(args, cwd);
+    case 'lesson_supersede':
+      return toolLessonSupersede(args, cwd);
     default:
       throw new Error(`Неизвестный инструмент: ${name}`);
   }
@@ -688,6 +801,9 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
 
   // VL-152: поле references (связь с reference_*); двусторонняя связь — reference_link
   if (args.references !== undefined) updates.references = args.references as string[];
+
+  // VL-153: поле lessons (связь с lesson_*); двусторонняя связь — lesson_link
+  if (args.lessons !== undefined) updates.lessons = args.lessons as string[];
 
   // Секции тела
   if (args.plan !== undefined) updates.implementationPlan = args.plan as string;
@@ -1045,6 +1161,7 @@ function toolSearch(args: ToolArgs, cwd: string): string {
     project: args.project as string,
     priority: args.priority as string,
     modifiedFiles: args.modifiedFiles as string[],
+    hasLessons: args.hasLessons as boolean | undefined,
     limit: args.limit as number,
   });
   const simplified = tasks.map(t => ({
@@ -1295,4 +1412,79 @@ function toolReferenceLink(args: ToolArgs, cwd: string): string {
 function toolReferenceSync(_args: ToolArgs, cwd: string): string {
   const result = syncReferenceRepos(cwd);
   return JSON.stringify(result, null, 2);
+}
+
+// ============================================================
+// Lessons learned — уроки из задач (VL-153)
+// ============================================================
+
+function toolLessonList(args: ToolArgs, cwd: string): string {
+  let entries = listLessons(cwd);
+  const status = args.status as string | undefined;
+  if (status) {
+    entries = entries.filter(e => e.lesson.status === String(status).toLowerCase());
+  }
+  const tags = (args.tags as string[] | undefined) || [];
+  if (tags.length > 0) {
+    const needles = tags.map(t => String(t).toLowerCase());
+    entries = entries.filter(e =>
+      needles.every(n => e.lesson.tags.some(lt => String(lt).toLowerCase() === n))
+    );
+  }
+  return JSON.stringify(entries.map(e => e.lesson), null, 2);
+}
+
+function toolLessonCreate(args: ToolArgs, cwd: string): string {
+  const lesson = createLessonFile(cwd, {
+    title: args.title as string,
+    tags: (args.tags as string[] | undefined) || [],
+    source_tasks: (args.sourceTasks as string[] | undefined) || [],
+    content: args.content as string | undefined,
+  });
+  return `Lesson ${lesson.id} создан: ${lesson.title} (${lesson.status})`;
+}
+
+function toolLessonView(args: ToolArgs, cwd: string): string {
+  const entry = getLesson(cwd, args.id as string);
+  if (!entry) throw new Error(`Lesson ${args.id} не найден.`);
+  return JSON.stringify({
+    ...entry.lesson,
+    body: entry.body,
+    path: entry.path,
+  }, null, 2);
+}
+
+function toolLessonUpdate(args: ToolArgs, cwd: string): string {
+  const updates: UpdateLessonInput = {};
+  if (args.title !== undefined) updates.title = args.title as string;
+  if (args.status !== undefined) updates.status = args.status as string;
+  if (args.tags !== undefined) updates.tags = args.tags as string[];
+  if (args.sourceTasks !== undefined) updates.source_tasks = args.sourceTasks as string[];
+  if (args.linkedTasks !== undefined) updates.linked_tasks = args.linkedTasks as string[];
+  if (args.supersedes !== undefined) updates.supersedes = args.supersedes as string;
+  if (args.content !== undefined) updates.content = args.content as string;
+  if (Object.keys(updates).length === 0) {
+    throw new Error('Не указаны поля для обновления.');
+  }
+  const entry = updateLesson(cwd, args.id as string, updates);
+  if (!entry) throw new Error(`Lesson ${args.id} не найден.`);
+  return `Lesson ${entry.lesson.id} обновлён: ${Object.keys(updates).join(', ')} (updated_date: ${entry.lesson.updated_date})`;
+}
+
+function toolLessonSearch(args: ToolArgs, cwd: string): string {
+  const entries = searchLessons(cwd, args.query as string);
+  return JSON.stringify(entries.map(e => e.lesson), null, 2);
+}
+
+function toolLessonLink(args: ToolArgs, cwd: string): string {
+  const action = (args.action as 'add' | 'remove') || 'add';
+  linkLesson(cwd, args.lessonId as string, args.taskId as string, action);
+  return action === 'add'
+    ? `Lesson ${args.lessonId} связан с задачей ${args.taskId} (linked_tasks ↔ task.lessons).`
+    : `Связь Lesson ${args.lessonId} ↔ задача ${args.taskId} удалена.`;
+}
+
+function toolLessonSupersede(args: ToolArgs, cwd: string): string {
+  supersedeLesson(cwd, args.oldId as string, args.newId as string);
+  return `Lesson ${args.newId} заменяет ${args.oldId} (${args.oldId} → superseded, ${args.newId} → active).`;
 }
