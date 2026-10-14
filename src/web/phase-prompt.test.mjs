@@ -13,7 +13,7 @@
 
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -373,5 +373,50 @@ describe('VL-153 — taskLessons', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// ── VL-157: переносимость промптов — без внутренних ID задач репозитория ──
+
+describe('VL-157 — переносимость промптов', () => {
+  it('в шаблонах промптов нет внутренних ID задач (VL-N, VL-XX)', () => {
+    // Промпты уходят во ВНЕШНИЕ проекты — их ID задач там ничего не значат.
+    // Regex: VL- в качестве отдельного токена (VL-12, VL-XX), но не Vibelog.
+    const vlPattern = /\bVL-\d|\bVL-XX/i;
+    const templatesRoot = fileURLToPath(new URL('../../templates/', import.meta.url));
+    const dirs = [templatesRoot, join(templatesRoot, 'qwen-commands')];
+    for (const dir of dirs) {
+      for (const file of readdirSync(dir)) {
+        if (!file.endsWith('.md')) continue;
+        const text = readFileSync(join(dir, file), 'utf-8');
+        assert.ok(!vlPattern.test(text), `${file}: не должно быть внутренних ID задач VL-*`);
+      }
+    }
+  });
+
+  it('phase-1.md: регистрация references из текста пользователя', () => {
+    const text = readFileSync(join(templatesDir, 'phase-1.md'), 'utf-8');
+    assert.ok(text.includes('{{taskReferences}}'), 'блок задачи: подстановка {{taskReferences}}');
+    assert.ok(text.includes('reference_add'), 'шаг 5.6: reference_add для упомянутых источников');
+    assert.ok(text.includes('reference_link'), 'шаг 5.6: связь reference ↔ задача');
+    assert.ok(text.includes('"references"'), 'шаг 5: поле references в backlog_update_task');
+  });
+
+  it('phase-1.md: чтение явно упомянутой задачи разрешено (пункт 3 ТЗ)', () => {
+    const text = readFileSync(join(templatesDir, 'phase-1.md'), 'utf-8');
+    assert.ok(text.includes('явно ссылается'), 'исключение backlog_view_task при явной ссылке пользователя');
+    assert.ok(text.includes('Дополнительный комментарий пользователя'), 'блок {{comment}} для ссылок пользователя');
+  });
+
+  it('phase-1.md: ведущие #теги → labels (пункт 5 ТЗ)', () => {
+    const text = readFileSync(join(templatesDir, 'phase-1.md'), 'utf-8');
+    assert.ok(text.includes('#тег'), 'инструкция про #теги в начале заголовка/описания');
+    assert.ok(text.includes('labels пользователя'), 'теги — это labels пользователя');
+  });
+
+  it('phase-1.md: предложение нового label видно в чате после «Готово» (пункт 4 ТЗ)', () => {
+    const text = readFileSync(join(templatesDir, 'phase-1.md'), 'utf-8');
+    // Формат финала: «Готово» + строка предложения — бот пересылает финал как есть
+    assert.ok(text.includes('Предлагаю добавить label'), 'строка предложения в «Формат финала»');
   });
 });
