@@ -54,6 +54,15 @@ Definition of Done (DoD): {{taskDoD}}
    git commit -m "docs(task): VL-XX — файл подзадачи (батч {{taskId}})"
    Уже закоммиченные или пустые файлы — пропускай, не падай.
 
+6.5. Lessons learned — зафиксируй уроки закрытой задачи (если была в Code):
+   - Проверь, была ли задача в Code: modified_files непусты ИЛИ в комментариях есть отчёт Фазы 3. Если нет — пропусти шаг.
+   - Сформулируй 1–3 урока (если есть чему учить): императив, конкретика, 1 предложение. Хорошо: «Тесты со spawn медленные — запускай батчами по 10». Плохо: «Производительность тестов».
+   - Проверь похожие: lesson_search_lessons {"query": "<ключевые слова>"} и/или listLessons с tags задачи, status=active.
+   - Похожий активный есть → обнови: lesson_update {"id": "lesson-N", "linkedTasks": ["{{taskId}}", ...]} (linked_tasks += {{taskId}}, updated_date обновится сама).
+   - Нет → создай: lesson_create {"title": "...", "tags": [...], "sourceTasks": ["{{taskId}}"]} + lesson_link {"lessonId": "lesson-N", "taskId": "{{taskId}}"}.
+   - Свяжи задачу: backlog_update_task {"id": "{{taskId}}", "lessons": ["lesson-N", ...]} (полная замена списка).
+   - Если lessons нет и нечего фиксировать — пропусти шаг.
+
 ## Экономия ходов
 
 - Файлы кода не читай — фаза Close работает с git-статусом, modified_files и файлами задач (backlog/tasks/).

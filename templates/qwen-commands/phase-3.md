@@ -47,6 +47,12 @@ References: {{taskReferences}}
    git commit -m "feat: {{taskId}} — <краткое описание сути>"
    Только файлы этой задачи (код, тесты, шаблоны); файлы backlog/ НЕ коммит; никогда git add -A; не push. Если изменений нет — пропусти шаг.
 
+6.5. Lessons learned (если в задаче есть lessons или в процессе работы вспомнил урок):
+   - Использовал существующий lesson из блока/поля lessons задачи? Он уже связан — ничего не делай.
+   - Создал новый полезный урок? lesson_create {"title": "Императив, конкретика, 1 предложение", "tags": [...], "sourceTasks": ["{{taskId}}"]} и свяжи: lesson_link {"lessonId": "lesson-N", "taskId": "{{taskId}}"}.
+   - Обнови задачу при добавлении: backlog_update_task {"id": "{{taskId}}", "lessons": ["lesson-N", ...]} (полная замена списка).
+   - Если lessons не применялись и не создавались — пропусти шаг.
+
 7. Заверши фазу ОДНИМ вызовом backlog_finish_phase — отчёт комментарием + modifiedFiles + статус + батч-отметки AC/DoD (упомяни хэш feat-коммита из шага 6):
    backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза 3 (Code) выполнена. Изменено: <файлы>, коммит <хэш>. Проверки: <список выполненных>. Что осталось: ...", "modifiedFiles": ["src/foo.ts", "docs/bar.md"], "acChecks": [<индексы выполненных AC из шага 4>], "dodChecks": [<индексы выполненного DoD из шага 4>], "status": "Review"}
    - type=task: передавай modifiedFiles (только явные пути ВНЕ backlog/ — код, тесты, шаблоны, docs; файлы задач в backlog/ не включай; если ничего не менял — поле опусти) и status "Review".

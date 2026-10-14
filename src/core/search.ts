@@ -17,6 +17,7 @@ export interface SearchFilters {
   priority?: string;
   project?: string;
   modifiedFiles?: string[];
+  hasLessons?: boolean;
   limit?: number;
 }
 
@@ -40,7 +41,7 @@ export function searchTasks(cwd: string, filters: SearchFilters | string = {}): 
     f = filters;
   }
 
-  const { query, status, type, priority, project, modifiedFiles, limit } = f;
+  const { query, status, type, priority, project, modifiedFiles, hasLessons, limit } = f;
   let tasks = listTasks(cwd);
 
   // Текстовый запрос: substring по id/title/description/labels
@@ -80,6 +81,14 @@ export function searchTasks(cwd: string, filters: SearchFilters | string = {}): 
         : (t.modified_files ? [t.modified_files] : []);
       return files.some(f2 => needles.some(n => String(f2).toLowerCase().includes(n)));
     });
+  }
+
+  // hasLessons (VL-153): фильтр по наличию связанных lessons в задаче.
+  // true — только задачи с непустым lessons; false — только без lessons.
+  if (hasLessons === true) {
+    tasks = tasks.filter(t => Array.isArray(t.lessons) && t.lessons.length > 0);
+  } else if (hasLessons === false) {
+    tasks = tasks.filter(t => !Array.isArray(t.lessons) || t.lessons.length === 0);
   }
 
   if (limit && limit > 0) {

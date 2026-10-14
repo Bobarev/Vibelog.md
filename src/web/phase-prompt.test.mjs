@@ -25,6 +25,7 @@ import {
   taskBlockText,
 } from '../../dist/web/phase-prompt.js';
 import { addComment, createTaskFile } from '../../dist/core/store.js';
+import { createLessonFile } from '../../dist/core/lesson.js';
 
 const templatesDir = fileURLToPath(new URL('../../templates/qwen-commands/', import.meta.url));
 
@@ -170,12 +171,12 @@ describe('VL-137 — taskExtraVars/taskBlockText', () => {
     return root;
   };
 
-  it('taskExtraVars: задача читается → 11 подстановок с нумерованными AC и последним комментарием', () => {
+  it('taskExtraVars: задача читается → 12 подстановок с нумерованными AC и последним комментарием', () => {
     const root = makeRoot();
     try {
       const vars = taskExtraVars(root, 'VL-901');
       assert.ok(vars, 'vars должны подобраться');
-      assert.equal(Object.keys(vars).length, 11, 'ровно 11 подстановок');
+      assert.equal(Object.keys(vars).length, 12, 'ровно 12 подстановок');
       assert.equal(vars.taskTitle, 'Заголовок VL-901');
       assert.equal(vars.taskType, 'task');
       assert.equal(vars.taskStatus, 'Planned');
@@ -185,6 +186,7 @@ describe('VL-137 — taskExtraVars/taskBlockText', () => {
       assert.ok(vars.taskDoD.includes('1. [ ] Пункт DoD'), `taskDoD: ${vars.taskDoD}`);
       assert.equal(vars.taskModifiedFiles, 'src/a.ts, docs/b.md');
       assert.equal(vars.taskReferences, '(нет)', 'references по умолчанию пустые');
+      assert.equal(vars.taskLessons, '(нет)', 'lessons по умолчанию нет (нет tags/совпадений)');
       assert.equal(vars.availableLabels, '', 'конфиг без labels → пустая строка (VL-154)');
       assert.ok(vars.taskLastComment.includes('Текст последнего комментария'), `taskLastComment: ${vars.taskLastComment}`);
       assert.ok(vars.taskLastComment.includes('@user'), 'автор комментария в подстановке');
@@ -321,5 +323,55 @@ describe('VL-141 — фаза analyze', () => {
     assert.ok(text.includes('НОВЫХ задач НЕ создавать'), 'phase-analyze.md: без создания задач');
     // Терминальный вывод — одно слово
     assert.ok(text.includes('«Готово»'), 'phase-analyze.md: финал — «Готово»');
+  });
+});
+
+// ── VL-153: {{taskLessons}} — подстановка lessons по tags задачи ──
+
+describe('VL-153 — taskLessons', () => {
+  it('phase-2.md содержит {{taskLessons}} и пояснение про workflow-уроки', () => {
+    const text = readFileSync(join(templatesDir, 'phase-2.md'), 'utf-8');
+    assert.ok(text.includes('{{taskLessons}}'), 'phase-2.md: подстановка {{taskLessons}}');
+    assert.ok(text.includes('Lessons learned'), 'phase-2.md: заголовок блока Lessons');
+  });
+
+  /** Мини-проект: backlog/tasks + config.yml + lesson с tags; задача с labels. */
+  const makeRoot = (taskLabels) => {
+    const root = mkdtempSync(join(tmpdir(), 'vl153-lessons-'));
+    mkdirSync(join(root, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(root, 'backlog', 'config.yml'), 'project_name: VL-153\n', 'utf-8');
+    createTaskFile(root, { id: 'VL-905', title: 'Задача VL-153', labels: taskLabels, status: 'Planned' });
+    createLessonFile(root, {
+      id: 'lesson-1', title: 'Тесты батчами по 10', status: 'active', tags: ['tests', 'ci'],
+    });
+    createLessonFile(root, {
+      id: 'lesson-2', title: 'Чужой урок', status: 'active', tags: ['other'],
+    });
+    createLessonFile(root, {
+      id: 'lesson-3', title: 'Устаревший по tests', status: 'outdated', tags: ['tests'],
+    });
+    return root;
+  };
+
+  it('задача с совпавшим tags → компактные строки "- [lesson-N] title"', () => {
+    const root = makeRoot(['tests']);
+    try {
+      const vars = taskExtraVars(root, 'VL-905');
+      assert.ok(vars, 'vars подбираются');
+      assert.ok(vars.taskLessons.includes('- [lesson-1] Тесты батчами по 10'), `taskLessons: ${vars.taskLessons}`);
+      assert.ok(!vars.taskLessons.includes('lesson-2'), 'чужой tags не подставляется');
+      assert.ok(!vars.taskLessons.includes('lesson-3'), 'outdated не подставляется');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('нет совпадений по tags → "(нет)"; ошибки чтения не роняют фазу', () => {
+    const root = makeRoot(['nomatch']);
+    try {
+      assert.equal(taskExtraVars(root, 'VL-905').taskLessons, '(нет)', 'нет совпадений → фолбэк');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

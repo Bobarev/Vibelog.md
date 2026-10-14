@@ -71,6 +71,7 @@ export interface Task {
   references: string[];
   documentation: string[];
   modified_files: string[];
+  lessons: string[];
   // Тело (секции)
   description: string;
   /** Строки — уже отформатированные `- [ ] #N ...`; объекты — сырые данные. */
@@ -104,6 +105,7 @@ export interface TaskInput {
   references?: string[];
   documentation?: string[];
   modified_files?: string[];
+  lessons?: string[];
   acceptanceCriteria?: (ChecklistItem | string)[];
   definitionOfDone?: (ChecklistItem | string)[];
   implementationPlan?: string;
@@ -143,6 +145,7 @@ export function createTask(input: TaskInput, config: Record<string, unknown>): T
     references: input.references || [],
     documentation: input.documentation || [],
     modified_files: input.modified_files || [],
+    lessons: input.lessons || [],
     // Тело (секции)
     description: input.description || '',
     acceptanceCriteria: input.acceptanceCriteria || [],
@@ -181,6 +184,7 @@ export function taskToMarkdown(task: Task): string {
     ordinal: task.ordinal || 0,
     documentation: task.documentation || [],
     modified_files: task.modified_files || [],
+    lessons: task.lessons || [],
   };
 
   // Тело — собираем секции
@@ -307,6 +311,7 @@ export function markdownToTask(content: string): Task {
     references: Array.isArray(data.references) ? (data.references as string[]) : (data.references ? [data.references as string] : []),
     documentation: Array.isArray(data.documentation) ? (data.documentation as string[]) : (data.documentation ? [data.documentation as string] : []),
     modified_files: Array.isArray(data.modified_files) ? (data.modified_files as string[]) : (data.modified_files ? [data.modified_files as string] : []),
+    lessons: Array.isArray(data.lessons) ? (data.lessons as string[]) : (data.lessons ? [data.lessons as string] : []),
     // Тело
     description,
     acceptanceCriteria: ac,
