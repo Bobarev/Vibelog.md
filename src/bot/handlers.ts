@@ -42,7 +42,8 @@ import {
 } from './rich.js';
 import { loadBotSettings, resolveDefaultAgent, saveBotSettings } from './settings.js';
 import { commandsHelp } from './registry.js';
-import { rootCliPath, spawnReplacementBot } from './restart.js';
+import { rootCliPath, spawnReplacementBot, vibelogCliPath } from './restart.js';
+import { clearWebServer, currentWebServer, parseWebCommand, spawnWebServer, stopWebServer } from './web.js';
 import { buildTaskWorktree, ensureTaskWorktree, taskBranchName, worktreeCliPath } from '../core/worktree.js';
 import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
 import { getRun, startAnalyze, startPhase, startPrompt, startResume, rejectTask } from '../web/orchestrator.js';
@@ -1043,6 +1044,82 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     });
     // Новый процесс создан — выходим; detached+unref: он переживает нас
     process.exit(0);
+  });
+  // ── /web — запуск/остановка веб-интерфейса из чата (VL-161) ──
+  // /web start [VL-N] поднимает vibelog browser дочерним процессом; CLI по
+  // умолчанию — текущий dist бота (vibelogCliPath от import.meta.url): после
+  // /restart VL-N веб стартует из того же worktree. С аргументом VL-N —
+  // ensure+build worktree и запуск из него (без перезапуска бота).
+  // /web stop — kill дочернего процесса; повторные запуск/остановка идемпотентны.
+  bot.command('web', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const parsed = parseWebCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    if (parsed.action === 'stop') {
+      await sendMd(ctx, stopWebServer() ? '⏹ Веб-интерфейс остановлен' : 'Веб-интерфейс не запущен');
+      return;
+    }
+    // CLI текущего окружения бота (не rootCliPath): веб должен отдавать UI
+    // того же dist/worktree, из которого работает бот (VL-161)
+    let cliPath = vibelogCliPath();
+    if (parsed.taskId) {
+      const taskId = parsed.taskId;
+      await sendMd(ctx, `🔧 Сборка ветки ${taskBranchName(taskId)}…`);
+      // Ошибки ensure/build — в чат, бот продолжает работать (паттерн /restart)
+      let dir: string;
+      try {
+        dir = ensureTaskWorktree(deps.cwd, taskId);
+      } catch (err) {
+        await sendMd(ctx, `⚠️ ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      try {
+        buildTaskWorktree(deps.cwd, taskId);
+      } catch (err) {
+        await sendMd(ctx, `⚠️ ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      cliPath = worktreeCliPath(deps.cwd, taskId);
+      await sendMd(ctx, `✅ Ветка ${taskBranchName(taskId)} собрана (${dir})`);
+    }
+    const restarting = currentWebServer() !== null;
+    let port = 3030;
+    try {
+      const config = loadConfig(deps.cwd);
+      port = (config.default_port as number) || 3030;
+    } catch { /* дефолт */ }
+    const child = spawnWebServer(deps.cwd, cliPath, 'pipe');
+    if (restarting) await sendMd(ctx, '🔄 Веб-интерфейс уже был запущен — перезапускаю…');
+    let urlSent = false;
+    // stdout сервера: «Веб-интерфейс Vibelog.md: <url>» (server.ts) — шлём в чат
+    child.stdout?.on('data', (chunk: Buffer) => {
+      const match = /Веб-интерфейс Vibelog\.md:\s*(\S+)/.exec(chunk.toString());
+      if (match && !urlSent) {
+        urlSent = true;
+        void sendMd(ctx, `🌐 ${escapeMarkdownV2(match[1])}`);
+      }
+    });
+    // Порт занят (EADDRINUSE) и прочие сбои: сервер печатает ошибку в stderr
+    // и завершается — сообщаем в чат и сбрасываем синглтон
+    let stderrTail = '';
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderrTail = (stderrTail + chunk.toString()).slice(-300);
+    });
+    child.once('exit', (code) => {
+      // Сбрасываем синглтон только если это ещё текущий процесс: после
+      // перезапуска kill старого ребёнка не должен обнулить новый
+      if (currentWebServer() === child) clearWebServer();
+      if (!urlSent) {
+        const detail = stderrTail.trim() ? `\n${stderrTail.trim()}` : '';
+        void sendMd(
+          ctx,
+          `⚠️ Веб-интерфейс не запустился (код ${code}) — порт ${port} занят?${escapeMarkdownV2(detail)}`
+        );
+      }
+    });
   });
   // ── Кнопка «следующий этап» (VL-72) ──
   // callback-кнопка из rich-рендера карточки задачи: data = next:<id>.

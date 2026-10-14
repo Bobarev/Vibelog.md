@@ -43,6 +43,7 @@ export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'prompt', description: 'Запрос LLM без задачи: qwen или встроенный агент (/prompt:vb)', usage: '/prompt[:agent] <текст>' },
   { command: 'analyze', description: 'Анализ сессии агента — статистика, вердикт, рекомендации: /analyze vb:agent-XXX', usage: '/analyze[:agent] <session-ref>' },
   { command: 'restart', description: 'Перезапустить бота: /restart [VL-N] — из ветки vb/vl-N, без аргумента — из корневого dist/' },
+  { command: 'web', description: 'Веб-интерфейс: /web start [VL-N] | /web stop', usage: '/web start [VL-N] | /web stop' },
 ];
 
 /**

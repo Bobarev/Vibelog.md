@@ -10,7 +10,7 @@ import { BOT_COMMANDS, commandsHelp, syncCommands } from '../../dist/bot/registr
 
 describe('BOT_COMMANDS (VL-54)', () => {
   it('реестр валиден по лимитам Telegram', () => {
-    assert.equal(BOT_COMMANDS.length, 19, `ожидалось 19 команд, получено: ${BOT_COMMANDS.length}`);
+    assert.equal(BOT_COMMANDS.length, 20, `ожидалось 20 команд, получено: ${BOT_COMMANDS.length}`);
     assert.ok(BOT_COMMANDS.length <= 100, 'лимит Telegram: не более 100 команд');
     const seen = new Set();
     for (const c of BOT_COMMANDS) {
@@ -94,8 +94,14 @@ describe('BOT_COMMANDS (VL-54)', () => {
   it('commandsHelp() повторяет прежний хардкод help-строки /start', () => {
     assert.equal(
       commandsHelp(),
-      '/tasks, /task <id>, /docs, /doc <id>, /board, /diff, /commits [N], /create, /status, /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off>, /comment[:agent] VL-1 <текст>, /spec[:agent] <описание>, /plan[:agent] VL-<id> [комментарий], /code[:agent] VL-<id> [комментарий], /close[:agent] VL-<id>, /prompt[:agent] <текст>, /analyze[:agent] <session-ref>, /restart'
+      '/tasks, /task <id>, /docs, /doc <id>, /board, /diff, /commits [N], /create, /status, /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off>, /comment[:agent] VL-1 <текст>, /spec[:agent] <описание>, /plan[:agent] VL-<id> [комментарий], /code[:agent] VL-<id> [комментарий], /close[:agent] VL-<id>, /prompt[:agent] <текст>, /analyze[:agent] <session-ref>, /restart, /web start [VL-N] | /web stop'
     );
+  });
+
+  it('команда web в реестре с usage /web start [VL-N] | /web stop (VL-161)', () => {
+    const web = BOT_COMMANDS.find((c) => c.command === 'web');
+    assert.ok(web, 'команда web отсутствует в реестре');
+    assert.equal(web.usage, '/web start [VL-N] | /web stop');
   });
 });
 
