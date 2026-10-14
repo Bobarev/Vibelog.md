@@ -211,7 +211,7 @@ Workflow: spec → plan → code. Интерактивные команды жд
 VIBELOG_QWEN_BIN=$(pwd)/bin/vibelog-agent.mjs vibelog browser
 ```
 
-Агент: интерактивный TUI или `--headless` (JSON `type=result`, контракт `parseQwenResult`), loop detection, лимиты tool-calls/wall-time, локальные инструменты + Vibelog MCP. LLM — env `VIBELOG_LLM_BASE_URL` / `VIBELOG_LLM_API_KEY` / `VIBELOG_LLM_MODEL` (Cloud.ru). Детали: [backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md).
+Агент: интерактивный TUI или `--headless` (JSON `type=result`, контракт `parseQwenResult`), loop detection, лимиты tool-calls/wall-time, локальные инструменты + Vibelog MCP. TUI написан на чистом Node.js (zero deps — без Ink/React, работает на Node 20+). LLM — env `VIBELOG_LLM_BASE_URL` / `VIBELOG_LLM_API_KEY` / `VIBELOG_LLM_MODEL` (Cloud.ru). Детали: [backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md).
 
 ### Флаги init
 
