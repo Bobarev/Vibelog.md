@@ -68,6 +68,7 @@ describe('CLI — интеграционные тесты', () => {
     assert.ok(out.includes('init'));
     assert.ok(out.includes('task'));
     assert.ok(out.includes('board'));
+    assert.ok(out.includes('vibelog agent'), 'справка упоминает vibelog agent (VL-158)');
   });
 
   it('init — создаёт backlog/', async () => {
@@ -175,9 +176,9 @@ describe('CLI — интеграционные тесты', () => {
     assert.equal(pkg.bin.vb, './bin/vibelog.mjs');
   });
 
-  it('пустой запуск без аргументов (не-TTY) — справка, exit 0 (VL-102)', () => {
+  it('пустой запуск без аргументов (не-TTY) — справка, exit 0 (VL-158; ранее VL-102)', () => {
     // Контракт САМОГО ПРОЦЕССА CLI — остаётся spawnSync: stdio pipe →
-    // stdin/stdout не-TTY → TUI не запускается, показывается справка
+    // stdin/stdout не-TTY; VL-158: справка ВСЕГДА, TUI-чат переехал в vibelog agent
     const res = spawnSync('node', [cliPath], {
       cwd: testDir,
       encoding: 'utf-8',
@@ -189,6 +190,26 @@ describe('CLI — интеграционные тесты', () => {
     const out = `${res.stdout || ''}${res.stderr || ''}`;
     assert.ok(out.includes('Vibelog.md'), out.slice(0, 300));
     assert.ok(out.includes('Алиас'), 'справка упоминает алиас vb');
+    assert.ok(out.includes('vibelog agent'), 'справка подсказывает vibelog agent (VL-158)');
+  });
+
+  it('пустой запуск в TTY (подменён isTTY) — справка, а не TUI (VL-158)', async () => {
+    // VL-102 запускал TUI при isTTY; VL-158: даже в TTY пустой запуск = справка.
+    // Подменяем isTTY у stdin/stdout — route([]) обязан печатать справку (TUI не рисуется)
+    const stdout = process.stdout;
+    const stdin = process.stdin;
+    const outStdout = stdout.isTTY;
+    const outStdin = stdin.isTTY;
+    stdout.isTTY = true;
+    stdin.isTTY = true;
+    try {
+      const out = await capture(() => route([]));
+      assert.ok(out.includes('Vibelog.md'), `нет справки: ${out.slice(0, 300)}`);
+      assert.ok(out.includes('Алиас'), 'справка упоминает алиас vb');
+    } finally {
+      stdout.isTTY = outStdout;
+      stdin.isTTY = outStdin;
+    }
   });
 
   it('init — повторная инициализация запрещена (контракт процесса)', () => {
@@ -280,7 +301,7 @@ describe('CLI — интеграционные тесты', () => {
     process.exitCode = 0;
   });
 
-  it('agent — неизвестная подкоманда → ошибка (VL-141)', async () => {
+  it('agent — неизвестная подкоманда → ошибка (VL-141, текст VL-158)', async () => {
     let errText = '';
     const errSpy = vi.spyOn(console, 'error').mockImplementation((...c) => { errText += c.join(' ') + '\n'; });
     try {
@@ -290,7 +311,27 @@ describe('CLI — интеграционные тесты', () => {
     }
     assert.match(errText, /Неизвестная подкоманда agent/);
     assert.match(errText, /analyze/);
+    assert.match(errText, /task-id/, 'текст перечисляет <task-id> (VL-158)');
     assert.equal(process.exitCode, 1);
     process.exitCode = 0;
+  });
+
+  // ── VL-158: vibelog agent [task-id] — интерактивный чат ──
+
+  it('agent без подкоманды и <task-id> в не-TTY → ошибка про терминал (VL-158)', async () => {
+    // vitest — не-TTY: chat-ветка обязана отклониться ДО getTask/TUI.
+    // clt-1 существует в testDir (task create выше) — падение на getTask недопустимо
+    for (const sub of ['', 'clt-1', 'clt-999']) {
+      let errText = '';
+      const errSpy = vi.spyOn(console, 'error').mockImplementation((...c) => { errText += c.join(' ') + '\n'; });
+      try {
+        await runAgent(sub, [], {}, testDir);
+      } finally {
+        errSpy.mockRestore();
+      }
+      assert.match(errText, /нужен терминал \(TTY\)/, `sub='${sub}': ${errText}`);
+      assert.equal(process.exitCode, 1, `sub='${sub}'`);
+      process.exitCode = 0;
+    }
   });
 });

@@ -1,9 +1,10 @@
 /**
- * Интерактивный режим vibelog-agent (VL-102): multi-turn TUI-чат.
+ * Интерактивный режим агента (VL-102, перенесён в `vibelog agent` по VL-158):
+ * multi-turn TUI-чат.
  *
- * Точка входа для пустого запуска `vibelog`/`vb` в интерактивном TTY
- * (роутер CLI): пользователь вводит сообщения строкой ввода внизу TUI,
- * каждый ход выполняется через runLoop с полным набором инструментов
+ * Точка входа подкоманды agent без подкоманд/с <task-id> (роутер CLI, VL-158;
+ * ранее — пустой запуск `vibelog`/`vb`): пользователь вводит сообщения строкой
+ * ввода внизу TUI, каждый ход выполняется через runLoop с полным набором инструментов
  * (локальные + MCP Vibelog), ответ стримится в TUI, транскрипт сессии
  * сохраняется после каждого хода (VL-95). JSON-контракт оркестратора
  * (VL-63, main() в cli.ts) не задет — этот модуль отдельная точка входа
@@ -18,6 +19,8 @@
 import { createLlmClient } from './llm.js';
 import type { ChatMessage } from './llm.js';
 import { runLoop } from './loop.js';
+import { getTask } from '../core/store.js';
+import { taskToMarkdown } from '../core/task.js';
 import { agentSessionsDir, createSessionId, saveSession } from './session.js';
 // Загрузка .env проекта (VL-37) — общий модуль с ботом, только node:fs/path
 import { loadDotEnv } from '../bot/env.js';
@@ -52,8 +55,14 @@ export function composeTurnMessages(
  * Ошибки до цикла — stderr + exit 1 (TUI ещё не нарисован); SIGINT —
  * unmount TUI + закрытие MCP + exit 130. Сессия сохраняется после каждого
  * хода — обрыв теряет только текущий незавершённый ход.
+ *
+ * options.taskRef (VL-158): id задачи — её карточка добавляется в system
+ * prompt, чат стартует с задачей в контексте. Роутер проверил существование
+ * задачи до вызова; здесь — страховка (stderr + exit 1).
  */
-export async function runInteractiveAgent(): Promise<void> {
+export async function runInteractiveAgent(
+  options: { taskRef?: string } = {},
+): Promise<void> {
   const cwd = process.cwd();
   // .env проекта (VL-37): чат запускается человеком напрямую — VIBELOG_LLM_*
   // обычно лежат в .env. Реальное окружение приоритетнее файла (dotenv).
@@ -109,6 +118,17 @@ export async function runInteractiveAgent(): Promise<void> {
   }
 
   const systemPrompt = buildSystemPrompt(cwd);
+  // Контекст задачи (VL-158): vibelog agent <task-id> — карточка задачи
+  // в system prompt, чат стартует с задачей в контексте
+  if (options.taskRef) {
+    const task = getTask(cwd, options.taskRef);
+    if (!task) {
+      console.error(`Ошибка: задача не найдена: ${options.taskRef}`);
+      process.exitCode = 1;
+      return;
+    }
+    systemPrompt.content += `\n\n# Контекст задачи (открыл пользователь)\n\n${taskToMarkdown(task)}`;
+  }
   // История чата (без system — собирается на каждом ходе): растёт между ходами
   let history: ChatMessage[] = [];
   let busy = false;

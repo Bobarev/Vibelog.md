@@ -23,7 +23,7 @@ npm install -g vibelog.md
 
 В пакете уже собраны CLI (`dist/`) и веб-интерфейс (`web/dist`) — ничего компилировать не нужно. Одноразовый запуск без установки: `npx vibelog.md`.
 
-После установки доступны два имени CLI: `vibelog` и алиас `vb` — один и тот же бинарь, поведение идентично (`vb --help` = `vibelog --help`). Запуск `vibelog` или `vb` **без аргументов** в интерактивном терминале открывает TUI-чат с LLM-агентом Vibelog (ключи `VIBELOG_LLM_*` читаются из `.env` проекта; см. [backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md)); в скриптах и CI (не-TTY) — обычная справка.
+После установки доступны два имени CLI: `vibelog` и алиас `vb` — один и тот же бинарь, поведение идентично (`vb --help` = `vibelog --help`). Запуск `vibelog` или `vb` **без аргументов** показывает справку (эквивалент `vibelog help`). TUI-чат с LLM-агентом Vibelog запускается командой `vibelog agent` (или `vibelog agent <task-id>` — карточка задачи в контексте чата; ключи `VIBELOG_LLM_*` читаются из `.env` проекта; см. [backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md)).
 
 CLI автоматически проверяет npm registry на наличие новой версии (раз в сутки, молча). Если обновление доступно — в stderr выводится `⚠ Доступна новая версия для обновления: npm install -g vibelog.md (...)`, без автоустановки. Отключение: `VIBELOG_SKIP_UPDATE_CHECK=true`. Подробнее: [backlog/docs/doc-7-CLI-справочник-Vibelogmd.md](backlog/docs/doc-7-CLI-справочник-Vibelogmd.md#автообновление).
 
@@ -53,8 +53,8 @@ pnpm link --global
 ## Быстрый старт
 
 ```bash
-# Алиас vb — то же самое, что vibelog; vb без аргументов в интерактивном
-# терминале открывает TUI-чат с LLM-агентом (в скриптах/CI — справка)
+# Алиас vb — то же самое, что vibelog; без аргументов — справка, а чат
+# с LLM-агентом (TUI) открывает vibelog agent [task-id]
 
 # Инициализация backlog-а в текущем git-репозитории
 vibelog init "Мой проект"
