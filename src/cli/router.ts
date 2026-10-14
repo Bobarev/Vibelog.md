@@ -13,8 +13,8 @@
  * - help — справка
  *
  * Алиас: `vb` — тот же бинарь (bin.vb → ./bin/vibelog.mjs), поведение
- * не зависит от имени argv[0]. Без аргументов в интерактивном TTY
- * запускается TUI чата с агентом (VL-102); в не-TTY — справка.
+ * не зависит от имени argv[0]. Без аргументов — справка (VL-158);
+ * чат с агентом — vibelog agent [task-id].
  */
 
 import { parseArgs } from './args.js';
@@ -52,16 +52,8 @@ export async function route(args: string[]): Promise<void> {
     return runVersion(args, flags);
   }
 
-  // Без аргументов в интерактивном TTY — TUI чата с агентом (VL-102):
-  // пустой запуск `vibelog`/`vb` открывает чат, а не пустой вывод. В не-TTY
-  // (скрипты, CI, тесты) и при явном help — справка, как раньше.
-  // Динамический импорт: ink/react не грузятся в headless-путях CLI.
-  if (args.length === 0 && process.stdout.isTTY && process.stdin.isTTY) {
-    const { runInteractiveAgent } = await import('../agent/interactive.js');
-    return runInteractiveAgent();
-  }
-
-  // Без команды — показываем справку
+  // Без команды — показываем справку (VL-158: всегда, в т.ч. в TTY;
+  // чат с агентом перенесён в vibelog agent)
   if (!command || command === 'help') {
     return showHelp();
   }
@@ -132,7 +124,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('board', colors.cyan)} [--export]                   Канбан-доска
   ${colorize('browser', colors.cyan)} [--port N] [--no-open]      Веб-интерфейс
   ${colorize('bot', colors.cyan)}                             Telegram-бот (grammy)
-  ${colorize('agent', colors.cyan)} analyze <ref>       Анализ сессии агента (статистика/вердикт)
+  ${colorize('agent', colors.cyan)} [task-id]               Чат с LLM-агентом (TUI); analyze <ref> — анализ сессии
   ${colorize('qwen-debug', colors.cyan)}                  Дебаг-прогон qwen (ping, stream-json)
   ${colorize('search', colors.cyan)} "query" [--status ...]      Поиск задач с фильтрами
   ${colorize('instructions', colors.cyan)} [topic]               Инструкции для агентов
@@ -149,7 +141,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('help', colors.cyan)}                                Эта справка
 
 ${colorize('Алиас:', colors.bold)} vb — то же самое, что vibelog
-${colorize('Без аргументов:', colors.bold)} в интерактивном терминале запускается TUI чата с агентом
+${colorize('Без аргументов:', colors.bold)} показывается эта справка; чат с агентом — vibelog agent
 
 ${colorize('Примеры:', colors.bold)}
   vibelog init "My Project"
@@ -295,7 +287,11 @@ vibelog bot
 Команды: /tasks, /task <id>, /board`,
 
     agent: `
+vibelog agent [task-id]
 vibelog agent analyze <session-ref>
+
+Интерактивный TUI-чат с LLM-агентом (VL-158, нужен терминал):
+  task-id — карточка задачи добавляется в контекст чата
 
 Штатный разбор сессии vibelog-agent (VL-141) — CLI-паритет /analyze бота:
 статистика jsonl (длительность, wall-убийства, прогоны «Продолжи», профиль
