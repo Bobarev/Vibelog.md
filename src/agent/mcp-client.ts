@@ -23,6 +23,14 @@ import type { ToolSpec } from './tools.js';
 
 /** Опции создания клиента. */
 export interface McpClientOptions {
+  /**
+   * Произвольная команда внешнего MCP-сервера (VL-149). Задана — спавним
+   * `command commandArgs` напрямую (stdio JSON-RPC); без неё — прежний путь
+   * `bin [binArgs] mcp start` (встроенный сервер Vibelog, VL-84).
+   */
+  command?: string;
+  /** Аргументы команды внешнего сервера (VL-149). */
+  commandArgs?: string[];
   /** Команда CLI (путь к vibelog). Дефолт — VIBELOG_BIN или 'vibelog' из PATH. */
   bin?: string;
   /** Дополнительные аргументы перед 'mcp start' (в тестах — путь к bin/vibelog.mjs). */
@@ -80,9 +88,14 @@ export class McpClient {
    * ENOENT спавна → reject «MCP-сервер не запущен: …».
    */
   static async create(options: McpClientOptions): Promise<McpClient> {
-    const bin = options.bin ?? process.env.VIBELOG_BIN ?? 'vibelog';
-    const binArgs = options.binArgs ?? [];
-    const args = [...binArgs, 'mcp', 'start'];
+    // Внешний сервер (VL-149): command задан — спавним его как есть;
+    // иначе — встроенный vibelog mcp start (VL-84, обратная совместимость)
+    const isExternal = options.command !== undefined && options.command !== '';
+    const bin = isExternal ? (options.command as string) : options.bin ?? process.env.VIBELOG_BIN ?? 'vibelog';
+    const args = isExternal
+      ? options.commandArgs ?? []
+      : [...(options.binArgs ?? []), 'mcp', 'start'];
+    const commandDesc = isExternal ? `${bin} ${args.join(' ')}` : `${bin} mcp start`;
     // stdio:'pipe' — все три потока через pipe; stdin закрывается в close().
     const child = spawn(bin, args, { cwd: options.cwd, stdio: 'pipe', env: options.env });
     const client = new McpClient(child, options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS_DEFAULT);
@@ -92,7 +105,7 @@ export class McpClient {
     child.on('error', (err) => {
       // Спавн не удался (обычно ENOENT): все ожидающие запросы — reject.
       client.failAllPending(
-        new Error(`MCP-сервер не запущен: ${bin} mcp start недоступен (проверь VIBELOG_BIN / PATH): ${err.message}`),
+        new Error(`MCP-сервер не запущен: ${commandDesc} недоступен (проверь конфиг/PATH): ${err.message}`),
       );
     });
     child.on('exit', (code, signal) => {
@@ -155,7 +168,9 @@ export class McpClient {
     await this.request('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: { name: 'vibelog-agent' },
+      // name+version — обязательны у сторонних серверов (VL-149: chrome-devtools
+      // MCP отклонял initialize без clientInfo.version схемой zod)
+      clientInfo: { name: 'vibelog-agent', version: '1.0.0' },
     });
     this.notify('notifications/initialized', {});
   }
@@ -258,10 +273,14 @@ export class McpClient {
  * Проксирование MCP-инструментов в loop агента: из ToolDef сервера — в
  * ToolSpec локального формата. Handler возвращает текст модели; исключение
  * протокола — тоже текст «MCP-вызов X не выполнен: …», loop продолжает.
+ *
+ * namePrefix (VL-149) — префикс имени в ToolSpec (для внешних серверов:
+ * «chrome_devtools__navigate_page»). В сервер уходит имя БЕЗ префикса —
+ * callTool получает def.name, префикс видит только модель.
  */
-export function toolsAsSpecs(client: McpClient, defs: ToolDef[]): ToolSpec[] {
+export function toolsAsSpecs(client: McpClient, defs: ToolDef[], namePrefix = ''): ToolSpec[] {
   return defs.map((def) => ({
-    name: def.name,
+    name: namePrefix + def.name,
     description: def.description,
     inputSchema: def.inputSchema,
     handler: async (args) => {
