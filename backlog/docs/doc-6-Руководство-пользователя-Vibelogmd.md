@@ -294,6 +294,8 @@ vibelog browser            # веб-интерфейс (kanban, drag-and-drop)
 vibelog browser --port 8080 --no-open
 ```
 
+В веб-интерфейсе есть сайдбар с переключением между канбан-доской (`#/`) и страницей настроек (`#/settings`, VL-156). Страница настроек редактирует тот же `.vibelog/settings.json`, что и команда `/set` в боте: агент по умолчанию (qwen/vb), лимиты `max_wall_time`/`max_requests` (0 или пусто — сброс к дефолту агента), флаги `branch_mode`/`compact`/`code_same_session`. Секреты (env-секция, например TELEGRAM_BOT_TOKEN) в браузер не отдаются и через страницу не редактируются — только напрямую правкой файла.
+
 ---
 
 ## 11. Telegram-бот
