@@ -11,6 +11,7 @@ source_tasks:
   - VL-155
 linked_tasks:
   - VL-155
+  - VL-158
 created_date: 2026-10-14
 updated_date: 2026-10-14
 supersedes: ''
