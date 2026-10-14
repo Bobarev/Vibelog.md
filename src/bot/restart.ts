@@ -15,15 +15,34 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fileLoadedEnvKeys } from '../core/settings.js';
 
 /**
  * Абсолютный путь к CLI vibelog (bin/vibelog.mjs) из dist/bot/restart.js.
  * bin/vibelog.mjs импортирует dist/ — новый процесс исполняет свежую сборку.
+ *
+ * Внимание (VL-151): резолв идёт от location ТЕКУЩЕГО процесса — если бот
+ * запущен из worktree (`/restart VL-N`), путь указывает на worktree CLI,
+ * и пустой `/restart` «застревает» в worktree. Для возврата в main используй
+ * rootCliPath(cwd): корневой CLI резолвится от cwd процесса, который у
+ * перезапущенного через `/restart VL-N` бота остаётся главным репозиторием.
  */
 export function vibelogCliPath(): string {
   return fileURLToPath(new URL('../../bin/vibelog.mjs', import.meta.url));
+}
+
+/**
+ * Путь корневого CLI от cwd процесса: join(cwd, 'bin', 'vibelog.mjs').
+ *
+ * В отличие от vibelogCliPath (резолв от import.meta.url — при запуске
+ * из worktree указывает на worktree CLI, баг VL-151) детерминирован:
+ * у бота, перезапущенного через /restart VL-N, cwd остаётся главным
+ * репозиторием — /restart без аргументов возвращает в main dist.
+ */
+export function rootCliPath(cwd: string): string {
+  return join(cwd, 'bin', 'vibelog.mjs');
 }
 
 /**

@@ -42,7 +42,7 @@ import {
 } from './rich.js';
 import { loadBotSettings, resolveDefaultAgent, saveBotSettings } from './settings.js';
 import { commandsHelp } from './registry.js';
-import { spawnReplacementBot } from './restart.js';
+import { rootCliPath, spawnReplacementBot } from './restart.js';
 import { buildTaskWorktree, ensureTaskWorktree, taskBranchName, worktreeCliPath } from '../core/worktree.js';
 import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
 import { getRun, startAnalyze, startPhase, startPrompt, startResume, rejectTask } from '../web/orchestrator.js';
@@ -992,7 +992,11 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, parsed.error);
       return;
     }
-    let cliPath: string | undefined;
+    // Дефолт — корневой CLI от cwd, а не vibelogCliPath() от import.meta.url:
+    // после /restart VL-N процесс исполняет worktree-dist, и его import.meta.url
+    // указывает на worktree — пустой /restart оставался бы в worktree вместо
+    // возврата в main (баг VL-151). Ветка taskId ниже перезаписывает worktreeCliPath.
+    let cliPath = rootCliPath(deps.cwd);
     if (parsed.taskId) {
       const taskId = parsed.taskId;
       await sendMd(ctx, `🔧 Сборка ветки ${taskBranchName(taskId)}…`);
