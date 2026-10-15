@@ -20,11 +20,14 @@ export function KanbanColumn({
   status,
   tasks,
   runningPhases,
+  onTaskClick,
 }: {
   status: string;
   tasks: KanbanTask[];
   /** Задачи с запущенной фазой qwen (VL-28) — индикация на карточках. */
   runningPhases: Set<string>;
+  /** Клик по карточке — открыть модалку просмотра (VL-163). */
+  onTaskClick?: (task: KanbanTask) => void;
 }) {
   // Контейнер задач: сюда перетаскиваются карточки (drop-цель колонки)
   const taskDropTarget = useDroppable({
@@ -66,6 +69,7 @@ export function KanbanColumn({
             columnId={status}
             index={taskIndex}
             isRunning={runningPhases.has(task.id)}
+            onClick={onTaskClick}
           />
         ))}
       </div>
