@@ -7,7 +7,7 @@
  * мешает исправному), enabled:false, closeExternalMcpClients.
  */
 
-import { describe, it, beforeAll, afterAll } from 'vitest';
+import { describe, it, beforeAll, afterAll, beforeEach } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -31,6 +31,12 @@ function writeSettings(data) {
   mkdirSync(join(testDir, '.vibelog'), { recursive: true });
   writeFileSync(join(testDir, '.vibelog', 'settings.json'), JSON.stringify(data, null, 2), 'utf-8');
 }
+
+beforeEach(() => {
+  // VL-167: VIBELOG_CWD (branch-mode) не должен утекать между тестами —
+  // каждый тест либо не задаёт env (чистое поведение cwd), либо задаёт свой
+  delete process.env.VIBELOG_CWD;
+});
 
 beforeAll(() => {
   // Изолированный /tmp-проект (паттерн mcp-client.test.mjs)
@@ -229,5 +235,49 @@ describe('connectExternalMcpServers: подключение (VL-149)', () => {
     assert.equal(clients.length, 0);
     assert.equal(specs.length, 0);
     await closeExternalMcpClients([]); // не падает на пустом массиве
+  });
+});
+
+describe('connectExternalMcpServers: VIBELOG_CWD (VL-167 fix)', () => {
+  it('VIBELOG_CWD задан → конфиг читается из settingsCwd, спавн в cwd', async () => {
+    // Симуляция branch-mode: «главный репо» (mainDir) содержит .vibelog/settings.json,
+    // «worktree» (workDir) — нет. Оркестратор задаёт VIBELOG_CWD=главный репо.
+    const mainDir = mkdtempSync(join(tmpdir(), 'vl-167-main-'));
+    const workDir = mkdtempSync(join(tmpdir(), 'vl-167-work-'));
+    try {
+      mkdirSync(join(mainDir, '.vibelog'), { recursive: true });
+      writeFileSync(
+        join(mainDir, '.vibelog', 'settings.json'),
+        JSON.stringify({
+          mcpServers: { alpha: { command: process.execPath, args: [join(testDir, 'fake-mcp.mjs')] } },
+        }),
+        'utf-8',
+      );
+      // В workDir конфига нет — без fix здесь был бы пустой список
+      process.env.VIBELOG_CWD = mainDir;
+      const { clients, specs } = await connectExternalMcpServers(workDir);
+      try {
+        assert.equal(clients.length, 1, 'сервер подключён из конфига главного репо');
+        assert.deepEqual(specs.map((s) => s.name), ['alpha__echo']);
+      } finally {
+        await closeExternalMcpClients(clients);
+      }
+    } finally {
+      rmSync(mainDir, { recursive: true, force: true });
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
+  it('без VIBELOG_CWD — прежнее поведение: конфиг читается из cwd', async () => {
+    // testDir содержит .vibelog/settings.json (writeSettings) — проверяем,
+    // что без env сервер берётся оттуда
+    writeSettings({ mcpServers: { beta: { command: process.execPath, args: [join(testDir, 'fake-mcp.mjs')] } } });
+    const { clients, specs } = await connectExternalMcpServers(testDir);
+    try {
+      assert.equal(clients.length, 1);
+      assert.deepEqual(specs.map((s) => s.name), ['beta__echo']);
+    } finally {
+      await closeExternalMcpClients(clients);
+    }
   });
 });
