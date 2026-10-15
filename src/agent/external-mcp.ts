@@ -126,7 +126,13 @@ export function toolPrefixFor(serverName: string): string {
 export async function connectExternalMcpServers(cwd: string): Promise<ExternalMcpConnections> {
   const clients: McpClient[] = [];
   const specs: ToolSpec[] = [];
-  for (const server of loadExternalMcpServers(cwd)) {
+  // VL-167: в branch-mode фаза спавнится с cwd=worktree, а .vibelog/ в
+  // .gitignore — в worktree нет settings.json, конфиг молча пустел и
+  // внешние серверы (chrome-devtools) не подключались. Читаем конфиг из
+  // главного репо (VIBELOG_CWD задаёт оркестратор), а сами процессы
+  // серверов спавним в cwd фазы (worktree) — паттерн cli.ts:321.
+  const settingsCwd = process.env.VIBELOG_CWD ?? cwd;
+  for (const server of loadExternalMcpServers(settingsCwd)) {
     if (server.enabled === false) continue;
     try {
       const client = await McpClient.create({
