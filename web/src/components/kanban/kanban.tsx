@@ -22,6 +22,8 @@ import {
 import { RefreshCw } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { TaskModal } from '@/components/task-modal/task-modal';
+import { QUICK_CREATE_EVENT, consumeQuickCreatePending } from '@/lib/quick-create';
 
 import { fetchStatuses, fetchTasks, getTriggerStatus, patchTaskStatus, triggerPhase } from './api';
 import { KanbanColumn } from './kanban-column';
@@ -59,6 +61,12 @@ export function Kanban() {
   const [columnOrder, setColumnOrder] = React.useState<string[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  // Модалка задачи (VL-163): просмотр по клику на карточку, создание — Quick Create
+  const [modal, setModal] = React.useState<{
+    open: boolean;
+    mode: 'view' | 'create' | 'edit';
+    task: KanbanTask | null;
+  }>({ open: false, mode: 'view', task: null });
   // Задачи с запущенной фазой qwen + таймеры поллинга их завершения (VL-28)
   const [runningPhases, setRunningPhases] = React.useState<Set<string>>(new Set());
   const pollTimers = React.useRef(new Map<string, ReturnType<typeof setInterval>>());
@@ -93,6 +101,31 @@ export function Kanban() {
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  // Quick Create сайдбара (VL-163): событие — если Kanban уже смонтирован;
+  // модульный флаг — если запрос пришёл до монтирования (пользователь был
+  // на другой странице, hash только что переключился на доску)
+  React.useEffect(() => {
+    const openCreate = () => {
+      consumeQuickCreatePending(); // гасим флаг, чтобы не открыть повторно при remount
+      setModal({ open: true, mode: 'create', task: null });
+    };
+    window.addEventListener(QUICK_CREATE_EVENT, openCreate);
+    if (consumeQuickCreatePending()) {
+      queueMicrotask(openCreate);
+    }
+    return () => window.removeEventListener(QUICK_CREATE_EVENT, openCreate);
+  }, []);
+
+  /** Клик по карточке — просмотр задачи в модалке (VL-163). */
+  function openView(task: KanbanTask) {
+    setModal({ open: true, mode: 'view', task });
+  }
+
+  /** После сохранения/архивирования — перечитать доску из файлов. */
+  function handleSaved() {
+    void load();
+  }
 
   // Очистка поллинг-таймеров при размонтировании — иначе утечка setInterval
   React.useEffect(() => {
@@ -225,6 +258,7 @@ export function Kanban() {
                   status={status}
                   tasks={board[status]}
                   runningPhases={runningPhases}
+                  onTaskClick={openView}
                 />
               ))}
             </div>
@@ -244,6 +278,16 @@ export function Kanban() {
           </DragOverlay>
         </DragDropProvider>
       )}
+
+      {/* Модалка задачи (VL-163): view/create/edit; statuses — колонки доски */}
+      <TaskModal
+        open={modal.open}
+        onOpenChange={open => setModal(prev => ({ ...prev, open }))}
+        mode={modal.mode}
+        task={modal.task}
+        statuses={columnOrder}
+        onSaved={handleSaved}
+      />
     </div>
   );
 }

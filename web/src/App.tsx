@@ -15,16 +15,30 @@ import { usePreferences } from "@/components/preferences"
 import { SettingsPage } from "@/components/settings/settings"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { useHashRoute } from "@/lib/use-hash-route"
+import { QUICK_CREATE_EVENT, setQuickCreatePending } from "@/lib/quick-create"
 
 export function App() {
   const route = useHashRoute()
   const { values } = usePreferences()
 
+  /** Quick Create: вернуться на доску (модалка живёт в Kanban) и открыть её. */
+  function handleQuickCreate() {
+    window.location.hash = "#/"
+    // Флаг — для случая, когда Kanban ещё не смонтирован (другая страница);
+    // событие — когда доска уже открыта. Второе гасится потреблением флага.
+    setQuickCreatePending()
+    window.dispatchEvent(new CustomEvent(QUICK_CREATE_EVENT))
+  }
+
   return (
     <SidebarProvider>
       {/* variant/collapsible из PreferencesProvider (VL-166): spread {...props}
           в AppSidebar переопределяет дефолт collapsible="icon" */}
-      <AppSidebar variant={values.sidebar_variant} collapsible={values.sidebar_collapsible} />
+      <AppSidebar
+        variant={values.sidebar_variant}
+        collapsible={values.sidebar_collapsible}
+        onQuickCreate={handleQuickCreate}
+      />
       <SidebarInset>
         <AppHeader />
         {/* main — scroll-контейнер (flex-1), header всегда виден (VL-166) */}

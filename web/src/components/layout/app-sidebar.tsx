@@ -14,9 +14,9 @@
 
 import * as React from "react";
 
-import { Command, FolderCog, Kanban, Settings, SlidersHorizontal } from "lucide-react";
+import { Command, FolderCog, Kanban, PlusCircle, Settings, SlidersHorizontal } from "lucide-react";
 
-import { Sidebar, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarRail } from "@/components/ui/sidebar";
+import { Sidebar, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarRail } from "@/components/ui/sidebar";
 import { NavMain, type NavGroup } from "@/components/layout/nav-main";
 
 /** Группы навигации: Канбан + вложенное меню Настройки (VL-165). */
@@ -39,7 +39,13 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
-export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
+export function AppSidebar({
+  onQuickCreate,
+  ...props
+}: React.ComponentProps<typeof Sidebar> & {
+  /** Клик Quick Create — открыть модалку создания задачи (VL-163). */
+  onQuickCreate?: () => void;
+}) {
   return (
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
@@ -54,6 +60,26 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
+      {/* Quick Create — кнопка над навигацией, паттерн ref-2 (nav-main.tsx):
+          bg-primary, tooltip при свёрнутом сайдбаре (VL-163) */}
+      {onQuickCreate && (
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  tooltip="Создать задачу"
+                  onClick={onQuickCreate}
+                  className="min-w-8 bg-primary text-primary-foreground duration-200 ease-linear hover:bg-primary/90 hover:text-primary-foreground active:bg-primary/90 active:text-primary-foreground"
+                >
+                  <PlusCircle />
+                  <span>Создать задачу</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      )}
       <NavMain items={NAV_GROUPS} />
       <SidebarRail />
     </Sidebar>

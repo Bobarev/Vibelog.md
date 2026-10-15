@@ -43,6 +43,17 @@ function toKanbanTask(raw: ApiTask): KanbanTask {
   };
 }
 
+/** Поля задачи, редактируемые через модалку (VL-163). */
+export interface TaskFormPayload {
+  title: string;
+  description: string;
+  status: string;
+  priority: string;
+  due_date: string;
+  labels: string[];
+  assignee: string[];
+}
+
 /** Список задач доски. */
 export async function fetchTasks(): Promise<KanbanTask[]> {
   const res = await fetch('/api/tasks');
@@ -74,6 +85,40 @@ export async function patchTaskStatus(id: string, status: string): Promise<void>
     body: JSON.stringify({ status }),
   });
   if (!res.ok) throw new Error(`PATCH /api/tasks/${id}: ${res.status}`);
+}
+
+/** Создание задачи (модалка VL-163). Бросает при ошибке — текст показывает модалка. */
+export async function createTask(input: TaskFormPayload): Promise<KanbanTask> {
+  const res = await fetch('/api/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(errBody.error || `POST /api/tasks: ${res.status}`);
+  }
+  return toKanbanTask((await res.json()) as ApiTask);
+}
+
+/** Частичное обновление задачи (модалка VL-163). */
+export async function patchTask(id: string, patch: Partial<TaskFormPayload>): Promise<KanbanTask> {
+  const res = await fetch(`/api/tasks/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(errBody.error || `PATCH /api/tasks/${id}: ${res.status}`);
+  }
+  return toKanbanTask((await res.json()) as ApiTask);
+}
+
+/** Архивирование задачи (кнопка «Архивировать» в edit-режиме модалки, VL-163). */
+export async function archiveTask(id: string): Promise<void> {
+  const res = await fetch(`/api/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`DELETE /api/tasks/${id}: ${res.status}`);
 }
 
 /** Запуск фазы оркестратора (VL-28). Бросает при ошибке — вызывающий логирует. */

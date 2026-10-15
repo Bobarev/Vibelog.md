@@ -6,7 +6,7 @@
  * - вместо Next.js Link/usePathname — хеш-ссылки <a href="#/..."> и
  *   useHashRoute (адресная строка — единственный источник маршрута);
  * - вместо zustand/preference-store — статические пропсы items;
- * - бейджи и Quick Create не переносим (нет в Vibelog).
+ * - бейджи не переносим; Quick Create живёт в app-sidebar.tsx (VL-163).
  *
  * Пункт с subItems: развёрнутый сайдбар — Collapsible + SidebarMenuSub
  * с поворотом ChevronRight; свёрнутый до иконок (collapsible=icon) —

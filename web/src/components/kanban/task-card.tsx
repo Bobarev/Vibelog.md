@@ -57,11 +57,14 @@ export function TaskCard({
   task,
   isOverlay = false,
   isRunning = false,
+  onClick,
 }: {
   task: KanbanTask;
   isOverlay?: boolean;
   /** Идёт ли фаза qwen (VL-28) — показываем индикатор. */
   isRunning?: boolean;
+  /** Клик по карточке — модалка просмотра (VL-163). */
+  onClick?: () => void;
 }) {
   const priority = priorityConfig(task.priority);
   const PriorityIcon = priority.icon;
@@ -69,8 +72,24 @@ export function TaskCard({
 
   return (
     <article
+      onClick={onClick}
+      // Карточка кликабельна (VL-163): role=button + keyboard для a11y;
+      // курсор и hover — визуальная обратная связь
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={
+        onClick
+          ? e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
       className={cn(
         'flex flex-col gap-3 rounded-xl border bg-card p-4 text-card-foreground shadow-xs',
+        onClick && 'cursor-pointer transition-colors hover:border-ring/50 hover:bg-accent/40',
         isOverlay && 'w-68 rotate-1 shadow-lg',
       )}
     >

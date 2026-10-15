@@ -17,12 +17,15 @@ export function SortableTaskCard({
   columnId,
   index,
   isRunning = false,
+  onClick,
 }: {
   task: KanbanTask;
   columnId: string;
   index: number;
   /** Идёт ли фаза qwen для этой задачи (VL-28). */
   isRunning?: boolean;
+  /** Клик по карточке — модалка просмотра (VL-163). */
+  onClick?: (task: KanbanTask) => void;
 }) {
   const { isDragging, ref } = useSortable({
     id: task.id,
@@ -35,7 +38,7 @@ export function SortableTaskCard({
 
   return (
     <div ref={ref} className={cn('touch-none', isDragging && 'opacity-30')}>
-      <TaskCard task={task} isRunning={isRunning} />
+      <TaskCard task={task} isRunning={isRunning} onClick={onClick ? () => onClick(task) : undefined} />
     </div>
   );
 }
