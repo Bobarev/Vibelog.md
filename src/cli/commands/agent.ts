@@ -5,7 +5,8 @@
  * Подкоманды:
  * - без подкоманд / <task-id> — интерактивный TUI-чат (VL-158, перенесён
  *   из пустого запуска vibelog/VB по VL-102); с task-id задача добавляется
- *   в контекст чата;
+ *   в контекст чата; флаг --resume <session-ref> (VL-171) продолжает
+ *   сохранённую сессию чата из jsonl-хранилища;
  * - analyze — паритет бот-команды /analyze (VL-141): vibelog agent
  *   analyze <session-ref> спавнит фазу analyze через startAnalyze — тот же
  *   шаблон phase-analyze.md, та же статистика jsonl и рекомендации.
@@ -22,19 +23,34 @@ import { printError } from '../ui.js';
  *
  * @param subcommand — подкоманда (analyze, <task-id> или пусто — чат)
  * @param positional — позиционные аргументы (session-ref для analyze)
- * @param flags — флаги CLI (не используются)
+ * @param flags — флаги CLI; `resume` (VL-171) — session-ref для возобновления
+ *   TUI-чата сохранённой сессии (vb:agent-XXX либо agent-XXX)
  * @param cwd — каталог проекта (там же backlog/ и .vibelog/)
  */
 export async function runAgent(
   subcommand: string,
   positional: string[],
-  _flags: Record<string, unknown>,
+  flags: Record<string, unknown>,
   cwd: string
 ): Promise<void> {
   // Интерактивный чат (VL-158): без подкоманды либо с <task-id>.
   // TTY-check ДО getTask: в скриптах/CI чат не запускается вовсе —
   // ошибка одинакова для несуществующей задачи и pipe-запуска
   if (subcommand === '' || taskIdPattern(cwd).test(subcommand)) {
+    // VL-171: --resume <session-ref> возобновляет сохранённую сессию чата.
+    // Значение флага проверяем ДО TTY-check: boolean (флаг без значения)
+    // означает, что sessionId не задан — явная ошибка вместо тихого старта
+    // новой сессии
+    const resumeFlag = flags.resume;
+    let resume: string | undefined;
+    if (resumeFlag !== undefined) {
+      if (typeof resumeFlag !== 'string' || !resumeFlag.trim()) {
+        printError('--resume требует session-ref: vibelog agent --resume vb:agent-XXX');
+        process.exitCode = 1;
+        return;
+      }
+      resume = resumeFlag.trim();
+    }
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       printError(
         'Интерактивному чату агента нужен терминал (TTY); в скриптах используйте vibelog-agent --headless'
@@ -45,12 +61,22 @@ export async function runAgent(
     // Динамический импорт: ink/react не грузятся в headless-путях CLI
     // (паттерн router.ts) — чат тянет TUI-стек только по факту запуска
     const { runInteractiveAgent } = await import('../../agent/interactive.js');
-    return runInteractiveAgent(subcommand ? { taskRef: subcommand } : {});
+    return runInteractiveAgent({
+      ...(subcommand ? { taskRef: subcommand } : {}),
+      ...(resume !== undefined ? { resume } : {}),
+    });
   }
   if (subcommand !== 'analyze') {
     printError(
       `Неизвестная подкоманда agent: ${subcommand} (доступны: analyze, <task-id>, чат без подкоманд)`
     );
+    process.exitCode = 1;
+    return;
+  }
+  // --resume с analyze — явная ошибка: analyze запускает headless-фазу
+  // разбора jsonl, возобновление к ней неприменимо
+  if (flags.resume !== undefined) {
+    printError('--resume поддерживается только в интерактивном чате (без подкоманды analyze)');
     process.exitCode = 1;
     return;
   }

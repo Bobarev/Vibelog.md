@@ -17,6 +17,7 @@ import {
   parsePlanCommand,
   parsePromptCommand,
   parseAnalyzeCommand,
+  parseResumeCommand,
   parseRestartCommand,
   parseSetCommand,
   parseSpecCommand,
@@ -345,6 +346,77 @@ describe('parseAnalyzeCommand (VL-141)', () => {
 
   it('неизвестный суффикс :foo → error с агентами (как у prompt, VL-92)', () => {
     const e = parseAnalyzeCommand('vb:agent-123', 'analyze:foo');
+    assert.ok('error' in e);
+    assert.match(e.error, /Синтаксис/);
+  });
+});
+
+describe('parseResumeCommand (VL-171)', () => {
+  it('vb:agent-N → sessionId без префикса, agent vb, дефолтный комментарий', () => {
+    assert.deepEqual(parseResumeCommand('vb:agent-1792057147372'), {
+      sessionId: 'agent-1792057147372',
+      agent: 'vb',
+      comment: 'Продолжи',
+    });
+  });
+
+  it('голый agent-N — как vb: (префикс необязателен)', () => {
+    assert.deepEqual(parseResumeCommand('agent-123'), {
+      sessionId: 'agent-123',
+      agent: 'vb',
+      comment: 'Продолжи',
+    });
+  });
+
+  it('qwen-UUID и qwen:UUID → agent qwen; комментарий сохраняется', () => {
+    assert.deepEqual(
+      parseResumeCommand('6e3f8a9c-1234-4abc-9def-000000000000 проверь сборку'),
+      {
+        sessionId: '6e3f8a9c-1234-4abc-9def-000000000000',
+        agent: 'qwen',
+        comment: 'проверь сборку',
+      }
+    );
+    assert.deepEqual(
+      parseResumeCommand('qwen:6e3f8a9c-1234-4abc-9def-000000000000 продолжай'),
+      {
+        sessionId: '6e3f8a9c-1234-4abc-9def-000000000000',
+        agent: 'qwen',
+        comment: 'продолжай',
+      }
+    );
+  });
+
+  it('комментарий из нескольких слов целиком', () => {
+    const r = parseResumeCommand('vb:agent-5 перепиши план с учётом VL-9');
+    assert.ok(!('error' in r));
+    assert.equal(r.comment, 'перепиши план с учётом VL-9');
+  });
+
+  it('пусто и пробелы → error с подсказкой', () => {
+    for (const t of ['', '   ']) {
+      const e = parseResumeCommand(t);
+      assert.ok('error' in e, `ожидался error для "${t}"`);
+      assert.match(e.error, /Синтаксис/);
+    }
+  });
+
+  it('битый ref → error с подсказкой', () => {
+    const e = parseResumeCommand('VL-1 продолжи');
+    assert.ok('error' in e);
+    assert.match(e.error, /Синтаксис/);
+  });
+
+  it('суффикс :vb перекрывает агента по формату ref (VL-94-паттерн)', () => {
+    assert.deepEqual(parseResumeCommand('agent-77 продолжай', 'resume:vb'), {
+      sessionId: 'agent-77',
+      agent: 'vb',
+      comment: 'продолжай',
+    });
+  });
+
+  it('неизвестный суффикс :foo → error с агентами', () => {
+    const e = parseResumeCommand('vb:agent-1', 'resume:foo');
     assert.ok('error' in e);
     assert.match(e.error, /Синтаксис/);
   });

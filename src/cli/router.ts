@@ -287,11 +287,13 @@ vibelog bot
 Команды: /tasks, /task <id>, /board`,
 
     agent: `
-vibelog agent [task-id]
+vibelog agent [task-id] [--resume <session-ref>]
 vibelog agent analyze <session-ref>
 
 Интерактивный TUI-чат с LLM-агентом (VL-158, нужен терминал):
   task-id — карточка задачи добавляется в контекст чата
+  --resume <session-ref> (VL-171) — чат продолжает сохранённую сессию
+    (vb:agent-XXX либо agent-XXX; префикс vb: необязателен)
 
 Штатный разбор сессии vibelog-agent (VL-141) — CLI-паритет /analyze бота:
 статистика jsonl (длительность, wall-убийства, прогоны «Продолжи», профиль

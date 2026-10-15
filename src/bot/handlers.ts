@@ -59,6 +59,7 @@ import {
   parsePlanCommand,
   parsePromptCommand,
   parseRestartCommand,
+  parseResumeCommand,
   parseSetCommand,
   parseSpecCommand,
   parseStatusCommand,
@@ -979,10 +980,44 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     }
     await sendMd(ctx, `🔬 Анализ сессии ${escapeMarkdownV2(parsed.sessionId)} запущен, PID ${result.pid}`);
   });
+  // ── /resume — возобновление сессии агента по session-ref (VL-171) ──
+  // Штатная команда вместо reply на сообщение бота (VL-93): владелец может
+  // продолжить сессию по явному session-ref — vb:agent-XXX (встроенный
+  // агент) либо qwen-UUID, комментарий необязателен (дефолт «Продолжи»).
+  // Семантика спавна — та же, что у reply-resume: startResume (guard
+  // двойного запуска VL-145, мета worktree VL-110, блок задачи VL-137).
+  bot.command(['resume', 'resume:qwen', 'resume:vb'], async (ctx) => {
+    if (!requireBind(ctx)) return;
+    // ctx.command в grammy 1.46 отсутствует — слово команды из текста (как /prompt)
+    const raw = (ctx.message?.text ?? '').trim();
+    const commandWord = raw.split(/\s+/)[0]?.replace(/^\//, '') ?? 'resume';
+    const parsed = parseResumeCommand((ctx.match ?? '').toString(), commandWord);
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    // Resume вне жизненного цикла фаз задачи — карточка не шлётся, только
+    // информационное сообщение (паттерн reply-resume VL-93, /prompt)
+    const notifyChat = ctx.chat?.id;
+    const onExit: PhaseExitCallback = (run) => {
+      if (notifyChat === undefined) return;
+      void sendPhaseResult(bot, notifyChat, run);
+    };
+    const result = startResume(deps.cwd, parsed.sessionId, parsed.comment, onExit, parsed.agent);
+    if ('error' in result) {
+      // Guard «Запуск уже выполняется» (VL-145), битый session-ref
+      await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
+      return;
+    }
+    await sendMd(
+      ctx,
+      `🔄 Сессия возобновлена (resume ${escapeMarkdownV2(parsed.sessionId)}), PID ${result.pid}`
+    );
+  });
   // Фолбэк VL-141 для /<фаза>:<неизвестный агент>: как у /prompt — command-
   // хендлеры выше не сматчат 'analyze:foo' (только зарегистрированные имена),
-  // подсказка шлётся здесь, спавна нет
-  bot.hears(/^\/(spec|plan|code|close|comment|analyze):(\S+)/, async (ctx) => {
+  // подсказка шлётся здесь, спавна нет. resume:foo — тоже здесь (VL-171)
+  bot.hears(/^\/(spec|plan|code|close|comment|analyze|resume):(\S+)/, async (ctx) => {
     if (!requireBind(ctx)) return;
     const cmd = ctx.match?.[1] ?? 'команда';
     await sendMd(ctx, escapeMarkdownV2(`Синтаксис: /${cmd}[:agent] … (агенты: qwen, vb)`));

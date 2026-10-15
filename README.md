@@ -234,12 +234,18 @@ vibelog init "Name" --no-skills       # не создавать команды
 vibelog bot   # long-polling: /start + пин-код для привязки чата
 ```
 
-Команды: `/tasks`, `/task VL-1`, справка `/help`, `/board`, `/diff`, `/commits`, фазы `/spec`, `/plan`, `/code`, `/close`, `/comment`, `/prompt`, разбор сессии `/analyze vb:agent-XXX`, настройки `/set`, самоперезапуск `/restart`, веб-интерфейс `/web`. В карточке `/task` для задач в To Do есть кнопка «✖ Reject» (отклонение: статус Rejected + перенос в `backlog/completed/`; см. VL-144). Полный список — в [руководстве пользователя](backlog/docs/doc-6-Руководство-пользователя-Vibelogmd.md).
+Команды: `/tasks`, `/task VL-1`, справка `/help`, `/board`, `/diff`, `/commits`, фазы `/spec`, `/plan`, `/code`, `/close`, `/comment`, `/prompt`, разбор сессии `/analyze vb:agent-XXX`, возобновление сессии `/resume vb:agent-XXX [комментарий]`, настройки `/set`, самоперезапуск `/restart`, веб-интерфейс `/web`. В карточке `/task` для задач в To Do есть кнопка «✖ Reject» (отклонение: статус Rejected + перенос в `backlog/completed/`; см. VL-144). Полный список — в [руководстве пользователя](backlog/docs/doc-6-Руководство-пользователя-Vibelogmd.md).
 
 Разбор сессии агента (VL-141) доступен и без бота — CLI-паритет `/analyze`:
 
 ```bash
 vibelog agent analyze vb:agent-XXX   # статистика jsonl, вердикт, рекомендации
+```
+
+TUI-чат агента продолжает сохранённую сессию флагом `--resume` (VL-171):
+
+```bash
+vibelog agent --resume vb:agent-XXX   # чат стартует с историей сессии, ходы пишутся в тот же jsonl
 ```
 
 Если итог `/analyze` не помещается в одно сообщение Telegram (лимит 4096 символов), бот разбивает его на несколько последовательных сообщений с нумерацией «часть i/N»; короткий итог приходит одним сообщением без изменений (VL-148).
