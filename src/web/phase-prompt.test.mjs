@@ -399,6 +399,9 @@ describe('VL-157 — переносимость промптов', () => {
     assert.ok(text.includes('{{taskReferences}}'), 'блок задачи: подстановка {{taskReferences}}');
     assert.ok(text.includes('reference_add'), 'шаг 5.6: reference_add для упомянутых источников');
     assert.ok(text.includes('reference_link'), 'шаг 5.6: связь reference ↔ задача');
+    assert.ok(text.includes('reference_search'), 'шаг 5.6: поиск существующих refs перед регистрацией');
+    assert.ok(text.includes('reference_list'), 'шаг 5.6: reference_list как дополнительная проверка');
+    assert.ok(text.includes('НЕ создавай дубликат'), 'шаг 5.6: запрет дубликата reference');
     assert.ok(text.includes('"references"'), 'шаг 5: поле references в backlog_update_task');
   });
 
