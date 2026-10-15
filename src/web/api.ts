@@ -8,6 +8,7 @@
  * - PATCH /api/tasks/:id     — обновить задачу
  * - DELETE /api/tasks/:id    — архивировать задачу
  * - GET  /api/config         — конфиг проекта
+ * - PUT  /api/config         — патч конфига проекта с валидацией (VL-165)
  * - GET  /api/settings       — настройки бота/settings.json без секретов (VL-156)
  * - PUT  /api/settings       — патч настроек с валидацией (VL-156)
  * - POST /api/tasks/:id/trigger — запуск фазы оркестратора (VL-28)
@@ -18,7 +19,7 @@
 import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile } from '../core/store.js';
 import type { CreateTaskFileInput } from '../core/store.js';
 import type { Task } from '../core/task.js';
-import { loadConfig } from '../core/config.js';
+import { loadConfig, saveConfig, defaultConfig } from '../core/config.js';
 import { loadBotSettings, saveBotSettings } from '../bot/settings.js';
 import type { BotSettings } from '../bot/settings.js';
 import { startPhase, getRun, rejectTask } from './orchestrator.js';
@@ -54,6 +55,25 @@ export function handleApi(
     if (method === 'GET' && url === '/api/config') {
       const config = loadConfig(cwd);
       return { status: 200, body: config };
+    }
+
+    // PUT /api/config — патч конфига проекта backlog/config.yml (VL-165).
+    // Валидация зеркалит CLI `config set`: whitelist ключей defaultConfig,
+    // строгие типы (массивы непустых строк / boolean / числа). Неизвестный
+    // ключ или мусор → 400, файл не меняется. Запись read-modify-write через
+    // saveConfig — как у CLI, комментарии YAML не сохраняются (известное
+    // ограничение stringifyYaml).
+    if (method === 'PUT' && url === '/api/config') {
+      const validated = validateConfigPatch(body);
+      if ('error' in validated) return { status: 400, body: { error: validated.error } };
+      const config = loadConfig(cwd);
+      Object.assign(config, validated.patch);
+      // Связка default_status ∈ statuses проверяется по ИТОГОВОМУ конфигу
+      // (патч может менять оба поля разом)
+      const consistency = checkConfigConsistency(config);
+      if (consistency) return { status: 400, body: { error: consistency } };
+      saveConfig(cwd, config);
+      return { status: 200, body: loadConfig(cwd) };
     }
 
     // GET /api/settings — настройки для веб-страницы (VL-156).
@@ -206,4 +226,84 @@ function validateSettingsPatch(
     }
   }
   return { patch };
+}
+
+/** Типы ключей конфига — как в CLI config set (ARRAY/BOOLEAN/NUMBER_KEYS). */
+const CONFIG_ARRAY_KEYS = ['statuses', 'labels', 'priorities', 'types', 'definition_of_done'];
+const CONFIG_BOOLEAN_KEYS = [
+  'auto_open_browser',
+  'remote_operations',
+  'auto_commit',
+  'bypass_git_hooks',
+  'check_active_branches',
+];
+const CONFIG_NUMBER_KEYS = ['default_port', 'active_branch_days', 'max_column_width'];
+const CONFIG_STRING_KEYS = [
+  'project_name',
+  'task_prefix',
+  'default_status',
+  'date_format',
+  'default_editor',
+];
+
+/**
+ * Валидация патча конфига из PUT /api/config (VL-165) — зеркало CLI config set.
+ *
+ * Whitelist ключей — Object.keys(defaultConfig): веб не пишет в config.yml
+ * то, что доска/CLI проигнорируют. Строгие типы: массивы — только непустые
+ * строки, boolean-ключи — строго true/false, числа — Number.isFinite,
+ * строки — непустые. default_editor допускает пустую строку (дефолт —
+ * «открывать системный»).
+ *
+ * @returns patch — валидированные поля для Object.assign в конфиг,
+ *   либо error — текст ошибки (HTTP 400, файл не меняется)
+ */
+function validateConfigPatch(
+  body: Record<string, unknown> | null
+): { patch: Record<string, unknown> } | { error: string } {
+  const allowed = Object.keys(defaultConfig('x', 'x'));
+  const patch: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body ?? {})) {
+    if (!allowed.includes(key)) return { error: `Неизвестный ключ конфига: ${key}` };
+    if (CONFIG_ARRAY_KEYS.includes(key)) {
+      if (!Array.isArray(value) || value.some(v => typeof v !== 'string' || v.trim() === '')) {
+        return { error: `${key}: ожидается массив непустых строк, получено ${JSON.stringify(value)}` };
+      }
+      patch[key] = value.map(v => String(v).trim());
+    } else if (CONFIG_BOOLEAN_KEYS.includes(key)) {
+      if (typeof value !== 'boolean') {
+        return { error: `${key}: ожидается boolean, получено ${JSON.stringify(value)}` };
+      }
+      patch[key] = value;
+    } else if (CONFIG_NUMBER_KEYS.includes(key)) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) {
+        return { error: `${key}: ожидается положительное число, получено ${JSON.stringify(value)}` };
+      }
+      patch[key] = n;
+    } else if (CONFIG_STRING_KEYS.includes(key)) {
+      if (typeof value !== 'string' || (value.trim() === '' && key !== 'default_editor')) {
+        return { error: `${key}: ожидается непустая строка, получено ${JSON.stringify(value)}` };
+      }
+      patch[key] = value.trim();
+    }
+  }
+  return { patch };
+}
+
+/**
+ * Связки итогового конфига после патча (VL-165): default_status ∈ statuses.
+ *
+ * Без проверки доска получит колонку-призрак: карточки со статусом вне
+ * списка statuses не отображаются на канбане.
+ *
+ * @returns текст ошибки (HTTP 400) либо null, если конфиг консистентен
+ */
+function checkConfigConsistency(config: Record<string, unknown>): string | null {
+  const statuses = Array.isArray(config.statuses) ? config.statuses.map(String) : [];
+  const defaultStatus = typeof config.default_status === 'string' ? config.default_status : '';
+  if (defaultStatus && !statuses.includes(defaultStatus)) {
+    return `default_status "${defaultStatus}" отсутствует в statuses [${statuses.join(', ')}]`;
+  }
+  return null;
 }
