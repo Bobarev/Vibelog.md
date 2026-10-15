@@ -8,6 +8,7 @@
  */
 
 import type { Bot } from 'grammy';
+import { escapeMarkdownV2 } from './formatting.js';
 
 /**
  * Команда бота; структурно совместима с BotCommand из grammy
@@ -20,30 +21,33 @@ export interface RegistryCommand {
   description: string;
   /** Представление в help-строке /start (для /task — '/task <id>'). */
   usage?: string;
+  /** Примеры вызова для /help (VL-150); в setMyCommands не передаются. */
+  examples?: string[];
 }
 
 /** Все команды бота: имя + русское описание для меню Telegram. */
 export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'start', description: 'Привязать чат: введите код из консоли' },
+  { command: 'help', description: 'Все команды: описание и примеры (/help)' },
   { command: 'tasks', description: 'Список невыполненных задач' },
-  { command: 'task', description: 'Детали задачи: /task VL-1', usage: '/task <id>' },
+  { command: 'task', description: 'Детали задачи: /task VL-1', usage: '/task <id>', examples: ['/task VL-1'] },
   { command: 'docs', description: 'Список документов' },
-  { command: 'doc', description: 'Документ: /doc doc-1', usage: '/doc <id>' },
+  { command: 'doc', description: 'Документ: /doc doc-1', usage: '/doc <id>', examples: ['/doc doc-1'] },
   { command: 'board', description: 'Канбан-доска задач' },
   { command: 'diff', description: 'Незакоммиченные файлы (git status)' },
-  { command: 'commits', description: 'Последние коммиты git (log)', usage: '/commits [N]' },
+  { command: 'commits', description: 'Последние коммиты git (log)', usage: '/commits [N]', examples: ['/commits 10'] },
   { command: 'create', description: 'Создать задачу' },
-  { command: 'status', description: 'Сменить статус задачи' },
-  { command: 'set', description: 'Настройки бота: агент, лимиты фаз, режим веток, компакшн', usage: '/set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off>' },
-  { command: 'comment', description: 'Комментарий + Фаза Comment: /comment[:agent] VL-1 текст', usage: '/comment[:agent] VL-1 <текст>' },
-  { command: 'spec', description: 'Фаза 1 (Spec): /spec[:agent] описание фичи', usage: '/spec[:agent] <описание>' },
-  { command: 'plan', description: 'Фаза 2 (Plan): /plan[:agent] VL-<id> [комментарий]', usage: '/plan[:agent] VL-<id> [комментарий]' },
-  { command: 'code', description: 'Фаза 3 (Code): /code[:agent] VL-<id> [комментарий]', usage: '/code[:agent] VL-<id> [комментарий]' },
-  { command: 'close', description: 'Закрыть задачу (Фаза Close): /close[:agent] VL-<id>', usage: '/close[:agent] VL-<id>' },
-  { command: 'prompt', description: 'Запрос LLM без задачи: qwen или встроенный агент (/prompt:vb)', usage: '/prompt[:agent] <текст>' },
-  { command: 'analyze', description: 'Анализ сессии агента — статистика, вердикт, рекомендации: /analyze vb:agent-XXX', usage: '/analyze[:agent] <session-ref>' },
-  { command: 'restart', description: 'Перезапустить бота: /restart [VL-N] — из ветки vb/vl-N, без аргумента — из корневого dist/' },
-  { command: 'web', description: 'Веб-интерфейс: /web start [VL-N] | /web stop', usage: '/web start [VL-N] | /web stop' },
+  { command: 'status', description: 'Сменить статус задачи', examples: ['/status VL-1 In Progress'] },
+  { command: 'set', description: 'Настройки бота: агент, лимиты фаз, режим веток, компакшн', usage: '/set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off>', examples: ['/set agent vb', '/set max-wall-time 1800', '/set branch-mode on', '/set compact off'] },
+  { command: 'comment', description: 'Комментарий + Фаза Comment: /comment[:agent] VL-1 текст', usage: '/comment[:agent] VL-1 <текст>', examples: ['/comment VL-1 добавь тесты', '/comment:vb VL-1 перепиши план'] },
+  { command: 'spec', description: 'Фаза 1 (Spec): /spec[:agent] описание фичи', usage: '/spec[:agent] <описание>', examples: ['/spec добавь экспорт задач в CSV'] },
+  { command: 'plan', description: 'Фаза 2 (Plan): /plan[:agent] VL-<id> [комментарий]', usage: '/plan[:agent] VL-<id> [комментарий]', examples: ['/plan VL-12', '/plan:vb VL-12 учти замечания'] },
+  { command: 'code', description: 'Фаза 3 (Code): /code[:agent] VL-<id> [комментарий]', usage: '/code[:agent] VL-<id> [комментарий]', examples: ['/code VL-12', '/code:vb VL-12 продолжи'] },
+  { command: 'close', description: 'Закрыть задачу (Фаза Close): /close[:agent] VL-<id>', usage: '/close[:agent] VL-<id>', examples: ['/close VL-12', '/close:vb VL-12'] },
+  { command: 'prompt', description: 'Запрос LLM без задачи: qwen или встроенный агент (/prompt:vb)', usage: '/prompt[:agent] <текст>', examples: ['/prompt закоммить правки', '/prompt:vb сделай ревью'] },
+  { command: 'analyze', description: 'Анализ сессии агента — статистика, вердикт, рекомендации: /analyze vb:agent-XXX', usage: '/analyze[:agent] <session-ref>', examples: ['/analyze vb:agent-1a2b'] },
+  { command: 'restart', description: 'Перезапустить бота: /restart [VL-N] — из ветки vb/vl-N, без аргумента — из корневого dist/', examples: ['/restart', '/restart VL-12'] },
+  { command: 'web', description: 'Веб-интерфейс: /web start [VL-N] | /web stop', usage: '/web start [VL-N] | /web stop', examples: ['/web start', '/web start VL-12', '/web stop'] },
 ];
 
 /**
@@ -55,6 +59,25 @@ export function commandsHelp(): string {
     .filter((c) => c.command !== 'start')
     .map((c) => c.usage ?? '/' + c.command)
     .join(', ');
+}
+
+/**
+ * Полная справка по командам для /help (VL-150): MarkdownV2-текст собирается
+ * из реестра, а не хардкодится — новая команда автоматически появляется
+ * в справке (рассинхрон захардкоженных списков — историческая проблема VL-54).
+ * Статические строки registry содержат `<id>`, дефисы и точки — всё
+ * экранируется через escapeMarkdownV2, чтобы парсер MarkdownV2 не падал.
+ */
+export function helpText(): string {
+  const lines: string[] = [`*${escapeMarkdownV2('Команды Vibelog-бота')}*`, ''];
+  for (const c of BOT_COMMANDS) {
+    const head = escapeMarkdownV2(c.usage ?? '/' + c.command);
+    lines.push(`*${head}* — ${escapeMarkdownV2(c.description)}`);
+    for (const ex of c.examples ?? []) {
+      lines.push(`пример: ${escapeMarkdownV2(ex)}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 /**

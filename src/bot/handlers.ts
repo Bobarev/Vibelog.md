@@ -41,7 +41,7 @@ import {
   renderTasksRich,
 } from './rich.js';
 import { loadBotSettings, resolveDefaultAgent, saveBotSettings } from './settings.js';
-import { commandsHelp } from './registry.js';
+import { commandsHelp, helpText } from './registry.js';
 import { rootCliPath, spawnReplacementBot, vibelogCliPath } from './restart.js';
 import { clearWebServer, currentWebServer, parseWebCommand, spawnWebServer, stopWebServer } from './web.js';
 import { buildTaskWorktree, ensureTaskWorktree, taskBranchName, worktreeCliPath } from '../core/worktree.js';
@@ -380,6 +380,17 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       ctx,
       'Чат не привязан. Введите код привязки (отображается в консоли запущенного vibelog bot):'
     );
+  });
+
+  // /help — справка по всем командам реестра (VL-150). Без requireBind:
+  // справка не содержит данных проекта и полезна до привязки чата (как /start).
+  bot.command('help', async (ctx) => {
+    // Текст собран из BOT_COMMANDS и может приблизиться к лимиту Telegram
+    // (4096 символов) — режем по границам строк; sendMd фолбэчит на plain,
+    // если парсер MarkdownV2 отвергнет сообщение
+    for (const part of chunkRich(helpText(), TELEGRAM_TEXT_LIMIT)) {
+      await sendMd(ctx, part);
+    }
   });
 
   bot.command('tasks', async (ctx) => {
