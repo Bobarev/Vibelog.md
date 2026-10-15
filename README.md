@@ -114,7 +114,7 @@ vibelog instructions overview
 |---|---|
 | `backlog_create_task` | Создать задачу (title, priority, type, milestone, project, ordinal, finalSummary) |
 | `backlog_list_tasks` | Список задач (фильтры: status, labels, type, milestone, ready, sort) |
-| `backlog_view_task` | Просмотр задачи по ID |
+| `backlog_view_task` | Просмотр задачи по ID; опционально fields — выбор возвращаемых полей (ключи Task, напр. `["id","title","description"]`) |
 | `backlog_update_status` | Обновить статус |
 | `backlog_update_task` | Универсальное обновление полей (title, priority, type, plan, notes, final_summary) |
 | `backlog_manage_ac` | Управление AC (add/check/uncheck/remove/list; index — номер, массив или "all"; text — строка или массив) |
