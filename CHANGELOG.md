@@ -20,6 +20,8 @@
 
 ### Исправлено
 
+- **VL-168: фаза Spec не создаёт дубликатов references** — шаг 5.6 шаблона `templates/qwen-commands/phase-1.md` перед регистрацией источника обязывает выполнить дедуп: сначала `reference_search` (при необходимости `reference_list`); если найден ref с совпадающим url/path (или явно тот же источник по title) — существующий ref связывается через `reference_link` и попадает в поле references вызова `backlog_update_task`, дубликат через `reference_add` НЕ создаётся; `reference_add` — только при отсутствии совпадений. Инцидент: при запуске Spec для VL-166 источник «next-shadcn-admin-dashboard» был уже зарегистрирован (ref-2), но агент создал дубликат ref-15. Тесты: 3 новых ассерта в `src/web/phase-prompt.test.mjs` («регистрация references из текста пользователя»): `reference_search`, `reference_list`, «НЕ создавай дубликат».
+
 - **VL-160: регрессия «Tooltip must be used within TooltipProvider» после VL-156** — `SidebarProvider` (`web/src/components/ui/sidebar.tsx`) теперь оборачивает дерево в `<TooltipProvider delayDuration={0}>` (канон shadcn; context-only провайдер без DOM-узла, на вёрстку не влияет) — белый экран при загрузке веб-интерфейса устранён, hover-тултипы сайдбара в свёрнутом состоянии работают. `web/dist` пересобран и закоммичен.
 
 ## [1.8.0] — 2026-10-14
