@@ -9,19 +9,26 @@
 
 import { Kanban } from "@/components/kanban/kanban"
 import { ConfigPage } from "@/components/config/config-page"
+import { AppHeader } from "@/components/header/app-header"
 import { AppSidebar } from "@/components/layout/app-sidebar"
+import { usePreferences } from "@/components/preferences"
 import { SettingsPage } from "@/components/settings/settings"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { useHashRoute } from "@/lib/use-hash-route"
 
 export function App() {
   const route = useHashRoute()
+  const { values } = usePreferences()
 
   return (
     <SidebarProvider>
-      <AppSidebar />
+      {/* variant/collapsible из PreferencesProvider (VL-166): spread {...props}
+          в AppSidebar переопределяет дефолт collapsible="icon" */}
+      <AppSidebar variant={values.sidebar_variant} collapsible={values.sidebar_collapsible} />
       <SidebarInset>
-        <main className="min-h-svh p-2">
+        <AppHeader />
+        {/* main — scroll-контейнер (flex-1), header всегда виден (VL-166) */}
+        <main className="min-h-0 flex-1 overflow-y-auto p-2">
           {route === "settings" ? (
             <SettingsPage />
           ) : route === "config" ? (

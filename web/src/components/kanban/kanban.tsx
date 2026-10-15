@@ -194,7 +194,7 @@ export function Kanban() {
   const orderedColumns = columnOrder.filter(status => status in board);
 
   return (
-    <div className="flex h-[calc(100dvh-2rem)] min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border">
       {/* Шапка: заголовок + кнопка обновления (тулбар шаблона вне скоупа VL-27) */}
       <div className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-3 lg:px-6">
         <h1 className="font-medium text-base">Задачи</h1>

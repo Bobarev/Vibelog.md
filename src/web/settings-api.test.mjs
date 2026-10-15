@@ -64,6 +64,24 @@ describe('GET /api/settings (VL-156)', () => {
     assert.equal(res.body.settings.default_agent, 'vb');
     assert.deepEqual(res.body.settings.chats, [42]);
   });
+
+  it('git_user_name из кэша settings.json → отдан в теле (VL-166)', () => {
+    writeSettingsFile({ git_user_name: 'Pavel' });
+    const res = handleApi('GET', '/api/settings', null, cwd);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.git_user_name, 'Pavel');
+  });
+
+  it('без ключа git_user_name → fallback git config или @agent, всегда строка (VL-166)', () => {
+    // Кэш очищен — resolveGitUserName идёт в git config user.name;
+    // в tmp-каталоге репозитория нет, но глобальный ~/.gitconfig может
+    // дать реальное имя, поэтому проверяем контракт, а не конкретное значение.
+    writeSettingsFile({});
+    const res = handleApi('GET', '/api/settings', null, cwd);
+    assert.equal(res.status, 200);
+    assert.equal(typeof res.body.git_user_name, 'string');
+    assert.ok(res.body.git_user_name.length > 0, 'git_user_name — непустая строка');
+  });
 });
 
 describe('PUT /api/settings — валидация (VL-156)', () => {
