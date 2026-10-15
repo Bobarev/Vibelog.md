@@ -244,7 +244,7 @@ function checkSourcesMatch(): CheckResult {
  */
 function checkMcpToolsCount(): CheckResult {
   const tools = listTools();
-  const expected = 36;
+  const expected = 37;
   const ok = tools.length === expected;
   return {
     name: 'mcp_tools_count',

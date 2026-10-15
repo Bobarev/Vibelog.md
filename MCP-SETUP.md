@@ -30,6 +30,7 @@ Vibelog.md реализует MCP-сервер поверх stdio (JSON-RPC 2.0)
 | `reference_view` | Показать reference (метаданные, linked_tasks, тело) |
 | `reference_search` | Поиск references по запросу |
 | `reference_remove` | Удалить reference (клон в data/ сохраняется) |
+| `reference_update` | Обновить теги/описание reference (полная замена) |
 | `reference_link` | Двусторонняя связь reference ↔ задача (linked_tasks ↔ task.references) |
 | `reference_sync` | Доклонировать отсутствующие репозитории (type=repo) |
 
