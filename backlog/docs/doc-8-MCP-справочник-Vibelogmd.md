@@ -10,7 +10,7 @@ tags:
 ---
 # MCP-справочник Vibelog.md
 
-36 инструментов MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
+37 инструментов MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
 Автоматическое подключение: `vibelog init` пишет `mcpServers` в `.qwen/settings.json`
 (ручная настройка — в [MCP-SETUP.md](../MCP-SETUP.md)).
 
@@ -273,6 +273,16 @@ tags:
 |---|---|---|---|
 | `id` | string | ✓ | Клон в `data/` сохраняется |
 
+### reference_update — обновить метаданные (VL-164)
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `id` | string | ✓ | ID reference (ref-N) |
+| `tags` | string[] | | Метки (полная замена, не merge) |
+| `description` | string | | Описание (markdown, полная замена тела) |
+
+Обновляет только переданные поля. Несуществующий id — ошибка «Reference … не найден.»; вызов без `tags`/`description` — ошибка «Не указаны поля для обновления (tags, description).»
+
 ### reference_link — двусторонняя связь с задачей
 
 | Параметр | Тип | Required | Описание |
@@ -387,6 +397,11 @@ id генерируется (`lesson-N`), даты — сегодня.
 { "name": "reference_add", "arguments": {
   "title": "vibe-kanban", "type": "repo",
   "url": "https://github.com/BloopAI/vibe-kanban.git", "tags": ["orchestration"] } }
+
+// Обновить метаданные референса (VL-164)
+{ "name": "reference_update", "arguments": {
+  "id": "ref-3", "tags": ["orchestration", "kanban"],
+  "description": "Описание с канбаном и оркестрацией" } }
 
 // Связать референс с задачей
 { "name": "reference_link", "arguments": {
