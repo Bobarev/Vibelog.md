@@ -6,11 +6,13 @@ import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-import { BOT_COMMANDS, commandsHelp, syncCommands } from '../../dist/bot/registry.js';
+import { BOT_COMMANDS, commandsHelp, helpText, syncCommands } from '../../dist/bot/registry.js';
+import { chunkRich } from '../../dist/bot/rich.js';
+import { escapeMarkdownV2 } from '../../dist/bot/formatting.js';
 
 describe('BOT_COMMANDS (VL-54)', () => {
   it('реестр валиден по лимитам Telegram', () => {
-    assert.equal(BOT_COMMANDS.length, 20, `ожидалось 20 команд, получено: ${BOT_COMMANDS.length}`);
+    assert.equal(BOT_COMMANDS.length, 21, `ожидалось 21 команда, получено: ${BOT_COMMANDS.length}`);
     assert.ok(BOT_COMMANDS.length <= 100, 'лимит Telegram: не более 100 команд');
     const seen = new Set();
     for (const c of BOT_COMMANDS) {
@@ -94,7 +96,7 @@ describe('BOT_COMMANDS (VL-54)', () => {
   it('commandsHelp() повторяет прежний хардкод help-строки /start', () => {
     assert.equal(
       commandsHelp(),
-      '/tasks, /task <id>, /docs, /doc <id>, /board, /diff, /commits [N], /create, /status, /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off>, /comment[:agent] VL-1 <текст>, /spec[:agent] <описание>, /plan[:agent] VL-<id> [комментарий], /code[:agent] VL-<id> [комментарий], /close[:agent] VL-<id>, /prompt[:agent] <текст>, /analyze[:agent] <session-ref>, /restart, /web start [VL-N] | /web stop'
+      '/help, /tasks, /task <id>, /docs, /doc <id>, /board, /diff, /commits [N], /create, /status, /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off>, /comment[:agent] VL-1 <текст>, /spec[:agent] <описание>, /plan[:agent] VL-<id> [комментарий], /code[:agent] VL-<id> [комментарий], /close[:agent] VL-<id>, /prompt[:agent] <текст>, /analyze[:agent] <session-ref>, /restart, /web start [VL-N] | /web stop'
     );
   });
 
@@ -102,6 +104,41 @@ describe('BOT_COMMANDS (VL-54)', () => {
     const web = BOT_COMMANDS.find((c) => c.command === 'web');
     assert.ok(web, 'команда web отсутствует в реестре');
     assert.equal(web.usage, '/web start [VL-N] | /web stop');
+  });
+});
+
+describe('helpText (VL-150)', () => {
+  it('справка содержит заголовок и команду help', () => {
+    const text = helpText();
+    // Заголовок в MarkdownV2 — дефис экранирован (Vibelog\-бота)
+    assert.ok(text.includes(escapeMarkdownV2('Команды Vibelog-бота')), 'нет заголовка справки');
+    assert.ok(text.includes('/help'), 'команда help отсутствует в справке');
+  });
+
+  it('каждая команда реестра представлена в справке (usage или /имя)', () => {
+    const text = helpText();
+    for (const c of BOT_COMMANDS) {
+      // Справка — MarkdownV2: спецсимволы usage экранированы, сравниваем в том же виде
+      assert.ok(
+        text.includes(escapeMarkdownV2(c.usage ?? '/' + c.command)),
+        `команда ${c.command} не найдена в справке`
+      );
+    }
+  });
+
+  it('примеры set экранированы и присутствуют в справке', () => {
+    const text = helpText();
+    const set = BOT_COMMANDS.find((c) => c.command === 'set');
+    assert.ok(set?.examples?.length, 'у set нет examples');
+    for (const ex of set.examples) {
+      assert.ok(text.includes(escapeMarkdownV2(ex)), `пример "${ex}" отсутствует в справке`);
+    }
+  });
+
+  it('части справки не превышают лимит Telegram после chunkRich', () => {
+    for (const part of chunkRich(helpText(), 4096)) {
+      assert.ok(part.length <= 4096, `часть справки длиной ${part.length} > 4096`);
+    }
   });
 });
 
