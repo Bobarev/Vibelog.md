@@ -361,12 +361,14 @@ export function startPrompt(
  * @param sessionRef — session-ref бота: vb:agent-XXX либо голый agent-XXX
  * @param onExit — колбэк завершения (бот шлёт информационное сообщение)
  * @param agent — агент-исполнитель: qwen (дефолт) либо встроенный vibelog-agent
+ * @param comment — необязательный комментарий пользователя (VL-169) → {{comment}} промпта
  */
 export function startAnalyze(
   cwd: string,
   sessionRef: string,
   onExit?: PhaseExitCallback,
-  agent: 'qwen' | 'vb' = 'qwen'
+  agent: 'qwen' | 'vb' = 'qwen',
+  comment?: string
 ): StartResult {
   // Нормализация: бот присылает vb:agent-XXX (префикс vb: снимает resume);
   // CLI может передать голый agent-XXX
@@ -390,6 +392,9 @@ export function startAnalyze(
       sessionPhase: meta?.phase ?? '(неизвестна)',
       sessionCwd: meta?.cwd ?? '(неизвестен)',
       sessionPath: `.vibelog/agent-sessions/${bare}.jsonl`,
+      // VL-169: подставляем всегда (пустая строка без комментария) —
+      // иначе агент увидит literal {{comment}} в шаблоне
+      comment: comment ?? '',
     });
   } catch (err) {
     return { error: (err as Error).message };

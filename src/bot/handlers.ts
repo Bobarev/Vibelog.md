@@ -971,7 +971,8 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     };
     // Явный суффикс :<agent> перекрывает агента по умолчанию из настроек (VL-94)
     const agent = parsed.agent ?? resolveDefaultAgent(deps.cwd);
-    const result = startAnalyze(deps.cwd, parsed.sessionId, onExit, agent);
+    // VL-169: необязательный комментарий после session-ref → {{comment}} промпта
+    const result = startAnalyze(deps.cwd, parsed.sessionId, onExit, agent, parsed.comment);
     if ('error' in result) {
       // Guard «уже выполняется», некорректный session-ref, сессия не найдена
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
