@@ -114,11 +114,17 @@ export function listTools(): ToolDefinition[] {
     },
     {
       name: 'backlog_view_task',
-      description: 'Получить детали задачи по ID',
+      description: 'Получить детали задачи по ID; опционально fields — выбор возвращаемых полей (VL-162)',
       inputSchema: {
         type: 'object',
         properties: {
           id: { type: 'string', description: 'ID задачи (например back-100)' },
+          // VL-162: урезанный режим — например для фазы Spec достаточно ["id","title","description"]
+          fields: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Имена полей Task для возврата (ключи интерфейса Task, напр. ["id","title","description"]); без параметра или при пустом массиве — полное представление',
+          },
         },
         required: ['id'],
       },
@@ -753,7 +759,28 @@ function toolViewTask(args: ToolArgs, cwd: string): string {
   if (!task) {
     throw new Error(`Задача ${args.id} не найдена.`);
   }
-  return JSON.stringify(task, null, 2);
+
+  // VL-162: урезанный режим с выбором полей. Имена полей — ключи интерфейса Task;
+  // реестр не держим, Object.keys(task) всегда актуален (новые поля Task автоматически допустимы).
+  const fields = args.fields as string[] | undefined;
+  // Обратная совместимость: без fields или с пустым массивом — полное представление,
+  // как и раньше (веб-оркестратор и фазовые промпты зовут без параметров — регрессия исключена)
+  if (fields === undefined || (Array.isArray(fields) && fields.length === 0)) {
+    return JSON.stringify(task, null, 2);
+  }
+  if (!Array.isArray(fields)) {
+    throw new Error('Параметр fields должен быть массивом имён полей.');
+  }
+  // Валидация имён: неизвестное поле — ошибка с перечнем допустимых, а не тихий пропуск
+  const valid = Object.keys(task);
+  const unknown = fields.filter((f) => !valid.includes(f));
+  if (unknown.length > 0) {
+    throw new Error(`Неизвестные поля: ${unknown.join(', ')}. Допустимые: ${valid.join(', ')}.`);
+  }
+  // Порядок ключей в ответе = порядок в fields (удобно для компактного контекста)
+  const picked: Record<string, unknown> = {};
+  for (const f of fields) picked[f] = task[f as keyof Task];
+  return JSON.stringify(picked, null, 2);
 }
 
 /**
