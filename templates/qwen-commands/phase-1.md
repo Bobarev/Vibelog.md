@@ -62,9 +62,9 @@ Spec НЕ читает код и НЕ пишет план реализации, 
    - НЕ создавай labels автоматически — никаких config set от имени агента; создаёт только пользователь.
 
 5.6. Если в описании или комментарии пользователя упомянуты внешние источники (URL, репозиторий, файл, документация) — зарегистрируй их как references задачи:
-   - reference_add {"title": "<краткое название источника>", "type": "url|repo|file|doc|spec", "url|path": "<из упоминания>"};
-   - свяжи: reference_link {"referenceId": "ref-N", "taskId": "{{taskId}}"};
-   - добавь ref-N в поле references вызова backlog_update_task (шаг 5).
+   - СНАЧАЛА проверь, не зарегистрирован ли источник уже в проекте: reference_search {"query": "<название или url источника>"} (при необходимости — reference_list).
+   - Если найден ref с совпадающим url/path (или явно тот же источник по title) — НЕ создавай дубликат через reference_add: свяжи существующий: reference_link {"referenceId": "<ref-N из поиска>", "taskId": "{{taskId}}"} и добавь ЭТОТ ref-N в поле references вызова backlog_update_task (шаг 5).
+   - Только если совпадений нет — регистрируй новый: reference_add {"title": "<краткое название источника>", "type": "url|repo|file|doc|spec", "url|path": "<из упоминания>"}; затем свяжи: reference_link {"referenceId": "ref-N", "taskId": "{{taskId}}"}; добавь новый ref-N в поле references вызова backlog_update_task (шаг 5).
    - Уже связанные references (блок References из блока задачи) повторно не добавляй.
    - Содержимое референсов НЕ читай и НЕ изучай — это работа Фазы 2 (Plan).
 
