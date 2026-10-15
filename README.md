@@ -79,8 +79,9 @@ vibelog task reject LB-1 "задача больше не актуальна"
 vibelog board
 
 # Веб-интерфейс (React UI из web/dist; сборка UI: pnpm web:build)
-# Сайдбар переключает Kanban-доску и страницу настроек (#/settings):
-# те же опции, что /set в боте (.vibelog/settings.json), без секретов env
+# Сайдбар: Kanban-доска (#/) и вложенное меню «Настройки»:
+# «Бот» (#/settings — те же опции, что /set в боте, .vibelog/settings.json,
+# без секретов env) и «Конфиг проекта» (#/config — backlog/config.yml)
 # Перенос карточки в Spec/In Progress/Review запускает фазу qwen
 # (оркестратор VL-28; требуется qwen в PATH или VIBELOG_QWEN_BIN)
 # Карточка в To Do содержит кнопку «✖ Reject» — отклонение задачи

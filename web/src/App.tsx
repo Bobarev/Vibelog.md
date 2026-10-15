@@ -1,11 +1,14 @@
 /**
- * Корень веб-интерфейса (VL-156): сайдбар + контент по хеш-маршруту.
+ * Корень веб-интерфейса (VL-165): сайдбар + контент по хеш-маршруту.
  *
  * Сайдбар — постоянный (ref-2 паттерн AppSidebar + SidebarProvider);
- * контент переключается Канбан ↔ Настройки через useHashRoute (#/ ↔ #/settings).
+ * контент переключается по useHashRoute: Канбан (#/), Настройки бота
+ * (#/settings, .vibelog/settings.json, VL-156) и Конфиг проекта
+ * (#/config, backlog/config.yml, VL-165).
  */
 
 import { Kanban } from "@/components/kanban/kanban"
+import { ConfigPage } from "@/components/config/config-page"
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { SettingsPage } from "@/components/settings/settings"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
@@ -18,7 +21,15 @@ export function App() {
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <main className="min-h-svh p-2">{route === "settings" ? <SettingsPage /> : <Kanban />}</main>
+        <main className="min-h-svh p-2">
+          {route === "settings" ? (
+            <SettingsPage />
+          ) : route === "config" ? (
+            <ConfigPage />
+          ) : (
+            <Kanban />
+          )}
+        </main>
       </SidebarInset>
     </SidebarProvider>
   )

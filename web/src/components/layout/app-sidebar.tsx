@@ -1,90 +1,60 @@
 /**
- * Постоянный сайдбар веб-интерфейса (VL-156).
+ * Постоянный сайдбар веб-интерфейса (VL-156, переработан в VL-165).
  *
- * Паттерн по мотивам ref-2 (next-shadcn-admin-dashboard):
- * app-sidebar.tsx — SidebarHeader с логотипом + SidebarContent с NavMain.
- * Отличия: без Next.js Link/usePathname — хеш-ссылки <a href="#/...">;
- * без zustand/preference-store — статические пункты; footer вне скоупа.
+ * Паттерн ref-2 (next-shadcn-admin-dashboard): SidebarHeader с логотипом
+ * Command + название, SidebarContent с NavMain (группы, collapsible-подменю).
+ * Отличия: без Next.js Link — хеш-ссылки <a href="#/...">; без
+ * zustand/preference-store — статические пункты; footer вне скоупа.
  *
- * Навигация: Канбан (#/) ↔ Настройки (#/settings), адресная строка —
- * единственный источник маршрута (см. useHashRoute).
+ * Навигация (VL-165): Канбан (#/); «Настройки» — parent-пункт с подменю:
+ * «Бот» (#/settings, .vibelog/settings.json) и «Конфиг проекта» (#/config,
+ * backlog/config.yml). Развёрнутый сайдбар — Collapsible + SidebarMenuSub,
+ * свёрнутый до иконок — DropdownMenu (как Authentication в референсе).
  */
 
 import * as React from "react";
 
-import { Command, Kanban, Settings } from "lucide-react";
+import { Command, FolderCog, Kanban, Settings, SlidersHorizontal } from "lucide-react";
 
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarHeader,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarRail,
-} from "@/components/ui/sidebar";
-import { useHashRoute } from "@/lib/use-hash-route";
+import { Sidebar, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarRail } from "@/components/ui/sidebar";
+import { NavMain, type NavGroup } from "@/components/layout/nav-main";
 
-/** Пункт навигации сайдбара. */
-interface NavItem {
-  title: string;
-  url: string;
-  icon: React.ComponentType<{ className?: string }>;
-  /** Маршрут, при котором пункт активен. */
-  route: "board" | "settings";
-}
-
-const NAV_ITEMS: NavItem[] = [
-  { title: "Канбан", url: "#/", icon: Kanban, route: "board" },
-  { title: "Настройки", url: "#/settings", icon: Settings, route: "settings" },
+/** Группы навигации: Канбан + вложенное меню Настройки (VL-165). */
+const NAV_GROUPS: NavGroup[] = [
+  {
+    id: "main",
+    label: "Основное",
+    items: [
+      { id: "board", title: "Канбан", url: "board", icon: Kanban },
+      {
+        id: "settings",
+        title: "Настройки",
+        icon: Settings,
+        subItems: [
+          { id: "bot", title: "Бот", url: "settings", icon: SlidersHorizontal },
+          { id: "config", title: "Конфиг проекта", url: "config", icon: FolderCog },
+        ],
+      },
+    ],
+  },
 ];
 
 export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
-  const route = useHashRoute();
-
   return (
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" asChild>
+            <SidebarMenuButton asChild>
               <a href="#/">
-                <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
-                  <Command className="size-4" />
-                </div>
-                <div className="grid flex-1 text-left leading-tight">
-                  <span className="truncate font-semibold">Vibelog</span>
-                  <span className="truncate text-xs">таск-менеджер</span>
-                </div>
+                <Command />
+                <span className="font-semibold text-base">Vibelog</span>
               </a>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {NAV_ITEMS.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={route === item.route}
-                    tooltip={item.title}
-                  >
-                    <a href={item.url}>
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </a>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-      </SidebarContent>
+      <NavMain items={NAV_GROUPS} />
       <SidebarRail />
     </Sidebar>
   );
