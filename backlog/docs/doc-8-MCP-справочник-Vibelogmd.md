@@ -69,9 +69,10 @@ tags:
 
 ### backlog_view_task — просмотр задачи
 
-| Параметр | Тип | Required |
-|---|---|---|
-| `id` | string | ✓ |
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `id` | string | ✓ | |
+| `fields` | string[] | | Выбор возвращаемых полей Task — ключи интерфейса Task (напр. `["id","title","description"]` — контекст для фазы Spec); порядок ключей в ответе = порядок в `fields`; без параметра или при пустом массиве — полное представление (обратная совместимость); неизвестное имя — ошибка с перечнем допустимых имён (VL-162) |
 
 ### backlog_update_status — смена статуса
 
@@ -357,6 +358,10 @@ id генерируется (`lesson-N`), даты — сегодня.
 // Создать дочернюю задачу эпика (VL-69)
 { "name": "backlog_create_task", "arguments": {
   "title": "Подзадача эпика", "parentTaskId": "api-1", "type": "task" } }
+
+// Просмотр задачи: только нужные поля — экономия контекста (VL-162)
+{ "name": "backlog_view_task", "arguments": {
+  "id": "api-1", "fields": ["id", "title", "description"] } }
 
 // Пачка отметок AC
 { "name": "backlog_manage_ac", "arguments": {
