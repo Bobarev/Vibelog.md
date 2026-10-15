@@ -10,6 +10,10 @@
 
 - **VL-156: страница настроек и сайдбар в веб-интерфейсе** — веб-UI (Vite+React в `web/`) дополнен постоянным сайдбаром (shadcn Sidebar, по мотивам референса next-shadcn-admin-dashboard) с навигацией «Канбан» ↔ «Настройки» и хеш-роутингом `#/` / `#/settings` (без react-router, index.html только на `/` — сервер не менялся). Новая страница настроек редактирует тот же `.vibelog/settings.json`, что и команда `/set` в боте: default_agent (сегмент-кнопки qwen/vb), max_wall_time/max_requests (Input, 0 или пусто — сброс к дефолту агента), branch_mode/compact/code_same_session (Switch; compact по умолчанию вкл, undefined=вкл — VL-122). Backend: `GET/PUT /api/settings` в `src/web/api.ts` — GET отдаёт только валидированные поля `loadBotSettings` **без env-секции** (секреты вроде TELEGRAM_BOT_TOKEN не попадают в браузер), PUT валидирует зеркалом `/set` (неизвестные ключи → 400, файл не меняется) и пишет через `saveBotSettings` — env/chats сохраняются (VL-143). В `web/src/components/ui/` скопировано 8 shadcn-компонентов (sidebar, sheet, skeleton, tooltip, input, label, switch, card) + хук `use-mobile` — новых npm-зависимостей нет. Тесты: `src/web/settings-api.test.mjs` (7 тестов: дефолты, отсутствие env в ответе, валидация 400, сброс 0/null, сохранение env/chats). `web/dist` пересобран и закоммичен. Документация: README (раздел веб-интерфейса).
 
+### Исправлено
+
+- **VL-160: регрессия «Tooltip must be used within TooltipProvider» после VL-156** — `SidebarProvider` (`web/src/components/ui/sidebar.tsx`) теперь оборачивает дерево в `<TooltipProvider delayDuration={0}>` (канон shadcn; context-only провайдер без DOM-узла, на вёрстку не влияет) — белый экран при загрузке веб-интерфейса устранён, hover-тултипы сайдбара в свёрнутом состоянии работают. `web/dist` пересобран и закоммичен.
+
 ## [1.8.0] — 2026-10-14
 
 ### Добавлено
