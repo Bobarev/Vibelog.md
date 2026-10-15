@@ -50,11 +50,11 @@ afterAll(() => {
 });
 
 describe('VL-152 — регистрация reference_* инструментов', () => {
-  it('все 7 reference_* в listTools; всего 36 инструментов', () => {
+  it('все 8 reference_* в listTools; всего 37 инструментов', () => {
     const tools = listTools();
-    assert.equal(tools.length, 36);
+    assert.equal(tools.length, 37);
     const names = tools.map(t => t.name);
-    for (const n of ['reference_list', 'reference_add', 'reference_view', 'reference_search', 'reference_remove', 'reference_link', 'reference_sync']) {
+    for (const n of ['reference_list', 'reference_add', 'reference_view', 'reference_search', 'reference_remove', 'reference_update', 'reference_link', 'reference_sync']) {
       assert.ok(names.includes(n), `${n} не найден`);
     }
   });
@@ -168,5 +168,51 @@ describe('VL-152 — reference_link (двусторонняя связь) и bac
     await handleToolCall('backlog_update_task', { id: taskId, references: ['ref-1', 'ref-2'] }, testRoot);
     const task = JSON.parse(await handleToolCall('backlog_view_task', { id: taskId }, testRoot));
     assert.deepEqual(task.references, ['ref-1', 'ref-2']);
+  });
+});
+
+describe('VL-164 — reference_update', () => {
+  it('обновление tags — полная замена списка; видно через view и list', async () => {
+    const added = await handleToolCall('reference_add', {
+      title: 'Update target', type: 'url', url: 'https://example.com/update',
+      tags: ['a', 'b'], description: 'Старое описание',
+    }, testRoot);
+    const id = added.match(/ref-\d+/)[0];
+
+    const out = await handleToolCall('reference_update', { id, tags: ['c'] }, testRoot);
+    assert.ok(out.includes('обновлён'), out);
+
+    const view = JSON.parse(await handleToolCall('reference_view', { id }, testRoot));
+    assert.deepEqual(view.tags, ['c'], 'tags заменены полностью, без merge');
+
+    const list = JSON.parse(await handleToolCall('reference_list', {}, testRoot));
+    const found = list.find(r => r.id === id);
+    assert.deepEqual(found.tags, ['c'], 'list показывает обновлённые tags');
+  });
+
+  it('обновление description — полная замена тела; видно через view', async () => {
+    const added = await handleToolCall('reference_add', {
+      title: 'Body target', type: 'doc', path: 'docs/body.md', description: 'Старое тело',
+    }, testRoot);
+    const id = added.match(/ref-\d+/)[0];
+
+    await handleToolCall('reference_update', { id, description: 'Новое тело' }, testRoot);
+
+    const view = JSON.parse(await handleToolCall('reference_view', { id }, testRoot));
+    assert.equal(view.body, 'Новое тело', 'body заменён полностью');
+  });
+
+  it('несуществующий id → понятная ошибка на русском', async () => {
+    await assert.rejects(
+      handleToolCall('reference_update', { id: 'ref-999', tags: ['x'] }, testRoot),
+      /не найден/,
+    );
+  });
+
+  it('без полей для обновления → ошибка', async () => {
+    await assert.rejects(
+      handleToolCall('reference_update', { id: 'ref-1' }, testRoot),
+      /Не указаны поля/,
+    );
   });
 });

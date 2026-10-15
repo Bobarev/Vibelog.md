@@ -453,6 +453,19 @@ export function listTools(): ToolDefinition[] {
       },
     },
     {
+      name: 'reference_update',
+      description: 'Обновить reference: теги и/или описание (полная замена).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'ID reference (ref-N)' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Метки (полная замена)' },
+          description: { type: 'string', description: 'Описание (markdown, полная замена тела)' },
+        },
+        required: ['id'],
+      },
+    },
+    {
       name: 'reference_link',
       description: 'Двусторонняя связь reference ↔ задача: обновляет reference.linked_tasks И task.references.',
       inputSchema: {
@@ -629,6 +642,8 @@ export async function handleToolCall(name: string, args: ToolArgs, cwd: string):
       return toolReferenceSearch(args, cwd);
     case 'reference_remove':
       return toolReferenceRemove(args, cwd);
+    case 'reference_update':
+      return toolReferenceUpdate(args, cwd);
     case 'reference_link':
       return toolReferenceLink(args, cwd);
     case 'reference_sync':
@@ -1426,6 +1441,19 @@ function toolReferenceRemove(args: ToolArgs, cwd: string): string {
   const ok = removeReference(cwd, args.id as string);
   if (!ok) throw new Error(`Reference ${args.id} не найден (или файл не удалось удалить).`);
   return `Reference ${args.id} удалён (клон в data/ сохранён).`;
+}
+
+// VL-164: обновление меты reference; MCP-параметр description → UpdateReferenceInput.content
+function toolReferenceUpdate(args: ToolArgs, cwd: string): string {
+  const updates: UpdateReferenceInput = {};
+  if (args.tags !== undefined) updates.tags = args.tags as string[];
+  if (args.description !== undefined) updates.content = args.description as string;
+  if (Object.keys(updates).length === 0) {
+    throw new Error('Не указаны поля для обновления (tags, description).');
+  }
+  const entry = updateReference(cwd, args.id as string, updates);
+  if (!entry) throw new Error(`Reference ${args.id} не найден.`);
+  return `Reference ${entry.reference.id} обновлён: ${Object.keys(updates).join(', ')}`;
 }
 
 function toolReferenceLink(args: ToolArgs, cwd: string): string {
