@@ -20,6 +20,7 @@ import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile } f
 import type { CreateTaskFileInput } from '../core/store.js';
 import type { Task } from '../core/task.js';
 import { loadConfig, saveConfig, defaultConfig } from '../core/config.js';
+import { resolveGitUserName } from '../core/project-settings.js';
 import { loadBotSettings, saveBotSettings } from '../bot/settings.js';
 import type { BotSettings } from '../bot/settings.js';
 import { startPhase, getRun, rejectTask } from './orchestrator.js';
@@ -81,7 +82,13 @@ export function handleApi(
     // (TELEGRAM_BOT_TOKEN и др.) сюда не попадает — секреты не должны утекать
     // в браузер даже на localhost.
     if (method === 'GET' && url === '/api/settings') {
-      return { status: 200, body: { settings: loadBotSettings(cwd) } };
+      // git_user_name (VL-166): резолвим из кэша .vibelog/settings.json или
+      // git config → '@agent'. Нужен юзер-меню шапки. resolveGitUserName
+      // никогда не бросает (git-спавн в try/catch внутри getGitUserName).
+      return {
+        status: 200,
+        body: { settings: loadBotSettings(cwd), git_user_name: resolveGitUserName(cwd) },
+      };
     }
 
     // PUT /api/settings — патч настроек, зеркало валидации команды /set (VL-156).
