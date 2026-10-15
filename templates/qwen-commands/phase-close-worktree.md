@@ -64,6 +64,13 @@ Definition of Done (DoD): {{taskDoD}}
    - Свяжи задачу: backlog_update_task {"id": "{{taskId}}", "lessons": ["lesson-N", ...]} (полная замена списка).
    - Если lessons нет и нечего фиксировать — пропусти шаг.
 
+7.6. Закоммичи refs и lessons этой задачи в ГЛАВНОМ репо (файл задачи коммитит шаг 10 — сюда его НЕ включай):
+   - Получи ID: backlog_view_task {"id": "{{taskId}}", "fields": ["references", "lessons"]} + refs/lessons, созданные/обновлённые в этой фазе (references ставили Spec/Plan/Code через MCP в главный репо; lessons — шаг 7.5).
+   - Точные пути через ls backlog/references/<ref-N>* backlog/lessons/lesson-N* — используй выведенные пути, не угадывай slug.
+   - Сверь git status --porcelain -- <пути>; backlog/references/data/ НЕ коммити (.gitignore).
+   - Незакоммиченное — явные пути, один коммит: git add <явные пути> && git commit -m "docs(task): {{taskId}} — refs и lessons"
+   - Нечего коммитить — пропусти (пустой коммит запрещён).
+
 8. Обнови итоговую документацию в ГЛАВНОМ репо:
    - CHANGELOG.md: запись в разделе Unreleased — что сделано (из отчётов Фаз 3 и merge). Если ничего пользовательского не менялось — пропусти.
    - Если менялось поведение/форматы/CLI/промпты — обнови соответствующие документы backlog/docs.

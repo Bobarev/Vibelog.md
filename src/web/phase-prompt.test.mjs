@@ -376,6 +376,25 @@ describe('VL-153 — taskLessons', () => {
   });
 });
 
+// ── VL-170: close коммитит refs и lessons ──
+
+describe('VL-170 — close коммитит refs и lessons', () => {
+  // Инвариант по AC VL-170, добавлен осознанно — не удалять при рефакторинге (паттерн VL-142):
+  // после фазы close refs/lessons не должны оставаться незакоммиченными.
+  for (const file of ['phase-close.md', 'phase-close-worktree.md']) {
+    it(`${file}: шаг коммита refs/lessons`, () => {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      assert.ok(text.includes('refs и lessons'), `${file}: формулировка шага коммита`);
+      assert.ok(text.includes('backlog/lessons'), `${file}: путь lessons`);
+      assert.ok(text.includes('backlog/references'), `${file}: путь references`);
+      assert.ok(text.includes('git status --porcelain'), `${file}: проверка статуса перед коммитом`);
+      assert.ok(text.includes('git add <явные пути>'), `${file}: коммит только явными путями`);
+      // «никогда git add -A» — запрет в правилах; как коммит-шаг использоваться не должен
+      assert.ok(!text.replaceAll('никогда git add -A', '').includes('git add -A'), `${file}: git add -A только в запретах`);
+    });
+  }
+});
+
 // ── VL-157: переносимость промптов — без внутренних ID задач репозитория ──
 
 describe('VL-157 — переносимость промптов', () => {
