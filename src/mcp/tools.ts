@@ -179,7 +179,7 @@ export function listTools(): ToolDefinition[] {
         properties: {
           id: { type: 'string', description: 'ID задачи' },
           action: { type: 'string', enum: ['add', 'check', 'uncheck', 'remove', 'list'], description: 'Действие' },
-          text: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }], description: 'Текст критерия (для action=add); массив строк — несколько за один вызов' },
+          text: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }], description: 'Текст критерия (для action=add); массив строк — несколько за один вызов; JSON-строка массива — тоже несколько' },
           index: { anyOf: [{ type: 'number' }, { type: 'string' }, { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] } }], description: 'Номер(а) критерия с 1; строка-число ("3"); массив [1,2,3] — несколько; "all" — все пункты; строка-массив "[1, 2]" тоже принимается' },
         },
         required: ['id', 'action'],
@@ -193,7 +193,7 @@ export function listTools(): ToolDefinition[] {
         properties: {
           id: { type: 'string', description: 'ID задачи' },
           action: { type: 'string', enum: ['add', 'check', 'uncheck', 'remove', 'list'], description: 'Действие' },
-          text: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }], description: 'Текст критерия (для action=add); массив строк — несколько за один вызов' },
+          text: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }], description: 'Текст критерия (для action=add); массив строк — несколько за один вызов; JSON-строка массива — тоже несколько' },
           index: { anyOf: [{ type: 'number' }, { type: 'string' }, { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] } }], description: 'Номер(а) критерия с 1; строка-число ("3"); массив [1,2,3] — несколько; "all" — все пункты; строка-массив "[1, 2]" тоже принимается' },
         },
         required: ['id', 'action'],
@@ -817,6 +817,15 @@ function toolUpdateStatus(args: ToolArgs, cwd: string): string {
  * Поля plan/notes/append_notes/final_summary пишут в соответствующие секции тела.
  */
 function toolUpdateTask(args: ToolArgs, cwd: string): string {
+  // VL-183: валидация id на границе MCP-слоя. Схема требует id, но сервер её
+  // не проверяет: без id getTask/findTaskFilePath падают с TypeError
+  // «Cannot read properties of undefined (reading 'toLowerCase')» — модель
+  // видит невнятную ошибку вместо подсказки (инцидент VL-182).
+  const id = args.id;
+  if (typeof id !== 'string' || id.trim() === '') {
+    throw new Error('Не передан id задачи (параметр "id").');
+  }
+
   const updates: Partial<Task> = {};
 
   // Frontmatter-поля
@@ -827,7 +836,10 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
   if (args.labels !== undefined) updates.labels = args.labels as string[];
   if (args.milestone !== undefined) updates.milestone = args.milestone as string;
   if (args.status !== undefined) updates.status = args.status as string;
-  if (args.type !== undefined) updates.type = normalizeTaskType(loadConfig(cwd), args.type as string);
+  // VL-183: null ≠ «сброс» — раньше args.type === null проходил проверку
+  // !== undefined и тихо стирал type в ''. null приравнен к отсутствию
+  // (поле не трогаем); явный сброс — только пустая строка ''.
+  if (args.type !== undefined && args.type !== null) updates.type = normalizeTaskType(loadConfig(cwd), args.type as string);
   // VL-69: смена/сброс родителя; несуществующий parent — ошибка, поле не трогаем
   if (args.parentTaskId !== undefined) {
     const parent = args.parentTaskId as string;
@@ -967,21 +979,38 @@ function manageChecklist(args: ToolArgs, cwd: string, field: 'acceptanceCriteria
 
     case 'add': {
       if (!args.text) throw new Error('Для action=add требуется параметр text.');
+      // VL-183 (инцидент VL-182): модель/мост могут передать массив как
+      // JSON-строку «["A","B"]» — как index в VL-120/VL-135. Без парсинга
+      // строка целиком становилась ОДНИМ критерием-JSON. Парсим только валидный
+      // JSON-массив непустых строк; битый JSON и тексты вида «[blocker] …»
+      // уходят в scalar-ветку — обычные критерии не ломаются.
+      let text: unknown = args.text;
+      if (typeof text === 'string' && text.trim().startsWith('[')) {
+        try {
+          const parsed: unknown = JSON.parse(text.trim());
+          if (Array.isArray(parsed) && parsed.length > 0 &&
+              parsed.every(t => typeof t === 'string' && t.trim() !== '')) {
+            text = parsed;
+          }
+        } catch {
+          // Не JSON — оставляем строкой (scalar-критерий)
+        }
+      }
       // VL-135: batch-add — массив строк создаёт несколько пунктов за один вызов
       // (раньше сливалось в один критерий «B1,B2»; симметрия с батч-отметкой)
-      if (Array.isArray(args.text)) {
-        for (const t of args.text) {
+      if (Array.isArray(text)) {
+        for (const t of text) {
           if (typeof t !== 'string' || t.trim() === '') {
             throw new Error('Для action=add text — строка или массив непустых строк.');
           }
         }
-        for (const t of args.text) list.push({ text: t, checked: false });
+        for (const t of text) list.push({ text: t, checked: false });
         updateTaskFile(cwd, args.id as string, { [field]: list });
-        return `Добавлено критериев: ${args.text.length} (${args.text.join(', ')})`;
+        return `Добавлено критериев: ${text.length} (${text.join(', ')})`;
       }
-      list.push({ text: args.text as string, checked: false });
+      list.push({ text: text as string, checked: false });
       updateTaskFile(cwd, args.id as string, { [field]: list });
-      return `Добавлен критерий #${list.length}: ${args.text}`;
+      return `Добавлен критерий #${list.length}: ${text}`;
     }
 
     case 'check':

@@ -149,6 +149,56 @@ describe('VL-4 — MCP: type в create/list/update', () => {
     );
   });
 
+  // --- VL-183: валидация id/type на границе MCP (инцидент VL-182) ---
+
+  it('VL-183: update_task на задаче с пустым type не падает, type остаётся ""', async () => {
+    const t = createTaskFile(testDir, { title: 'VL183 пустой тип' });
+    assert.equal(getTask(testDir, t.id).type, '');
+    await handleToolCall('backlog_update_task', { id: t.id, title: 'VL183 пустой тип 2' }, testDir);
+    const task = getTask(testDir, t.id);
+    assert.equal(task.title, 'VL183 пустой тип 2');
+    assert.equal(task.type, '');
+  });
+
+  it('VL-183: update_task на задаче БЕЗ ключа type во frontmatter не падает (сценарий AC1)', async () => {
+    const t = createTaskFile(testDir, { title: 'VL183 ключ type удалён' });
+    // вырезаем строку type — воспроизведение исходной фикстуры инцидента VL-182
+    const file = readdirSync(tasksDirPath).find((f) => f.startsWith(t.id + ' '));
+    const filePath = join(tasksDirPath, file);
+    const raw = readFileSync(filePath, 'utf-8');
+    writeFileSync(filePath, raw.replace(/^type:.*\n/m, ''), 'utf-8');
+    assert.equal(getTask(testDir, t.id).type, '');
+    await handleToolCall('backlog_update_task', { id: t.id, labels: ['core'] }, testDir);
+    assert.equal(getTask(testDir, t.id).type, '');
+  });
+
+  it('VL-183: type: null — поле НЕ трогается (не стирается), остальные поля применяются', async () => {
+    const t = createTaskFile(testDir, { title: 'VL183 null type', type: 'bug' });
+    await handleToolCall('backlog_update_task', { id: t.id, type: null, title: 'VL183 null type 2' }, testDir);
+    const task = getTask(testDir, t.id);
+    assert.equal(task.type, 'bug');
+    assert.equal(task.title, 'VL183 null type 2');
+  });
+
+  it('VL-183: без id / с пустым id — понятная ошибка, не TypeError toLowerCase', async () => {
+    for (const bad of [{ title: 'без id' }, { id: '', title: 'пустой id' }]) {
+      await assert.rejects(
+        handleToolCall('backlog_update_task', bad, testDir),
+        (err) => {
+          assert.ok(err.message.includes('Не передан id задачи'), `неожиданное сообщение: ${err.message}`);
+          assert.ok(!/toLowerCase/.test(err.message), `сообщение содержит toLowerCase: ${err.message}`);
+          return true;
+        }
+      );
+    }
+  });
+
+  it('VL-183: type: "" — явный сброс в ""', async () => {
+    const t = createTaskFile(testDir, { title: 'VL183 сброс типа', type: 'bug' });
+    await handleToolCall('backlog_update_task', { id: t.id, type: '' }, testDir);
+    assert.equal(getTask(testDir, t.id).type, '');
+  });
+
   it('Round-trip: type переживает markdownToTask(taskToMarkdown())', async () => {
     const t = createTaskFile(testDir, { title: 'RT тип', type: 'docs' });
     const reparsed = markdownToTask(taskToMarkdown(getTask(testDir, t.id)));
