@@ -1,11 +1,11 @@
 ---
 id: VL-36
 title: 'Telegram-бот: уведомления — fs.watch на backlog/, события задач и комментариев'
-status: Backlog
+status: To Do
 assignee: []
 reporter: ''
 created_date: '2026-10-02 18:32'
-updated_date: '2026-10-03 02:37'
+updated_date: '2026-10-25 13:58'
 due_date: ''
 labels: []
 dependencies:
@@ -19,6 +19,7 @@ parent_task_id: ''
 ordinal: 0
 documentation: []
 modified_files: []
+lessons: []
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
