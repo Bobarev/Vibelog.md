@@ -19,6 +19,10 @@
  * - GET  /api/references/:id  — детали reference (метаданные + тело)
  * - PATCH /api/references/:id — обновление title/tags/url/тела (VL-174)
  * - POST /api/references/sync — клонировать отсутствующие репо (VL-174)
+ * - GET  /api/documents      — список документов без тел (VL-181)
+ * - POST /api/documents      — создать документ (VL-181)
+ * - GET  /api/documents/:id  — детали документа (метаданные + body + path)
+ * - PATCH /api/documents/:id — обновление title/type/tags/content (VL-181)
  */
 
 import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile, addComment } from '../core/store.js';
@@ -32,6 +36,15 @@ import {
   REFERENCE_TYPES,
 } from '../core/reference.js';
 import type { UpdateReferenceInput } from '../core/reference.js';
+import { findBacklogDir } from '../core/paths.js';
+import {
+  listDocuments,
+  getDocument,
+  writeDocument,
+  updateDocument,
+  DOCUMENT_TYPES,
+} from '../core/document.js';
+import type { UpdateDocumentInput } from '../core/document.js';
 import { loadConfig, saveConfig, defaultConfig } from '../core/config.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadBotSettings, saveBotSettings } from '../bot/settings.js';
@@ -174,6 +187,93 @@ export function handleApi(
       if (body?.content !== undefined) updates.content = String(body.content);
       const updated = updateReference(cwd, refMatch[1], updates);
       if (!updated) return { status: 404, body: { error: 'Reference не найден' } };
+      return { status: 200, body: updated };
+    }
+
+    // GET /api/documents — список документов (VL-181).
+    // ВАЖНО: listDocuments/getDocument/writeDocument/updateDocument принимают
+    // backlogDir, а НЕ cwd (в отличие от listReferences) — резолвим через
+    // findBacklogDir, без backlog отвечаем 400 (паттерн CLI doc/bot handlers).
+    // Тела (body) НЕ отдаём: список — только метаданные (title/type/tags/
+    // created_date); тело грузится на детальной через GET /api/documents/:id.
+    if (method === 'GET' && url === '/api/documents') {
+      const backlogDir = findBacklogDir(cwd);
+      if (!backlogDir) return { status: 400, body: { error: 'Backlog не найден. Выполните: vibelog init' } };
+      const entries = listDocuments(backlogDir);
+      return {
+        status: 200,
+        body: entries.map(e => ({ document: e.document, path: e.path })),
+      };
+    }
+
+    // POST /api/documents — создать документ (VL-181).
+    // Точное совпадение ДО regex :id ниже — иначе POST матчится как id.
+    // Предвалидация до writeDocument: мусор в type/tags ушёл бы в md-файл
+    // (normalizeDocumentType бросил бы → 500). Ошибки валидации — 400.
+    if (method === 'POST' && url === '/api/documents') {
+      const backlogDir = findBacklogDir(cwd);
+      if (!backlogDir) return { status: 400, body: { error: 'Backlog не найден. Выполните: vibelog init' } };
+      const title = typeof body?.title === 'string' ? body.title.trim() : '';
+      if (!title) return { status: 400, body: { error: 'Укажите заголовок' } };
+      if (body?.type !== undefined && body.type !== null && body.type !== '') {
+        const type = String(body.type).toLowerCase();
+        if (!DOCUMENT_TYPES.includes(type as (typeof DOCUMENT_TYPES)[number])) {
+          return {
+            status: 400,
+            body: { error: `Недопустимый тип документа "${body.type}". Допустимые: ${DOCUMENT_TYPES.join(', ')}` },
+          };
+        }
+      }
+      if (body?.tags !== undefined && body.tags !== null) {
+        if (!Array.isArray(body.tags) || body.tags.some(t => typeof t !== 'string')) {
+          return { status: 400, body: { error: 'tags — массив строк' } };
+        }
+      }
+      const doc = writeDocument(backlogDir, {
+        title,
+        type: typeof body?.type === 'string' ? body.type : undefined,
+        tags: Array.isArray(body?.tags) ? (body.tags as string[]) : undefined,
+        content: typeof body?.content === 'string' ? body.content : '',
+      });
+      return { status: 201, body: doc };
+    }
+
+    // GET/PATCH /api/documents/:id — детали и обновление документа (VL-181).
+    const docMatch = url.match(/^\/api\/documents\/([^/]+)$/);
+    if (docMatch && method === 'GET') {
+      const backlogDir = findBacklogDir(cwd);
+      if (!backlogDir) return { status: 400, body: { error: 'Backlog не найден. Выполните: vibelog init' } };
+      const entry = getDocument(backlogDir, docMatch[1]);
+      if (!entry) return { status: 404, body: { error: 'Документ не найден' } };
+      return { status: 200, body: entry };
+    }
+    if (docMatch && method === 'PATCH') {
+      const backlogDir = findBacklogDir(cwd);
+      if (!backlogDir) return { status: 400, body: { error: 'Backlog не найден. Выполните: vibelog init' } };
+      // Предвалидация до updateDocument (паттерн PATCH references): некорректный
+      // type бросил бы normalizeDocumentType → 500, мусор в tags ушёл бы в файл.
+      const updates: UpdateDocumentInput = {};
+      if (body?.type !== undefined) {
+        const type = String(body.type).toLowerCase();
+        if (!DOCUMENT_TYPES.includes(type as (typeof DOCUMENT_TYPES)[number])) {
+          return {
+            status: 400,
+            body: { error: `Недопустимый тип документа "${body.type}". Допустимые: ${DOCUMENT_TYPES.join(', ')}` },
+          };
+        }
+        updates.type = type;
+      }
+      if (body?.tags !== undefined) {
+        if (!Array.isArray(body.tags) || body.tags.some(t => typeof t !== 'string')) {
+          return { status: 400, body: { error: 'tags — массив строк' } };
+        }
+        updates.tags = body.tags as string[];
+      }
+      if (body?.title !== undefined) updates.title = String(body.title);
+      // 'content' — wire-поле тела (совпадает с UpdateDocumentInput)
+      if (body?.content !== undefined) updates.content = String(body.content);
+      const updated = updateDocument(backlogDir, docMatch[1], updates);
+      if (!updated) return { status: 404, body: { error: 'Документ не найден' } };
       return { status: 200, body: updated };
     }
 

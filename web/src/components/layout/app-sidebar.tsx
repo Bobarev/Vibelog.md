@@ -8,14 +8,16 @@
  *
  * Навигация (VL-165): Канбан (#/); «Настройки» — parent-пункт с подменю:
  * «Бот» (#/settings, .vibelog/settings.json) и «Конфиг проекта» (#/config,
- * backlog/config.yml). References (#/references, VL-174) — отдельный пункт
- * в группе «Основное», подсвечивается и на #/reference/<id> (activeWhen). Развёрнутый сайдбар — Collapsible + SidebarMenuSub,
+ * backlog/config.yml). References (#/references, VL-174) и Documents
+ * (#/documents, VL-181) — отдельные пункты в группе «Основное»,
+ * подсвечиваются и на детальных страницах #/reference/<id>, #/document/<id>
+ * (activeWhen). Развёрнутый сайдбар — Collapsible + SidebarMenuSub,
  * свёрнутый до иконок — DropdownMenu (как Authentication в референсе).
  */
 
 import * as React from "react";
 
-import { Command, FolderCog, Kanban, Library, PlusCircle, Settings, SlidersHorizontal } from "lucide-react";
+import { Command, FileText, FolderCog, Kanban, Library, PlusCircle, Settings, SlidersHorizontal } from "lucide-react";
 
 import { Sidebar, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarRail } from "@/components/ui/sidebar";
 import { NavMain, type NavGroup } from "@/components/layout/nav-main";
@@ -35,6 +37,14 @@ const NAV_GROUPS: NavGroup[] = [
         url: "references",
         icon: Library,
         activeWhen: ["references", "reference"],
+      },
+      // Documents (VL-181): активен и на детальной странице #/document/<id>
+      {
+        id: "documents",
+        title: "Documents",
+        url: "documents",
+        icon: FileText,
+        activeWhen: ["documents", "document"],
       },
       {
         id: "settings",

@@ -4,12 +4,15 @@
  * Сайдбар — постоянный (ref-2 паттерн AppSidebar + SidebarProvider);
  * контент переключается по useHashRoute: Канбан (#/), Настройки бота
  * (#/settings, .vibelog/settings.json, VL-156), Конфиг проекта
- * (#/config, backlog/config.yml, VL-165) и References (#/references,
- * #/reference/<id>, VL-174).
+ * (#/config, backlog/config.yml, VL-165), References (#/references,
+ * #/reference/<id>, VL-174) и Documents (#/documents, #/document/<id>,
+ * VL-181).
  */
 
 import { Kanban } from "@/components/kanban/kanban"
 import { ConfigPage } from "@/components/config/config-page"
+import { DocumentDetail } from "@/components/documents/document-detail"
+import { DocumentsPage } from "@/components/documents/documents-page"
 import { AppHeader } from "@/components/header/app-header"
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { usePreferences } from "@/components/preferences"
@@ -18,12 +21,13 @@ import { ReferenceDetail } from "@/components/references/reference-detail"
 import { SettingsPage } from "@/components/settings/settings"
 import { TasksPage } from "@/components/tasks/tasks-page"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
-import { useHashRoute, useReferenceId } from "@/lib/use-hash-route"
+import { useHashRoute, useReferenceId, useDocumentId } from "@/lib/use-hash-route"
 import { QUICK_CREATE_EVENT, setQuickCreatePending } from "@/lib/quick-create"
 
 export function App() {
   const route = useHashRoute()
   const refId = useReferenceId()
+  const docId = useDocumentId()
   const { values } = usePreferences()
 
   /** Quick Create: вернуться на доску (модалка живёт в Kanban) и открыть её. */
@@ -58,6 +62,10 @@ export function App() {
             <ReferencesPage />
           ) : route === "reference" ? (
             <ReferenceDetail id={refId ?? ""} />
+          ) : route === "documents" ? (
+            <DocumentsPage />
+          ) : route === "document" ? (
+            <DocumentDetail id={docId ?? ""} />
           ) : (
             <Kanban />
           )}

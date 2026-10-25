@@ -86,7 +86,11 @@ vibelog board
 # источников с type/url/tags/linked_tasks и кнопкой Sync — POST
 # /api/references/sync клонирует отсутствующие репо; #/reference/<id> —
 # просмотр title/type/url/path/tags/body/linked_tasks и редактирование
-# title/tags/url/body через PATCH /api/references/:id, VL-174) и вложенное
+# title/tags/url/body через PATCH /api/references/:id, VL-174),
+# Documents (#/documents — список документов (type/tags/created_date,
+# фильтры по type и тегам, кнопка "+ Документ" → POST /api/documents);
+# #/document/<id> — просмотр (title/type/tags/body/created_date, markdown)
+# и редактирование через PATCH /api/documents/:id, VL-181) и вложенное
 # меню «Настройки»:
 # «Бот» (#/settings — те же опции, что /set в боте, .vibelog/settings.json,
 # без секретов env) и «Конфиг проекта» (#/config — backlog/config.yml)
