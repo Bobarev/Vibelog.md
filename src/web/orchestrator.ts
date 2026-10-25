@@ -18,12 +18,19 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderPrompt, taskBlockText, taskExtraVars } from './phase-prompt.js';
 import type { Phase } from './phase-prompt.js';
-import { getTask, rejectTaskFile, wasInCode } from '../core/store.js';
+import { addComment, getTask, rejectTaskFile, wasInCode } from '../core/store.js';
 import type { Task } from '../core/task.js';
 import { ensureTaskWorktree, taskBranchName, taskWorktreeDir } from '../core/worktree.js';
 import { explainQwenParse, parseQwenResult } from './qwen-result.js';
 import type { QwenResult } from './qwen-result.js';
-import { loadBotSettings, resolveBranchMode, resolveCodeSameSession } from '../bot/settings.js';
+import {
+  loadBotSettings,
+  resolveBranchMode,
+  resolveCodeSameSession,
+  // VL-180: единый резолв агента по умолчанию — бот и веб читают
+  // default_agent из .vibelog/settings.json, а не хардкодят 'qwen'
+  resolveDefaultAgent,
+} from '../bot/settings.js';
 import { taskIdPattern } from '../core/config.js';
 import { agentSessionsDir, findTaskPhaseSessionSync, loadSessionMetaSync, saveSessionMeta } from '../agent/session.js';
 
@@ -143,7 +150,7 @@ export function startPhase(
   phase: string,
   onExit?: PhaseExitCallback,
   extraVars?: Record<string, string>,
-  agent: 'qwen' | 'vb' = 'qwen',
+  agent: 'qwen' | 'vb' = resolveDefaultAgent(cwd),
   opts?: { sameSession?: boolean }
 ): StartResult {
   // Защита HTTP-границы (VL-66): api.ts пропускает произвольный phase из
@@ -253,6 +260,56 @@ export function startPhase(
 }
 
 /**
+ * Общий запуск фазы задачи для бота и веб-API (VL-180).
+ *
+ * Единая точка «комментарий → фаза» (раньше дублировалась в api.ts trigger
+ * и в commitComment//plan//code бота): сначала addComment в задачу — ДО
+ * старта, чтобы taskExtraVars(startPhase) перечитал файл и {{taskLastComment}}
+ * close-промпта уже содержал его (VL-60/порядок как раньше); исключение
+ * addComment пробрасывается вызывающему (api → 500, бот → «Ошибка: …»).
+ *
+ * Агент: явный opts.agent → default_agent из .vibelog/settings.json
+ * (VL-180: веб больше не хардкодит 'qwen' — браузер и бот идентичны).
+ *
+ * Пустой/отсутствующий комментарий НЕ создаёт extraVars — в промпте остаётся
+ * литеральный {{comment}} с фолбэк-инструкцией шаблона (контракт VL-80 и
+ * семантика веба; шаблоны phase-1/2/3/reject/comment фолбэк поддерживают).
+ *
+ * @param cwd — рабочая директория проекта (backlog/, .vibelog/settings.json)
+ * @param taskId — ID задачи
+ * @param phase — spec | plan | code | close | comment | reject
+ * @param opts — comment: текст комментария (непустой после trim → addComment
+ *   до старта); onExit: колбэк завершения фазы; agent: явный агент
+ *   (перекрывает default_agent); sameSession: переопределение настройки
+ *   code_same_session для фазы code (VL-147)
+ * @returns StartResult — вызывающий по opts.comment сам знает, писался ли
+ *   комментарий (нужно для 409-текста api и «⚠️»-сообщений бота)
+ */
+export function startTaskPhase(
+  cwd: string,
+  taskId: string,
+  phase: string,
+  opts?: {
+    comment?: string;
+    onExit?: PhaseExitCallback;
+    agent?: 'qwen' | 'vb';
+    sameSession?: boolean;
+  }
+): StartResult {
+  // VL-180: агент — явный параметр либо default_agent проекта (fallback qwen)
+  const agent = opts?.agent ?? resolveDefaultAgent(cwd);
+  // Trim-пустой комментарий считается отсутствующим: не пишем в задачу
+  // и не подставляем в промпт (литеральный {{comment}} + фолбэк шаблона)
+  const comment = opts?.comment?.trim();
+  if (comment) {
+    addComment(cwd, taskId, comment);
+  }
+  return startPhase(cwd, taskId, phase, opts?.onExit, comment ? { comment } : undefined, agent, {
+    sameSession: opts?.sameSession,
+  });
+}
+
+/**
  * Запускает следующий close из очереди branch-mode (VL-146).
  *
  * Вызывается из wrappedExit завершившейся close-фазы. Флаг closeActive
@@ -318,7 +375,8 @@ export function rejectTask(
       opts?.onExit?.(run);
     },
     { comment: comment ?? '' },
-    opts?.agent ?? 'qwen'
+    // VL-180: без явного агента — default_agent проекта (как у бота)
+    opts?.agent ?? resolveDefaultAgent(cwd)
   );
 }
 
@@ -332,13 +390,14 @@ export function rejectTask(
  * @param cwd — рабочая директория проекта
  * @param promptText — текст запроса пользователя (подставляется в {{prompt}})
  * @param onExit — колбэк завершения (бот шлёт информационное сообщение без карточки)
- * @param agent — агент-исполнитель: qwen (дефолт) либо встроенный vibelog-agent
+ * @param agent — агент-исполнитель: дефолт — default_agent проекта (VL-180),
+ *   fallback 'qwen'; встроенный vibelog-agent
  */
 export function startPrompt(
   cwd: string,
   promptText: string,
   onExit?: PhaseExitCallback,
-  agent: 'qwen' | 'vb' = 'qwen'
+  agent: 'qwen' | 'vb' = resolveDefaultAgent(cwd)
 ): StartResult {
   let prompt: string;
   try {
@@ -372,7 +431,7 @@ export function startAnalyze(
   cwd: string,
   sessionRef: string,
   onExit?: PhaseExitCallback,
-  agent: 'qwen' | 'vb' = 'qwen',
+  agent: 'qwen' | 'vb' = resolveDefaultAgent(cwd),
   comment?: string
 ): StartResult {
   // Нормализация: бот присылает vb:agent-XXX (префикс vb: снимает resume);
@@ -437,7 +496,7 @@ export function startResume(
   sessionId: string,
   promptText: string,
   onExit?: PhaseExitCallback,
-  agent: 'qwen' | 'vb' = 'qwen'
+  agent: 'qwen' | 'vb' = resolveDefaultAgent(cwd)
 ): StartResult {
   // Фаза 'prompt' — вне жизненного цикла задачи, шаблон не подставляется;
   // resume поддержан для обоих агентов (VL-95: vb хранит сессии JSONL).

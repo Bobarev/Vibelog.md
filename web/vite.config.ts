@@ -12,6 +12,12 @@ export default defineConfig({
     proxy: {
       "/api": "http://127.0.0.1:3030",
     },
+    // VL-180: web импортирует общий модуль src/core/phase-buttons.ts за
+    // пределами web/ — dev-сервер должен отдавать файлы корня репозитория
+    // (иначе vite dev блокирует их по fs.allow; сборка web/dist это не трогает)
+    fs: {
+      allow: [resolve(import.meta.dirname, "..")],
+    },
   },
   resolve: {
     alias: {

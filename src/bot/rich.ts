@@ -19,6 +19,9 @@ import type { DocumentEntry } from '../core/document.js';
 import type { PhaseRun } from '../web/orchestrator.js';
 import { VALID_TASK_STYLES } from './settings.js';
 import { formatDuration } from './formatting.js';
+// VL-180: общий модуль «статус → следующая фаза» (core, тот же импортирует
+// веб) — локальная копия удалена, ниже по файлу идёт ре-экспорт этих имён
+import { PHASE_EMOJI, nextPhaseForStatus } from '../core/phase-buttons.js';
 
 /** Лимит Rich Message по спецификации Telegram (символов UTF-8). */
 export const RICH_LIMIT = 32768;
@@ -274,43 +277,13 @@ function checklist(items: (ChecklistItem | string)[]): string {
     .join('\n');
 }
 
-/** Следующая фаза workflow для статуса задачи (VL-72). */
-export type NextPhase = { phase: 'spec' | 'plan' | 'code' | 'close'; label: string };
-
-/**
- * Маппинг статус → следующая фаза workflow (VL-72).
- *
- * Статусы по умолчанию из config.ts; Done/Blocked/неизвестные → null —
- * фаза не запускается, кнопка в карточке не показывается.
- */
-export function nextPhaseForStatus(status: string): NextPhase | null {
-  switch (status) {
-    case 'To Do':
-      return { phase: 'spec', label: 'Spec' };
-    case 'Spec':
-      return { phase: 'plan', label: 'Plan' };
-    case 'Planned':
-    case 'In Progress':
-      return { phase: 'code', label: 'Code' };
-    case 'Review':
-      return { phase: 'close', label: 'Close' };
-    default:
-      return null;
-  }
-}
-
-/**
- * Эмодзи фазы для label кнопки следующего этапа (VL-78).
- *
- * Карта — ТОЛЬКО для кнопки rich-рендера: nextPhaseForStatus() не меняется,
- * иначе сломаются тексты уведомлений («Фаза Plan запускается…») и тесты.
- */
-export const PHASE_EMOJI: Record<NextPhase['phase'], string> = {
-  spec: '▶',
-  plan: '📋',
-  code: '💻',
-  close: '✅',
-};
+// VL-180: маппинг «статус → следующая фаза» вынесен в src/core/phase-buttons.ts —
+// один источник для бота (rich-карточка, кнопка «next:») и веб-кнопок модалки
+// (web/src/lib/phase-buttons.ts ре-экспортирует тот же модуль). Ре-экспорт
+// сохраняет публичные имена rich.js — handlers.ts и rich.test.mjs не меняются;
+// локальный import сверху нужен для внутреннего использования в этом файле.
+export { nextPhaseForStatus, PHASE_EMOJI };
+export type { NextPhase } from '../core/phase-buttons.js';
 
 /**
  * Собирает полный Rich Markdown карточки задачи.

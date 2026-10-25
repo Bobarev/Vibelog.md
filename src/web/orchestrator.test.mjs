@@ -20,9 +20,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { renderPrompt, startAnalyze, startPhase, startPrompt, startResume, getRun, setSpawnEnvBaseForTests } from '../../dist/web/orchestrator.js';
+import { renderPrompt, startAnalyze, startPhase, startPrompt, startResume, startTaskPhase, getRun, setSpawnEnvBaseForTests } from '../../dist/web/orchestrator.js';
 import { handleApi } from '../../dist/web/api.js';
-import { addComment, createTaskFile } from '../../dist/core/store.js';
+import { addComment, createTaskFile, getTask } from '../../dist/core/store.js';
 import { ensureTaskWorktree } from '../../dist/core/worktree.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { agentSessionsDir, saveSessionMeta } from '../../dist/agent/session.js';
@@ -1916,5 +1916,73 @@ process.exit(0);
       });
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  // ── VL-180: общий хелпер startTaskPhase (бот ↔ веб, единая точка входа) ──
+
+  it('startTaskPhase: непустой комментарий в файле до спавна, текст в {{comment}}', async () => {
+    resetStubEnv();
+    setStubEnv({
+      VL28_STUB_MARKER: join(testRoot, 'marker-taskphase.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+    });
+    const task = createTaskFile(testRoot, { title: 'startTaskPhase с комментарием', status: 'Planned' });
+    const res = startTaskPhase(testRoot, task.id, 'plan', { comment: 'учти edge-cases' });
+    assert.equal(res.started, true, JSON.stringify(res));
+    // Комментарий уже в файле сразу после вызова: addComment внутри хелпера
+    // выполняется ДО startPhase — taskExtraVars читает задачу уже с ним
+    const fresh = getTask(testRoot, task.id);
+    assert.equal(fresh.comments.length, 1, 'комментарий записан до спавна');
+    assert.equal(fresh.comments[0].text, 'учти edge-cases');
+    const run = await waitDone(task.id);
+    assert.equal(run.exitCode, 0, run.logTail ?? '');
+    const prompt = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8')).join(' ');
+    assert.ok(prompt.includes('учти edge-cases'), 'текст комментария подставлен в {{comment}}');
+    assert.ok(!prompt.includes('{{comment}}'), 'литеральный {{comment}} не остался');
+    resetStubEnv();
+  });
+
+  it('startTaskPhase: агент по умолчанию из настроек проекта (default_agent vb)', async () => {
+    const settingsDir = join(testRoot, '.vibelog');
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify({ default_agent: 'vb' }), 'utf-8');
+    try {
+      setStubEnv({
+        // Несуществующий qwen-бинарь: если бы агент игнорировался, спавн упал бы
+        VIBELOG_QWEN_BIN: join(testRoot, 'no-such-qwen-bin'),
+        VIBELOG_AGENT_BIN: stubBin,
+        VL28_STUB_MARKER: join(testRoot, 'marker-taskphase-vb.txt'),
+        VL28_STUB_SLEEP: '0',
+        VL28_STUB_EXIT: '0',
+      });
+      const task = createTaskFile(testRoot, { title: 'startTaskPhase vb', status: 'Spec' });
+      const res = startTaskPhase(testRoot, task.id, 'plan');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone(task.id);
+      assert.equal(run.exitCode, 0, run.logTail ?? '');
+      assert.equal(run.agent, 'vb', 'агент взят из .vibelog/settings.json, не хардкод');
+    } finally {
+      resetStubEnv();
+      rmSync(join(settingsDir, 'settings.json'), { force: true });
+    }
+  });
+
+  it('startTaskPhase: без комментария — литеральный {{comment}} в промпте (VL-80)', async () => {
+    resetStubEnv();
+    setStubEnv({
+      VL28_STUB_MARKER: join(testRoot, 'marker-taskphase-nocomment.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+    });
+    const task = createTaskFile(testRoot, { title: 'startTaskPhase без комментария', status: 'Planned' });
+    const res = startTaskPhase(testRoot, task.id, 'plan');
+    assert.equal(res.started, true, JSON.stringify(res));
+    const run = await waitDone(task.id);
+    assert.equal(run.exitCode, 0, run.logTail ?? '');
+    const prompt = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8')).join(' ');
+    assert.ok(prompt.includes('{{comment}}'), 'ожидался литеральный {{comment}} (контракт VL-80)');
+    assert.equal(getTask(testRoot, task.id).comments.length, 0, 'комментариев не добавлено');
+    resetStubEnv();
   });
 });

@@ -77,6 +77,9 @@ describe('POST /api/tasks/:id/trigger + comment (VL-172)', () => {
       env[k] = v;
     }
     env.VIBELOG_QWEN_BIN = stubBin;
+    // VL-180: и бинарь vb-агента — та же заглушка: тест default_agent=vb
+    // должен спавнить заглушку, а не настоящий bin/vibelog-agent.mjs
+    env.VIBELOG_AGENT_BIN = stubBin;
     env.VL28_STUB_MARKER = marker;
     setSpawnEnvBaseForTests(env);
   });
@@ -155,5 +158,37 @@ describe('POST /api/tasks/:id/trigger + comment (VL-172)', () => {
       comment: 'текст',
     }, testRoot);
     assert.equal(res.status, 404);
+  });
+
+  it('default_agent vb в settings.json → запуск фазы агентом vb (VL-180)', async () => {
+    // AC1: веб больше не хардкодит 'qwen' — триггер берёт агента из
+    // настроек проекта (.vibelog/settings.json), как бот (resolveDefaultAgent)
+    const settingsDir = join(testRoot, '.vibelog');
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify({ default_agent: 'vb' }), 'utf-8');
+    try {
+      const task = createTaskFile(testRoot, { title: 'Агент из настроек', status: 'Spec' });
+      const res = handleApi('POST', `/api/tasks/${task.id}/trigger`, { phase: 'plan' }, testRoot);
+      assert.equal(res.status, 202, JSON.stringify(res.body));
+      const run = await waitDone(task.id);
+      assert.equal(run.exitCode, 0, run.logTail ?? '');
+      assert.equal(run.agent, 'vb', 'агент запуска — default_agent из settings.json');
+      // Спавн шёл через VIBELOG_AGENT_BIN (заглушка): промпт записан в маркер
+      const argv = readPromptArgv();
+      assert.ok(argv.join(' ').length > 0, 'заглушка получила промпт');
+    } finally {
+      rmSync(join(settingsDir, 'settings.json'), { force: true });
+    }
+  });
+
+  it('без settings.json → агент по умолчанию qwen (регрессия VL-180)', async () => {
+    // Хронологический фолбэк resolveDefaultAgent: файла настроек нет → 'qwen'
+    rmSync(join(testRoot, '.vibelog', 'settings.json'), { force: true });
+    const task = createTaskFile(testRoot, { title: 'Дефолтный агент', status: 'Spec' });
+    const res = handleApi('POST', `/api/tasks/${task.id}/trigger`, { phase: 'plan' }, testRoot);
+    assert.equal(res.status, 202, JSON.stringify(res.body));
+    const run = await waitDone(task.id);
+    assert.equal(run.exitCode, 0, run.logTail ?? '');
+    assert.equal(run.agent, 'qwen', 'без settings.json агент — qwen, как раньше');
   });
 });
