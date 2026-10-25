@@ -25,6 +25,7 @@ import {
   taskBlockText,
 } from '../../dist/web/phase-prompt.js';
 import { addComment, createTaskFile } from '../../dist/core/store.js';
+import { DEFAULT_TASK_TYPES } from '../../dist/core/config.js';
 import { createLessonFile } from '../../dist/core/lesson.js';
 
 const templatesDir = fileURLToPath(new URL('../../templates/qwen-commands/', import.meta.url));
@@ -171,12 +172,12 @@ describe('VL-137 — taskExtraVars/taskBlockText', () => {
     return root;
   };
 
-  it('taskExtraVars: задача читается → 12 подстановок с нумерованными AC и последним комментарием', () => {
+  it('taskExtraVars: задача читается → 14 подстановок с нумерованными AC и последним комментарием', () => {
     const root = makeRoot();
     try {
       const vars = taskExtraVars(root, 'VL-901');
       assert.ok(vars, 'vars должны подобраться');
-      assert.equal(Object.keys(vars).length, 12, 'ровно 12 подстановок');
+      assert.equal(Object.keys(vars).length, 14, 'ровно 14 подстановок');
       assert.equal(vars.taskTitle, 'Заголовок VL-901');
       assert.equal(vars.taskType, 'task');
       assert.equal(vars.taskStatus, 'Planned');
@@ -274,6 +275,73 @@ describe('VL-154 — availableLabels', () => {
     const prompt = renderPrompt('spec', 'VL-902', { ...TASK_VARS, availableLabels: 'core, mcp' });
     assert.ok(prompt.includes('Доступные labels: core, mcp'), 'labels подставились в промпт');
     assert.ok(!prompt.includes('{{availableLabels}}'), 'неподставленного {{availableLabels}} не остаётся');
+  });
+});
+
+// VL-184: {{availableTypes}}/{{availablePriorities}} — типы и приоритеты
+// из backlog/config.yml для Spec-фазы
+describe('VL-184 — availableTypes/availablePriorities', () => {
+  /** Мини-проект; cfgIn — YAML-фрагмент конфига или ''. */
+  const makeRoot = (cfgIn) => {
+    const root = mkdtempSync(join(tmpdir(), 'vl184-types-'));
+    mkdirSync(join(root, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(root, 'backlog', 'config.yml'), `project_name: VL-184\n${cfgIn}`, 'utf-8');
+    createTaskFile(root, { id: 'VL-903', title: 'Задача VL-184', status: 'To Do' });
+    return root;
+  };
+
+  it('config с types/priorities → значения через запятую', () => {
+    const root = makeRoot('types:\n  - bug\n  - task\npriorities:\n  - P0\n  - P1\n');
+    try {
+      const vars = taskExtraVars(root, 'VL-903');
+      assert.ok(vars, 'vars подбираются');
+      assert.equal(vars.availableTypes, 'bug, task', 'types из конфига через запятую');
+      assert.equal(vars.availablePriorities, 'P0, P1', 'priorities из конфига через запятую');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('config без types/priorities → дефолты DEFAULT_TASK_TYPES и High/Medium/Low', () => {
+    const root = makeRoot('');
+    try {
+      const vars = taskExtraVars(root, 'VL-903');
+      assert.equal(
+        vars.availableTypes,
+        DEFAULT_TASK_TYPES.join(', '),
+        'нет types → дефолтный список (зеркало normalizeTaskType)'
+      );
+      assert.equal(vars.availablePriorities, 'High, Medium, Low', 'нет priorities → дефолт');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('битый config.yml → дефолты (fallback, фаза не падает)', () => {
+    const root = makeRoot('types: [oops\n  bad');
+    try {
+      const vars = taskExtraVars(root, 'VL-903');
+      assert.equal(vars.availableTypes, DEFAULT_TASK_TYPES.join(', '), 'битый YAML → дефолтные типы');
+      assert.equal(vars.availablePriorities, 'High, Medium, Low', 'битый YAML → дефолтные приоритеты');
+      assert.equal(vars.availableLabels, '', 'битый YAML → labels пусто (VL-154)');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('шаблон phase-1 содержит {{availableTypes}}/{{availablePriorities}}; renderPrompt без остатков', () => {
+    const text = readFileSync(join(templatesDir, 'phase-1.md'), 'utf-8');
+    assert.ok(text.includes('{{availableTypes}}'), 'phase-1.md: блок «Доступные типы»');
+    assert.ok(text.includes('{{availablePriorities}}'), 'phase-1.md: блок «Доступные приоритеты»');
+    const prompt = renderPrompt('spec', 'VL-903', {
+      ...TASK_VARS,
+      availableTypes: 'bug, task',
+      availablePriorities: 'High, Medium, Low',
+    });
+    assert.ok(prompt.includes('Доступные типы: bug, task'), 'типы подставились в промпт');
+    assert.ok(prompt.includes('Доступные приоритеты: High, Medium, Low'), 'приоритеты подставились');
+    assert.ok(!prompt.includes('{{availableTypes}}'), 'неподставленного {{availableTypes}} не остаётся');
+    assert.ok(!prompt.includes('{{availablePriorities}}'), 'неподставленного {{availablePriorities}} не остаётся');
   });
 });
 

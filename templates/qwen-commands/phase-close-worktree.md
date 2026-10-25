@@ -16,7 +16,7 @@ Definition of Done (DoD): {{taskDoD}}
 
 ## Шаги
 
-1. Определи type задачи (task или epic) и modified_files по блоку «Задача (подставлена автоматически)» выше — backlog_view_task не нужен.
+1. Определи type задачи и modified_files по блоку «Задача (подставлена автоматически)» выше — backlog_view_task не нужен. Ветвление ниже — только epic/не-epic: любой тип кроме epic ведёт себя как обычная задача.
 
 2. Проверь worktree ветки:
    git -C {{worktreeDir}} status --porcelain

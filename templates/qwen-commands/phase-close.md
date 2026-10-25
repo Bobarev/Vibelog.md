@@ -15,7 +15,7 @@ Definition of Done (DoD): {{taskDoD}}
 
 ## Шаги
 
-1. Определи type задачи (task или epic) и её modified_files по блоку «Задача (подставлена автоматически)» выше — backlog_view_task не нужен.
+1. Определи type задачи и её modified_files по блоку «Задача (подставлена автоматически)» выше — backlog_view_task не нужен. Ветвление ниже — только epic/не-epic: любой тип кроме epic ведёт себя как обычная задача.
 
 2. Если type=epic — проверь дочерних задач:
    backlog_list_tasks {"parentTaskId": "{{taskId}}"}
