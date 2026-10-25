@@ -299,6 +299,45 @@ describe('checkShellCommandInProject (VL-99)', () => {
   });
 });
 
+describe('checkShellCommandInProject: экранированные скобки (VL-179)', () => {
+  // Тот же принцип, что в VL-99: проверка лексическая, cwd фиктивный.
+  const CWD = '/tmp/vibelog-vl179-fake-project';
+
+  it('\\(main\\)-пути внутри проекта возвращают null (не reject)', () => {
+    const allowed = [
+      // 5 ложных отказов из транскрипта agent-1792916033752
+      'ls -la backlog/references/data/next-shadcn-admin-dashboard/src/app/\\(main\\)/dashboard/tasks/',
+      'cd backlog/references/data/x && grep -rn foo src/app/\\(main\\)/dashboard/tasks/_components/tasks.tsx',
+      "cd backlog/references/data/x && sed -n '1,120p' src/app/\\(main\\)/dashboard/tasks/_components/tasks.tsx",
+      'grep -rn "Tabs\\|Search\\|Filter\\|Sort" docs/src/app/\\(main\\)/dashboard/kanban/_components/kanban.tsx',
+      'grep -rn "AssigneeFilter" src/app/\\(main\\)/dashboard/tasks/_components/columns.tsx',
+      // экранирование в кавычках обоих видов + одиночный апостроф (AC-2)
+      "grep -rn 'src/app/\\(main\\)/dashboard/x.tsx' .",
+      'grep -rn "src/app/\\(main\\)/dashboard/x.tsx" .',
+      "grep foo src/it\\'s-dir",
+      // '..' ВНУТРИ проекта — не reject
+      'ls src/app/\\(main\\)/../dashboard',
+    ];
+    for (const cmd of allowed) {
+      assert.equal(checkShellCommandInProject(cmd, CWD), null, 'неожиданный отказ: ' + cmd);
+    }
+  });
+
+  it('.. наружу из \\(main\\)-пути по-прежнему отклоняется', () => {
+    assert.match(
+      checkShellCommandInProject('ls src/app/\\(main\\)/../../../../etc', CWD),
+      /Команда отклонена/,
+    );
+  });
+
+  it('истинный отказ из транскрипта (6-й кейс) сохраняется', () => {
+    assert.match(
+      checkShellCommandInProject("sed -n '1,120p' web/../../../../../web", CWD),
+      /Команда отклонена/,
+    );
+  });
+});
+
 describe('run_shell_command: команда с путями вне проекта (VL-99)', () => {
   it('ls ~ отклоняется до запуска процесса', async () => {
     const out = await byName.get('run_shell_command').handler({ command: 'ls ~' });
