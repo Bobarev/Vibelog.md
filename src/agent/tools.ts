@@ -263,6 +263,9 @@ const SPECIAL_FILES = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/
  * и regex-паттерны. Токен без метасимволов не матчится — регрессии нет.
  * Лексическая эвристика: путь с метасимволами в имени не проверяется —
  * остаточный риск сопоставим с лексической проверкой VL-99.
+ * VL-179: на вход подаётся путь после снятия экранирования скобок —
+ * `\(main\)` перестаёт выглядеть как regex-экранирование и проверяется
+ * как путь, а `\|`/`\.` в паттернах сохраняются и по-прежнему пропускаются.
  */
 function isRegexPatternToken(token: string): boolean {
   // Экранированные метасимволы regex: \|, \(, \[ и т.п.
@@ -283,6 +286,10 @@ function isRegexPatternToken(token: string): boolean {
  * наружу. Спецфайлы /dev/* и regex-паттерны grep/sed пропускаются (VL-104).
  * наружу. Лексика не закрывает динамическое построение путей (командные
  * подстановки, base64) — остаточный риск, минимизируется правилом промпта.
+ * VL-179: токенизатор учитывает shell-экранирование — `\(`, `\)`, `\'`,
+ * `\"` не разбивают токен, route-группы `src/app/\(main\)/...` проверяются
+ * как единый относительный путь; фрагменты после разбиения на разделителе
+ * не возникают и не считаются абсолютными путями.
  */
 export function checkShellCommandInProject(command: string, cwd: string): ValidateResult {
   // Отказ с одинаковым текстом для всех срабатываний проверок.
@@ -298,10 +305,19 @@ export function checkShellCommandInProject(command: string, cwd: string): Valida
     return reject('$HOME');
   }
   // Токенизация по разделителям shell; кавычки снимаются — путь внутри кавычек
-  // так же опасен, как и без них.
-  const tokens = command.match(/"[^"]*"|'[^']*'|[^\s;|&()<>]+/g) ?? [];
+  // так же опасен, как и без них. VL-179: shell-экранирование учитывается —
+  // `\(`, `\)`, `\'`, `\"` и т.п. не разбивают токен на разделителе, иначе
+  // route-группа `src/app/\(main\)/dashboard/` превращалась в фрагмент
+  // `/dashboard/...`, который ложно считался абсолютным путём вне проекта.
+  const tokens =
+    command.match(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:\\[^\s]|[^\s;|&()<>])+/g) ?? [];
   for (const raw of tokens) {
     const token = raw.replace(/^["']|["']$/g, '');
+    // VL-179: снимаем экранирование ТОЛЬКО скобок — src/app/\(main\)/...
+    // проверяется как src/app/(main)/... . Полный shell-unescape намеренно
+    // НЕ делаем: \.\. в regex-паттерне не должен превращаться в сегмент
+    // '..' (ложный reject).
+    const path = token.replace(/\\([()])/g, '$1');
     // Тилда после снятия кавычек — та же домашняя директория (~, ~/...).
     if (token === '~' || token.startsWith('~/')) return reject('~');
     // Флаги, переменные и подстановки путями не считаем — резолвить нечего.
@@ -310,21 +326,23 @@ export function checkShellCommandInProject(command: string, cwd: string): Valida
     if (SPECIAL_FILES.has(token)) continue;
     // Regex-паттерны grep/sed (VL-104): токен с метасимволами — паттерн,
     // а не путь ("/set\|max-wall-time" начинается с /, но путём не является).
-    if (isRegexPatternToken(token)) continue;
+    // VL-179: проверяем path после снятия экранирования скобок — иначе
+    // src/app/\(main\)/../.. содержал бы `\(` и пропустил бы проверку `..`.
+    if (isRegexPatternToken(path)) continue;
     // Абсолютный путь должен резолвиться внутрь проекта.
-    if (isAbsolute(token)) {
-      const rel = relative(cwd, token);
+    if (isAbsolute(path)) {
+      const rel = relative(cwd, path);
       if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-        return reject(token);
+        return reject(path);
       }
       continue;
     }
     // Относительный с ..: резолвим от cwd — src/../ok внутри, ../.. наружу.
-    if (token.split('/').includes('..')) {
-      const abs = resolve(cwd, token);
+    if (path.split('/').includes('..')) {
+      const abs = resolve(cwd, path);
       const rel = relative(cwd, abs);
       if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-        return reject(token);
+        return reject(path);
       }
     }
   }
