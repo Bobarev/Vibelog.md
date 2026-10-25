@@ -4,10 +4,18 @@
  * Текстовый substring-поиск (id/title/description/labels) и фильтры
  * точного совпадения (status/type/priority/project) — case-insensitive,
  * как в оригинале Backlog.md (task_search).
+ *
+ * Здесь же — globalSearch (VL-185): единый поиск по 4 типам сущностей
+ * (задачи/lessons/references/documents) с группировкой и лимитами; логика
+ * не дублируется в веб-слое (lesson-37 — API-хендлер только валидирует).
  */
 
+import { findBacklogDir } from './paths.js';
 import { listTasks } from './store.js';
 import type { Task } from './task.js';
+import { searchLessons } from './lesson.js';
+import { searchReferences } from './reference.js';
+import { searchDocuments } from './document.js';
 
 /** Фильтры поиска (все поля необязательны — как required: [] в оригинале). */
 export interface SearchFilters {
@@ -96,4 +104,130 @@ export function searchTasks(cwd: string, filters: SearchFilters | string = {}): 
   }
 
   return tasks;
+}
+
+/** Лимит результатов на один тип сущности в глобальном поиске (VL-185). */
+const SEARCH_PER_TYPE_LIMIT = 5;
+/** Общий лимит результатов глобального поиска (VL-185). */
+const SEARCH_TOTAL_LIMIT = 20;
+
+/** Слим-хит задачи в глобальном поиске: метаданные без description/планов. */
+export interface SearchTaskHit {
+  id: string;
+  title: string;
+  type: string;
+  status: string;
+  priority: string;
+  labels: string[];
+}
+
+/** Слим-хит lesson: метаданные без body. */
+export interface SearchLessonHit {
+  id: string;
+  title: string;
+  status: string;
+  tags: string[];
+}
+
+/** Слим-хит reference: метаданные без body. */
+export interface SearchReferenceHit {
+  id: string;
+  title: string;
+  type: string;
+  /** Может быть пустой строкой у path-референсов без url. */
+  url: string;
+  tags: string[];
+}
+
+/** Слим-хит документа: метаданные без body. */
+export interface SearchDocumentHit {
+  id: string;
+  title: string;
+  type: string;
+  tags: string[];
+}
+
+/** Сгруппированный ответ глобального поиска (GET /api/search, VL-185). */
+export interface GlobalSearchResults {
+  query: string;
+  tasks: SearchTaskHit[];
+  lessons: SearchLessonHit[];
+  references: SearchReferenceHit[];
+  documents: SearchDocumentHit[];
+}
+
+/**
+ * Глобальный поиск по 4 типам сущностей (VL-185): задачи, lessons,
+ * references, documents. Decisions НЕ ищутся (не используются активно).
+ *
+ * Каждая группа ограничена SEARCH_PER_TYPE_LIMIT, суммарно —
+ * SEARCH_TOTAL_LIMIT: лимит задач = min(найдено, TOTAL − остальные_группы),
+ * поэтому при пустых остальных группах задачи дорастают до 20 (спека:
+ * «если общее меньше 20, а задач больше 5 — увеличить»).
+ *
+ * Пустой запрос или отсутствующий backlog → пустые группы (200, не ошибка):
+ * searchLessons/searchReferences бросают без backlog (requireBacklogDir),
+ * поэтому предпроверка здесь обязательна.
+ *
+ * @param cwd — рабочая директория проекта
+ * @param query — поисковый запрос (substring, case-insensitive)
+ */
+export function globalSearch(cwd: string, query: string): GlobalSearchResults {
+  const empty = (): GlobalSearchResults => ({
+    query,
+    tasks: [],
+    lessons: [],
+    references: [],
+    documents: [],
+  });
+
+  const q = (query ?? '').trim();
+  if (!q) return empty();
+
+  const backlogDir = findBacklogDir(cwd);
+  if (!backlogDir) return empty();
+
+  // Группы сущностей ≤ PER_TYPE; searchLessons/searchReferences резолвят
+  // backlog сами, но requireBacklogDir бросил бы без предпроверки выше
+  const lessons = searchLessons(cwd, q).slice(0, SEARCH_PER_TYPE_LIMIT);
+  const references = searchReferences(cwd, q).slice(0, SEARCH_PER_TYPE_LIMIT);
+  const documents = searchDocuments(backlogDir, q).slice(0, SEARCH_PER_TYPE_LIMIT);
+  const others = lessons.length + references.length + documents.length;
+
+  // Задачи добираются до TOTAL − others (спека VL-185); минус 0 не бывает —
+  // others ≤ 3×5 = 15 < 20, но защищаемся на случай смены лимитов
+  const tasksAll = searchTasks(cwd, { query: q });
+  const taskLimit = Math.max(0, Math.min(tasksAll.length, SEARCH_TOTAL_LIMIT - others));
+  const tasks = tasksAll.slice(0, taskLimit);
+
+  return {
+    query,
+    tasks: tasks.map(t => ({
+      id: t.id,
+      title: t.title,
+      type: t.type,
+      status: t.status,
+      priority: t.priority,
+      labels: t.labels ?? [],
+    })),
+    lessons: lessons.map(e => ({
+      id: e.lesson.id,
+      title: e.lesson.title,
+      status: e.lesson.status,
+      tags: e.lesson.tags ?? [],
+    })),
+    references: references.map(e => ({
+      id: e.reference.id,
+      title: e.reference.title,
+      type: e.reference.type,
+      url: e.reference.url ?? '',
+      tags: e.reference.tags ?? [],
+    })),
+    documents: documents.map(e => ({
+      id: e.document.id,
+      title: e.document.title,
+      type: e.document.type,
+      tags: e.document.tags ?? [],
+    })),
+  };
 }

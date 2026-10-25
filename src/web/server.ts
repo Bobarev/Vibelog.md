@@ -32,7 +32,10 @@ const webDistDir = fileURLToPath(new URL('../../web/dist', import.meta.url));
  */
 export function startWebServer(cwd: string, port = 3030, openBrowser = true, staticDir: string = webDistDir): Server {
   const server = createServer((req, res) => {
-    const url = (req.url ?? '').split('?')[0];
+    // Сырой URL сохраняем ДО отрезки '?': handleApi получает query string
+    // отдельным 5-м параметром (VL-185 — GET /api/search?q=...)
+    const rawUrl = req.url ?? '';
+    const url = rawUrl.split('?')[0];
     // '' не совпадает ни с одним эндпоинтом — тот же 404, что и у undefined
     const method = req.method || '';
 
@@ -58,7 +61,8 @@ export function startWebServer(cwd: string, port = 3030, openBrowser = true, sta
           try { parsed = JSON.parse(body); } catch { /* ignore */ }
         }
 
-        const result = handleApi(method, url, parsed, cwd);
+        const queryString = rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?') + 1) : '';
+        const result = handleApi(method, url, parsed, cwd, queryString);
         res.writeHead(result.status, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(result.body));
       });
