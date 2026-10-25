@@ -166,6 +166,36 @@ describe('MCP v1.1 — инструменты', () => {
     assert.ok(result.includes('К1'));
   });
 
+  // --- VL-183: add принимает JSON-строку массива (инцидент VL-182) ---
+
+  it('manage_ac: add с JSON-строкой массива добавляет каждый элемент отдельным критерием', async () => {
+    const t = createTaskFile(testDir, { title: 'AC VL-183 json' });
+    const res = await handleToolCall('backlog_manage_ac', { id: t.id, action: 'add', text: '["К1", "К2"]' }, testDir);
+    const task = getTask(testDir, t.id);
+    assert.equal(task.acceptanceCriteria.length, 2, JSON.stringify(task.acceptanceCriteria));
+    assert.equal(task.acceptanceCriteria[0].text, 'К1');
+    assert.equal(task.acceptanceCriteria[1].text, 'К2');
+    assert.ok(!task.acceptanceCriteria.some((c) => c.text.startsWith('[')), 'JSON записан одним критерием');
+    assert.ok(res.includes('Добавлено критериев: 2'), res);
+  });
+
+  it('manage_ac: add с реальным массивом — каждый элемент отдельным критерием (регресс VL-135)', async () => {
+    const t = createTaskFile(testDir, { title: 'AC VL-183 array' });
+    await handleToolCall('backlog_manage_ac', { id: t.id, action: 'add', text: ['К1', 'К2'] }, testDir);
+    const task = getTask(testDir, t.id);
+    assert.equal(task.acceptanceCriteria.length, 2);
+    assert.equal(task.acceptanceCriteria[0].text, 'К1');
+    assert.equal(task.acceptanceCriteria[1].text, 'К2');
+  });
+
+  it('manage_ac: add с текстом «[blocker] …» — scalar-фолбэк, не ломается', async () => {
+    const t = createTaskFile(testDir, { title: 'AC VL-183 bracket' });
+    await handleToolCall('backlog_manage_ac', { id: t.id, action: 'add', text: '[blocker] fix flaky test' }, testDir);
+    const task = getTask(testDir, t.id);
+    assert.equal(task.acceptanceCriteria.length, 1);
+    assert.equal(task.acceptanceCriteria[0].text, '[blocker] fix flaky test');
+  });
+
   // --- VL-120: валидация индекса на границе MCP (инцидент VL-113) ---
 
   it('manage_ac: строка-число index "3" принимается', async () => {
