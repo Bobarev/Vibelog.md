@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-25 10:42'
-updated_date: '2026-10-25 17:26'
+updated_date: '2026-10-25 17:27'
 due_date: ''
 labels:
   - web
@@ -20,7 +20,8 @@ parent_task_id: ''
 ordinal: 0
 documentation: []
 modified_files: []
-lessons: []
+lessons:
+  - lesson-27
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->

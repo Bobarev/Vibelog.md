@@ -13,6 +13,8 @@ linked_tasks:
   - VL-156
   - VL-165
   - VL-166
+  - VL-173
+  - VL-175
 ---
 Админ-дашборд на shadcn (Next.js) — референс веб-UI (react, drag-and-drop, kanban).
 
