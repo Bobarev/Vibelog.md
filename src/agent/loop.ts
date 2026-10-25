@@ -14,6 +14,7 @@
 
 import { addUsage, zeroUsage, type ChatMessage, type LlmClient, type LlmUsage, type ToolDef } from './llm.js';
 import type { ToolSpec } from './tools.js';
+import { truncateToolOutput } from './tools.js';
 
 /** Лимиты цикла; дефолты — 100 tool-calls и 900 секунд wall-time. */
 export interface LoopLimits {
@@ -396,6 +397,11 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           output = `Ошибка выполнения инструмента ${call.name}: ${err instanceof Error ? err.message : String(err)}`;
         }
       }
+      // VL-178: единый ingestion-cap ВСЕХ tool-выводов, включая внешние MCP
+      // (chrome_devtools__take_snapshot приносил 624 КБ целиком — VL-110-cap
+      // работал только для встроенных инструментов, MCP шёл мимо). Обрезка
+      // ДО onToolEnd/pushMessage: в jsonl сессии и модели уходит ≤8KB + маркер.
+      output = truncateToolOutput(output);
       // Хук завершения — и для неизвестного инструмента: TUI (VL-86) показывает
       // карточку со статусом error, а не теряет вызов модели
       options.onToolEnd?.(call.name, output, toolError);
