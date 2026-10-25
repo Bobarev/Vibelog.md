@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-25 13:59'
-updated_date: '2026-10-25 20:31'
+updated_date: '2026-10-25 23:26'
 due_date: ''
 labels:
   - bug
@@ -13,7 +13,7 @@ labels:
   - bot
   - refactor
 dependencies: []
-milestone: ''
+milestone: v1.9
 references: []
 priority: ''
 type: task

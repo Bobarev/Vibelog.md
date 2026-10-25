@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-25 13:21'
-updated_date: '2026-10-25 18:47'
+updated_date: '2026-10-25 23:26'
 due_date: ''
 labels:
   - agent
@@ -14,7 +14,7 @@ labels:
   - chrome
   - llm-client
 dependencies: []
-milestone: ''
+milestone: v1.9
 references: []
 priority: medium
 type: task

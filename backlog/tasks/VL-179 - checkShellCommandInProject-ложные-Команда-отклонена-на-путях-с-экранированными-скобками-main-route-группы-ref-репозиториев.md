@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-25 13:23'
-updated_date: '2026-10-25 17:33'
+updated_date: '2026-10-25 23:26'
 due_date: ''
 labels:
   - agent
@@ -13,7 +13,7 @@ labels:
   - guard
   - shell
 dependencies: []
-milestone: ''
+milestone: v1.9
 references: []
 priority: medium
 type: bug
