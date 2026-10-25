@@ -46,18 +46,11 @@ import {
 } from '@/components/tasks/use-task-filters';
 import { fetchConfig, type TasksConfig } from '@/components/tasks/api';
 
-import { fetchTasks, fetchTask, getTriggerStatus, patchTaskStatus, triggerPhase } from './api';
+import { fetchTasks, fetchTask, getTriggerStatus, patchTaskStatus, rejectTask, triggerPhase } from './api';
 import { KanbanColumn } from './kanban-column';
 import { TaskCard } from './task-card';
 import { buildBoard, findColumnId } from './utils';
 import type { BoardState, KanbanTask } from '../../types/kanban';
-
-/** Колонка-триггер → фаза оркестратора (VL-28): перенос сюда запускает qwen. */
-const PHASE_BY_STATUS: Record<string, string> = {
-  Spec: 'spec',
-  'In Progress': 'plan',
-  Review: 'code',
-};
 
 /** Drag-data карточки: проверяется перед использованием в DragOverlay. */
 type TaskDragData = {
@@ -287,7 +280,9 @@ export function Kanban() {
     if (newStatus === task.status) return;
 
     try {
-      await patchTaskStatus(task.id, newStatus);
+      // VL-188: сервер валидирует переход (canMoveTo) и возвращает triggerPhase —
+      // фазу, производящую новый статус; без транзита — 400 и откат (catch ниже)
+      const { triggerPhase: phaseToStart } = await patchTaskStatus(task.id, newStatus);
       // Обновляем локальную копию задачи, чтобы карточка знала новый статус
       applyBoard(
         Object.fromEntries(
@@ -298,11 +293,13 @@ export function Kanban() {
         )
       );
 
-      // VL-28: перенос в колонку-триггер запускает фазу qwen
-      const phase = PHASE_BY_STATUS[newStatus];
-      if (phase) {
+      // Фаза перехода (VL-188): запускается только если переход её производит
+      // (To Do → Spec → фаза spec и т.д.); ручные переходы (Backlog → To Do) — null.
+      // reject идёт через POST /reject (семантика механики/архива VL-144), не trigger.
+      if (phaseToStart) {
         try {
-          await triggerPhase(task.id, phase);
+          if (phaseToStart === 'reject') await rejectTask(task.id);
+          else await triggerPhase(task.id, phaseToStart);
           startPolling(task.id);
         } catch (err2) {
           // Статус уже сохранён — доску не откатываем, только логируем
@@ -310,7 +307,8 @@ export function Kanban() {
         }
       }
     } catch (err) {
-      // Откат: файл не обновился — доска не должна врать
+      // Откат: файл не обновился (400 «Переход недоступен по workflow») —
+      // доска не должна врать
       applyBoard(boardBeforeDrag.current);
       console.error('Не удалось сменить статус задачи:', err);
     }

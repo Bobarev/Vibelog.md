@@ -38,6 +38,7 @@ export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'commits', description: 'Последние коммиты git (log)', usage: '/commits [N]', examples: ['/commits 10'] },
   { command: 'create', description: 'Создать задачу' },
   { command: 'status', description: 'Сменить статус задачи', examples: ['/status VL-1 In Progress'] },
+  { command: 'move', description: 'Ручной переход статуса по workflow (Backlog → To Do и др.)', usage: '/move <id> <статус>', examples: ['/move VL-1 To Do'] },
   { command: 'set', description: 'Настройки бота: агент, лимиты фаз, режим веток, компакшн', usage: '/set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off>', examples: ['/set agent vb', '/set max-wall-time 1800', '/set branch-mode on', '/set compact off'] },
   { command: 'comment', description: 'Комментарий + Фаза Comment: /comment[:agent] VL-1 текст', usage: '/comment[:agent] VL-1 <текст>', examples: ['/comment VL-1 добавь тесты', '/comment:vb VL-1 перепиши план'] },
   { command: 'spec', description: 'Фаза 1 (Spec): /spec[:agent] описание фичи', usage: '/spec[:agent] <описание>', examples: ['/spec добавь экспорт задач в CSV'] },

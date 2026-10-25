@@ -5,7 +5,7 @@
  * {{worktreeDir}}, отсутствие неподставленных {{...}}, различие собранных
  * промптов close с опцией closeWorktree и без (сравнением промптов, а не по
  * конкретной фразе шаблона). Assert-ы на конкретные формулировки текста
- * шаблонов удалены (VL-130): правка любого текста templates/qwen-commands/*.md
+ * шаблонов удалены (VL-130): правка любого текста templates/phases/*.md
  * не должна ломать тесты. Исключение — точечные инварианты VL-142 (правила
  * phase-2 «только целевой код» и «отчёт/статус после записи плана»):
  * добавлены осознанно по AC, не удалять при рефакторинге.
@@ -28,7 +28,7 @@ import { addComment, createTaskFile } from '../../dist/core/store.js';
 import { DEFAULT_TASK_TYPES } from '../../dist/core/config.js';
 import { createLessonFile } from '../../dist/core/lesson.js';
 
-const templatesDir = fileURLToPath(new URL('../../templates/qwen-commands/', import.meta.url));
+const templatesDir = fileURLToPath(new URL('../../templates/phases/', import.meta.url));
 
 /**
  * Полный набор task-переменных (VL-137): renderPrompt подставляет только
@@ -46,6 +46,8 @@ const TASK_VARS = {
   taskTitle: 'Тестовая задача',
   taskType: 'task',
   taskStatus: 'Planned',
+  // VL-188: статус после фазы — подстановка из workflow оркестратором/CLI
+  producesStatus: 'Review',
 };
 
 describe('renderPrompt — подстановка taskId (VL-109)', () => {
@@ -107,14 +109,14 @@ describe('VL-144 — renderPrompt фазы reject', () => {
 
 describe('VL-137 — блок подстановки задачи в шаблонах', () => {
   const phaseTemplates = [
-    'phase-1.md',
-    'phase-2.md',
-    'phase-3.md',
+    'phase-spec.md',
+    'phase-plan.md',
+    'phase-code.md',
     'phase-close.md',
     'phase-close-worktree.md',
     'phase-comment.md',
     // VL-144: reject — откат начатых изменений для задач, бывших в Code
-    'reject.md',
+    'phase-reject.md',
   ];
 
   it('все шаблоны фаз содержат блок «Задача (подставлена автоматически)»', () => {
@@ -128,8 +130,8 @@ describe('VL-137 — блок подстановки задачи в шабло�
     }
   });
 
-  it('phase-2 и phase-3 содержат {{taskReferences}} (VL-152: Plan читает, Code добавляет)', () => {
-    for (const file of ['phase-2.md', 'phase-3.md']) {
+  it('phase-plan и phase-code содержат {{taskReferences}} (VL-152: Plan читает, Code добавляет)', () => {
+    for (const file of ['phase-plan.md', 'phase-code.md']) {
       const text = readFileSync(join(templatesDir, file), 'utf-8');
       assert.ok(text.includes('{{taskReferences}}'), `${file}: подстановка {{taskReferences}}`);
     }
@@ -142,8 +144,8 @@ describe('VL-137 — блок подстановки задачи в шабло�
     }
   });
 
-  it('phase-3 и оба close-шаблона содержат правило пакетирования shell-команд', () => {
-    for (const file of ['phase-3.md', 'phase-close.md', 'phase-close-worktree.md']) {
+  it('phase-code и оба close-шаблона содержат правило пакетирования shell-команд', () => {
+    for (const file of ['phase-code.md', 'phase-close.md', 'phase-close-worktree.md']) {
       const text = readFileSync(join(templatesDir, file), 'utf-8');
       assert.ok(text.includes('Пакетируй последовательные git/shell-команды'), `${file}: правило пакетирования`);
       assert.ok(text.includes(' через && '), `${file}: объединение команд через &&`);
@@ -269,9 +271,9 @@ describe('VL-154 — availableLabels', () => {
     }
   });
 
-  it('шаблон phase-1 содержит {{availableLabels}}; renderPrompt без остатков', () => {
-    const text = readFileSync(join(templatesDir, 'phase-1.md'), 'utf-8');
-    assert.ok(text.includes('{{availableLabels}}'), 'phase-1.md: блок «Доступные labels»');
+  it('шаблон phase-spec содержит {{availableLabels}}; renderPrompt без остатков', () => {
+    const text = readFileSync(join(templatesDir, 'phase-spec.md'), 'utf-8');
+    assert.ok(text.includes('{{availableLabels}}'), 'phase-spec.md: блок «Доступные labels»');
     const prompt = renderPrompt('spec', 'VL-902', { ...TASK_VARS, availableLabels: 'core, mcp' });
     assert.ok(prompt.includes('Доступные labels: core, mcp'), 'labels подставились в промпт');
     assert.ok(!prompt.includes('{{availableLabels}}'), 'неподставленного {{availableLabels}} не остаётся');
@@ -329,10 +331,10 @@ describe('VL-184 — availableTypes/availablePriorities', () => {
     }
   });
 
-  it('шаблон phase-1 содержит {{availableTypes}}/{{availablePriorities}}; renderPrompt без остатков', () => {
-    const text = readFileSync(join(templatesDir, 'phase-1.md'), 'utf-8');
-    assert.ok(text.includes('{{availableTypes}}'), 'phase-1.md: блок «Доступные типы»');
-    assert.ok(text.includes('{{availablePriorities}}'), 'phase-1.md: блок «Доступные приоритеты»');
+  it('шаблон phase-spec содержит {{availableTypes}}/{{availablePriorities}}; renderPrompt без остатков', () => {
+    const text = readFileSync(join(templatesDir, 'phase-spec.md'), 'utf-8');
+    assert.ok(text.includes('{{availableTypes}}'), 'phase-spec.md: блок «Доступные типы»');
+    assert.ok(text.includes('{{availablePriorities}}'), 'phase-spec.md: блок «Доступные приоритеты»');
     const prompt = renderPrompt('spec', 'VL-903', {
       ...TASK_VARS,
       availableTypes: 'bug, task',
@@ -348,20 +350,20 @@ describe('VL-184 — availableTypes/availablePriorities', () => {
 // Точечные инварианты VL-142 (см. шапку): ассерты на конкретные формулировки
 // здесь осознанно, по AC задачи — в отличие от общих, удалённых в VL-130.
 describe('VL-142 — phase-2: экономия ходов', () => {
-  const text = readFileSync(join(templatesDir, 'phase-2.md'), 'utf-8');
+  const text = readFileSync(join(templatesDir, 'phase-plan.md'), 'utf-8');
 
   it('правило: для плана читать только целевой код', () => {
     assert.ok(text.includes('только целевой код'),
-      'phase-2.md: блок «Экономия ходов» должен запрещать чтение всего подряд');
+      'phase-plan.md: блок «Экономия ходов» должен запрещать чтение всего подряд');
     assert.ok(text.includes('CHANGELOG, README, тест-файлы'),
-      'phase-2.md: явный запрет на контекстный мусор');
+      'phase-plan.md: явный запрет на контекстный мусор');
   });
 
   it('правило: отчёт и статус сразу после записи плана', () => {
     assert.ok(text.includes('Сразу после записи Implementation Plan'),
-      'phase-2.md: после plan — обязательно шаги 5 и 6');
+      'phase-plan.md: после plan — обязательно шаги 5 и 6');
     assert.ok(text.includes('не завершай фазу раньше'),
-      'phase-2.md: финальный ответ только после отчёта и смены статуса');
+      'phase-plan.md: финальный ответ только после отчёта и смены статуса');
   });
 });
 
@@ -412,10 +414,10 @@ describe('VL-141 — фаза analyze', () => {
 // ── VL-153: {{taskLessons}} — подстановка lessons по tags задачи ──
 
 describe('VL-153 — taskLessons', () => {
-  it('phase-2.md содержит {{taskLessons}} и пояснение про workflow-уроки', () => {
-    const text = readFileSync(join(templatesDir, 'phase-2.md'), 'utf-8');
-    assert.ok(text.includes('{{taskLessons}}'), 'phase-2.md: подстановка {{taskLessons}}');
-    assert.ok(text.includes('Lessons learned'), 'phase-2.md: заголовок блока Lessons');
+  it('phase-plan.md содержит {{taskLessons}} и пояснение про workflow-уроки', () => {
+    const text = readFileSync(join(templatesDir, 'phase-plan.md'), 'utf-8');
+    assert.ok(text.includes('{{taskLessons}}'), 'phase-plan.md: подстановка {{taskLessons}}');
+    assert.ok(text.includes('Lessons learned'), 'phase-plan.md: заголовок блока Lessons');
   });
 
   /** Мини-проект: backlog/tasks + config.yml + lesson с tags; задача с labels. */
@@ -486,7 +488,7 @@ describe('VL-157 — переносимость промптов', () => {
     // Regex: VL- в качестве отдельного токена (VL-12, VL-XX), но не Vibelog.
     const vlPattern = /\bVL-\d|\bVL-XX/i;
     const templatesRoot = fileURLToPath(new URL('../../templates/', import.meta.url));
-    const dirs = [templatesRoot, join(templatesRoot, 'qwen-commands')];
+    const dirs = [templatesRoot, join(templatesRoot, 'phases')];
     for (const dir of dirs) {
       for (const file of readdirSync(dir)) {
         if (!file.endsWith('.md')) continue;
@@ -496,8 +498,8 @@ describe('VL-157 — переносимость промптов', () => {
     }
   });
 
-  it('phase-1.md: регистрация references из текста пользователя', () => {
-    const text = readFileSync(join(templatesDir, 'phase-1.md'), 'utf-8');
+  it('phase-spec.md: регистрация references из текста пользователя', () => {
+    const text = readFileSync(join(templatesDir, 'phase-spec.md'), 'utf-8');
     assert.ok(text.includes('{{taskReferences}}'), 'блок задачи: подстановка {{taskReferences}}');
     assert.ok(text.includes('reference_add'), 'шаг 5.6: reference_add для упомянутых источников');
     assert.ok(text.includes('reference_link'), 'шаг 5.6: связь reference ↔ задача');
@@ -507,21 +509,164 @@ describe('VL-157 — переносимость промптов', () => {
     assert.ok(text.includes('"references"'), 'шаг 5: поле references в backlog_update_task');
   });
 
-  it('phase-1.md: чтение явно упомянутой задачи разрешено (пункт 3 ТЗ)', () => {
-    const text = readFileSync(join(templatesDir, 'phase-1.md'), 'utf-8');
+  it('phase-spec.md: чтение явно упомянутой задачи разрешено (пункт 3 ТЗ)', () => {
+    const text = readFileSync(join(templatesDir, 'phase-spec.md'), 'utf-8');
     assert.ok(text.includes('явно ссылается'), 'исключение backlog_view_task при явной ссылке пользователя');
     assert.ok(text.includes('Дополнительный комментарий пользователя'), 'блок {{comment}} для ссылок пользователя');
   });
 
-  it('phase-1.md: ведущие #теги → labels (пункт 5 ТЗ)', () => {
-    const text = readFileSync(join(templatesDir, 'phase-1.md'), 'utf-8');
+  it('phase-spec.md: ведущие #теги → labels (пункт 5 ТЗ)', () => {
+    const text = readFileSync(join(templatesDir, 'phase-spec.md'), 'utf-8');
     assert.ok(text.includes('#тег'), 'инструкция про #теги в начале заголовка/описания');
     assert.ok(text.includes('labels пользователя'), 'теги — это labels пользователя');
   });
 
-  it('phase-1.md: предложение нового label видно в чате после «Готово» (пункт 4 ТЗ)', () => {
-    const text = readFileSync(join(templatesDir, 'phase-1.md'), 'utf-8');
+  it('phase-spec.md: предложение нового label видно в чате после «Готово» (пункт 4 ТЗ)', () => {
+    const text = readFileSync(join(templatesDir, 'phase-spec.md'), 'utf-8');
     // Формат финала: «Готово» + строка предложения — бот пересылает финал как есть
     assert.ok(text.includes('Предлагаю добавить label'), 'строка предложения в «Формат финала»');
   });
 });
+
+// ── VL-188: переименование шаблонов, phase-do, переопределение проектом ──
+
+describe('VL-188 — шаблоны фаз: имена и переопределение', () => {
+  it('переименованные шаблоны существуют: phase-spec/plan/code/do/reject', () => {
+    for (const file of [
+      'phase-spec.md',
+      'phase-plan.md',
+      'phase-code.md',
+      'phase-do.md',
+      'phase-reject.md',
+      'phase-close.md',
+      'phase-close-worktree.md',
+      'phase-comment.md',
+      'phase-analyze.md',
+      'prompt.md',
+    ]) {
+      assert.ok(
+        readFileSync(join(templatesDir, file), 'utf-8').length > 0,
+        `${file} существует в templates/phases/`
+      );
+    }
+  });
+
+  it('старых имён (phase-1/2/3.md, reject.md) в templates/phases/ нет', () => {
+    const files = readdirSync(templatesDir);
+    for (const old of ['phase-1.md', 'phase-2.md', 'phase-3.md', 'reject.md']) {
+      assert.ok(!files.includes(old), `${old} удалён (переименован)`);
+    }
+  });
+
+  it('renderPrompt: PHASES включает do; фаза do собирается без остатков {{...}}', () => {
+    const prompt = renderPrompt('do', 'VL-1', { ...TASK_VARS, comment: '' });
+    assert.ok(prompt.includes('VL-1'), 'taskId подставлен');
+    assert.ok(prompt.includes('Review'), 'producesStatus подставлен');
+    assert.ok(!prompt.includes('{{'), 'неподставленных подстановок не остаться');
+  });
+
+  it('phase-do.md использует {{producesStatus}} (без хардкода Review)', () => {
+    const text = readFileSync(join(templatesDir, 'phase-do.md'), 'utf-8');
+    assert.ok(text.includes('{{producesStatus}}'), 'producesStatus в finish_phase');
+    assert.ok(!/"status": "Review"/.test(text), 'хардкод Review отсутствует');
+  });
+
+  it('workflow-шаблоны используют {{producesStatus}} вместо хардкода статусов', () => {
+    for (const file of ['phase-spec.md', 'phase-plan.md', 'phase-code.md', 'phase-close.md']) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      assert.ok(text.includes('{{producesStatus}}'), `${file}: подстановка producesStatus`);
+    }
+    // Хардкод целевых статусов в finish_phase отсутствует
+    for (const [file, status] of [
+      ['phase-spec.md', '"status": "Spec"'],
+      ['phase-plan.md', '"status": "Planned"'],
+      ['phase-code.md', '"status": "Review"'],
+      ['phase-close.md', '"status": "Done"'],
+    ]) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      assert.ok(!text.includes(status), `${file}: хардкод ${status} удалён`);
+    }
+  });
+
+  it('неизвестная фаза → throw (loadPhaseTemplate)', () => {
+    assert.throws(() => renderPrompt('nope', 'VL-1'), /Неизвестная фаза/);
+  });
+
+  it('переопределение проектом: .vibelog/prompts/phases/phase-plan.md приоритетнее встроенного', () => {
+    const root = mkdtempSync(join(tmpdir(), 'vl188-override-'));
+    try {
+      const dir = join(root, '.vibelog', 'prompts', 'phases');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'phase-plan.md'), 'ПРОЕКТ-ПЛАН {{taskId}} {{producesStatus}}', 'utf-8');
+      const prompt = renderPrompt('plan', 'VL-9', { ...TASK_VARS }, { cwd: root });
+      assert.ok(prompt.startsWith('ПРОЕКТ-ПЛАН'), 'взят шаблон проекта');
+      assert.ok(prompt.includes('VL-9'), 'подстановка taskId работает');
+      assert.ok(prompt.includes('Review'), 'подстановка producesStatus работает');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('переопределение проектом: worktree-вариант phase-close-worktree.md из проекта', () => {
+    const root = mkdtempSync(join(tmpdir(), 'vl188-override-wt-'));
+    try {
+      const dir = join(root, '.vibelog', 'prompts', 'phases');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'phase-close-worktree.md'), 'ПРОЕКТ-WT {{branch}}', 'utf-8');
+      const prompt = renderPrompt(
+        'close',
+        'VL-9',
+        { ...TASK_VARS, branch: 'vb/vl-9', worktreeDir: '.vibelog/worktrees/vl-9' },
+        { closeWorktree: true, cwd: root }
+      );
+      assert.ok(prompt.startsWith('ПРОЕКТ-WT'), 'worktree-шаблон проекта приоритетен');
+      assert.ok(prompt.includes('vb/vl-9'), '{{branch}} подставлен');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('без переопределения cwd → встроенный шаблон (fallback)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'vl188-nooverride-'));
+    try {
+      const prompt = renderPrompt('plan', 'VL-9', { ...TASK_VARS }, { cwd: root });
+      assert.ok(!prompt.startsWith('ПРОЕКТ'), 'встроенный шаблон, проектного файла нет');
+      assert.ok(prompt.includes('VL-9'), 'taskId подставлен');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── VL-105 (перенесено из skills.test.mjs при очистке qwen-commands, VL-188): инварианты шаблонов ──
+// ============================================================
+// VL-105 — ревизия промптов: дубли устранены, дрейф закрыт
+// ============================================================
+
+describe('VL-105 — инварианты промптов', () => {
+  const tmplDir = join(__dirname, '..', '..', 'templates', 'phases');
+  const phaseFiles = [
+    'phase-spec.md', 'phase-plan.md', 'phase-code.md', 'phase-close.md',
+    'phase-comment.md', 'phase-do.md', 'prompt.md', 'phase-reject.md',
+  ];
+
+  it('В шаблонах фаз нет pnpm и «Только Node.js» — правила проекта в AGENTS.md', () => {
+    for (const name of phaseFiles) {
+      const content = readFileSync(join(tmplDir, name), 'utf-8');
+      assert.ok(!/pnpm/i.test(content), name + ': pnpm-правила не должны дублироваться');
+      assert.ok(!/только node\.js/i.test(content), name + ': запрет рантаймов не должен дублироваться');
+    }
+  });
+
+  // Хрупкие проверки формулировок шаблонов («"status": "Review"», «Planned»,
+  // «задай вопросы») удалены в VL-130 — это текст инструкций, а не контракт.
+  // Оставлены негативные политические инварианты (дубли правил проекта
+  // в шаблонах запрещены) и проверка исходников TS.
+
+  it('BASE_PROMPT не дублирует AGENTS.md: нет русского языка и pnpm', () => {
+    const content = readFileSync(join(__dirname, '..', '..', 'src', 'agent', 'system-prompt.ts'), 'utf-8');
+    assert.ok(!content.includes('Отвечай на русском'), 'русский язык — в AGENTS.md проекта');
+    assert.ok(!/pnpm/i.test(content), 'pnpm-правила — в AGENTS.md проекта');
+  });
+});
+

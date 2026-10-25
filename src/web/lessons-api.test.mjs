@@ -104,7 +104,10 @@ describe('PATCH /api/lessons/:id (VL-182)', () => {
     assert.ok(!existsSync(oldPath), 'старый файл удалён при смене title');
     assert.ok(existsSync(res.body.path), 'новый файл существует');
     // updated_date обновляется при любом патче (семантика updateLesson)
-    assert.equal(lesson.updated_date, new Date().toISOString().slice(0, 10));
+    // сверяем с ЛОКАЛЬНОЙ датой — как today() в lesson.ts (toISOString даёт UTC и расходится после local midnight)
+    const d = new Date();
+    const localDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    assert.equal(lesson.updated_date, localDate);
   });
 
   it('невалидный status → 400, файл не меняется', () => {

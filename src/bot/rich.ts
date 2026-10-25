@@ -19,9 +19,10 @@ import type { DocumentEntry } from '../core/document.js';
 import type { PhaseRun } from '../web/orchestrator.js';
 import { VALID_TASK_STYLES } from './settings.js';
 import { formatDuration } from './formatting.js';
-// VL-180: общий модуль «статус → следующая фаза» (core, тот же импортирует
-// веб) — локальная копия удалена, ниже по файлу идёт ре-экспорт этих имён
-import { PHASE_EMOJI, nextPhaseForStatus } from '../core/phase-buttons.js';
+// VL-180/VL-188: общий модуль представления фаз (core) — эмодзи/подписи;
+// сами фазы считаются по workflow (core/workflow.ts) и приходят в renderTaskRich
+// вторым аргументом из handlers (lesson-37: одна логика — один модуль)
+import { phaseButtonLabel, PHASE_EMOJI, PHASE_LABEL } from '../core/phase-buttons.js';
 
 /** Лимит Rich Message по спецификации Telegram (символов UTF-8). */
 export const RICH_LIMIT = 32768;
@@ -277,44 +278,63 @@ function checklist(items: (ChecklistItem | string)[]): string {
     .join('\n');
 }
 
-// VL-180: маппинг «статус → следующая фаза» вынесен в src/core/phase-buttons.ts —
-// один источник для бота (rich-карточка, кнопка «next:») и веб-кнопок модалки
-// (web/src/lib/phase-buttons.ts ре-экспортирует тот же модуль). Ре-экспорт
-// сохраняет публичные имена rich.js — handlers.ts и rich.test.mjs не меняются;
+// VL-180: ре-экспорт представления фаз сохраняет публичные имена rich.js;
 // локальный import сверху нужен для внутреннего использования в этом файле.
-export { nextPhaseForStatus, PHASE_EMOJI };
-export type { NextPhase } from '../core/phase-buttons.js';
+export { PHASE_EMOJI, PHASE_LABEL, phaseButtonLabel };
 
 /**
  * Собирает полный Rich Markdown карточки задачи.
  *
  * @param task — задача (поля frontmatter + секции тела)
+ * @param availablePhases — фазы workflow, доступные из текущего статуса
+ *   (VL-188: getAvailablePhases в handlers; [] — только comment-кнопка)
+ * @param opts — canStart: показать кнопку «Взять в работу» (Backlog →
+ *   initial_status, ручной переход не-фазой)
  * @returns GFM-разметка для InputRichMessage.markdown
  */
-export function renderTaskRich(task: Task): string {
+export function renderTaskRich(
+  task: Task,
+  availablePhases: string[] = [],
+  opts?: { canStart?: boolean }
+): string {
   const parts: string[] = [];
 
   // Шапка: жирный заголовок + строка меты
   parts.push(`# ${task.id} — ${task.title}\n`);
 
-  // VL-72/VL-78: callback-кнопки сразу после заголовка, в центрированном
-  // row: primary — следующий этап (label с эмодзи PHASE_EMOJI), success —
-  // «Комментарий» (показывается всегда: комментарий уместен к любой задаче,
-  // включая Done/Blocked). Формат tg-button-row — по @grammyjs/types
-  // rich.d.ts; callback-данные next:<id>/comment:<id> обрабатывает
-  // bot.on('callback_query') в handlers.ts.
-  const next = nextPhaseForStatus(task.status);
+  // VL-72/VL-78/VL-188: callback-кнопки сразу после заголовка, в центрированном
+  // row: primary — кнопки фаз по workflow, success — «Комментарий» (всегда:
+  // комментарий уместен к любой задаче, включая Done/Blocked). Формат
+  // tg-button-row — по @grammyjs/types rich.d.ts; callback-данные
+  // phase:<id>:<phase>/next:<id>/start:<id>/reject:<id>/comment:<id>
+  // обрабатывает bot.on('callback_query') в handlers.ts.
   const buttons: string[] = [];
-  if (next) {
+  // Ручной переход Backlog → initial_status (VL-188): НЕ фаза, статус меняется
+  // в обработчике start:<id> синхронно, без LLM
+  if (opts?.canStart) {
     buttons.push(
-      `<tg-button type="callback_data" style="primary" data="next:${task.id}">${PHASE_EMOJI[next.phase]} ${next.label}</tg-button>`
+      `<tg-button type="callback_data" style="primary" data="start:${task.id}">▶ Взять в работу</tg-button>`
     );
   }
-  // VL-144: кнопка Reject — только для To Do (по AC); стиль danger
-  // поддержан rich-форматом Telegram (валидные стили: primary/success/
-  // danger/link — те же, что task_type_styles в bot.yml, VL-82).
-  // Обработчик reject:<id> — ветка в bot.on('callback_query') handlers.ts.
-  if (task.status === 'To Do') {
+  const nonReject = availablePhases.filter((p) => p !== 'reject');
+  // next:<id> — только когда фаза ровно одна (нет ветвления); при ветвлении
+  // (spec+reject и др.) каждая не-reject фаза — своя кнопка phase:<id>:<phase>
+  if (nonReject.length === 1 && availablePhases.length === 1 && !opts?.canStart) {
+    const phase = nonReject[0];
+    buttons.push(
+      `<tg-button type="callback_data" style="primary" data="next:${task.id}">${phaseButtonLabel(phase)}</tg-button>`
+    );
+  } else {
+    for (const phase of nonReject) {
+      buttons.push(
+        `<tg-button type="callback_data" style="primary" data="phase:${task.id}:${phase}">${phaseButtonLabel(phase)}</tg-button>`
+      );
+    }
+  }
+  // VL-144/VL-188: reject — danger-кнопка, когда переход есть в workflow
+  // (для default это To Do/Spec/Planned/In Progress/Review); семантика
+  // механического/LLM-отката живёт в отдельном обработчике reject:<id>
+  if (availablePhases.includes('reject')) {
     buttons.push(
       `<tg-button type="callback_data" style="danger" data="reject:${task.id}">✖ Reject</tg-button>`
     );

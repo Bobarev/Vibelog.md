@@ -11,6 +11,8 @@ import { createTaskFile, getTask, listTasks, updateTaskFile } from '../core/stor
 import { loadConfig } from '../core/config.js';
 import type { Task } from '../core/task.js';
 import { getGitLog, getGitStatus } from '../core/git.js';
+// VL-188: workflow переходов — общий источник фаз для карточек и кнопок
+import { canMoveTo, getAvailablePhases, getWorkflowForTask, getNextPhase, getStatusAfterPhase, isPhaseAllowed } from '../core/workflow.js';
 import type { DiffFile, GitStatus, GitCommit } from '../core/git.js';
 import { getDocument, listDocuments, searchDocuments } from '../core/document.js';
 import type { DocumentEntry } from '../core/document.js';
@@ -31,7 +33,6 @@ import {
 } from './formatting.js';
 import {
   chunkRich,
-  nextPhaseForStatus,
   renderCommitsRich,
   renderDiffRich,
   renderDocsRich,
@@ -118,10 +119,21 @@ async function sendTaskView(
   bot: Bot,
   chatId: number,
   task: Task,
-  phaseRun?: PhaseRun
+  phaseRun?: PhaseRun,
+  cwd?: string
 ): Promise<void> {
   try {
-    const rich = renderTaskRich(task);
+    // VL-188: кнопки фаз по workflow задачи; cwd не передан (старые вызовы) —
+    // без фаз: renderTaskRich оставляет только comment-кнопку
+    const availablePhases = cwd !== undefined ? getAvailablePhases(getWorkflowForTask(cwd, task), task.status) : [];
+    // «Взять в работу»: ручной вход в initial_status (Backlog → To Do) —
+    // canMoveTo + исключение from === to (иначе кнопка была бы у To Do)
+    const workflow = cwd !== undefined ? getWorkflowForTask(cwd, task) : null;
+    const canStart =
+      workflow !== null &&
+      task.status !== workflow.initial_status &&
+      canMoveTo(workflow, task.status, workflow.initial_status);
+    const rich = renderTaskRich(task, availablePhases, { canStart });
     for (const part of chunkRich(rich)) {
       await bot.api.sendRichMessage(chatId, { markdown: part });
     }
@@ -312,7 +324,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     void (async () => {
       // Файл мог изменить qwen — перечитываем; rich-рендер без phaseRun
       const fresh = getTask(deps.cwd, task.id) ?? task;
-      await sendTaskView(bot, chatId, fresh);
+      await sendTaskView(bot, chatId, fresh, undefined, deps.cwd);
       // VL-98: task.id есть у всех реальных завершений фаз (comment/spec/
       // plan/code/close) — идентификатор попадает в заголовок отчёта
       await sendPhaseResult(bot, chatId, run, task.id);
@@ -446,7 +458,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     const phaseRun = getRun(id);
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return;
-    await sendTaskView(bot, chatId, task, phaseRun ?? undefined);
+    await sendTaskView(bot, chatId, task, phaseRun ?? undefined, deps.cwd);
   });
 
   // ── /docs — список документов (VL-89) ──
@@ -584,6 +596,51 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         return;
       }
       const updated = updateTaskFile(deps.cwd, parsed.id, { status: parsed.status });
+      await sendMd(ctx, `*${updated.id}*: ${task.status} → ${updated.status}`);
+    } catch (err) {
+      await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+  // ── /move — ручной переход статуса ПО workflow (VL-188) ──
+  // В отличие от /status (escape-hatch без проверок) /move проверяет canMoveTo:
+  // переход должен быть транзитом либо ручным входом в initial_status
+  // (Backlog → To Do). Фазы НЕ запускаются — чистая смена статуса.
+  bot.command('move', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const parsed = parseStatusCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    // AC: /move VL-N "To Do" — кавычки вокруг многословного статуса опциональны
+    const targetStatus = parsed.status.replace(/^["'«»]+|["'«»]+$/g, '');
+    try {
+      const task = getTask(deps.cwd, parsed.id);
+      if (!task) {
+        await sendMd(ctx, `Задача ${parsed.id} не найдена.`);
+        return;
+      }
+      const config = loadConfig(deps.cwd);
+      const statuses = Array.isArray(config.statuses) ? config.statuses.map(String) : [];
+      if (!statuses.includes(targetStatus)) {
+        await sendMd(ctx, `Неизвестный статус: ${targetStatus}. Доступные: ${statuses.join(', ')}`);
+        return;
+      }
+      const workflow = getWorkflowForTask(deps.cwd, task);
+      if (!canMoveTo(workflow, task.status, targetStatus)) {
+        const available = getAvailablePhases(workflow, task.status)
+          .map((p) => getStatusAfterPhase(workflow, task.status, p))
+          .filter(Boolean)
+          .join(', ');
+        await sendMd(
+          ctx,
+          `Переход «${task.status}» → «${targetStatus}» недоступен по workflow.` +
+            (available ? ` Доступно: ${available}.` : '')
+        );
+        return;
+      }
+      const updated = updateTaskFile(deps.cwd, parsed.id, { status: targetStatus });
       await sendMd(ctx, `*${updated.id}*: ${task.status} → ${updated.status}`);
     } catch (err) {
       await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
@@ -1236,7 +1293,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         return;
       }
       await ctx.answerCallbackQuery({ text: `📋 ${task.id}` }).catch(() => {});
-      await sendTaskView(bot, chatId, task, getRun(id) ?? undefined);
+      await sendTaskView(bot, chatId, task, getRun(id) ?? undefined, deps.cwd);
       return;
     }
     // ── Кнопка документа в списке /docs (VL-89): data = doc:<id> ──
@@ -1261,7 +1318,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendDocView(bot, chatId, entry);
       return;
     }
-    if (!data.startsWith('next:') && !data.startsWith('reject:')) return; // чужие callback не трогаем
+    if (!data.startsWith('next:') && !data.startsWith('reject:') && !data.startsWith('phase:') && !data.startsWith('start:')) return; // чужие callback не трогаем (VL-188: +phase:/start:)
     // ── Кнопка «Reject» (VL-144): data = reject:<id> ──
     // Никогда не бывшая в Code задача отклоняется синхронно (механика:
     // Rejected + архив), бывшая — запускает LLM-фазу reject (откат начатых
@@ -1309,50 +1366,118 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       );
       return;
     }
-    const id = data.slice('next:'.length).trim();
-    // answerCallbackQuery обязателен в любом исходе — иначе «часики» на кнопке
-    if (!requireBind(ctx)) {
+    // ── Кнопка «Взять в работу» (VL-188): data = start:<id> ──
+    // Backlog → initial_status: ручной переход БЕЗ фазы и LLM.
+    if (data.startsWith('start:')) {
+      const id = data.slice('start:'.length).trim();
+      if (!requireBind(ctx)) {
+        await ctx
+          .answerCallbackQuery({ text: 'Бот не привязан к чату — выполните /start' })
+          .catch(() => {});
+        return;
+      }
+      const task = getTask(deps.cwd, id);
+      if (!task) {
+        await ctx.answerCallbackQuery({ text: `Задача ${id} не найдена.` }).catch(() => {});
+        return;
+      }
+      const workflow = getWorkflowForTask(deps.cwd, task);
+      if (!canMoveTo(workflow, task.status, workflow.initial_status)) {
+        await ctx
+          .answerCallbackQuery({
+            text: `Переход «${task.status}» → «${workflow.initial_status}» недоступен`,
+          })
+          .catch(() => {});
+        return;
+      }
+      const updated = updateTaskFile(deps.cwd, id, { status: workflow.initial_status });
       await ctx
-        .answerCallbackQuery({ text: 'Бот не привязан к чату — выполните /start' })
+        .answerCallbackQuery({ text: `▶ ${updated.id}: ${task.status} → ${updated.status}` })
         .catch(() => {});
+      await sendTaskView(bot, ctx.chat?.id ?? 0, updated, undefined, deps.cwd);
       return;
     }
-    const task = getTask(deps.cwd, id);
-    const next = task ? nextPhaseForStatus(task.status) : null;
-    if (!task || !next) {
+
+    // ── Кнопка фазы (VL-188): data = phase:<id>:<phase> и legacy next:<id> ──
+    // Общий запуск: проверка isPhaseAllowed в startPhase (ошибка → в чат),
+    // notifyPhaseDone — паттерн /plan,/code,/close (VL-63).
+    let phaseTarget = '';
+    if (data.startsWith('phase:')) {
+      const rest = data.slice('phase:'.length);
+      const sep = rest.lastIndexOf(':');
+      if (sep > 0) phaseTarget = `${rest.slice(0, sep).trim()}|${rest.slice(sep + 1).trim()}`;
+    } else if (data.startsWith('next:')) {
+      phaseTarget = data.slice('next:'.length).trim();
+    }
+    if (phaseTarget === '') return;
+    {
+      const [id, explicitPhase] = phaseTarget.includes('|')
+        ? (phaseTarget.split('|') as [string, string | undefined])
+        : [phaseTarget, undefined];
+      // answerCallbackQuery обязателен в любом исходе — иначе «часики» на кнопке
+      if (!requireBind(ctx)) {
+        await ctx
+          .answerCallbackQuery({ text: 'Бот не привязан к чату — выполните /start' })
+          .catch(() => {});
+        return;
+      }
+      const task = getTask(deps.cwd, id);
+      if (!task) {
+        await ctx.answerCallbackQuery({ text: `Задача ${id} не найдена.` }).catch(() => {});
+        return;
+      }
+      const workflow = getWorkflowForTask(deps.cwd, task);
+      const phases = getAvailablePhases(workflow, task.status);
+      // Legacy next:<id> при ветвлении (несколько фаз из статуса, VL-188) —
+      // не угадываем: просим выбрать через новые кнопки phase:<id>:<phase>
+      // (они есть в карточке; старые карточки перерисовываются по /task)
+      if (explicitPhase === undefined && phases.length > 1) {
+        await ctx
+          .answerCallbackQuery({
+            text: `Из статуса «${task.status}» доступно несколько фаз: выберите кнопку в карточке`,
+          })
+          .catch(() => {});
+        return;
+      }
+      const phase = explicitPhase ?? getNextPhase(workflow, task.status) ?? '';
+      if (phase === '') {
+        await ctx
+          .answerCallbackQuery({ text: `Для статуса «${task.status}» нет следующего этапа.` })
+          .catch(() => {});
+        return;
+      }
+      if (!isPhaseAllowed(workflow, task.status, phase)) {
+        await ctx
+          .answerCallbackQuery({
+            text: `Фаза ${phase} недопустима из статуса ${task.status}`,
+          })
+          .catch(() => {});
+        return;
+      }
       await ctx
-        .answerCallbackQuery({
-          text: !task
-            ? `Задача ${id} не найдена.`
-            : `Для статуса «${task.status}» нет следующего этапа.`,
-        })
+        .answerCallbackQuery({ text: `🚀 Фаза ${phase} запускается для ${task.id}` })
         .catch(() => {});
-      return;
+      const notifyChat = ctx.chat?.id;
+      const onExit: PhaseExitCallback = (run) => {
+        if (notifyChat === undefined) return;
+        notifyPhaseDone(bot, notifyChat, task, run);
+      };
+      // Агент по умолчанию из настроек (VL-94): кнопки действий — как команды;
+      // VL-180: общий хелпер — comment '' не передаётся (литеральный {{comment}}
+      // в промпте, как в вебе — шаблон поддерживает фолбэк)
+      const agent = resolveDefaultAgent(deps.cwd);
+      const result = startTaskPhase(deps.cwd, task.id, phase, { onExit, agent });
+      if ('error' in result) {
+        await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
+        return;
+      }
+      await sendMd(
+        ctx,
+        // VL-187: подсказка sameSession — только для фазы code (поле есть лишь у неё)
+        `🚀 Фаза ${phase} (${agent}) запущена для *${task.id}*, PID ${result.pid}` +
+          (phase === 'code' ? sameSessionHint(result) : '')
+      );
     }
-    await ctx
-      .answerCallbackQuery({ text: `🚀 Фаза ${next.label} запускается для ${task.id}` })
-      .catch(() => {});
-    // Колбэк завершения — паттерн /plan,/code,/close (VL-63): notifyPhaseDone
-    const notifyChat = ctx.chat?.id;
-    const onExit: PhaseExitCallback = (run) => {
-      if (notifyChat === undefined) return;
-      notifyPhaseDone(bot, notifyChat, task, run);
-    };
-    // Агент по умолчанию из настроек (VL-94): кнопки действий — как команды;
-    // VL-180: общий хелпер — comment '' не передаётся (литеральный {{comment}}
-    // в промпте, как в вебе — шаблон поддерживает фолбэк)
-    const agent = resolveDefaultAgent(deps.cwd);
-    const result = startTaskPhase(deps.cwd, task.id, next.phase, { onExit, agent });
-    if ('error' in result) {
-      await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
-      return;
-    }
-    await sendMd(
-      ctx,
-      // VL-187: подсказка sameSession — только для фазы code (поле есть лишь у неё)
-      `🚀 Фаза ${next.label} (${agent}) запущена для *${task.id}*, PID ${result.pid}` +
-        (next.phase === 'code' ? sameSessionHint(result) : '')
-    );
   });
   // ── Ввод комментария (VL-78): ОБЯЗАТЕЛЬНО ДО catch-all пина ──
   // Режим ожидания после кнопки «Комментарий»: текст сохраняется через

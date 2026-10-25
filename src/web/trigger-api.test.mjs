@@ -192,3 +192,88 @@ describe('POST /api/tasks/:id/trigger + comment (VL-172)', () => {
     assert.equal(run.agent, 'qwen', 'без settings.json агент — qwen, как раньше');
   });
 });
+
+
+// ── VL-188: workflow-валидация trigger и PATCH-переходов ──
+
+describe('VL-188 — workflow в API фаз и переходов', () => {
+  // ПослеAll первого describe удалил testRoot — воссоздаём минимальный backlog
+  beforeAll(() => {
+    mkdirSync(join(backlogDir, 'tasks'), { recursive: true });
+    writeFileSync(join(backlogDir, 'config.yml'), stringifyYaml({
+      project_name: 'Trigger Workflow Test',
+      task_prefix: 'tc',
+      default_status: 'To Do',
+      statuses: ['Backlog', 'To Do', 'Spec', 'Planned', 'In Progress', 'Review', 'Done'],
+      definition_of_done: [],
+      labels: [],
+      priorities: ['High', 'Medium', 'Low'],
+      types: ['bug', 'feature', 'task'],
+    }), 'utf-8');
+  });
+
+  it('trigger фазы из недопустимого статуса → 409 с текстом «недопустима из статуса»', () => {
+    // To Do → plan не существует в default workflow (нужен Spec)
+    const task = createTaskFile(testRoot, { title: 'Workflow: plan из To Do', status: 'To Do' });
+    const res = handleApi('POST', `/api/tasks/${task.id}/trigger`, { phase: 'plan' }, testRoot);
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.match(res.body.error, /Фаза plan недопустима из статуса To Do/);
+    // Фаза не выполнялась: статус остался To Do (агент по finish_phase сменил бы его)
+    assert.equal(getTask(testRoot, task.id).status, 'To Do', 'статус не изменился');
+  });
+
+  it('trigger допустимой фазы из ветвления (To Do → spec) → 202', () => {
+    const task = createTaskFile(testRoot, { title: 'Workflow: spec из To Do', status: 'To Do' });
+    const res = handleApi('POST', `/api/tasks/${task.id}/trigger`, { phase: 'spec' }, testRoot);
+    assert.equal(res.status, 202, JSON.stringify(res.body));
+  });
+
+  it('PATCH /api/tasks/:id: транзит → 200 + triggerPhase; без транзита → 400', () => {
+    // To Do → Spec — транзит фазы spec → 200, triggerPhase=spec
+    const task = createTaskFile(testRoot, { title: 'Workflow: PATCH транзит', status: 'To Do' });
+    const ok = handleApi('PATCH', `/api/tasks/${task.id}`, { status: 'Spec' }, testRoot);
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.equal(ok.body.triggerPhase, 'spec', 'перенос в Spec производит фазу spec');
+    assert.equal(ok.body.status, 'Spec');
+
+    // Spec → Done — транзита нет → 400, файл не изменился
+    const bad = handleApi('PATCH', `/api/tasks/${task.id}`, { status: 'Done' }, testRoot);
+    assert.equal(bad.status, 400, JSON.stringify(bad.body));
+    assert.match(bad.body.error, /Переход «Spec» → «Done» недоступен по workflow задачи/);
+    assert.equal(getTask(testRoot, task.id).status, 'Spec', 'статус не изменился');
+  });
+
+  it('PATCH: ручной вход в initial_status (Backlog → To Do) → 200, triggerPhase=null', () => {
+    const task = createTaskFile(testRoot, { title: 'Workflow: Backlog → To Do', status: 'Backlog' });
+    const res = handleApi('PATCH', `/api/tasks/${task.id}`, { status: 'To Do' }, testRoot);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.triggerPhase, null, 'ручной переход без фазы');
+    assert.equal(res.body.status, 'To Do');
+  });
+
+  it('PATCH: смена НЕ-статуса не проверяется workflow', () => {
+    const task = createTaskFile(testRoot, { title: 'Workflow: патч названия', status: 'To Do' });
+    const res = handleApi('PATCH', `/api/tasks/${task.id}`, { title: 'Новое название' }, testRoot);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.title, 'Новое название');
+  });
+
+  it('GET /api/tasks/:id и список содержат availablePhases (ветвление To Do → spec/reject)', () => {
+    const task = createTaskFile(testRoot, { title: 'Workflow: availablePhases', status: 'To Do' });
+    const one = handleApi('GET', `/api/tasks/${task.id}`, null, testRoot);
+    assert.equal(one.status, 200);
+    assert.deepEqual(one.body.availablePhases, ['spec', 'reject'], 'ветвление default из To Do');
+    assert.equal(one.body.startTo, null, 'To Do — initial, кнопки «взять в работу» нет');
+
+    const list = handleApi('GET', '/api/tasks', null, testRoot);
+    const found = list.body.find((t) => t.id === task.id);
+    assert.ok(found, 'задача в списке');
+    assert.deepEqual(found.availablePhases, ['spec', 'reject']);
+  });
+
+  it('GET /api/config содержит initialStatus из default workflow', () => {
+    const res = handleApi('GET', '/api/config', null, testRoot);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.initialStatus, 'To Do');
+  });
+});

@@ -45,7 +45,7 @@ import {
   rejectTask,
   triggerPhase,
 } from '@/components/kanban/api';
-import { nextPhaseForStatus, PHASE_EMOJI } from '@/lib/phase-buttons';
+import { phaseButtonLabel } from '@/lib/phase-buttons';
 import type { KanbanTask, TaskDetail } from '@/types/kanban';
 
 import { TaskForm, emptyTaskForm, taskToForm, type TaskFormData } from './task-form';
@@ -232,7 +232,23 @@ function TaskModalBody({
     }
   }
 
-  /** ✖ Reject (только To Do): подтверждение + POST reject с комментарием. */
+  /** ▶ Взять в работу (VL-188): ручной переход Backlog → initial_status, без фазы. */
+  async function handleStart() {
+    if (!task || !task.startTo || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await patchTask(task.id, { status: task.startTo });
+      onSaved();
+      handleOpenChange(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Неизвестная ошибка смены статуса');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  /** ✖ Reject (кнопка есть, когда переход reject есть в workflow, VL-144/VL-188): подтверждение + POST reject с комментарием. */
   async function handleReject() {
     if (!task || submitting) return;
     if (!window.confirm(`Отклонить задачу ${task.id}? Она уйдёт из backlog/tasks/ в completed/.`)) {
@@ -252,9 +268,12 @@ function TaskModalBody({
     }
   }
 
-  // Кнопки view-режима по статусу — копия rich-рендера бота (VL-172)
-  const next = task ? nextPhaseForStatus(task.status) : null;
-  const isToDo = task?.status === 'To Do';
+  // Кнопки view-режима по workflow (VL-188): фазы из статуса приходят с API
+  // (getAvailablePhases на сервере), reject рендерится отдельной кнопкой,
+  // startTo — ручной переход «Взять в работу» (Backlog → initial_status)
+  const phases = (task?.availablePhases ?? []).filter((p) => p !== 'reject');
+  const showReject = (task?.availablePhases ?? []).includes('reject');
+  const startTo = task?.startTo ?? null;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -306,18 +325,28 @@ function TaskModalBody({
         {error ? <p className="text-destructive text-sm">{error}</p> : null}
 
         <DialogFooter className="flex-wrap">
-          {internalMode === 'view' ? (
+          {internalMode === 'view' && task ? (
             <>
-              {next ? (
+              {startTo ? (
                 <Button
                   disabled={submitting}
-                  onClick={() => void handlePhase(next.phase)}
-                  title={`Запустить фазу ${next.label}${commentText.trim() ? ' с комментарием' : ''}`}
+                  onClick={() => void handleStart()}
+                  title={`Взять в работу: ${task.status} → ${startTo} (без фазы)`}
                 >
-                  {PHASE_EMOJI[next.phase]} {next.label}
+                  ▶ Взять в работу
                 </Button>
               ) : null}
-              {isToDo && task ? (
+              {phases.map((phase) => (
+                <Button
+                  key={phase}
+                  disabled={submitting}
+                  onClick={() => void handlePhase(phase)}
+                  title={`Запустить фазу ${phase}${commentText.trim() ? ' с комментарием' : ''}`}
+                >
+                  {phaseButtonLabel(phase)}
+                </Button>
+              ))}
+              {showReject ? (
                 <Button variant="outline" disabled={submitting} onClick={() => void handleReject()}>
                   ✖ Reject
                 </Button>

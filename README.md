@@ -254,21 +254,7 @@ Vibelog.md doctor
 
 ## Работа с Qwen Code
 
-### Команды `/vibelog:*`
-
-```bash
-vibelog init "Мой проект" --skills
-```
-
-Создаёт в `.qwen/commands/vibelog/` три команды Qwen Code:
-
-| Команда | Фаза | Описание |
-|---|---|---|
-| `/vibelog:spec <описание>` | 1 | Уточнить фичу, определить тип (из config types) и приоритет |
-| `/vibelog:plan <ID>` | 2 | Составить план реализации |
-| `/vibelog:code <ID>` | 3 | Реализовать план (статус Review) |
-
-Workflow: spec → plan → code. Интерактивные команды ждут подтверждения пользователя; автоматические фазы (web-оркестратор, vibelog-agent) выполняются без подтверждения.
+Ранее init создавал команды `/vibelog:*` в `.qwen/commands/` (флаг `--skills`) — рудимент, удалённый в VL-188: сейчас используются только фазы (spec/plan/code/do/close/comment), запускаемые ботом, вебом и CLI.
 
 ### Агент Vibelog (замена qwen)
 
@@ -285,11 +271,46 @@ VIBELOG_QWEN_BIN=$(pwd)/bin/vibelog-agent.mjs vibelog browser
 ### Флаги init
 
 ```bash
-vibelog init "Name" --skills          # создать команды (qwen по умолчанию)
-vibelog init "Name" --skills=qwen     # явно указать агента
-vibelog init "Name" --skills --force  # перезаписать существующие
-vibelog init "Name" --no-skills       # не создавать команды
+vibelog init "Name" --no-mcp   # не настраивать MCP-сервер (.qwen/settings.json)
+vibelog init "Name" --force    # перезаписать существующие настройки
 ```
+
+## Workflow с переходами статус (VL-188)
+
+Статус первичен: задача начинается со статуса, фаза переводит её в новый статус. Переходы описываются в `.vibelog/settings.json`:
+
+```json
+{
+  "workflows": {
+    "default": {
+      "initial_status": "To Do",
+      "transitions": [
+        { "status": "To Do", "phase": "spec", "produces_status": "Spec" },
+        { "status": "To Do", "phase": "reject", "produces_status": "Rejected" },
+        { "status": "Spec", "phase": "plan", "produces_status": "Planned" },
+        { "status": "Planned", "phase": "code", "produces_status": "Review" },
+        { "status": "Review", "phase": "close", "produces_status": "Done" },
+        { "status": "Review", "phase": "code", "produces_status": "Review" },
+        { "status": "Done", "phase": null, "produces_status": null }
+      ]
+    },
+    "simple": {
+      "initial_status": "To Do",
+      "transitions": [
+        { "status": "To Do", "phase": "do", "produces_status": "Review" },
+        { "status": "Review", "phase": "close", "produces_status": "Done" }
+      ]
+    }
+  },
+  "task_workflows": { "bug": "bugfix", "chore": "simple", "docs": "simple" }
+}
+```
+
+- **Ветвление**: из одного статуса несколько фаз (`To Do → spec` ИЛИ `reject`) — бот и веб показывают выбор кнопок.
+- **`phase: null`** — финальный статус (Done/Rejected), фаз нет.
+- **Fallback**: нет `workflows` → встроенный default (spec → plan → code → close).
+- **Переходы вручную**: `Backlog → initial_status` — кнопка «Взять в работу» (без фазы) либо команда бота `/move VL-1 To Do`. Перенос на канбан-доске проверяется сервером: без транзита — 400 и откат колонки (команда `/status` остаётся непроверяемым escape-hatch'ем).
+- **Переопределение промптов фазы**: файл проекта `.vibelog/prompts/phases/phase-<имя>.md` приоритетнее встроенного `templates/phases/phase-<имя>.md`; worktree-вариант — `phase-<имя>-worktree.md`. Системный промпт vibelog-agent переопределяется через `.vibelog/prompts/agent-prompt.md`.
 
 ## Telegram-бот
 

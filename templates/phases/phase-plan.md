@@ -69,10 +69,10 @@ Lessons learned (уроки из прошлых задач) подставлен
      - установи статус Planned.
    - План в эпик НЕ пиши — только в дочерних задачах.
    - Смени статус эпика на Planned:
-     backlog_update_status {"id": "{{taskId}}", "status": "Planned"}
+     backlog_update_status {"id": "{{taskId}}", "status": "{{producesStatus}}"}
 
 5. Оставь отчёт комментарием и смени статус исходной задачи ОДНИМ вызовом backlog_finish_phase:
-   backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза 2 (Plan) выполнена. Тип: <тип задачи>. <Для task: план записан, N файлов, риски: ...>. <Для epic: созданы задачи <ID> — <заголовок>; ...>", "status": "Planned"}
+   backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза 2 (Plan) выполнена. Тип: <тип задачи>. <Для task: план записан, N файлов, риски: ...>. <Для epic: созданы задачи <ID> — <заголовок>; ...>", "status": "{{producesStatus}}"}
    - Если задача заблокирована (шаг 3) — НЕ передавай "status", оставь только комментарий: статус Blocked должен сохраниться.
    - Отдельные backlog_add_comment и backlog_update_status для отчёта/статуса НЕ вызывай.
 

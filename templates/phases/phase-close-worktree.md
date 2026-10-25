@@ -78,7 +78,7 @@ Definition of Done (DoD): {{taskDoD}}
    git commit -m "docs: {{taskId}} — документация и CHANGELOG"
 
 9. Оставь отчёт, смени статус и отметь DoD ОДНИМ вызовом backlog_finish_phase — ДО коммита файлов задач, чтобы комментарий попал в docs(task)-коммит (упомяни хэш docs-коммита из шага 8):
-   backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза Close выполнена. Ветка {{branch}} слита в master (<N> коммитов), worktree удалена, ветка удалена. DoD: <честный итог>.", "status": "Done", "dodChecks": [<индексы выполненных DoD из шага 7>]}
+   backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза Close выполнена. Ветка {{branch}} слита в master (<N> коммитов), worktree удалена, ветка удалена. DoD: <честный итог>.", "status": "{{producesStatus}}", "dodChecks": [<индексы выполненных DoD из шага 7>]}
    - dodChecks — только если есть реально выполненные пункты; пустой список — поле опусти. Отдельные backlog_manage_dod check и backlog_update_status НЕ вызывай.
    - Если worktree не было (шаг 2) — напиши «работа велась без worktree; изменения уже в master» вместо пунктов про merge.
 

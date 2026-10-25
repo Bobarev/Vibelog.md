@@ -41,7 +41,7 @@ Definition of Done (DoD): {{taskDoD}}
    git commit -m "docs: {{taskId}} — документация и CHANGELOG"
 
 5. Оставь короткий отчёт и смени статус на Done ОДНИМ вызовом backlog_finish_phase — ДО коммита файлов задач, чтобы комментарий попал в docs(task)-коммит (упомяни хэш docs-коммита из шага 4):
-   backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза Close выполнена. Статус: Done. Коммиты: feat <хэш или «не требовался»>, docs <хэш или «нет»>. Не закоммичено: <список файлов или «нет»> (причина).", "status": "Done"}
+   backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза Close выполнена. Статус: {{producesStatus}}. Коммиты: feat <хэш или «не требовался»>, docs <хэш или «нет»>. Не закоммичено: <список файлов или «нет»> (причина).", "status": "{{producesStatus}}"}
    - Терминальный статус: если в backlog/config.yml Done переименован — используй переименованный.
    - Отдельные backlog_add_comment и backlog_update_status для этого НЕ вызывай.
 
