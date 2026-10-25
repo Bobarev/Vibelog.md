@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-10-25
+
 ### Добавлено
 
 - **VL-185: глобальный поиск в шапке (input с debounce 300ms, GET /api/search по задачам/lessons/references/documents)** — единый эндпоинт `GET /api/search?q=...` (`src/web/api.ts`) возвращает результаты, сгруппированные по типам (tasks, lessons, references, documents): лимит 5 на тип, до 20 суммарно, задачи добираются до `20 − (lessons+references+documents)`. Ядро — `globalSearch` (`src/core/search.ts`, слим-хиты без тел: description/body/plan/finalSummary), переиспользует существующие `searchTasks`/`searchLessons`/`searchReferences`/`searchDocuments`; `searchDocuments` научен искать по **type** (AC2). Query string пробрасывается из `server.ts` 5-м опциональным параметром `handleApi(method, url, body, cwd, queryString)` (сервер отрезает `?` до хендлера). UI: `web/src/components/header/search.tsx` (`GlobalSearch` вместо заглушки SearchButton) — debounce 300ms, seq-guard против гонок ответов, тихий fallback в консоль без ошибок (lesson-16), dropdown с группами «Задачи / Lessons / References / Документы», Escape и клик вне закрывают; клик по задаче → `requestOpenTask(id)` (модалка, маршрута `#/task/<id>` нет), по остальным → hash-роуты `#/lesson|reference|document/<id>`. Тесты: `src/web/search-api.test.mjs` (13: группировка, поля поиска substring case-insensitive по description/labels/id, body/tags, url/tags, type/body, лимиты, кириллица URL-encoded, пустой q, 400 без backlog). Документация: README (строка «неактивный поиск» → активный глобальный).
