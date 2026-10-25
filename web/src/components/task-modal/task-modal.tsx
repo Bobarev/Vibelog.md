@@ -1,20 +1,24 @@
 /**
- * Модальное окно задачи: просмотр/создание/редактирование (VL-163).
+ * Модальное окно задачи: просмотр/создание/редактирование (VL-163, VL-172).
  *
  * Управляемый компонент (open/onOpenChange, как Sheet в ref-14:
  * TaskCreateSheet/TaskEditSheet), один примитив + режимы внутри —
  * паттерн ref-3 (vibe-kanban: Dialog.tsx + специализированные диалоги).
  *
- * Весь изменяемый state живёт в TaskModalBody — mount-only компоненте
- * внутри DialogContent. Radix без forceMount размонтирует контент при
- * закрытии, поэтому при каждом открытии форма инициализируется заново —
- * без эффектов синхронизации setState-in-effect (правило eslint
- * react-hooks v7).
+ * Весь изменяемый state живёт в TaskModalBody — mount-only компоненте,
+ * который сам рендерит <Dialog> (а не лежит его child): так body владеет
+ * обёрткой onOpenChange и сбрасывает state при закрытии ЛЮБЫМ способом
+ * (Escape/оверлей/кнопки) — повторное открытие всегда стартует с пропа
+ * mode (AC3 VL-172: reopen после «Редактировать» → просмотр).
  *
  * Режимы:
- * - view: мета-строка (id, статус, приоритет, срок, метки) + описание,
- *   кнопки «Редактировать»/«Закрыть»;
- * - create/edit: общая форма (TaskForm), Save/Cancel; в edit дополнительно
+ * - view: табы-секции по образцу карточки бота (TaskView), md-рендер,
+ *   поле комментария и кнопки по статусу (nextPhaseForStatus из бота:
+ *   Review → ✅ Close + 💬 Комментарий; To Do → ▶ Spec + ✖ Reject);
+ *   комментарий при нажатии кнопки фазы пишется в задачу и уходит в
+ *   {{comment}} промпта (POST trigger, VL-172);
+ * - create/edit: общая форма (TaskForm), Save/Cancel; «Отмена» в edit
+ *   возвращает в просмотр без сохранения (AC3); в edit дополнительно
  *   «Архивировать» с подтверждением (window.confirm, как reject в assets.ts).
  *
  * Ошибки сети показываются текстом в модалке (text-destructive) —
@@ -33,11 +37,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Separator } from '@/components/ui/separator';
-import { archiveTask, createTask, patchTask } from '@/components/kanban/api';
-import type { KanbanTask } from '@/types/kanban';
+import {
+  archiveTask,
+  createTask,
+  fetchTask,
+  patchTask,
+  rejectTask,
+  triggerPhase,
+} from '@/components/kanban/api';
+import { nextPhaseForStatus, PHASE_EMOJI } from '@/lib/phase-buttons';
+import type { KanbanTask, TaskDetail } from '@/types/kanban';
 
 import { TaskForm, emptyTaskForm, taskToForm, type TaskFormData } from './task-form';
+import { TaskView } from './task-view';
 
 /** Режим модалки: просмотр существующей, создание, редактирование. */
 export type TaskModalMode = 'view' | 'create' | 'edit';
@@ -51,6 +63,8 @@ interface TaskModalSharedProps {
   statuses: string[];
   /** Вызывается после успешного создания/сохранения/архивирования. */
   onSaved: () => void;
+  /** Запуск фазы из модалки → поллинг завершения на доске (VL-172). */
+  onTriggered?: (taskId: string) => void;
 }
 
 export function TaskModal({
@@ -62,28 +76,31 @@ export function TaskModal({
   onOpenChange: (open: boolean) => void;
 }) {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      {/* key — страховка: новое тело при смене mode/задачи без закрытия */}
-      <TaskModalBody
-        key={`${shared.mode}:${shared.task?.id ?? 'new'}`}
-        onOpenChange={onOpenChange}
-        {...shared}
-      />
-    </Dialog>
+    <TaskModalBody
+      // key — страховка: новое тело при смене mode/задачи без закрытия
+      key={`${shared.mode}:${shared.task?.id ?? 'new'}`}
+      open={open}
+      onOpenChange={onOpenChange}
+      {...shared}
+    />
   );
 }
 
 /**
- * Mount-only тело модалки: state инициализируется из пропсов при рендере,
- * сбрасывается «бесплатно» размонтированием при закрытии окна.
+ * Mount-only тело модалки: state инициализируется из пропсов при рендере;
+ * при закрытии (handleOpenChange) сбрасывается к пропу mode — reopen
+ * без «залипшего» edit-режима (AC3 VL-172).
  */
 function TaskModalBody({
+  open,
   onOpenChange,
   mode,
   task,
   statuses,
   onSaved,
+  onTriggered,
 }: TaskModalSharedProps & {
+  open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
   // Внутренний режим: view → edit переключается кнопкой «Редактировать»
@@ -93,8 +110,62 @@ function TaskModalBody({
   );
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // Полная задача для табов view-режима (VL-172): GET /api/tasks/:id
+  const [detail, setDetail] = React.useState<TaskDetail | null>(null);
+  // Флаг «fetch завершился ошибкой»: без него detail===null неотличим от
+  // «грузится» и плейсхолдер «Загрузка…» висел бы вечно (react-hooks v7
+  // set-state-in-effect запрещает синхронный setDetailLoading(true) в
+  // эффекте — loading выводится при рендере как detail===null && !failed)
+  const [detailFailed, setDetailFailed] = React.useState(false);
+  const [commentText, setCommentText] = React.useState('');
 
   const canSubmit = form.title.trim().length > 0 && !submitting;
+  const detailLoading = internalMode === 'view' && detail === null && !detailFailed;
+
+  /**
+   * Закрытие окна любым способом: сброс к пропу mode — при следующем
+   * открытии (key body не меняется) режим берётся из пропса, а не из
+   * «залипшего» internalMode (AC3 VL-172). Вызывается ВСЕМИ путями
+   * закрытия: Escape/оверлей (через Dialog onOpenChange) и кнопками.
+   */
+  const handleOpenChange = (next: boolean) => {
+    if (!next) {
+      setInternalMode(mode);
+      setForm(mode !== 'create' && task ? taskToForm(task) : emptyTaskForm(statuses));
+      setError(null);
+      setCommentText('');
+      setDetail(null);
+      setDetailFailed(false);
+    }
+    onOpenChange(next);
+  };
+
+  /**
+   * Загрузка полной задачи для табов: setState только в .then-колбэках
+   * (асинхронно) — иначе eslint react-hooks v7 set-state-in-effect флагает
+   * вызов async-функции с setState из тела эффекта. stale-флаг защищает
+   * от гонки при быстрой смене открытой задачи.
+   */
+  React.useEffect(() => {
+    if (!open || internalMode !== 'view' || !task) return;
+    let stale = false;
+    fetchTask(task.id)
+      .then(d => {
+        if (stale) return;
+        setDetail(d);
+        setDetailFailed(false);
+      })
+      .catch(() => {
+        // Тихий fallback (lesson-16): остаются данные карточки (description),
+        // ошибка не сыплется в консоль — секции просто покажутся пустыми
+        if (stale) return;
+        setDetail(null);
+        setDetailFailed(true);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [open, internalMode, task]);
 
   /** Сохранение: POST для create, PATCH для edit; успех — onSaved + закрытие. */
   async function handleSave() {
@@ -108,7 +179,7 @@ function TaskModalBody({
         await patchTask(task.id, form);
       }
       onSaved();
-      onOpenChange(false);
+      handleOpenChange(false);
     } catch (err) {
       // Тихая обработка: ошибка видна пользователю внутри модалки
       setError(err instanceof Error ? err.message : 'Неизвестная ошибка сохранения');
@@ -128,7 +199,7 @@ function TaskModalBody({
     try {
       await archiveTask(task.id);
       onSaved();
-      onOpenChange(false);
+      handleOpenChange(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Неизвестная ошибка архивирования');
     } finally {
@@ -136,92 +207,170 @@ function TaskModalBody({
     }
   }
 
+  /**
+   * Кнопка фазы по статусу (▶ Spec/📋 Plan/💻 Code/✅ Close) или
+   * «Комментарий» (phase='comment'). Непустой комментарий → сервер пишет
+   * его в задачу и подставляет в {{comment}} промпта (VL-172, AC2).
+   * Ошибка (409 и др.) — текст в модалке, окно открыто: при 409 сервер
+   * уже сохранил комментарий («Комментарий добавлен, но запуск не
+   * удался: …» — семантика бота VL-60).
+   */
+  async function handlePhase(phase: string) {
+    if (!task || submitting) return;
+    if (phase === 'comment' && !commentText.trim()) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await triggerPhase(task.id, phase, { comment: commentText });
+      onSaved();
+      onTriggered?.(task.id);
+      handleOpenChange(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Неизвестная ошибка запуска фазы');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  /** ✖ Reject (только To Do): подтверждение + POST reject с комментарием. */
+  async function handleReject() {
+    if (!task || submitting) return;
+    if (!window.confirm(`Отклонить задачу ${task.id}? Она уйдёт из backlog/tasks/ в completed/.`)) {
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      await rejectTask(task.id, commentText);
+      onSaved();
+      onTriggered?.(task.id); // LLM-путь reject асинхронен — поллинг дособерёт доску
+      handleOpenChange(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Неизвестная ошибка отклонения');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  // Кнопки view-режима по статусу — копия rich-рендера бота (VL-172)
+  const next = task ? nextPhaseForStatus(task.status) : null;
+  const isToDo = task?.status === 'To Do';
+
   return (
-    <DialogContent className="max-h-[calc(100%-2rem)] overflow-y-auto sm:max-w-2xl">
-      <DialogHeader>
-        {internalMode === 'create' ? (
-          <DialogTitle>Создать задачу</DialogTitle>
-        ) : internalMode === 'edit' && task ? (
-          <DialogTitle>Редактировать {task.id}</DialogTitle>
-        ) : task ? (
-          <>
-            <DialogTitle>{task.title}</DialogTitle>
-            <DialogDescription asChild>
-              <div className="flex flex-wrap items-center gap-2 text-sm">
-                <span className="font-mono text-xs">{task.id}</span>
-                <Badge variant="secondary">{task.status}</Badge>
-                <Badge variant={task.priority === 'High' ? 'destructive' : 'outline'}>
-                  {task.priority}
-                </Badge>
-                {task.due_date ? <span className="text-muted-foreground">срок: {task.due_date}</span> : null}
-                {task.labels.map(label => (
-                  <Badge key={label} variant="outline" className="rounded-md px-1.5 text-[11px]">
-                    {label}
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="max-h-[calc(100%-2rem)] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          {internalMode === 'create' ? (
+            <DialogTitle>Создать задачу</DialogTitle>
+          ) : internalMode === 'edit' && task ? (
+            <DialogTitle>Редактировать {task.id}</DialogTitle>
+          ) : task ? (
+            <>
+              <DialogTitle>{task.title}</DialogTitle>
+              <DialogDescription asChild>
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="font-mono text-xs">{task.id}</span>
+                  <Badge variant="secondary">{task.status}</Badge>
+                  <Badge variant={task.priority === 'High' ? 'destructive' : 'outline'}>
+                    {task.priority}
                   </Badge>
-                ))}
-              </div>
-            </DialogDescription>
-          </>
-        ) : null}
-      </DialogHeader>
-
-      {internalMode === 'view' && task ? (
-        <div className="space-y-4 text-sm">
-          <Separator />
-          {task.description ? (
-            <p className="text-foreground text-sm leading-6 whitespace-pre-wrap">{task.description}</p>
-          ) : (
-            <p className="text-muted-foreground text-sm">Описание отсутствует.</p>
-          )}
-          {task.assignee.length > 0 ? (
-            <p className="text-muted-foreground text-sm">Исполнители: {task.assignee.join(', ')}</p>
+                  {task.due_date ? <span className="text-muted-foreground">срок: {task.due_date}</span> : null}
+                  {task.labels.map(label => (
+                    <Badge key={label} variant="outline" className="rounded-md px-1.5 text-[11px]">
+                      {label}
+                    </Badge>
+                  ))}
+                </div>
+              </DialogDescription>
+            </>
           ) : null}
-        </div>
-      ) : (
-        <TaskForm
-          data={form}
-          onChange={setForm}
-          statuses={statuses}
-          submitting={submitting}
-        />
-      )}
+        </DialogHeader>
 
-      {error ? <p className="text-destructive text-sm">{error}</p> : null}
+        {internalMode === 'view' && task ? (
+          <TaskView
+            task={task}
+            detail={detail}
+            detailLoading={detailLoading}
+            commentText={commentText}
+            onCommentChange={setCommentText}
+          />
+        ) : (
+          <TaskForm
+            data={form}
+            onChange={setForm}
+            statuses={statuses}
+            submitting={submitting}
+          />
+        )}
 
-      <DialogFooter>
-        {internalMode === 'view' ? (
-          <>
-            {task ? (
+        {error ? <p className="text-destructive text-sm">{error}</p> : null}
+
+        <DialogFooter className="flex-wrap">
+          {internalMode === 'view' ? (
+            <>
+              {next ? (
+                <Button
+                  disabled={submitting}
+                  onClick={() => void handlePhase(next.phase)}
+                  title={`Запустить фазу ${next.label}${commentText.trim() ? ' с комментарием' : ''}`}
+                >
+                  {PHASE_EMOJI[next.phase]} {next.label}
+                </Button>
+              ) : null}
+              {isToDo && task ? (
+                <Button variant="outline" disabled={submitting} onClick={() => void handleReject()}>
+                  ✖ Reject
+                </Button>
+              ) : null}
               <Button
                 variant="outline"
+                disabled={submitting || !commentText.trim()}
+                onClick={() => void handlePhase('comment')}
+                title="Записать комментарий в задачу и запустить Фазу Comment"
+              >
+                💬 Комментарий
+              </Button>
+              {task ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setError(null);
+                    setInternalMode('edit');
+                  }}
+                >
+                  Редактировать
+                </Button>
+              ) : null}
+              <Button variant="ghost" onClick={() => handleOpenChange(false)}>
+                Закрыть
+              </Button>
+            </>
+          ) : (
+            <>
+              {internalMode === 'edit' && task ? (
+                <Button variant="destructive" disabled={submitting} onClick={() => void handleArchive()}>
+                  Архивировать
+                </Button>
+              ) : null}
+              {/* AC3 VL-172: Отмена — назад в просмотр без сохранения */}
+              <Button
+                variant="ghost"
+                disabled={submitting}
                 onClick={() => {
+                  if (task) setForm(taskToForm(task));
                   setError(null);
-                  setInternalMode('edit');
+                  setInternalMode('view');
                 }}
               >
-                Редактировать
+                Отмена
               </Button>
-            ) : null}
-            <Button variant="ghost" onClick={() => onOpenChange(false)}>
-              Закрыть
-            </Button>
-          </>
-        ) : (
-          <>
-            {internalMode === 'edit' && task ? (
-              <Button variant="destructive" disabled={submitting} onClick={() => void handleArchive()}>
-                Архивировать
+              <Button disabled={!canSubmit} onClick={() => void handleSave()}>
+                {submitting ? 'Сохранение…' : 'Сохранить'}
               </Button>
-            ) : null}
-            <Button variant="ghost" disabled={submitting} onClick={() => onOpenChange(false)}>
-              Отмена
-            </Button>
-            <Button disabled={!canSubmit} onClick={() => void handleSave()}>
-              {submitting ? 'Сохранение…' : 'Сохранить'}
-            </Button>
-          </>
-        )}
-      </DialogFooter>
-    </DialogContent>
+            </>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

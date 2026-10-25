@@ -25,3 +25,38 @@ export interface KanbanTask {
 
 /** Доска: статус → задачи этого статуса. */
 export type BoardState = Record<string, KanbanTask[]>;
+
+/** Элемент чеклиста AC/DoD (строки хранятся как «- [ ] #N …»). */
+export interface ChecklistItem {
+  text: string;
+  checked: boolean;
+}
+
+/** Комментарий задачи (формат Backlog.md). */
+export interface TaskComment {
+  author: string;
+  created: string;
+  text: string;
+}
+
+/**
+ * Полная задача из GET /api/tasks/:id — секции тела для табов
+ * модалки просмотра (VL-172): KanbanTask не содержит plan/DoD/comments[].
+ */
+export interface TaskDetail extends KanbanTask {
+  reporter: string;
+  created_date: string;
+  updated_date: string;
+  type: string;
+  milestone: string;
+  dependencies: string[];
+  references: string[];
+  modified_files: string[];
+  lessons: string[];
+  acceptanceCriteria: (ChecklistItem | string)[];
+  definitionOfDone: (ChecklistItem | string)[];
+  implementationPlan: string;
+  implementationNotes: string;
+  finalSummary: string;
+  comments: TaskComment[];
+}
