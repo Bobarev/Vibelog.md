@@ -1,11 +1,11 @@
 ---
 id: VL-179
 title: 'checkShellCommandInProject: ложные «Команда отклонена» на путях с экранированными скобками \(main\) (route-группы ref-репозиториев)'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-25 13:23'
-updated_date: '2026-10-25 14:23'
+updated_date: '2026-10-25 17:33'
 due_date: ''
 labels:
   - agent
@@ -247,5 +247,10 @@ author: @agent
 created: 2026-10-25 14:23
 ---
 Фаза 3 (Code) выполнена. Изменено: src/agent/tools.ts (токенизатор line ~302 с backslash-ветками "\\[^\s]" и экранированными кавычками; paren-unescape path = token.replace(/\\([()])/g) перед isRegexPatternToken/absolute/..-проверками; проверки ~ / флагов / SPECIAL_FILES оставлены на token; JSDoc checkShellCommandInProject и isRegexPatternToken дополнены про VL-179), src/agent/tools.test.mjs (новый describe VL-179: 9 allowed-кейсов из транскрипта + quoted/'-экранирование + 2 reject-теста). Коммит eb715a6. Проверки: pnpm build чист (strict tsc); npx vitest run src/agent/tools.test.mjs — 50 passed; pnpm test — 67 test files / 1165 passed + 4 skipped (итоговый блок: ещё 7 passed), exit 0; smoke из скрипт-файла против dist — 5 ложных отказов транскрипта → null, 5 истинных (web/../../../../../web, /Users/bob/Desktop, ~, $HOME, \(main\)+4×.. наружу) → reject. Отклонение от плана: в reject-тесте 3×.. из глубины src/app/(main)=3 резолвятся ровно в cwd (внутрь) — исправлено на 4×.. в тесте, код не менялся. Опыт: создан lesson-26 (smoke guard-фиксов в worktree — через скрипт-файл, т.к. MCP run_shell_command валидировался старым dist основного репо и ложно отклонял саму smoke-команду), связан с задачей. References не использовались (поле пустое). Документация (DoD-2): JSDoc/комментарии в tools.ts; CHANGELOG/документы не трогал по правилам Фазы 3 — допишет Close. Осталось: ничего.
+---
+author: @agent
+created: 2026-10-25 17:33
+---
+Фаза Close выполнена. Ветка vb/vl-179 слита в master (1 коммит: eb715a6, merge c7e96ce), worktree .vibelog/worktrees/vl-179 удалена (untracked node_modules/refs — симлинки оркестратора, удалены с --force), ветка удалена. Проверки после merge: pnpm build чист (strict tsc), pnpm test — зелёный (exit 0). DoD: 1 (тесты проходят) — подтверждено pnpm test; 2 (документация) — JSDoc/комментарии в tools.ts из Фазы 3 + запись в CHANGELOG.md (Unreleased → Исправлено), docs-коммит 30ff90a; 3 (нет регрессий) — существующие describe VL-99/VL-104 не менялись, полный прогон зелёный. CHANGELOG дополнен изменением поведения guard (ложные отказы на \(main\)-путях устранены, истинные сохранены).
 ---
 <!-- COMMENTS:END -->
