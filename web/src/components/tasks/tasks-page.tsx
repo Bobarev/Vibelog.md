@@ -2,12 +2,14 @@
  * Страница «Задачи — таблица» (#/tasks, VL-175).
  *
  * Владелец данных и состояния: загружает задачи + конфиг (Promise.all,
- * паттерн kanban.tsx), хранит сортировку/пагинацию, рендерит TasksTable
- * (презентационная) и TaskModal для просмотра по клику на строку.
+ * паттерн kanban.tsx), хранит сортировку/фильтры/пагинацию, рендерит
+ * TasksFilters (VL-176), TasksTable (презентационная) и TaskModal для
+ * просмотра по клику на строку.
  *
- * Фильтры multi-select подключаются в VL-176 — место размечено:
- * filterTasks до sortTasks, счётчик «Показано N из M» считается после
- * фильтров (сейчас фильтров нет, filteredCount === total).
+ * Цепочка обработки: filterTasks (6 multi-select групп, AND между ними) →
+ * sortTasks → слайс страницы. Счётчик «Показано N из M» — после фильтров
+ * (filteredCount) из общего числа загруженных (total). Смена фильтра или
+ * сортировки сбрасывает страницу на 0 (первую).
  */
 
 import * as React from "react";
@@ -20,7 +22,9 @@ import type { KanbanTask } from "@/types/kanban";
 
 import { fetchConfig, fetchTasks, type TasksConfig } from "./api";
 import { sortTasks, type SortState } from "./sort-tasks";
+import { TasksFilters } from "./tasks-filters";
 import { TasksTable } from "./tasks-table";
+import { filterTasks, useTaskFilters, type TaskFilterKey } from "./use-task-filters";
 
 /** Размер страницы по умолчанию (AC3: 25/50/100). */
 const DEFAULT_PAGE_SIZE = 25;
@@ -36,6 +40,8 @@ export function TasksPage() {
   const [sort, setSort] = React.useState<SortState>(DEFAULT_SORT);
   const [page, setPage] = React.useState(0);
   const [pageSize, setPageSize] = React.useState(DEFAULT_PAGE_SIZE);
+  // Фильтры multi-select: состояние + localStorage (VL-176)
+  const { filters, setFilter, clearFilter, reset, isEmpty } = useTaskFilters();
   // Модалка просмотра (по клику на строку) — режим только view (VL-175)
   const [modal, setModal] = React.useState<{ open: boolean; task: KanbanTask | null }>({
     open: false,
@@ -86,16 +92,38 @@ export function TasksPage() {
     }
   }, []);
 
-  // Фильтры подключаются здесь в VL-176: filterTasks(tasks) до sortTasks
+  // Цепочка VL-176: фильтры → сортировка → слайс страницы (см. шапку файла)
+  const filtered = React.useMemo(() => filterTasks(tasks, filters), [tasks, filters]);
   const sorted = React.useMemo(
-    () => sortTasks(tasks, sort, config ?? { statuses: [], priorities: [], types: [] }),
-    [tasks, sort, config]
+    () => sortTasks(filtered, sort, config ?? { statuses: [], priorities: [], types: [] }),
+    [filtered, sort, config]
   );
-  const filteredCount = sorted.length; // после фильтров (VL-176)
+  const filteredCount = sorted.length; // после фильтров (N в «Показано N из M»)
 
   /** Смена сортировки — сброс на первую страницу (AC: страница 0 при sort). */
   function handleSortChange(next: SortState) {
     setSort(next);
+    setPage(0);
+  }
+
+  /**
+   * Сброс страницы при смене любого фильтра — в хендлерах, а не useEffect
+   * (паттерн VL-175: setPage синхронно в effect дал бы react-hooks/
+   * set-state-in-effect; все изменения фильтров идут только из этих
+   * хендлеров, поэтому поведение эквивалентно useEffect по filters/sort).
+   */
+  function handleFilterToggle(key: TaskFilterKey, value: string) {
+    setFilter(key, value);
+    setPage(0);
+  }
+
+  function handleFilterClearGroup(key: TaskFilterKey) {
+    clearFilter(key);
+    setPage(0);
+  }
+
+  function handleFilterReset() {
+    reset();
     setPage(0);
   }
 
@@ -130,18 +158,30 @@ export function TasksPage() {
           <p className="text-muted-foreground text-sm">Загрузка задач…</p>
         </div>
       ) : (
-        <TasksTable
-          tasks={pageTasks}
-          sort={sort}
-          onSortChange={handleSortChange}
-          page={page}
-          pageSize={pageSize}
-          onPageChange={setPage}
-          onPageSizeChange={handlePageSizeChange}
-          onRowClick={(task) => setModal({ open: true, task })}
-          filteredCount={filteredCount}
-          total={tasks.length}
-        />
+        <>
+          {/* Панель фильтров (VL-176) — над таблицей; «Сбросить фильтры» внутри */}
+          <TasksFilters
+            filters={filters}
+            config={config}
+            tasks={tasks}
+            isEmpty={isEmpty}
+            onToggle={handleFilterToggle}
+            onClearGroup={handleFilterClearGroup}
+            onReset={handleFilterReset}
+          />
+          <TasksTable
+            tasks={pageTasks}
+            sort={sort}
+            onSortChange={handleSortChange}
+            page={page}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={handlePageSizeChange}
+            onRowClick={(task) => setModal({ open: true, task })}
+            filteredCount={filteredCount}
+            total={tasks.length}
+          />
+        </>
       )}
 
       <TaskModal
