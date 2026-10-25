@@ -12,7 +12,8 @@
  * - GET  /api/settings       — настройки бота/settings.json без секретов (VL-156)
  * - PUT  /api/settings       — патч настроек с валидацией (VL-156)
  * - POST /api/tasks/:id/trigger — запуск фазы оркестратора (VL-28); поле
- *   comment (VL-172) — сначала addComment в задачу, затем {{comment}} промпта
+ *   comment (VL-172) — сначала addComment в задачу, затем {{comment}} промпта;
+ *   общий с ботом хелпер startTaskPhase + агент default_agent (VL-180)
  * - GET  /api/tasks/:id/trigger — состояние запуска фазы
  * - POST /api/tasks/:id/reject — отклонить задачу (VL-144)
  * - GET  /api/references      — список references без тел (VL-174)
@@ -28,7 +29,7 @@
  * - PATCH /api/lessons/:id   — обновление title/tags/status/content (VL-182)
  */
 
-import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile, addComment } from '../core/store.js';
+import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile } from '../core/store.js';
 import type { CreateTaskFileInput } from '../core/store.js';
 import type { Task } from '../core/task.js';
 import {
@@ -59,7 +60,7 @@ import { loadConfig, saveConfig, defaultConfig } from '../core/config.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadBotSettings, saveBotSettings } from '../bot/settings.js';
 import type { BotSettings } from '../bot/settings.js';
-import { startPhase, getRun, rejectTask } from './orchestrator.js';
+import { startTaskPhase, getRun, rejectTask } from './orchestrator.js';
 
 /** HTTP-ответ API. */
 export interface ApiResponse {
@@ -374,15 +375,14 @@ export function handleApi(
       // запуска — taskExtraVars(startPhase) перечитывает задачу, поэтому
       // {{taskLastComment}} close-промпта уже содержит его; при ошибке
       // запуска комментарий НЕ откатывается (семантика бота).
-      if (comment) {
-        addComment(cwd, task.id, comment);
-      }
+      //
       // VL-147: sameSession — явное переопределение настройки code_same_session
       // для фазы code (продолжение plan-сессии через --resume)
       const sameSession = typeof body?.sameSession === 'boolean' ? body.sameSession : undefined;
-      const result = startPhase(cwd, triggerMatch[1], phase, undefined, comment ? { comment } : undefined, 'qwen', {
-        sameSession,
-      });
+      // VL-180: общий хелпер бота и веб (startTaskPhase): addComment до старта
+      // внутри, агент — default_agent из .vibelog/settings.json (без хардкода
+      // 'qwen' — запуск фаз из браузера использует настройки проекта)
+      const result = startTaskPhase(cwd, triggerMatch[1], phase, { comment, sameSession });
       if ('error' in result) {
         return {
           status: 409,

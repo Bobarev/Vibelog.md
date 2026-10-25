@@ -7,7 +7,7 @@
  */
 
 import type { Bot, Context } from 'grammy';
-import { addComment, createTaskFile, getTask, listTasks, updateTaskFile } from '../core/store.js';
+import { createTaskFile, getTask, listTasks, updateTaskFile } from '../core/store.js';
 import { loadConfig } from '../core/config.js';
 import type { Task } from '../core/task.js';
 import { getGitLog, getGitStatus } from '../core/git.js';
@@ -45,8 +45,10 @@ import { commandsHelp, helpText } from './registry.js';
 import { rootCliPath, spawnReplacementBot, vibelogCliPath } from './restart.js';
 import { clearWebServer, currentWebServer, parseWebCommand, spawnWebServer, stopWebServer } from './web.js';
 import { buildTaskWorktree, ensureTaskWorktree, taskBranchName, worktreeCliPath } from '../core/worktree.js';
-import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
-import { getRun, startAnalyze, startPhase, startPrompt, startResume, rejectTask } from '../web/orchestrator.js';
+import type { PhaseExitCallback, PhaseRun, StartResult } from '../web/orchestrator.js';
+// VL-180: startTaskPhase — общий с вебом хелпер «комментарий → фаза»
+// (агент default_agent, addComment до старта); startPhase больше не нужен
+import { getRun, startAnalyze, startTaskPhase, startPrompt, startResume, rejectTask } from '../web/orchestrator.js';
 import {
   extractSessionRef,
   richToText,
@@ -320,9 +322,11 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   };
 
   /**
-   * Общая логика комментария (VL-60 / VL-78): addComment → сообщение →
-   * запуск Фазы Comment с notifyPhaseDone. Используется командой /comment
-   * и callback-кнопкой «Комментарий» — поведение /comment не меняется.
+   * Общая логика комментария (VL-60 / VL-78): сообщение → запуск Фазы
+   * Comment с notifyPhaseDone. Используется командой /comment и callback-
+   * кнопкой «Комментарий» — поведение /comment не меняется.
+   * VL-180: addComment + startPhase объединены в общий с вебом хелпер
+   * startTaskPhase (комментарий пишется внутри него ДО старта, VL-60).
    * Ошибки пробрасываются вызывающему (обработчик шлёт «Ошибка: …»).
    */
   async function commitComment(
@@ -332,25 +336,27 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     agent: AgentName
   ): Promise<void> {
     // Автор НЕ передаётся: addComment дефолтит git config user.name —
-    // единый автор для CLI и бота (однопользовательская система, VL-35)
-    const task = addComment(deps.cwd, taskId, text);
-    await sendText(bot, chatId, `💬 Комментарий добавлен к *${task.id}*`);
-    // VL-60: комментарий — не только запись, но и команда для qwen:
-    // сразу после addComment запускаем Фазу Comment — headless qwen
-    // выполняет запрос из комментария и оставляет отчёт комментарием.
+    // единый автор для CLI и бота (однопользовательская система, VL-35).
+    // Проверка до хелпера: текст ошибки совпадает с addComment («Задача не
+    // найдена: …»), карточке нужен task ниже (notifyPhaseDone)
+    const task = getTask(deps.cwd, taskId);
+    if (!task) {
+      throw new Error(`Задача не найдена: ${taskId}`);
+    }
+    // VL-60: комментарий — не только запись, но и команда для агента:
+    // startTaskPhase пишет его в задачу и сразу запускает Фазу Comment —
+    // headless-агент выполняет запрос из комментария и оставляет отчёт.
     // Статус НЕ меняется (фаза вне жизненного цикла spec/plan/code/close).
     // Уведомление — паттерн VL-63: карточка + информационное сообщение.
     const onExit: PhaseExitCallback = (run) => {
       notifyPhaseDone(bot, chatId, task, run);
     };
-    const result = startPhase(
-      deps.cwd,
-      task.id,
-      'comment',
+    const result = startTaskPhase(deps.cwd, task.id, 'comment', {
+      comment: text,
+      agent,
       onExit,
-      { comment: text },
-      agent
-    );
+    });
+    await sendText(bot, chatId, `💬 Комментарий добавлен к *${task.id}*`);
     if ('error' in result) {
       // Guard «уже выполняется» и прочие ошибки валидации startPhase:
       // комментарий уже сохранён — не откатываем, сообщаем явно (VL-60)
@@ -732,7 +738,8 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         if (notifyChat === undefined) return;
         notifyPhaseDone(bot, notifyChat, task, run);
       };
-      const result = startPhase(deps.cwd, task.id, 'spec', onExit, undefined, agent);
+      // VL-180: общий с вебом хелпер (агент уже рассчитан для текста сообщений)
+      const result = startTaskPhase(deps.cwd, task.id, 'spec', { onExit, agent });
       if ('error' in result) {
         await sendMd(
           ctx,
@@ -771,13 +778,8 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, `Задача ${escapeMarkdownV2(parsed.id)} не найдена.`);
       return;
     }
-    // Опциональный комментарий (VL-80): сначала в задачу, затем в промпт фазы
-    try {
-      if (parsed.comment) addComment(deps.cwd, task.id, parsed.comment);
-    } catch (err) {
-      await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
+    // Опциональный комментарий (VL-80): сначала в задачу, затем в промпт фазы —
+    // порядок и выбор агента гарантирует общий хелпер (VL-180)
     // Явный суффикс :<agent> перекрывает агента по умолчанию (VL-94)
     const agent = parsed.agent ?? resolveDefaultAgent(deps.cwd);
     // Колбэк завершения — паттерн VL-63: карточка + информационное сообщение
@@ -786,14 +788,19 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       if (notifyChat === undefined) return;
       notifyPhaseDone(bot, notifyChat, task, run);
     };
-    const result = startPhase(
-      deps.cwd,
-      task.id,
-      'plan',
-      onExit,
-      { comment: parsed.comment ?? '' },
-      agent
-    );
+    let result: StartResult;
+    try {
+      // VL-180: общий с вебом хелпер — addComment до старта (если комментарий
+      // есть) + startPhase; исключение addComment → «Ошибка: …» как раньше
+      result = startTaskPhase(deps.cwd, task.id, 'plan', {
+        comment: parsed.comment,
+        agent,
+        onExit,
+      });
+    } catch (err) {
+      await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
     if ('error' in result) {
       // Guard «уже выполняется» и прочие ошибки валидации startPhase
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
@@ -820,13 +827,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, `Задача ${escapeMarkdownV2(parsed.id)} не найдена.`);
       return;
     }
-    // Опциональный комментарий (VL-80): как в /plan
-    try {
-      if (parsed.comment) addComment(deps.cwd, task.id, parsed.comment);
-    } catch (err) {
-      await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
+    // Опциональный комментарий (VL-80): как в /plan — общий хелпер (VL-180)
     // Явный суффикс :<agent> перекрывает агента по умолчанию (VL-94)
     const agent = parsed.agent ?? resolveDefaultAgent(deps.cwd);
     // Колбэк завершения — паттерн VL-63: карточка + информационное сообщение
@@ -835,17 +836,22 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       if (notifyChat === undefined) return;
       notifyPhaseDone(bot, notifyChat, task, run);
     };
-    const result = startPhase(
-      deps.cwd,
-      task.id,
-      'code',
-      onExit,
-      { comment: parsed.comment ?? '' },
-      agent,
-      // VL-147: явный флаг --same-session/--no-same-session переопределяет
-      // настройку code_same_session; undefined — брать настройку
-      { sameSession: parsed.sameSession }
-    );
+    let result: StartResult;
+    try {
+      // VL-180: общий с вебом хелпер — addComment до старта + startPhase
+      // (семантика пустого комментария — литеральный {{comment}}, как в вебе)
+      result = startTaskPhase(deps.cwd, task.id, 'code', {
+        comment: parsed.comment,
+        agent,
+        onExit,
+        // VL-147: явный флаг --same-session/--no-same-session переопределяет
+        // настройку code_same_session; undefined — брать настройку
+        sameSession: parsed.sameSession,
+      });
+    } catch (err) {
+      await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
     if ('error' in result) {
       // Guard «уже выполняется» и прочие ошибки валидации startPhase
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
@@ -881,7 +887,8 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       if (notifyChat === undefined) return;
       notifyPhaseDone(bot, notifyChat, task, run);
     };
-    const result = startPhase(deps.cwd, task.id, 'close', onExit, undefined, agent);
+    // VL-180: общий с вебом хелпер (без комментария — как раньше)
+    const result = startTaskPhase(deps.cwd, task.id, 'close', { onExit, agent });
     if ('error' in result) {
       // Guard «уже выполняется» и прочие ошибки валидации startPhase
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
@@ -1321,9 +1328,11 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       if (notifyChat === undefined) return;
       notifyPhaseDone(bot, notifyChat, task, run);
     };
-    // Агент по умолчанию из настроек (VL-94): кнопки действий — как команды
+    // Агент по умолчанию из настроек (VL-94): кнопки действий — как команды;
+    // VL-180: общий хелпер — comment '' не передаётся (литеральный {{comment}}
+    // в промпте, как в вебе — шаблон поддерживает фолбэк)
     const agent = resolveDefaultAgent(deps.cwd);
-    const result = startPhase(deps.cwd, task.id, next.phase, onExit, { comment: '' }, agent);
+    const result = startTaskPhase(deps.cwd, task.id, next.phase, { onExit, agent });
     if ('error' in result) {
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
       return;

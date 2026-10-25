@@ -100,8 +100,12 @@ vibelog board
 # меню «Настройки»:
 # «Бот» (#/settings — те же опции, что /set в боте, .vibelog/settings.json,
 # без секретов env) и «Конфиг проекта» (#/config — backlog/config.yml)
-# Перенос карточки в Spec/In Progress/Review запускает фазу qwen
-# (оркестратор VL-28; требуется qwen в PATH или VIBELOG_QWEN_BIN)
+# Запуск фаз из веб-интерфейса (POST /api/tasks/:id/trigger, кнопки карточки)
+# использует агента default_agent из .vibelog/settings.json — как бот,
+# без захардкоженного значения (VL-180)
+# Перенос карточки в Spec/In Progress/Review запускает фазу
+# (оркестратор VL-28; агент — default_agent из .vibelog/settings.json,
+# по умолчанию qwen — требуется qwen в PATH или VIBELOG_QWEN_BIN)
 # Карточка в To Do содержит кнопку «✖ Reject» — отклонение задачи
 # (VL-163) Quick Create «Создать задачу» в сайдбаре — модальное окно создания;
 # клик по карточке — просмотр задачи (кнопка «Редактировать» — форма
@@ -273,6 +277,8 @@ VIBELOG_QWEN_BIN=$(pwd)/bin/vibelog-agent.mjs vibelog browser
 ```
 
 Агент: интерактивный TUI или `--headless` (JSON `type=result`, контракт `parseQwenResult`), loop detection, лимиты tool-calls/wall-time, локальные инструменты + Vibelog MCP. TUI написан на чистом Node.js (zero deps — без Ink/React, работает на Node 20+). LLM — env `VIBELOG_LLM_BASE_URL` / `VIBELOG_LLM_API_KEY` / `VIBELOG_LLM_MODEL` (Cloud.ru). Детали: [backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md).
+
+Выбор агента для запусков фаз: команда бота с суффиксом (`/plan:vb …`) либо настройка проекта `default_agent` в `.vibelog/settings.json` (ключ задаётся через `/set agent vb` или веб-раздел «Настройки → Бот»). Один и тот же `default_agent` используют и бот, и запуск фаз из веб-интерфейса (`POST /api/tasks/:id/trigger`, кнопки карточки, перетаскивание на доске) — общий код (`startTaskPhase`), без хардкода агента в вебе (VL-180).
 
 ### Флаги init
 

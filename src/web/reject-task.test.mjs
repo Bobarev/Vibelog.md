@@ -69,6 +69,8 @@ describe('rejectTask (VL-144)', () => {
       env[k] = v;
     }
     env.VIBELOG_QWEN_BIN = stubBin;
+    // VL-180: бинарь vb-агента — та же заглушка (тест default_agent=vb)
+    env.VIBELOG_AGENT_BIN = stubBin;
     setSpawnEnvBaseForTests(env);
   });
 
@@ -150,5 +152,23 @@ describe('rejectTask (VL-144)', () => {
     assert.deepEqual(ok.body, { rejected: true });
     const missing = handleApi('POST', '/api/tasks/vo-999/reject', null, testRoot);
     assert.equal(missing.status, 404);
+  });
+
+  it('бывшая в Code + default_agent vb → LLM-путь запущен агентом vb (VL-180)', async () => {
+    // AC1: rejectTask без opts.agent берёт агента из настроек проекта
+    // (раньше внутри был хардкод дефолта 'qwen')
+    const settingsDir = join(testRoot, '.vibelog');
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify({ default_agent: 'vb' }), 'utf-8');
+    try {
+      const task = createTaskFile(testRoot, { title: 'Reject из настроек', status: 'In Progress' });
+      const result = rejectTask(testRoot, task.id, 'настройки агента');
+      assert.ok('started' in result, `ожидался запуск LLM-фазы: ${JSON.stringify(result)}`);
+      const run = await waitDone(task.id);
+      assert.equal(run.exitCode, 0, run.logTail ?? '');
+      assert.equal(run.agent, 'vb', 'rejectTask без opts.agent → default_agent из settings.json');
+    } finally {
+      rmSync(join(settingsDir, 'settings.json'), { force: true });
+    }
   });
 });
