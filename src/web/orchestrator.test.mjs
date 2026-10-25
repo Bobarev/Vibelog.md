@@ -1480,6 +1480,40 @@ describe('orchestrator (VL-28)', () => {
     }
   });
 
+  it('startAnalyze: необязательный comment → {{comment}} в промпте; без него — пустая строка (VL-169)', async () => {
+    const anRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-anc-'));
+    mkdirSync(join(anRoot, 'backlog'), { recursive: true });
+    writeFileSync(join(anRoot, 'backlog', 'config.yml'), 'project_name: An Cmt\n', 'utf-8');
+    makeAgentSession(anRoot, 'agent-777', { taskId: '', phase: 'code', cwd: anRoot });
+    setStubEnv({
+      VL28_STUB_MARKER: join(anRoot, 'marker-anc.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+    });
+    try {
+      // С комментарием — текст подставляется в промпт
+      const res = startAnalyze(anRoot, 'vb:agent-777', undefined, 'qwen', 'сверь объём с AC');
+      assert.equal(res.started, true, JSON.stringify(res));
+      await waitDone('analyze-agent-777');
+      let argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
+      let prompt = argv[0];
+      assert.ok(prompt.includes('сверь объём с AC'), 'текст комментария в промпте');
+      assert.doesNotMatch(prompt, /\{\{[a-zA-Z]+\}\}/, 'неподставленные {{...}} при комментарии');
+      // Без комментария — подстановка пустая (не literal {{comment}})
+      const res2 = startAnalyze(anRoot, 'vb:agent-777', undefined, 'qwen');
+      assert.equal(res2.started, true, JSON.stringify(res2));
+      await waitDone('analyze-agent-777');
+      argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
+      prompt = argv[0];
+      assert.ok(prompt.includes('Дополнительный комментарий пользователя к разбору:'), 'строка комментария в шаблоне');
+      assert.doesNotMatch(prompt, /\{\{[a-zA-Z]+\}\}/, 'неподставленные {{...}} без комментария');
+    } finally {
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
+      rmSync(anRoot, { recursive: true, force: true });
+    }
+  });
+
   it('startAnalyze: guard по ключу analyze-<id>; разные сессии параллельны (VL-141)', async () => {
     const gRoot = mkdtempSync(join(tmpdir(), 'vibelog-orch-ang-'));
     mkdirSync(join(gRoot, 'backlog'), { recursive: true });

@@ -349,6 +349,23 @@ describe('parseAnalyzeCommand (VL-141)', () => {
     assert.ok('error' in e);
     assert.match(e.error, /Синтаксис/);
   });
+
+  it('VL-169: хвост после session-ref → необязательный comment', () => {
+    assert.deepEqual(parseAnalyzeCommand('vb:agent-123 проверь wall-убийства', 'analyze'), {
+      sessionId: 'agent-123',
+      comment: 'проверь wall-убийства',
+    });
+    // Голый ref + суффикс :vb + комментарий
+    assert.deepEqual(parseAnalyzeCommand('agent-123 сверь объём с AC', 'analyze:vb'), {
+      sessionId: 'agent-123',
+      agent: 'vb',
+      comment: 'сверь объём с AC',
+    });
+    // Без хвоста — ключа comment нет (deepEqual-контракт VL-80)
+    assert.deepEqual(parseAnalyzeCommand('vb:agent-123', 'analyze'), { sessionId: 'agent-123' });
+    // Хвост из пробелов — тоже без comment
+    assert.deepEqual(parseAnalyzeCommand('vb:agent-123   ', 'analyze'), { sessionId: 'agent-123' });
+  });
 });
 
 describe('parseResumeCommand (VL-171)', () => {

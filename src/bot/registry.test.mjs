@@ -85,10 +85,10 @@ describe('BOT_COMMANDS (VL-54)', () => {
     }
   });
 
-  it('команда analyze в реестре с usage /analyze[:agent] <session-ref> (VL-141)', () => {
+  it('команда analyze в реестре с usage /analyze[:agent] <session-ref> [комментарий] (VL-141/169)', () => {
     const analyze = BOT_COMMANDS.find((c) => c.command === 'analyze');
     assert.ok(analyze, 'команда analyze отсутствует в реестре');
-    assert.equal(analyze.usage, '/analyze[:agent] <session-ref>');
+    assert.equal(analyze.usage, '/analyze[:agent] <session-ref> [комментарий]');
     assert.match(analyze.description, /vb:agent-XXX/);
     assert.match(analyze.description, /вердикт|рекомендац/i);
   });
@@ -104,7 +104,7 @@ describe('BOT_COMMANDS (VL-54)', () => {
   it('commandsHelp() повторяет прежний хардкод help-строки /start', () => {
     assert.equal(
       commandsHelp(),
-      '/help, /tasks, /task <id>, /docs, /doc <id>, /board, /diff, /commits [N], /create, /status, /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off>, /comment[:agent] VL-1 <текст>, /spec[:agent] <описание>, /plan[:agent] VL-<id> [комментарий], /code[:agent] VL-<id> [комментарий], /close[:agent] VL-<id>, /prompt[:agent] <текст>, /analyze[:agent] <session-ref>, /resume[:agent] <session-ref> [комментарий], /restart, /web start [VL-N] | /web stop'
+      '/help, /tasks, /task <id>, /docs, /doc <id>, /board, /diff, /commits [N], /create, /status, /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off>, /comment[:agent] VL-1 <текст>, /spec[:agent] <описание>, /plan[:agent] VL-<id> [комментарий], /code[:agent] VL-<id> [комментарий], /close[:agent] VL-<id>, /prompt[:agent] <текст>, /analyze[:agent] <session-ref> [комментарий], /resume[:agent] <session-ref> [комментарий], /restart, /web start [VL-N] | /web stop'
     );
   });
 

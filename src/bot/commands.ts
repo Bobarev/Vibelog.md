@@ -94,12 +94,14 @@ export interface PromptCommand {
   agent?: AgentName;
 }
 
-/** Результат разбора /analyze (VL-141): сессия агента для разбора + агент-исполнитель. */
+/** Результат разбора /analyze (VL-141/169): сессия агента для разбора + агент + опциональный комментарий. */
 export interface AnalyzeCommand {
   /** Голый идентификатор сессии (agent-XXX, без префикса vb:). */
   sessionId: string;
   /** Агент: задан явно суффиксом :<agent>; иначе — из настроек (VL-94). */
   agent?: AgentName;
+  /** Необязательный комментарий после session-ref (VL-169), как у /plan (VL-80). */
+  comment?: string;
 }
 
 /** Снятие окружающих кавычек. */
@@ -466,7 +468,9 @@ export function parsePromptCommand(
 }
 
 /**
- * Разбирает /analyze (VL-141): session-ref сессии vibelog-agent для разбора.
+ * Разбирает /analyze (VL-141, VL-169): session-ref сессии vibelog-agent
+ * для разбора + необязательный комментарий (хвост после session-ref, как
+ * у /plan, VL-80).
  * Суффикс :<agent> выбирает агента-исполнителя (как у /prompt, VL-94).
  * Session-ref в том же формате, что у resume: vb:agent-XXX либо голый
  * agent-XXX (префикс vb: снимается). qwen-UUID отклоняется — у qwen-сессий
@@ -474,20 +478,31 @@ export function parsePromptCommand(
  *
  * @param text — аргументы команды (без слова команды)
  * @param commandWord — слово команды с суффиксом (analyze:vb)
- * @returns {sessionId, agent?} или {error} с подсказкой
+ * @returns {sessionId, agent?, comment?} или {error} с подсказкой
  */
 export function parseAnalyzeCommand(
   text: string,
   commandWord = ''
 ): AnalyzeCommand | { error: string } {
-  const hint = 'Синтаксис: /analyze[:agent] vb:agent-<id> (префикс vb: необязателен)';
+  const hint =
+    'Синтаксис: /analyze[:agent] vb:agent-<id> [комментарий] (префикс vb: необязателен)';
   const parsed = extractAgent('analyze', commandWord, text, hint);
   if ('error' in parsed) return parsed;
   if (!parsed.text) return { error: hint };
+  // Хвост после первого пробела — необязательный комментарий (VL-169, паттерн VL-80)
+  const rest = parsed.text;
+  const spaceIdx = rest.indexOf(' ');
+  const refPart = spaceIdx === -1 ? rest : rest.slice(0, spaceIdx);
+  const comment = spaceIdx === -1 ? '' : rest.slice(spaceIdx + 1).trim();
   // Нормализация vb:agent-XXX → agent-XXX; UUID qwen не матчится → error
-  const bare = parsed.text.replace(/^vb:/, '');
+  const bare = refPart.replace(/^vb:/, '');
   if (!/^agent-\d+$/.test(bare)) return { error: hint };
-  return { sessionId: bare, ...(parsed.agent ? { agent: parsed.agent } : {}) };
+  // Ключи comment/agent добавляем ТОЛЬКО при наличии — иначе сломаются deepEqual-тесты
+  return {
+    sessionId: bare,
+    ...(parsed.agent ? { agent: parsed.agent } : {}),
+    ...(comment ? { comment } : {}),
+  };
 }
 
 /** Результат разбора /resume (VL-171): сессия для возобновления + комментарий. */

@@ -300,15 +300,30 @@ describe('VL-142 — phase-2: экономия ходов', () => {
 // ── VL-141: фаза analyze — headless-разбор сессии агента без задачи ──
 
 describe('VL-141 — фаза analyze', () => {
-  it('renderPrompt: подстановки сессии, неподставленных {{...}} не остаётся', () => {
+  it('renderPrompt: подстановки сессии (+ comment VL-169), неподставленных {{...}} не остаётся', () => {
     const prompt = renderPrompt('analyze', '', {
       sessionId: 'agent-123',
       sessionPhase: 'code',
       sessionCwd: '/tmp/proj',
       sessionPath: '.vibelog/agent-sessions/agent-123.jsonl',
+      // VL-169: startAnalyze подставляет comment всегда (пустая строка без комментария)
+      comment: '',
     });
     assert.ok(prompt.includes('agent-123'), 'sessionId подставился');
     assert.ok(prompt.includes('.vibelog/agent-sessions/agent-123.jsonl'), 'путь к jsonl подставился');
+    assert.ok(prompt.includes('Дополнительный комментарий пользователя к разбору:'), 'строка комментария в шаблоне (VL-169)');
+    assert.ok(!prompt.includes('{{'), 'неподставленных подстановок не остаться');
+  });
+
+  it('VL-169: непустой comment подставляется в {{comment}}', () => {
+    const prompt = renderPrompt('analyze', '', {
+      sessionId: 'agent-123',
+      sessionPhase: 'code',
+      sessionCwd: '/tmp/proj',
+      sessionPath: '.vibelog/agent-sessions/agent-123.jsonl',
+      comment: 'сверь объём с AC',
+    });
+    assert.ok(prompt.includes('сверь объём с AC'), 'текст комментария подставился');
     assert.ok(!prompt.includes('{{'), 'неподставленных подстановок не остаться');
   });
 

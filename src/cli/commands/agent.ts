@@ -7,9 +7,10 @@
  *   из пустого запуска vibelog/VB по VL-102); с task-id задача добавляется
  *   в контекст чата; флаг --resume <session-ref> (VL-171) продолжает
  *   сохранённую сессию чата из jsonl-хранилища;
- * - analyze — паритет бот-команды /analyze (VL-141): vibelog agent
- *   analyze <session-ref> спавнит фазу analyze через startAnalyze — тот же
- *   шаблон phase-analyze.md, та же статистика jsonl и рекомендации.
+ * - analyze — паритет бот-команды /analyze (VL-141, VL-169): vibelog agent
+ *   analyze <session-ref> [комментарий] спавнит фазу analyze через startAnalyze —
+ *   тот же шаблон phase-analyze.md, та же статистика jsonl и рекомендации;
+ *   комментарий подставляется в {{comment}} промпта.
  */
 
 import { startAnalyze } from '../../web/orchestrator.js';
@@ -82,10 +83,12 @@ export async function runAgent(
   }
   const ref = positional[0];
   if (!ref) {
-    printError('Синтаксис: vibelog agent analyze <session-ref>');
+    printError('Синтаксис: vibelog agent analyze <session-ref> [комментарий]');
     process.exitCode = 1;
     return;
   }
+  // VL-169: необязательный комментарий — хвост после session-ref (как у бота)
+  const comment = positional.slice(1).join(' ').trim() || undefined;
   // Агент-исполнитель — из настроек проекта (/set agent), как у бота
   const agent = resolveDefaultAgent(cwd);
   // Ждём onExit: без await процесс CLI завершится раньше агента
@@ -97,7 +100,7 @@ export async function runAgent(
       console.log(`\n📊 Анализ завершён (exit=${run.exitCode ?? '-'}):\n${report}`);
       resolve();
     };
-    const res = startAnalyze(cwd, ref, onExit, agent);
+    const res = startAnalyze(cwd, ref, onExit, agent, comment);
     if ('error' in res) {
       printError(res.error);
       process.exitCode = 1;

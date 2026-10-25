@@ -124,7 +124,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('board', colors.cyan)} [--export]                   Канбан-доска
   ${colorize('browser', colors.cyan)} [--port N] [--no-open]      Веб-интерфейс
   ${colorize('bot', colors.cyan)}                             Telegram-бот (grammy)
-  ${colorize('agent', colors.cyan)} [task-id]               Чат с LLM-агентом (TUI); analyze <ref> — анализ сессии
+  ${colorize('agent', colors.cyan)} [task-id]               Чат с LLM-агентом (TUI); analyze <ref> [комментарий] — анализ сессии
   ${colorize('qwen-debug', colors.cyan)}                  Дебаг-прогон qwen (ping, stream-json)
   ${colorize('search', colors.cyan)} "query" [--status ...]      Поиск задач с фильтрами
   ${colorize('instructions', colors.cyan)} [topic]               Инструкции для агентов
@@ -288,7 +288,7 @@ vibelog bot
 
     agent: `
 vibelog agent [task-id] [--resume <session-ref>]
-vibelog agent analyze <session-ref>
+vibelog agent analyze <session-ref> [комментарий]
 
 Интерактивный TUI-чат с LLM-агентом (VL-158, нужен терминал):
   task-id — карточка задачи добавляется в контекст чата
@@ -298,7 +298,8 @@ vibelog agent analyze <session-ref>
 Штатный разбор сессии vibelog-agent (VL-141) — CLI-паритет /analyze бота:
 статистика jsonl (длительность, wall-убийства, прогоны «Продолжи», профиль
 tool-вызовов), вердикт «объём задачи vs тупик», рекомендации.
-  session-ref — vb:agent-XXX либо agent-XXX (только сессии vibelog-agent)`,
+  session-ref — vb:agent-XXX либо agent-XXX (только сессии vibelog-agent)
+  комментарий — необязательный (VL-169): уточнение к разбору, как в /analyze бота`,
 
     draft: `
 vibelog draft <subcommand> [опции]
