@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTask } from '../core/store.js';
-import { loadConfig } from '../core/config.js';
+import { DEFAULT_TASK_TYPES, loadConfig } from '../core/config.js';
 import { loadLessonsForTask } from '../core/lesson.js';
 import type { ChecklistItem, Task } from '../core/task.js';
 
@@ -128,6 +128,30 @@ export function taskExtraVars(cwd: string, taskId: string): Record<string, strin
   }
   if (!task) return null;
   const last = task.comments.length > 0 ? task.comments[task.comments.length - 1] : null;
+
+  // VL-154/VL-184: labels/types/priorities из backlog/config.yml — Spec
+  // классифицирует задачу по готовым спискам (метки, тип, приоритет), не тратя
+  // ход на backlog_config. Ошибка чтения конфига (нет config.yml, битый YAML):
+  // labels → пустая строка, types/priorities → значения по умолчанию
+  // (зеркало fallback normalizeTaskType в core/config.ts) — фаза не должна
+  // падать из-за отсутствующего конфига.
+  let cfg: Record<string, unknown> = {};
+  try {
+    cfg = loadConfig(cwd);
+  } catch {
+    // конфига нет/битый YAML — cfg остаётся {}, ниже срабатывают дефолты
+  }
+  const cfgLabels = cfg.labels;
+  const availableLabels = Array.isArray(cfgLabels) ? cfgLabels.join(', ') : '';
+  // VL-184: типы из конфига; дефолт — DEFAULT_TASK_TYPES (как в normalizeTaskType)
+  const cfgTypes = cfg.types;
+  const availableTypes = (Array.isArray(cfgTypes) && cfgTypes.length > 0 ? cfgTypes : DEFAULT_TASK_TYPES).join(', ');
+  // VL-184: приоритеты из конфига; дефолт — High/Medium/Low (как в defaultConfig)
+  const cfgPriorities = cfg.priorities;
+  const availablePriorities = (
+    Array.isArray(cfgPriorities) && cfgPriorities.length > 0 ? cfgPriorities : ['High', 'Medium', 'Low']
+  ).join(', ');
+
   // Порядок ключей фиксирован: renderPrompt заменяет значения по порядку
   // replaceAll — длинные тексты (description/plan) идут первыми, чтобы
   // редкий случай литерала {{...}} внутри них гасился последующими ключами
@@ -151,18 +175,11 @@ export function taskExtraVars(cwd: string, taskId: string): Record<string, strin
         return '(нет)';
       }
     })(),
-    // VL-154: labels из backlog/config.yml — Spec классифицирует задачу по
-    // готовому списку, не тратя ход на backlog_config. Любая ошибка чтения
-    // конфига (нет backlog, нет config.yml, битый YAML) → пустая строка:
-    // фаза не должна падать из-за отсутствующих labels
-    availableLabels: (() => {
-      try {
-        const labels = loadConfig(cwd).labels;
-        return Array.isArray(labels) ? labels.join(', ') : '';
-      } catch {
-        return '';
-      }
-    })(),
+    // VL-154: labels при ошибке конфига → ''; VL-184: types/priorities →
+    // дефолты (см. вычисления выше)
+    availableLabels,
+    availableTypes,
+    availablePriorities,
     taskTitle: task.title,
     taskType: task.type || '(не определён)',
     taskStatus: task.status,

@@ -78,7 +78,7 @@ export function listTools(): ToolDefinition[] {
         properties: {
           title: { type: 'string', description: 'Заголовок задачи' },
           description: { type: 'string', description: 'Описание задачи' },
-          priority: { type: 'string', enum: ['High', 'Medium', 'Low'], description: 'Приоритет' },
+          priority: { type: 'string', description: 'Приоритет (High/Medium/Low или значение из config.priorities)' },
           labels: { type: 'array', items: { type: 'string' }, description: 'Метки' },
           dependencies: { type: 'array', items: { type: 'string' }, description: 'ID зависимостей' },
           acceptanceCriteria: { type: 'array', items: { type: 'string' }, description: 'Критерии приёмки' },
@@ -150,7 +150,7 @@ export function listTools(): ToolDefinition[] {
           id: { type: 'string', description: 'ID задачи' },
           title: { type: 'string', description: 'Новый заголовок' },
           description: { type: 'string', description: 'Новое описание (полная замена)' },
-          priority: { type: 'string', enum: ['High', 'Medium', 'Low'], description: 'Приоритет' },
+          priority: { type: 'string', description: 'Приоритет (High/Medium/Low или значение из config.priorities)' },
           assignee: { type: 'array', items: { type: 'string' }, description: 'Исполнители (полная замена)' },
           labels: { type: 'array', items: { type: 'string' }, description: 'Метки (полная замена)' },
           milestone: { type: 'string', description: 'Веха' },
