@@ -3,7 +3,7 @@
  *
  * Полная копия композиции ref-2 (dashboard/layout.tsx:47-70):
  * header flex h-12 с двумя группами. Левая: SidebarTrigger + Separator +
- * неактивный поиск. Правая: настройки вида, тема, репозиторий, юзер-меню.
+ * глобальный поиск (VL-185). Правая: настройки вида, тема, репозиторий, юзер-меню.
  */
 
 import { Separator } from "@/components/ui/separator";
@@ -11,7 +11,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { AccountSwitcher } from "@/components/header/account-switcher";
 import { LayoutControls } from "@/components/header/layout-controls";
 import { RepoMenu } from "@/components/header/repo-menu";
-import { SearchButton } from "@/components/header/search";
+import { GlobalSearch } from "@/components/header/search";
 import { ThemeSwitcher } from "@/components/header/theme-switcher";
 
 export function AppHeader() {
@@ -24,7 +24,7 @@ export function AppHeader() {
             orientation="vertical"
             className="mx-2 data-[orientation=vertical]:h-4 data-[orientation=vertical]:self-center"
           />
-          <SearchButton />
+          <GlobalSearch />
         </div>
         <div className="flex items-center gap-2">
           <LayoutControls />

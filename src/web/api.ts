@@ -4,6 +4,7 @@
  * Эндпоинты:
  * - GET  /api/tasks          — список задач
  * - POST /api/tasks          — создать задачу
+ * - GET  /api/search         — глобальный поиск по 4 типам сущностей (VL-185)
  * - GET  /api/tasks/:id      — детали задачи
  * - PATCH /api/tasks/:id     — обновить задачу
  * - DELETE /api/tasks/:id    — архивировать задачу
@@ -57,6 +58,7 @@ import {
 } from '../core/lesson.js';
 import type { UpdateLessonInput } from '../core/lesson.js';
 import { loadConfig, saveConfig, defaultConfig } from '../core/config.js';
+import { globalSearch } from '../core/search.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadBotSettings, saveBotSettings } from '../bot/settings.js';
 import type { BotSettings } from '../bot/settings.js';
@@ -75,18 +77,35 @@ export interface ApiResponse {
  * @param url — путь URL (без query string)
  * @param body — тело запроса (для POST/PATCH)
  * @param cwd — рабочая директория
+ * @param queryString — строка запроса после '?' (VL-185; '' по умолчанию —
+ *   обратная совместимость: существующие вызовы передают 4 аргумента)
  */
 export function handleApi(
   method: string,
   url: string,
   body: Record<string, unknown> | null,
-  cwd: string
+  cwd: string,
+  queryString: string = ''
 ): ApiResponse {
   try {
     // GET /api/tasks
     if (method === 'GET' && url === '/api/tasks') {
       const tasks = listTasks(cwd);
       return { status: 200, body: tasks };
+    }
+
+    // GET /api/search — глобальный поиск по задачам/lessons/references/
+    // documents (VL-185). Вся логика группировки и лимитов — в core
+    // globalSearch (lesson-37: хендлер только валидирует и отдаёт).
+    // Пустой q → 200 с пустыми группами (не ошибка); без backlog → 400
+    // (паттерн VL-182: предпроверка findBacklogDir вместо 500 от
+    // requireBacklogDir в searchLessons/searchReferences).
+    if (method === 'GET' && url === '/api/search') {
+      if (!findBacklogDir(cwd)) {
+        return { status: 400, body: { error: 'Backlog не найден. Выполните: vibelog init' } };
+      }
+      const q = new URLSearchParams(queryString).get('q') ?? '';
+      return { status: 200, body: globalSearch(cwd, q) };
     }
 
     // GET /api/config

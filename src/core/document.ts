@@ -235,7 +235,10 @@ export function updateDocument(
 }
 
 /**
- * Поиск документов: substring по id/title/tags/телу (case-insensitive).
+ * Поиск документов: substring по id/title/type/tags/телу (case-insensitive).
+ *
+ * type добавлен в VL-185 (AC глобального поиска: документы ищутся по
+ * title/body/type); общий для CLI/MCP/веб поисковый слой один (lesson-37).
  */
 export function searchDocuments(backlogDir: string, query: string): DocumentEntry[] {
   const all = listDocuments(backlogDir);
@@ -245,6 +248,7 @@ export function searchDocuments(backlogDir: string, query: string): DocumentEntr
   return all.filter(e => {
     if (e.document.id.toLowerCase().includes(q)) return true;
     if (e.document.title.toLowerCase().includes(q)) return true;
+    if (e.document.type && e.document.type.toLowerCase().includes(q)) return true;
     if (e.document.tags.some(t => String(t).toLowerCase().includes(q))) return true;
     if (e.body && e.body.toLowerCase().includes(q)) return true;
     return false;
