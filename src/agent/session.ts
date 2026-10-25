@@ -206,6 +206,31 @@ export function findTaskPhaseSessionSync(dir: string, taskId: string, phase: str
 }
 
 /**
+ * Диагностическая сводка метсессий задачи (VL-187): «sessionId:phase, …» для
+ * всех *.meta.json с meta.taskId (регистронезависимо). Пустая строка, если
+ * каталога нет/мет нет. Используется в fallback-логе startPhase, чтобы причина
+ * «план-сессия не найдена» читалась из лога оркестратора.
+ */
+export function listTaskSessionMetas(dir: string, taskId: string): string {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return '';
+  }
+  const wanted = taskId.toUpperCase();
+  const out: string[] = [];
+  for (const entry of entries) {
+    if (!entry.endsWith('.meta.json')) continue;
+    const sessionId = entry.slice(0, -'.meta.json'.length);
+    const meta = loadSessionMetaSync(dir, sessionId);
+    if (!meta?.taskId || meta.taskId.toUpperCase() !== wanted) continue;
+    out.push(`${sessionId}:${meta.phase ?? '?'}`);
+  }
+  return out.join(', ');
+}
+
+/**
  * sessionId приходит извне (--resume из CLI, ref бота) — без проверки
  * `..` в имени вышел бы за пределы каталога сессий (path traversal).
  */

@@ -32,7 +32,7 @@ import {
   resolveDefaultAgent,
 } from '../bot/settings.js';
 import { taskIdPattern } from '../core/config.js';
-import { agentSessionsDir, findTaskPhaseSessionSync, loadSessionMetaSync, saveSessionMeta } from '../agent/session.js';
+import { agentSessionsDir, findTaskPhaseSessionSync, listTaskSessionMetas, loadSessionMetaSync, saveSessionMeta } from '../agent/session.js';
 
 // Реэкспорт для обратной совместимости (VL-85): renderPrompt/Phase вынесены
 // в phase-prompt.ts — общий модуль оркестратора и CLI vibelog-agent.
@@ -65,6 +65,14 @@ export type StartResult =
       pid: number;
       /** VL-146: close поставлен в очередь branch-mode — процесс ещё не создан (pid 0). */
       queued?: boolean;
+      /**
+       * VL-187: статус продолжения plan-сессии фазой code (только phase==='code'):
+       * applied — настройка/флаг включены и план-сессия найдена (--resume передан);
+       * no-plan-session — включены, но мета план-сессии не найдена (новая сессия);
+       * off — настройка выключена; override-off — явный --no-same-session/sameSession:false.
+       * Поле additive: API отдаёт StartResult целиком (202), бот показывает в сообщении.
+       */
+      sameSession?: 'applied' | 'no-plan-session' | 'off' | 'override-off';
     }
   | { error: string };
 
@@ -202,18 +210,44 @@ export function startPhase(
   // сессии; для qwen дополнительно дописывает оркестратор в finish, VL-147).
   let extraArgs: string[] = [];
   const sameSession = opts?.sameSession ?? resolveCodeSameSession(cwd);
-  if (phase === 'code' && sameSession) {
-    const planSessionId = findTaskPhaseSessionSync(agentSessionsDir(cwd), taskId, 'plan');
-    if (planSessionId) {
-      extraArgs = ['--resume', planSessionId];
-      prompt +=
-        '\n\nСессия продолжает фазу plan, контекст планирования уже в истории.';
-    } else {
-      // Fallback: план-сессия не найдена (задача планировалась до VL-147,
-      // меты нет / сессия удалена) — обычный новый запуск, регрессий нет
-      console.log(
-        `[phase ${taskId}] VL-147: план-сессия не найдена — code запускается в новой сессии`
-      );
+  // VL-187: статус продолжения plan-сессии — считается ТОЛЬКО здесь (общий
+  // модуль бота и веба) и возвращается в StartResult: API-ответ 202 и
+  // сообщения бота показывают, что реально произошло при запуске code.
+  // Вне фазы code поле не добавляется (undefined).
+  let sameSessionStatus: 'applied' | 'no-plan-session' | 'off' | 'override-off' | undefined;
+  if (phase === 'code') {
+    sameSessionStatus = opts?.sameSession === false ? 'override-off' : 'off';
+    if (sameSession) {
+      // Основной каталог меты — главный репо; фолбэк (VL-187, ветка B) —
+      // каталог сессий worktree задачи: мета план-сессии могла попасть туда
+      // при запуске плана из worktree без VIBELOG_CWD/со старым dist.
+      const mainDir = agentSessionsDir(cwd);
+      const wtDir = agentSessionsDir(taskWorktreeDir(cwd, taskId));
+      let planSessionId = findTaskPhaseSessionSync(mainDir, taskId, 'plan');
+      if (!planSessionId) {
+        planSessionId = findTaskPhaseSessionSync(wtDir, taskId, 'plan');
+      }
+      if (planSessionId) {
+        extraArgs = ['--resume', planSessionId];
+        sameSessionStatus = 'applied';
+        prompt +=
+          '\n\nСессия продолжает фазу plan, контекст планирования уже в истории.';
+      } else {
+        // Fallback: план-сессия не найдена (задача планировалась до VL-147,
+        // меты нет / сессия удалена) — обычный новый запуск, регрессий нет.
+        // VL-187: лог расширен — каталоги поиска и меты задачи, иначе причина
+        // fallback нечитаема из лога оркестратора (инцидент VL-185).
+        sameSessionStatus = 'no-plan-session';
+        const metas = [mainDir, wtDir]
+          .map((dir) => listTaskSessionMetas(dir, taskId))
+          .filter(Boolean)
+          .join('; ');
+        console.log(
+          `[phase ${taskId}] VL-147: план-сессия не найдена — code запускается в новой сессии. ` +
+            `Каталоги поиска: ${mainDir}, ${wtDir}. ` +
+            `Меты задачи: ${metas || 'нет'}`
+        );
+      }
     }
   }
   // VL-146: в branch-mode close сериализуется — merge ветки в главном репо
@@ -256,7 +290,11 @@ export function startPhase(
     }
     return res;
   }
-  return spawnQwenRun(cwd, taskId, phase as Phase, prompt, onExit, agent, extraArgs);
+  const res = spawnQwenRun(cwd, taskId, phase as Phase, prompt, onExit, agent, extraArgs);
+  // VL-187: статус sameSession добавляем только к успеху и только для code
+  // (вне code sameSessionStatus === undefined — возвращаем как раньше)
+  if ('error' in res || sameSessionStatus === undefined) return res;
+  return { ...res, sameSession: sameSessionStatus };
 }
 
 /**
@@ -840,9 +878,15 @@ function spawnQwenRun(
     // У vb мета уже записана CLI при старте — перезапись идемпотентна
     // (та же taskId/phase; cwd приводится к realpath, как process.cwd() child'а
     // — иначе symlink /var→/private/var в macOS tmpdir менял бы мету, регрессия
-    // E2E VL-114). При --resume CLI мету не перезаписывает (isNewSession=false) —
-    // мета остаётся phase='plan', это корректно: возобновлённые code-запуски
-    // продолжают ту же план-сессию. Fire-and-forget: ошибка записи не роняет фазу.
+    // E2E VL-114).
+    // VL-187: resume-ран (--resume в extraArgs: reply-«Продолжить» из бота идёт
+    // с phase='prompt') НЕ перезаписывает СУЩЕСТВУЮЩУЮ мету сессии — иначе
+    // фаза плана/кода затирается на 'prompt' и findTaskPhaseSessionSync больше
+    // не находит план-сессию (инцидент VL-185: plan-сессия продолжена reply'ом
+    // → мета стала 'prompt' → code запустился в новой сессии при включённом
+    // code_same_session). Мета resume-сессии уже записана при её создании
+    // (CLI) либо прежним раном; без меты — пишем как раньше (восстановление).
+    // Fire-and-forget: ошибка записи не роняет фазу.
     if (result?.session_id && phaseTaskId !== '') {
       let metaCwd = cwd;
       try {
@@ -850,13 +894,25 @@ function spawnQwenRun(
       } catch {
         // каталог исчез между спавном и завершением — оставляем исходный путь
       }
-      saveSessionMeta(agentSessionsDir(cwd), result.session_id, {
-        taskId: phaseTaskId,
-        phase,
-        cwd: metaCwd,
-      }).catch((err) => {
-        console.log(`[phase ${key}] ${ts()} мета сессии не записана: ${(err as Error).message}`);
-      });
+      const isResumeRun = extraArgs.includes('--resume');
+      const existing = isResumeRun
+        ? loadSessionMetaSync(agentSessionsDir(cwd), result.session_id)
+        : null;
+      if (existing?.taskId && existing?.phase) {
+        // Resume-ран с записанной метой: исходная фаза/задача сохраняются как
+        // есть (cwd тоже не трогаем — сессия создавалась в нём же)
+        console.log(
+          `[phase ${key}] ${ts()} мета сессии ${result.session_id} сохранена без перезаписи (resume-ран, фаза '${existing.phase}')`
+        );
+      } else {
+        saveSessionMeta(agentSessionsDir(cwd), result.session_id, {
+          taskId: phaseTaskId,
+          phase,
+          cwd: metaCwd,
+        }).catch((err) => {
+          console.log(`[phase ${key}] ${ts()} мета сессии не записана: ${(err as Error).message}`);
+        });
+      }
     }
     if (!result) {
       const outLines = log.split('\n').filter((l) => l.trim());
