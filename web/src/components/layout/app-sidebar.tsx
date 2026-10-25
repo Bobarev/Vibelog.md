@@ -8,13 +8,14 @@
  *
  * Навигация (VL-165): Канбан (#/); «Настройки» — parent-пункт с подменю:
  * «Бот» (#/settings, .vibelog/settings.json) и «Конфиг проекта» (#/config,
- * backlog/config.yml). Развёрнутый сайдбар — Collapsible + SidebarMenuSub,
+ * backlog/config.yml). References (#/references, VL-174) — отдельный пункт
+ * в группе «Основное», подсвечивается и на #/reference/<id> (activeWhen). Развёрнутый сайдбар — Collapsible + SidebarMenuSub,
  * свёрнутый до иконок — DropdownMenu (как Authentication в референсе).
  */
 
 import * as React from "react";
 
-import { Command, FolderCog, Kanban, PlusCircle, Settings, SlidersHorizontal } from "lucide-react";
+import { Command, FolderCog, Kanban, Library, PlusCircle, Settings, SlidersHorizontal } from "lucide-react";
 
 import { Sidebar, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarRail } from "@/components/ui/sidebar";
 import { NavMain, type NavGroup } from "@/components/layout/nav-main";
@@ -26,6 +27,15 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Основное",
     items: [
       { id: "board", title: "Канбан", url: "board", icon: Kanban },
+      // References (VL-174): активен и на детальной странице #/reference/<id>
+      // (activeWhen в nav-main — у неё свой Route 'reference')
+      {
+        id: "references",
+        title: "References",
+        url: "references",
+        icon: Library,
+        activeWhen: ["references", "reference"],
+      },
       {
         id: "settings",
         title: "Настройки",

@@ -14,11 +14,23 @@
  * - POST /api/tasks/:id/trigger — запуск фазы оркестратора (VL-28)
  * - GET  /api/tasks/:id/trigger — состояние запуска фазы
  * - POST /api/tasks/:id/reject — отклонить задачу (VL-144)
+ * - GET  /api/references      — список references без тел (VL-174)
+ * - GET  /api/references/:id  — детали reference (метаданные + тело)
+ * - PATCH /api/references/:id — обновление title/tags/url/тела (VL-174)
+ * - POST /api/references/sync — клонировать отсутствующие репо (VL-174)
  */
 
 import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile } from '../core/store.js';
 import type { CreateTaskFileInput } from '../core/store.js';
 import type { Task } from '../core/task.js';
+import {
+  listReferences,
+  getReference,
+  updateReference,
+  syncReferenceRepos,
+  REFERENCE_TYPES,
+} from '../core/reference.js';
+import type { UpdateReferenceInput } from '../core/reference.js';
 import { loadConfig, saveConfig, defaultConfig } from '../core/config.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadBotSettings, saveBotSettings } from '../bot/settings.js';
@@ -102,6 +114,66 @@ export function handleApi(
       Object.assign(settings, validated.patch);
       saveBotSettings(cwd, settings);
       return { status: 200, body: { settings: loadBotSettings(cwd) } };
+    }
+
+    // GET /api/references — список references (VL-174).
+    // Тела (body) НЕ отдаём: список показывает только метаданные
+    // (type, url/path, tags, linked_tasks); тело грузится на детальной
+    // странице через GET /api/references/:id — экономим трафик на больших
+    // внешних источниках (тело README у repo-референса может быть мегабайтным).
+    if (method === 'GET' && url === '/api/references') {
+      const entries = listReferences(cwd);
+      return {
+        status: 200,
+        body: entries.map(e => ({ reference: e.reference, path: e.path })),
+      };
+    }
+
+    // POST /api/references/sync — клонирование отсутствующих репо (VL-174).
+    // ВАЖНО: точное совпадение ДО regex ниже — иначе 'sync' матчится как id.
+    // syncReferenceRepos синхронный (spawnSync git clone) — долгое клонирование
+    // блокирует event loop; для локального инструмента это приемлемо (как CLI).
+    if (method === 'POST' && url === '/api/references/sync') {
+      return { status: 200, body: syncReferenceRepos(cwd) };
+    }
+
+    // GET/PATCH /api/references/:id — детали и обновление reference (VL-174).
+    const refMatch = url.match(/^\/api\/references\/([^/]+)$/);
+    if (refMatch && method === 'GET') {
+      const entry = getReference(cwd, refMatch[1]);
+      if (!entry) return { status: 404, body: { error: 'Reference не найден' } };
+      return { status: 200, body: entry };
+    }
+    if (refMatch && method === 'PATCH') {
+      // Предвалидация до updateReference: некорректный type бросил бы
+      // normalizeReferenceType → 500, а мусор в tags/link_tasks ушёл бы
+      // в md-файл. Ошибки валидации — 400, файл не меняется.
+      const updates: UpdateReferenceInput = {};
+      if (body?.type !== undefined) {
+        const type = String(body.type).toLowerCase();
+        if (!REFERENCE_TYPES.includes(type as (typeof REFERENCE_TYPES)[number])) {
+          return {
+            status: 400,
+            body: { error: `Недопустимый тип reference "${body.type}". Допустимые: ${REFERENCE_TYPES.join(', ')}` },
+          };
+        }
+        updates.type = type;
+      }
+      for (const key of ['tags', 'linked_tasks'] as const) {
+        const value = body?.[key];
+        if (value === undefined) continue;
+        if (!Array.isArray(value) || value.some(v => typeof v !== 'string')) {
+          return { status: 400, body: { error: `${key} — массив строк` } };
+        }
+        updates[key] = value as string[];
+      }
+      if (body?.title !== undefined) updates.title = String(body.title);
+      if (body?.url !== undefined) updates.url = String(body.url);
+      // 'content' — wire-поле тела (совпадает с UpdateReferenceInput)
+      if (body?.content !== undefined) updates.content = String(body.content);
+      const updated = updateReference(cwd, refMatch[1], updates);
+      if (!updated) return { status: 404, body: { error: 'Reference не найден' } };
+      return { status: 200, body: updated };
     }
 
     // POST /api/tasks — тело приходит из HTTP без гарантий типов
