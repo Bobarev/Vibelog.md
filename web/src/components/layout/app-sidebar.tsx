@@ -9,16 +9,18 @@
  * Навигация (VL-165/VL-177): «Задачи» (#/ — доска/список, активен и на
  * #/tasks через activeWhen); «Настройки» — parent-пункт с подменю:
  * «Бот» (#/settings, .vibelog/settings.json) и «Конфиг проекта» (#/config,
- * backlog/config.yml). References (#/references, VL-174) и Documents
- * (#/documents, VL-181) — отдельные пункты в группе «Основное»,
- * подсвечиваются и на детальных страницах #/reference/<id>, #/document/<id>
- * (activeWhen). Развёрнутый сайдбар — Collapsible + SidebarMenuSub,
- * свёрнутый до иконок — DropdownMenu (как Authentication в референсе).
+ * backlog/config.yml). References (#/references, VL-174), Documents
+ * (#/documents, VL-181) и Lessons (#/lessons, VL-182) — отдельные пункты
+ * в группе «Основное»,
+ * подсвечиваются и на детальных страницах #/reference/<id>, #/document/<id>,
+ * #/lesson/<id> (activeWhen). Развёрнутый сайдбар — Collapsible +
+ * SidebarMenuSub, свёрнутый до иконок — DropdownMenu (как Authentication
+ * в референсе).
  */
 
 import * as React from "react";
 
-import { Command, FileText, FolderCog, Kanban, Library, PlusCircle, Settings, SlidersHorizontal } from "lucide-react";
+import { Command, FileText, FolderCog, Kanban, Library, Lightbulb, PlusCircle, Settings, SlidersHorizontal } from "lucide-react";
 
 import { Sidebar, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarRail } from "@/components/ui/sidebar";
 import { NavMain, type NavGroup } from "@/components/layout/nav-main";
@@ -56,6 +58,15 @@ const NAV_GROUPS: NavGroup[] = [
         url: "documents",
         icon: FileText,
         activeWhen: ["documents", "document"],
+      },
+      // Lessons (VL-182): активен и на детальной странице #/lesson/<id>
+      // (lesson-11 — активность по хеш-роуту, не defaultOpen)
+      {
+        id: "lessons",
+        title: "Lessons",
+        url: "lessons",
+        icon: Lightbulb,
+        activeWhen: ["lessons", "lesson"],
       },
       {
         id: "settings",

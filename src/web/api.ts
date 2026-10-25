@@ -23,6 +23,9 @@
  * - POST /api/documents      — создать документ (VL-181)
  * - GET  /api/documents/:id  — детали документа (метаданные + body + path)
  * - PATCH /api/documents/:id — обновление title/type/tags/content (VL-181)
+ * - GET  /api/lessons        — список lessons без тел (VL-182)
+ * - GET  /api/lessons/:id    — детали lesson (метаданные + body + path)
+ * - PATCH /api/lessons/:id   — обновление title/tags/status/content (VL-182)
  */
 
 import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile, addComment } from '../core/store.js';
@@ -45,6 +48,13 @@ import {
   DOCUMENT_TYPES,
 } from '../core/document.js';
 import type { UpdateDocumentInput } from '../core/document.js';
+import {
+  listLessons,
+  getLesson,
+  updateLesson,
+  LESSON_STATUSES,
+} from '../core/lesson.js';
+import type { UpdateLessonInput } from '../core/lesson.js';
 import { loadConfig, saveConfig, defaultConfig } from '../core/config.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadBotSettings, saveBotSettings } from '../bot/settings.js';
@@ -274,6 +284,67 @@ export function handleApi(
       if (body?.content !== undefined) updates.content = String(body.content);
       const updated = updateDocument(backlogDir, docMatch[1], updates);
       if (!updated) return { status: 404, body: { error: 'Документ не найден' } };
+      return { status: 200, body: updated };
+    }
+
+    // GET /api/lessons — список lessons (VL-182).
+    // Паттерн documents (VL-181): core-функции lessons сами резолвят backlog
+    // и бросают без него → предпроверка findBacklogDir, 400 вместо 500.
+    // Тела (body) НЕ отдаём: список — только метаданные (id/title/status/
+    // tags/source_tasks/linked_tasks); тело грузится на детальной странице
+    // через GET /api/lessons/:id — экономим трафик (как у references).
+    if (method === 'GET' && url === '/api/lessons') {
+      if (!findBacklogDir(cwd)) {
+        return { status: 400, body: { error: 'Backlog не найден. Выполните: vibelog init' } };
+      }
+      const entries = listLessons(cwd);
+      return {
+        status: 200,
+        body: entries.map(e => ({ lesson: e.lesson, path: e.path })),
+      };
+    }
+
+    // GET/PATCH /api/lessons/:id — детали и обновление lesson (VL-182).
+    const lessonMatch = url.match(/^\/api\/lessons\/([^/]+)$/);
+    if (lessonMatch && method === 'GET') {
+      if (!findBacklogDir(cwd)) {
+        return { status: 400, body: { error: 'Backlog не найден. Выполните: vibelog init' } };
+      }
+      const entry = getLesson(cwd, lessonMatch[1]);
+      if (!entry) return { status: 404, body: { error: 'Lesson не найден' } };
+      return { status: 200, body: entry };
+    }
+    if (lessonMatch && method === 'PATCH') {
+      if (!findBacklogDir(cwd)) {
+        return { status: 400, body: { error: 'Backlog не найден. Выполните: vibelog init' } };
+      }
+      // Предвалидация до updateLesson (паттерн PATCH references): некорректный
+      // status бросил бы normalizeLessonStatus → 500, а мусор в tags ушёл бы
+      // в md-файл. Ошибки валидации — 400, файл не меняется.
+      // PATCH принимает только редактируемые по AC поля: title/tags/status/
+      // content; source_tasks/linked_tasks — read-only из frontmatter.
+      const updates: UpdateLessonInput = {};
+      if (body?.status !== undefined) {
+        const status = String(body.status).toLowerCase();
+        if (!LESSON_STATUSES.includes(status)) {
+          return {
+            status: 400,
+            body: { error: `Недопустимый статус lesson "${body.status}". Допустимые: ${LESSON_STATUSES.join(', ')}` },
+          };
+        }
+        updates.status = status;
+      }
+      if (body?.tags !== undefined) {
+        if (!Array.isArray(body.tags) || body.tags.some(t => typeof t !== 'string')) {
+          return { status: 400, body: { error: 'tags — массив строк' } };
+        }
+        updates.tags = body.tags as string[];
+      }
+      if (body?.title !== undefined) updates.title = String(body.title);
+      // 'content' — wire-поле тела (совпадает с UpdateLessonInput)
+      if (body?.content !== undefined) updates.content = String(body.content);
+      const updated = updateLesson(cwd, lessonMatch[1], updates);
+      if (!updated) return { status: 404, body: { error: 'Lesson не найден' } };
       return { status: 200, body: updated };
     }
 
