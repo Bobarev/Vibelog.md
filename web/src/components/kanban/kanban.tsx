@@ -279,7 +279,7 @@ export function Kanban() {
         </DragDropProvider>
       )}
 
-      {/* Модалка задачи (VL-163): view/create/edit; statuses — колонки доски */}
+      {/* Модалка задачи (VL-163/VL-172): view/create/edit; statuses — колонки доски */}
       <TaskModal
         open={modal.open}
         onOpenChange={open => setModal(prev => ({ ...prev, open }))}
@@ -287,6 +287,7 @@ export function Kanban() {
         task={modal.task}
         statuses={columnOrder}
         onSaved={handleSaved}
+        onTriggered={startPolling}
       />
     </div>
   );

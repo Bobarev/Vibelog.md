@@ -3,11 +3,17 @@
  *
  * Ходит в существующий REST API Vibelog (src/web/api.ts):
  * - GET  /api/tasks       — список задач (Task[] из src/core)
+ * - GET  /api/tasks/:id   — полная задача (секции для табов, VL-172)
  * - GET  /api/config      — конфиг проекта, включая statuses[]
  * - PATCH /api/tasks/:id  — частичное обновление (в т.ч. status)
+ * - POST /api/tasks/:id/trigger — запуск фазы (+ comment, VL-172)
+ * - POST /api/tasks/:id/reject  — отклонение задачи (VL-144)
+ *
+ * Ошибки сети не логируются в console (lesson-16): текст уходит в error-
+ * состояние вызывающего компонента, консоль браузера остаётся чистой.
  */
 
-import type { KanbanTask } from '../../types/kanban';
+import type { KanbanTask, TaskDetail } from '../../types/kanban';
 
 /** Сырой Task, как его отдаёт API (массив комментариев, остальное — по мере надобности). */
 interface ApiTask {
@@ -60,6 +66,20 @@ export async function fetchTasks(): Promise<KanbanTask[]> {
   if (!res.ok) throw new Error(`GET /api/tasks: ${res.status}`);
   const data = (await res.json()) as ApiTask[];
   return data.map(toKanbanTask);
+}
+
+/**
+ * Полная задача по ID — секции тела (plan/DoD/comments) для табов
+ * модалки просмотра (VL-172). Бросает при ошибке — вызывающий показывает
+ * fallback на данных KanbanTask.
+ */
+export async function fetchTask(id: string): Promise<TaskDetail> {
+  const res = await fetch(`/api/tasks/${encodeURIComponent(id)}`);
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(errBody.error || `GET /api/tasks/${id}: ${res.status}`);
+  }
+  return (await res.json()) as TaskDetail;
 }
 
 /** Статусы колонок из конфига проекта. */
@@ -121,16 +141,42 @@ export async function archiveTask(id: string): Promise<void> {
   if (!res.ok) throw new Error(`DELETE /api/tasks/${id}: ${res.status}`);
 }
 
-/** Запуск фазы оркестратора (VL-28). Бросает при ошибке — вызывающий логирует. */
-export async function triggerPhase(id: string, phase: string): Promise<void> {
+/**
+ * Запуск фазы оркестратора (VL-28).
+ *
+ * opts.comment (VL-172): непустой комментарий сервер сначала пишет в задачу
+ * (addComment), затем запускает фазу с {{comment}} промпта — как commitComment
+ * в боте. Бросает при ошибке (в т.ч. 409 «Запуск уже выполняется» — комментарий
+ * уже сохранён, не откатывается).
+ */
+export async function triggerPhase(
+  id: string,
+  phase: string,
+  opts?: { comment?: string }
+): Promise<void> {
+  const comment = opts?.comment?.trim();
   const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/trigger`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ phase }),
+    body: JSON.stringify(comment ? { phase, comment } : { phase }),
   });
   if (!res.ok) {
     const errBody = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(errBody.error || `POST trigger: ${res.status}`);
+  }
+}
+
+/** Отклонение задачи (кнопка ✖ Reject в To Do, VL-144/VL-172). */
+export async function rejectTask(id: string, comment?: string): Promise<void> {
+  const trimmed = comment?.trim();
+  const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(trimmed ? { comment: trimmed } : {}),
+  });
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(errBody.error || `POST reject: ${res.status}`);
   }
 }
 

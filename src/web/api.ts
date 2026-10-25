@@ -11,12 +11,13 @@
  * - PUT  /api/config         — патч конфига проекта с валидацией (VL-165)
  * - GET  /api/settings       — настройки бота/settings.json без секретов (VL-156)
  * - PUT  /api/settings       — патч настроек с валидацией (VL-156)
- * - POST /api/tasks/:id/trigger — запуск фазы оркестратора (VL-28)
+ * - POST /api/tasks/:id/trigger — запуск фазы оркестратора (VL-28); поле
+ *   comment (VL-172) — сначала addComment в задачу, затем {{comment}} промпта
  * - GET  /api/tasks/:id/trigger — состояние запуска фазы
  * - POST /api/tasks/:id/reject — отклонить задачу (VL-144)
  */
 
-import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile } from '../core/store.js';
+import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile, addComment } from '../core/store.js';
 import type { CreateTaskFileInput } from '../core/store.js';
 import type { Task } from '../core/task.js';
 import { loadConfig, saveConfig, defaultConfig } from '../core/config.js';
@@ -118,13 +119,37 @@ export function handleApi(
       const task = getTask(cwd, triggerMatch[1]);
       if (!task) return { status: 404, body: { error: 'Задача не найдена' } };
       const phase = typeof body?.phase === 'string' ? body.phase : '';
+      // VL-172: комментарий пользователя к запуску фазы (как в боте:
+      // /plan VL-1 текст или кнопка «Комментарий»). Фаза comment без текста —
+      // ошибка 400 (шаблон phase-comment требует {{comment}}).
+      const comment =
+        typeof body?.comment === 'string' ? body.comment.trim() : '';
+      if (phase === 'comment' && !comment) {
+        return { status: 400, body: { error: 'Требуется комментарий' } };
+      }
+      // Порядок как в commitComment бота (VL-60): комментарий пишется ДО
+      // запуска — taskExtraVars(startPhase) перечитывает задачу, поэтому
+      // {{taskLastComment}} close-промпта уже содержит его; при ошибке
+      // запуска комментарий НЕ откатывается (семантика бота).
+      if (comment) {
+        addComment(cwd, task.id, comment);
+      }
       // VL-147: sameSession — явное переопределение настройки code_same_session
       // для фазы code (продолжение plan-сессии через --resume)
       const sameSession = typeof body?.sameSession === 'boolean' ? body.sameSession : undefined;
-      const result = startPhase(cwd, triggerMatch[1], phase, undefined, undefined, 'qwen', {
+      const result = startPhase(cwd, triggerMatch[1], phase, undefined, comment ? { comment } : undefined, 'qwen', {
         sameSession,
       });
-      if ('error' in result) return { status: 409, body: { error: result.error } };
+      if ('error' in result) {
+        return {
+          status: 409,
+          body: {
+            error: comment
+              ? `Комментарий добавлен, но запуск не удался: ${result.error}`
+              : result.error,
+          },
+        };
+      }
       return { status: 202, body: result };
     }
 
