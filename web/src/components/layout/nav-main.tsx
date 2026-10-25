@@ -58,6 +58,12 @@ type NavItem =
       title: string;
       url: Route;
       icon: React.ComponentType<{ className?: string }>;
+      /**
+       * Дополнительные маршруты, где пункт активен (VL-174): например,
+       * References подсвечивается и на детальной странице #/reference/<id>,
+       * у которой свой Route — сравнивать только с url нельзя.
+       */
+      activeWhen?: Route[];
       subItems?: never;
     }
   | {
@@ -104,7 +110,10 @@ export function NavMain({ items }: NavMainProps) {
                   <SidebarMenuItem key={item.id}>
                     <SidebarMenuButton
                       asChild
-                      isActive={route === item.url}
+                      isActive={
+                        route === item.url ||
+                        (item.activeWhen?.includes(route) ?? false)
+                      }
                       tooltip={item.title}
                     >
                       <a href={hrefFor(item.url)}>

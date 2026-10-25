@@ -82,7 +82,12 @@ vibelog board
 # Шапка (VL-166): сворачивание сайдбара (Ctrl/Cmd+B), неактивный поиск,
 # параметры вида (тема/стиль/свертка сайдбара), переключатель темы,
 # ссылка на репозиторий, юзер-меню (git_user_name из настроек)
-# Сайдбар: Kanban-доска (#/) и вложенное меню «Настройки»:
+# Сайдбар: Kanban-доска (#/), References (#/references — список внешних
+# источников с type/url/tags/linked_tasks и кнопкой Sync — POST
+# /api/references/sync клонирует отсутствующие репо; #/reference/<id> —
+# просмотр title/type/url/path/tags/body/linked_tasks и редактирование
+# title/tags/url/body через PATCH /api/references/:id, VL-174) и вложенное
+# меню «Настройки»:
 # «Бот» (#/settings — те же опции, что /set в боте, .vibelog/settings.json,
 # без секретов env) и «Конфиг проекта» (#/config — backlog/config.yml)
 # Перенос карточки в Spec/In Progress/Review запускает фазу qwen

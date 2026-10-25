@@ -3,8 +3,9 @@
  *
  * Сайдбар — постоянный (ref-2 паттерн AppSidebar + SidebarProvider);
  * контент переключается по useHashRoute: Канбан (#/), Настройки бота
- * (#/settings, .vibelog/settings.json, VL-156) и Конфиг проекта
- * (#/config, backlog/config.yml, VL-165).
+ * (#/settings, .vibelog/settings.json, VL-156), Конфиг проекта
+ * (#/config, backlog/config.yml, VL-165) и References (#/references,
+ * #/reference/<id>, VL-174).
  */
 
 import { Kanban } from "@/components/kanban/kanban"
@@ -12,13 +13,16 @@ import { ConfigPage } from "@/components/config/config-page"
 import { AppHeader } from "@/components/header/app-header"
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { usePreferences } from "@/components/preferences"
+import { ReferencesPage } from "@/components/references/references-page"
+import { ReferenceDetail } from "@/components/references/reference-detail"
 import { SettingsPage } from "@/components/settings/settings"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
-import { useHashRoute } from "@/lib/use-hash-route"
+import { useHashRoute, useReferenceId } from "@/lib/use-hash-route"
 import { QUICK_CREATE_EVENT, setQuickCreatePending } from "@/lib/quick-create"
 
 export function App() {
   const route = useHashRoute()
+  const refId = useReferenceId()
   const { values } = usePreferences()
 
   /** Quick Create: вернуться на доску (модалка живёт в Kanban) и открыть её. */
@@ -47,6 +51,10 @@ export function App() {
             <SettingsPage />
           ) : route === "config" ? (
             <ConfigPage />
+          ) : route === "references" ? (
+            <ReferencesPage />
+          ) : route === "reference" ? (
+            <ReferenceDetail id={refId ?? ""} />
           ) : (
             <Kanban />
           )}
