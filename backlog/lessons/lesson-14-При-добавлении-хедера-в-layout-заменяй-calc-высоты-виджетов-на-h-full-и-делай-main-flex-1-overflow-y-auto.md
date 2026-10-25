@@ -12,8 +12,9 @@ source_tasks:
   - VL-166
 linked_tasks:
   - VL-166
+  - VL-172
 created_date: 2026-10-15
-updated_date: 2026-10-15
+updated_date: 2026-10-25
 supersedes: ''
 ---
 ## Проблема
