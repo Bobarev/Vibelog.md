@@ -28,6 +28,7 @@ import {
   consumeQuickCreatePending,
   setQuickCreatePending,
 } from '@/lib/quick-create';
+import { OPEN_TASK_EVENT, consumePendingTaskId } from '@/lib/open-task';
 import { sortTasks, type SortState } from '@/components/tasks/sort-tasks';
 import { TasksFilters } from '@/components/tasks/tasks-filters';
 import { TasksList } from '@/components/tasks/tasks-list';
@@ -45,7 +46,7 @@ import {
 } from '@/components/tasks/use-task-filters';
 import { fetchConfig, type TasksConfig } from '@/components/tasks/api';
 
-import { fetchTasks, getTriggerStatus, patchTaskStatus, triggerPhase } from './api';
+import { fetchTasks, fetchTask, getTriggerStatus, patchTaskStatus, triggerPhase } from './api';
 import { KanbanColumn } from './kanban-column';
 import { TaskCard } from './task-card';
 import { buildBoard, findColumnId } from './utils';
@@ -153,6 +154,36 @@ export function Kanban() {
       queueMicrotask(openCreate);
     }
     return () => window.removeEventListener(QUICK_CREATE_EVENT, openCreate);
+  }, []);
+
+  // Переход на задачу из deep-link (VL-182: source_tasks/linked_tasks на
+  // страницах lessons). Два входа: событие — если Kanban уже смонтирован;
+  // модульный флаг — если запрос пришёл до монтирования (dispatch события
+  // идёт ДО смены hash, как в quick-create). Открытие — асинхронный
+  // fetchTask; ошибка (задача в архиве/нет сети) — тихий fallback без
+  // console (lesson-16), модалка просто не открывается.
+  React.useEffect(() => {
+    const openById = (id: string) => {
+      if (!id) return;
+      fetchTask(id)
+        .then(task => setModal({ open: true, mode: 'view', task }))
+        .catch(() => {
+          /* тихий fallback: задача не найдена — модалка не открывается */
+        });
+    };
+    const openFromEvent = (event: Event) => {
+      // Гасим модульный флаг: событие и флаг могли оба сработать на одном
+      // запросе — двойное открытие не нужно
+      consumePendingTaskId();
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id;
+      openById(typeof id === 'string' ? id : '');
+    };
+    window.addEventListener(OPEN_TASK_EVENT, openFromEvent);
+    const pending = consumePendingTaskId();
+    if (pending) {
+      queueMicrotask(() => openById(pending));
+    }
+    return () => window.removeEventListener(OPEN_TASK_EVENT, openFromEvent);
   }, []);
 
   /** Клик по карточке — просмотр задачи в модалке (VL-163). */

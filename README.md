@@ -91,7 +91,12 @@ vibelog board
 # Documents (#/documents — список документов (type/tags/created_date,
 # фильтры по type и тегам, кнопка "+ Документ" → POST /api/documents);
 # #/document/<id> — просмотр (title/type/tags/body/created_date, markdown)
-# и редактирование через PATCH /api/documents/:id, VL-181) и вложенное
+# и редактирование через PATCH /api/documents/:id, VL-181), Lessons
+# (#/lessons — список lessons (id/title/status/tags, клиентские фильтры
+# по status и тегам); #/lesson/<id> — просмотр title/status/tags/body
+# (markdown-рендер) и source_tasks/linked_tasks ссылками на задачи
+# (клик открывает модалку задачи на доске), редактирование title/tags/
+# body/status через PATCH /api/lessons/:id, VL-182) и вложенное
 # меню «Настройки»:
 # «Бот» (#/settings — те же опции, что /set в боте, .vibelog/settings.json,
 # без секретов env) и «Конфиг проекта» (#/config — backlog/config.yml)
