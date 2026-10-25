@@ -21,7 +21,7 @@ import type { ChatMessage } from './llm.js';
 import { runLoop } from './loop.js';
 import { getTask } from '../core/store.js';
 import { taskToMarkdown } from '../core/task.js';
-import { agentSessionsDir, createSessionId, saveSession } from './session.js';
+import { agentSessionsDir, createSessionId, loadSession, saveSession } from './session.js';
 // Загрузка .env проекта (VL-37) — общий модуль с ботом, только node:fs/path
 import { loadDotEnv } from '../bot/env.js';
 import { applySettingsEnv } from '../core/settings.js';
@@ -50,7 +50,31 @@ export function composeTurnMessages(
 }
 
 /**
- * Точка входа интерактивного чата: env-проверки → TUI → цикл ходов.
+ * Загружает сохранённую сессию для возобновления TUI-чата (VL-171).
+ *
+ * session-ref в том же формате, что у headless --resume (cli.ts) и бота:
+ * префикс `vb:` срезается (файл сессии — <id>.jsonl), system-сообщения
+ * истории вычищаются — свежий system собирается buildSystemPrompt на
+ * каждом ходе (дубли system ломают часть LLM API, паттерн composeTurnMessages).
+ *
+ * @param sessionsDir — каталог хранения сессий (.vibelog/agent-sessions)
+ * @param resumeRef — session-ref: vb:agent-XXX либо голый agent-XXX
+ * @throws Error «Сессия <ref> не найдена …» (loadSession) либо «битая строка N»
+ */
+export async function loadResumeHistory(
+  sessionsDir: string,
+  resumeRef: string,
+): Promise<{ sessionId: string; history: ChatMessage[] }> {
+  // Бот передаёт sessionId с префиксом vb: — снимаем, как в parseArgs
+  // headless-CLI (cli.ts) и startResume (orchestrator.ts)
+  const sessionId = resumeRef.replace(/^vb:/, '');
+  const messages = await loadSession(sessionsDir, sessionId);
+  // system в истории не нужен: на каждом ходе свежий systemPrompt
+  return { sessionId, history: messages.filter((m) => m.role !== 'system') };
+}
+
+/**
+ * Точка входа интерактивного чата: env- проверки → TUI → цикл ходов.
  *
  * Ошибки до цикла — stderr + exit 1 (TUI ещё не нарисован); SIGINT —
  * unmount TUI + закрытие MCP + exit 130. Сессия сохраняется после каждого
@@ -59,9 +83,14 @@ export function composeTurnMessages(
  * options.taskRef (VL-158): id задачи — её карточка добавляется в system
  * prompt, чат стартует с задачей в контексте. Роутер проверил существование
  * задачи до вызова; здесь — страховка (stderr + exit 1).
+ *
+ * options.resume (VL-171): session-ref (vb:agent-XXX либо agent-XXX) —
+ * TUI-чат продолжает сохранённую сессию: история загружается из jsonl,
+ * новые ходы дописываются в тот же файл. Ошибка загрузки — stderr + exit 1
+ * до рендера TUI (паттерн «ошибки до цикла»).
  */
 export async function runInteractiveAgent(
-  options: { taskRef?: string } = {},
+  options: { taskRef?: string; resume?: string } = {},
 ): Promise<void> {
   const cwd = process.cwd();
   // .env проекта (VL-37): чат запускается человеком напрямую — VIBELOG_LLM_*
@@ -90,7 +119,22 @@ export async function runInteractiveAgent(
   // в главном репо (VIBELOG_CWD от оркестратора), чтобы resume из бота
   // находил их; без env — прежний cwd (ручной запуск)
   const sessionsDir = agentSessionsDir(process.env.VIBELOG_CWD ?? cwd);
-  const sessionId = createSessionId();
+  // VL-171: --resume продолжает сохранённую сессию (sessionId + история
+  // из jsonl); без флага — новая сессия, как раньше. Ошибка загрузки —
+  // stderr + exit 1 ДО рендера TUI (сессия не найдена / битый jsonl)
+  let sessionId: string;
+  let history: ChatMessage[] = [];
+  if (options.resume !== undefined) {
+    try {
+      ({ sessionId, history } = await loadResumeHistory(sessionsDir, options.resume));
+    } catch (err) {
+      console.error(`Ошибка: ${(err as Error).message}`);
+      process.exitCode = 1;
+      return;
+    }
+  } else {
+    sessionId = createSessionId();
+  }
 
   // MCP: отказ не роняет чат — продолжаем без vibelog-инструментов (паттерн cli.ts).
   // VL-149: mcpClients — встроенный + внешние серверы из settings.json mcpServers.
@@ -129,8 +173,8 @@ export async function runInteractiveAgent(
     }
     systemPrompt.content += `\n\n# Контекст задачи (открыл пользователь)\n\n${taskToMarkdown(task)}`;
   }
-  // История чата (без system — собирается на каждом ходе): растёт между ходами
-  let history: ChatMessage[] = [];
+  // История чата без system собирается на каждом ходе (VL-171: при --resume
+  // history уже загружена из jsonl); растёт между ходами
   let busy = false;
   let finished = false;
   let tui: InteractiveTuiHandle | null = null;

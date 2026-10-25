@@ -334,4 +334,61 @@ describe('CLI — интеграционные тесты', () => {
       process.exitCode = 0;
     }
   });
+
+  // ── VL-171: vibelog agent --resume — возобновление TUI-чата ──
+
+  it('agent --resume без значения (boolean) → явная ошибка до TTY-check (VL-171)', async () => {
+    // args.ts превращает «--resume» без значения в boolean true —
+    // runAgent обязан отклонить такой флаг, а не молча стартовать новую сессию
+    let errText = '';
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((...c) => { errText += c.join(' ') + '\n'; });
+    try {
+      await runAgent('', [], { resume: true }, testDir);
+    } finally {
+      errSpy.mockRestore();
+    }
+    assert.match(errText, /--resume требует session-ref/);
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+  });
+
+  it('agent <task-id> --resume без значения → та же ошибка (VL-171)', async () => {
+    let errText = '';
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((...c) => { errText += c.join(' ') + '\n'; });
+    try {
+      await runAgent('clt-1', [], { resume: true }, testDir);
+    } finally {
+      errSpy.mockRestore();
+    }
+    assert.match(errText, /--resume требует session-ref/);
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+  });
+
+  it('agent --resume со строковым значением в не-TTY → ошибка про терминал (VL-171)', async () => {
+    // Валидация значения прошла → дальше штатный TTY-check чат-ветки
+    let errText = '';
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((...c) => { errText += c.join(' ') + '\n'; });
+    try {
+      await runAgent('', [], { resume: 'vb:agent-123' }, testDir);
+    } finally {
+      errSpy.mockRestore();
+    }
+    assert.match(errText, /нужен терминал \(TTY\)/);
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+  });
+
+  it('agent analyze --resume → ошибка «только в интерактивном чате» (VL-171)', async () => {
+    let errText = '';
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((...c) => { errText += c.join(' ') + '\n'; });
+    try {
+      await runAgent('analyze', ['vb:agent-123'], { resume: 'vb:agent-123' }, testDir);
+    } finally {
+      errSpy.mockRestore();
+    }
+    assert.match(errText, /--resume поддерживается только в интерактивном чате/);
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+  });
 });

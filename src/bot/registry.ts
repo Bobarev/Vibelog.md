@@ -46,6 +46,7 @@ export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'close', description: 'Закрыть задачу (Фаза Close): /close[:agent] VL-<id>', usage: '/close[:agent] VL-<id>', examples: ['/close VL-12', '/close:vb VL-12'] },
   { command: 'prompt', description: 'Запрос LLM без задачи: qwen или встроенный агент (/prompt:vb)', usage: '/prompt[:agent] <текст>', examples: ['/prompt закоммить правки', '/prompt:vb сделай ревью'] },
   { command: 'analyze', description: 'Анализ сессии агента — статистика, вердикт, рекомендации: /analyze vb:agent-XXX', usage: '/analyze[:agent] <session-ref>', examples: ['/analyze vb:agent-1a2b'] },
+  { command: 'resume', description: 'Возобновить сессию агента: /resume vb:agent-XXX [комментарий]', usage: '/resume[:agent] <session-ref> [комментарий]', examples: ['/resume vb:agent-1792 продолжи', '/resume 6e3f8a9c-1234-4abc-9def-000000000000 проверь сборку'] },
   { command: 'restart', description: 'Перезапустить бота: /restart [VL-N] — из ветки vb/vl-N, без аргумента — из корневого dist/', examples: ['/restart', '/restart VL-12'] },
   { command: 'web', description: 'Веб-интерфейс: /web start [VL-N] | /web stop', usage: '/web start [VL-N] | /web stop', examples: ['/web start', '/web start VL-12', '/web stop'] },
 ];

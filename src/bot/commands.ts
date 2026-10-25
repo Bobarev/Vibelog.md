@@ -490,6 +490,77 @@ export function parseAnalyzeCommand(
   return { sessionId: bare, ...(parsed.agent ? { agent: parsed.agent } : {}) };
 }
 
+/** Результат разбора /resume (VL-171): сессия для возобновления + комментарий. */
+export interface ResumeCommand {
+  /**
+   * Голый идентификатор сессии: agent-XXX (vb) либо UUID (qwen) — тот же
+   * нормализованный формат, что возвращает extractSessionRef для qwen.
+   */
+  sessionId: string;
+  /** Агент-владелец сессии: определяется форматом ref; суффикс :<agent> перекрывает. */
+  agent: AgentName;
+  /** Необязательный комментарий — промпт возобновления; пустой → «Продолжи». */
+  comment: string;
+}
+
+/**
+ * Разбирает /resume (VL-171): «<session-ref> [комментарий]» — возобновление
+ * сохранённой сессии агента без reply на сообщение бота.
+ *
+ * Session-ref в том же формате, что у reply-resume (extractSessionRef):
+ * vb:agent-XXX / голый agent-XXX → встроенный vibelog-agent; qwen:UUID /
+ * голый UUID → qwen. Агент определяется форматом ref; явный суффикс
+ * :<agent> (как у /prompt, VL-94) перекрывает определение. Остаток текста —
+ * необязательный комментарий (промпт фазы); без него — «Продолжи».
+ *
+ * @param text — аргументы команды (без слова команды)
+ * @param commandWord — слово команды с суффиксом (resume:vb)
+ * @returns {sessionId, agent, comment} или {error} с подсказкой
+ */
+export function parseResumeCommand(
+  text: string,
+  commandWord = ''
+): ResumeCommand | { error: string } {
+  const hint =
+    'Синтаксис: /resume vb:agent-<id> [комментарий] (также qwen-UUID; префикс vb:/qwen: необязателен)';
+  // Суффикс :<agent> обрабатываем до разбора ref — как у /prompt: неизвестный
+  // агент → {error} с подсказкой, спавна нет
+  let suffix: AgentName | undefined;
+  if (commandWord.includes(':')) {
+    const agentPart = commandWord.slice(commandWord.indexOf(':') + 1);
+    if (agentPart !== 'qwen' && agentPart !== 'vb') {
+      return { error: 'Синтаксис: /resume[:agent] <session-ref> [комментарий] (агенты: qwen, vb)' };
+    }
+    suffix = agentPart;
+  }
+  const trimmed = text.trim();
+  if (!trimmed) return { error: hint };
+  const sp = trimmed.search(/\s/);
+  const ref = sp === -1 ? trimmed : trimmed.slice(0, sp);
+  const comment = sp === -1 ? '' : trimmed.slice(sp).trim();
+  // Нормализация ref → {sessionId, agent}: как у extractSessionRef (VL-93) —
+  // vb:агент-матч и UUID qwen; всё прочее → error с подсказкой
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const qwenPref = ref.match(/^qwen:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+  let sessionId: string;
+  let agent: AgentName;
+  const bare = ref.replace(/^vb:/, '');
+  if (/^agent-\d+$/.test(bare) && !qwenPref) {
+    sessionId = bare;
+    agent = 'vb';
+  } else if (qwenPref) {
+    sessionId = qwenPref[1];
+    agent = 'qwen';
+  } else if (uuidRe.test(ref)) {
+    sessionId = ref;
+    agent = 'qwen';
+  } else {
+    return { error: hint };
+  }
+  // Явный суффикс :<agent> перекрывает агента по формату ref (VL-94-паттерн)
+  return { sessionId, agent: suffix ?? agent, comment: comment || 'Продолжи' };
+}
+
 /** Результат разбора /commits (VL-90): сколько коммитов показать. */
 export interface CommitsCommand {
   count: number;
