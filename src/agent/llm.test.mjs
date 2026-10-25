@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { createLlmClient } from '../../dist/agent/llm.js';
 
 /** Фейковый Response со SSE-телом: строки data: {...} / data: [DONE]. */
-function sseResponse(events, { status = 200, statusText = 'OK' } = {}) {
+function sseResponse(events, { status = 200, statusText = 'OK', bodyText = '' } = {}) {
   const encoder = new TextEncoder();
   const body = new ReadableStream({
     start(controller) {
@@ -22,7 +22,15 @@ function sseResponse(events, { status = 200, statusText = 'OK' } = {}) {
       controller.close();
     },
   });
-  return { ok: status >= 200 && status < 300, status, statusText, headers: new Headers(), body };
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText,
+    headers: new Headers(),
+    body,
+    // VL-178: тело не-ok ответа читается клиентом для детекта «high risk»
+    text: async () => bodyText,
+  };
 }
 
 /** Фейковый Response с JSON-телом (non-stream фолбэк). */
@@ -33,13 +41,16 @@ function jsonResponse(obj, { status = 200, statusText = 'OK' } = {}) {
     statusText,
     headers: new Headers(),
     json: async () => obj,
+    // VL-178: text() для детекта маркера в не-ok ответах (json() при throw не вызывается)
+    text: async () => JSON.stringify(obj),
   };
 }
 
-/** Обёртка fetchImpl со счётчиком вызовов и очередью ответов/ошибок. */
+/** Обёртка fetchImpl со счётчиком вызовов, телами запросов и очередью ответов/ошибок. */
 function fakeFetch(script) {
-  const state = { calls: 0 };
-  const impl = async () => {
+  const state = { calls: 0, bodies: [] };
+  const impl = async (_url, init) => {
+    state.bodies.push(typeof init?.body === 'string' ? init.body : '');
     const step = script[state.calls] ?? script[script.length - 1];
     state.calls++;
     if (step instanceof Error) throw step;
@@ -380,5 +391,96 @@ describe('createLlmClient: ретраи обрыва стрима (VL-103)', () 
     setTimeout(() => controller.abort(), 10);
     await assert.rejects(promise, /прервана/);
     assert.equal(state.calls, 1, 'вторая попытка не должна стартовать');
+  });
+});
+
+// ── VL-178: отказ провайдера «high risk» → повтор с усечённым payload ──
+
+describe('отказ «high risk» → shrink-повтор (VL-178)', () => {
+  const HIGH_RISK_BODY =
+    '{"error":{"message":"The request was rejected because it was considered high risk"}}';
+
+  /** Диалог с гигантским tool-выводом (как снапшот 624 КБ). */
+  const bigToolMessages = () => [
+    { role: 'user', content: 'сделай' },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{ id: 'c1', name: 'chrome_devtools__take_snapshot', arguments: {} }],
+    },
+    { role: 'tool', tool_call_id: 'c1', content: 'с'.repeat(624 * 1024) },
+  ];
+
+  const okStream = () =>
+    sseResponse([JSON.stringify({ choices: [{ delta: { content: 'ок' } }] })]);
+
+  it('стрим 400 + фолбэк 400 с маркером → повтор с tool ≤4096 → успех', async () => {
+    const { impl, state } = fakeFetch([
+      sseResponse([], { status: 400, statusText: 'Bad Request', bodyText: HIGH_RISK_BODY }),
+      jsonResponse({ error: HIGH_RISK_BODY }, { status: 400, statusText: 'Bad Request' }),
+      okStream(),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const res = await client.streamChat(bigToolMessages(), []);
+    assert.equal(res.text, 'ок');
+    // 2 вызова на полном payload (стрим + фолбэк) + 1 стрим-повтор с L1-усечением
+    assert.equal(state.calls, 3);
+    // В L1-повторе tool-сообщение ≤ 4096 + маркер (wire-cap 8KB уже оставил 8KB,
+    // shrink идёт по messages, а не по wire — проверяем маркер усечения)
+    const l1Body = JSON.parse(state.bodies[2]);
+    const toolMsg = l1Body.messages.find((m) => m.role === 'tool');
+    assert.ok(toolMsg.content.length <= 4096 + 200, `L1-длина ${toolMsg.content.length}`);
+    assert.match(toolMsg.content, /усечён до 4096/);
+  });
+
+  it('оба shrink-уровня отвергнуты → throw с текстом провайдера, вызовов = 6', async () => {
+    const reject400 = () =>
+      jsonResponse({ error: HIGH_RISK_BODY }, { status: 400, statusText: 'Bad Request' });
+    const rejectStream = () =>
+      sseResponse([], { status: 400, statusText: 'Bad Request', bodyText: HIGH_RISK_BODY });
+    const { impl, state } = fakeFetch([rejectStream(), reject400()]); // повторяется для всех вызовов
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    await assert.rejects(
+      () => client.streamChat(bigToolMessages(), []),
+      (err) => {
+        assert.match(err.message, /high risk/i);
+        assert.match(err.message, /400/);
+        return true;
+      },
+    );
+    // full (2: стрим+фолбэк) + L1 (2) + L2 (2) = 6; HIGH_RISK_MAX_SHRINKS=2 исчерпан
+    assert.equal(state.calls, 6);
+    // Последний payload — уровень L2 (≤1024)
+    const l2Body = JSON.parse(state.bodies.at(-1));
+    const toolMsg = l2Body.messages.find((m) => m.role === 'tool');
+    assert.ok(toolMsg.content.length <= 1024 + 200, `L2-длина ${toolMsg.content.length}`);
+  });
+
+  it('обычный 400 без маркера → без shrink-повторов (регрессия VL-83)', async () => {
+    const { impl, state } = fakeFetch([
+      sseResponse([], { status: 400, statusText: 'Bad Request', bodyText: '{"error":"bad"}' }),
+      jsonResponse({ error: 'bad' }, { status: 400, statusText: 'Bad Request' }),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    await assert.rejects(
+      () => client.streamChat(bigToolMessages(), []),
+      /Ошибка API Cloud.ru/,
+    );
+    assert.equal(state.calls, 2, 'shrink-повторов быть не должно');
+  });
+
+  it('wire-cap: tool-сообщение >8KB усечено в теле запроса (resume старых jsonl)', async () => {
+    const { impl, state } = fakeFetch([okStream()]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    await client.streamChat(bigToolMessages(), []);
+    const body = JSON.parse(state.bodies[0]);
+    const toolMsg = body.messages.find((m) => m.role === 'tool');
+    assert.ok(
+      toolMsg.content.length <= 8 * 1024 + 200,
+      `длина ${toolMsg.content.length} — wire-cap 8KB не применился`,
+    );
+    assert.match(toolMsg.content, /вывод обрезан/);
+    // Структура цела: tool_call_id не изменился (парность tool_calls ↔ tool)
+    assert.equal(toolMsg.tool_call_id, 'c1');
   });
 });

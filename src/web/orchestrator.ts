@@ -80,6 +80,11 @@ interface ActiveRun {
 const activeRuns = new Map<string, ActiveRun>();
 /** Задача → последний завершённый запуск (для getRun после close). */
 const lastRuns = new Map<string, PhaseRun>();
+/**
+ * Счётчик авто-resume после отказа провайдера «high risk» (VL-178):
+ * максимум 1 перезапуск на runKey — защита от цикла «упал → resume → упал».
+ */
+const highRiskAutoRetries = new Map<string, number>();
 
 /** Элемент очереди close-фаз (VL-146): полный запрос на запуск, ждущий освобождения. */
 interface QueuedClose {
@@ -833,6 +838,37 @@ function spawnQwenRun(
       result,
     };
     lastRuns.set(key, record);
+    // VL-178: авто-resume при отказе провайдера «high risk» — страховка вместо
+    // ручного «Продолжить» (основной повтор — в LLM-клиенте, здесь ловим случай,
+    // когда исчерпаны shrink-уровни и фаза всё же упала). Счётчик 1 на runKey —
+    // цикл исключён; текущий (упавший) вызов onExit пропускается — уведомление
+    // уйдёт по финальному record нового запуска (тот же onExit).
+    const highRiskText = `${result?.result ?? ''} ${record.logTail}`;
+    const isHighRisk =
+      record.result?.is_error === true &&
+      /high\s*risk|rejected\s+because\s+it\s+was\s+considered/i.test(highRiskText);
+    if (isHighRisk && result?.session_id) {
+      const retries = highRiskAutoRetries.get(key) ?? 0;
+      if (retries < 1) {
+        highRiskAutoRetries.set(key, retries + 1);
+        console.log(`[phase ${key}] ${ts()} авто-resume после high-risk (VL-178), session ${result.session_id}`);
+        // Дубль --resume не добавляем (lesson-18: флаг не должен прийти дважды)
+        const resumeArgs = extraArgs.includes('--resume')
+          ? extraArgs
+          : [...extraArgs, '--resume', result.session_id];
+        spawnQwenRun(
+          cwd,
+          key,
+          phase,
+          'Продолжи с текущего места — автоматический повтор после отказа провайдера (VL-178).',
+          onExit,
+          agent,
+          resumeArgs,
+          worktreeTaskId
+        );
+        return; // текущий record в lastRuns остался; onExit уйдёт по финальному
+      }
+    }
     // VL-48: уведомление о завершении (бот). Fire-and-forget в try/catch:
     // сетевые ошибки Telegram не должны ронять polling оркестратора.
     try {

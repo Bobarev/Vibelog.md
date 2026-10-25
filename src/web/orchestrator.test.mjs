@@ -1855,4 +1855,66 @@ setTimeout(() => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // ── VL-178: авто-resume после отказа провайдера «high risk» ──
+
+  it('finish() авто-resume при high-risk: 2 спавна, --resume, без цикла', async () => {
+    // Стаб ВСЕГДА отвечает high-risk ошибкой: 1-й спавн → авто-resume
+    // (счётчик 1 на runKey), 2-й спавн → счётчик исчерпан → onExit один раз.
+    // Лог argv аппендится — по нему видно оба спавна и флаг --resume.
+    const root = makeSameRoot('vibelog-orch-vl178-', 'VL-1780');
+    const logPath = join(root, 'vl178-argv.log');
+    const hrStub = join(root, 'qwen-hr-stub.cjs');
+    writeFileSync(hrStub, `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.appendFileSync(process.env.VL178_STUB_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
+fs.writeSync(1, JSON.stringify({
+  type: 'result', is_error: true, duration_ms: 1, duration_api_ms: 1, num_turns: 1,
+  result: '',
+  error: { message: 'The request was rejected because it was considered high risk' },
+  session_id: 'agent-hr-1',
+  usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, total_tokens: 2 },
+}) + '\\n');
+process.exit(0);
+`, 'utf-8');
+    chmodSync(hrStub, 0o755);
+    setStubEnv({
+      VIBELOG_QWEN_BIN: hrStub,
+      VL178_STUB_LOG: logPath,
+      VL28_STUB_RESULT: undefined,
+      VL28_STUB_MARKER: undefined,
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+    });
+    try {
+      const calls = [];
+      const res = startPhase(root, 'VL-1780', 'spec', (run) => calls.push(run));
+      assert.equal(res.started, true, JSON.stringify(res));
+      // waitDone ловит финал: 1-й прогон не отдаёт onExit (auto-resume внутри
+      // finish), поэтому ждём завершения 2-го прогона
+      const run = await waitDone('VL-1780', 8000);
+      // Дать второму finish(do) дописать lastRuns/onExit
+      await new Promise((r) => setTimeout(r, 100));
+      assert.equal(run.result?.is_error, true, 'финальный record — тоже high-risk (стаб не меняется)');
+      // Ровно 2 спавна: первый исходный, второй с --resume
+      const argvLines = readFileSync(logPath, 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+      assert.equal(argvLines.length, 2, `ожидалось 2 спавна, есть ${argvLines.length}: ${JSON.stringify(argvLines)}`);
+      assert.ok(!argvLines[0].includes('--resume'), '1-й спавн без --resume');
+      assert.ok(argvLines[1].includes('--resume'), '2-й спавн (авто-resume) с --resume');
+      assert.ok(argvLines[1].includes('agent-hr-1'), 'session_id из результата');
+      // onExit — ровно один раз, по финальному record (упавший 1-й прогон молчит)
+      assert.equal(calls.length, 1, `onExit вызван ${calls.length} раз(а)`);
+      assert.equal(calls[0].result?.session_id, 'agent-hr-1');
+    } finally {
+      setStubEnv({
+        VIBELOG_QWEN_BIN: undefined,
+        VL178_STUB_LOG: undefined,
+        VL28_STUB_RESULT: undefined,
+        VL28_STUB_MARKER: undefined,
+        VL28_STUB_SLEEP: undefined,
+        VL28_STUB_EXIT: undefined,
+      });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

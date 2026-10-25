@@ -15,7 +15,14 @@
  * циклом стриминг-попыток с теми же паузами; после исчерпания попыток —
  * non-stream фолбэк; abort не ретраится, финальная ошибка — русский текст
  * с диагностикой вместо сырого «terminated».
+ *
+ * VL-178: отказ провайдера «The request was rejected because it was considered
+ * high risk» (payload ~1.25 МБ из двух MCP-снапшотов) → автоматический повтор
+ * с усечённой полезной нагрузкой (shrink tool-выводов, 2 уровня) вместо
+ * ручного «Продолжить»; тело не-ok ответа читается для детекта маркера.
  */
+
+import { truncateToolOutput } from './tools.js';
 
 /** Роль сообщения в диалоге (wire-формат OpenAI chat/completions). */
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
@@ -247,6 +254,12 @@ function toWireMessages(messages: ChatMessage[]): unknown[] {
         })),
       };
     }
+    // VL-178: wire-cap tool-выводов — защита при resume старых jsonl-сессий,
+    // где гигантские MCP-выводы (624 КБ) уже записаны: в запрос провайдера
+    // уходит ≤8KB + маркер обрезки, ingestion-cap (loop) новых записей не заменяет
+    if (m.role === 'tool') {
+      return { ...m, content: truncateToolOutput(m.content) };
+    }
     return m;
   });
 }
@@ -375,9 +388,46 @@ function parseNonStream(body: unknown): LlmResponse {
   return { text, toolCalls, usage: mapUsage(obj.usage) };
 }
 
-/** Текст ошибки для модели/CLI: русский + статус провайдера. */
-function apiError(status: number, statusText: string): Error {
-  return new Error(`Ошибка API Cloud.ru: HTTP ${status}${statusText ? ` ${statusText}` : ''}`);
+/** Текст ошибки для модели/CLI: русский + статус провайдера (+ фрагмент тела). */
+function apiError(status: number, statusText: string, bodySnippet?: string): Error {
+  const base = `Ошибка API Cloud.ru: HTTP ${status}${statusText ? ` ${statusText}` : ''}`;
+  // VL-178: тело ответа содержит маркер отказа провайдера («high risk») —
+  // без него оператор видит только статус и причину угадывает
+  return new Error(bodySnippet ? `${base}: ${bodySnippet}` : base);
+}
+
+/**
+ * Маркер отказа провайдера «high risk» (VL-178). Совпадает и на английском
+ * тексте тела («The request was rejected because it was considered high risk»),
+ * и на возможных локализациях/аналогах модерации.
+ */
+export function isHighRiskBody(text: string): boolean {
+  return /high\s*risk|rejected\s+because\s+it\s+was\s+considered/i.test(text);
+}
+
+/** Уровни усечения tool-выводов при повторе после «high risk» (VL-178). */
+const SHRINK_LEVEL_1 = 4096;
+const SHRINK_LEVEL_2 = 1024;
+/** Максимум shrink-повторов запроса (VL-178): full → L1 → L2. */
+export const HIGH_RISK_MAX_SHRINKS = 2;
+
+/**
+ * Усекает content tool-сообщений до maxToolChars с маркером для модели.
+ *
+ * Сообщения НЕ выбрасываются (иначе ломается парность tool_calls ↔ tool
+ * и провайдер отклонит историю) — только обрезается длина; assistant/system/
+ * user не трогаются.
+ */
+export function shrinkMessages(messages: ChatMessage[], maxToolChars: number): ChatMessage[] {
+  return messages.map((m) => {
+    if (m.role !== 'tool' || m.content.length <= maxToolChars) return m;
+    return {
+      ...m,
+      content:
+        m.content.slice(0, maxToolChars) +
+        `\n…[вывод усечён до ${maxToolChars} символов из ${m.content.length} — повтор после отказа провайдера, VL-178]`,
+    };
+  });
 }
 
 /**
@@ -452,21 +502,51 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
     tools: ToolDef[] | undefined,
     opts: StreamChatOptions = {},
   ): Promise<LlmResponse> {
-    const baseBody: Record<string, unknown> = {
+    const buildBody = (msgs: ChatMessage[]): Record<string, unknown> => ({
       model,
-      messages: toWireMessages(messages),
+      messages: toWireMessages(msgs),
       ...(tools && tools.length > 0 ? { tools: toWireTools(tools) } : {}),
-    };
+    });
 
-    // Ретраи обрыва стрима (VL-103): requestWithRetry покрывает только
-    // установку соединения/статусы — обрыв ТЕЛА SSE (terminated/ECONNRESET
-    // от undici при закрытии соединения сервером) случается уже в parseSse,
-    // после возврата fetch-ответа. Поэтому стриминг-попытка обёрнута во
-    // внешний цикл ретраев с той же retryDelayMsFor-паузой; в том же цикле
-    // живёт non-stream фолбэк — после исчерпания стрим-попыток либо не-ok
-    // статуса стрима. Худший случай множение попыток (внутренние ретраи
-    // requestWithRetry × внешний цикл стрима) — приемлемо: сетевой обрыв
-    // редок, цена — десятки миллисекунд пауз (риск «множение попыток» VL-103).
+    // VL-178: внешний цикл усечения при отказе провайдера «high risk».
+    // Детект — по телу не-ok ответа (apiError включает фрагмент тела, маркер
+    // isHighRiskBody матчится по message исключения). Уровни: full → 4096 →
+    // 1024 символов на tool-вывод; максимум 2 повтора, затем ошибка наружу.
+    let currentMessages = messages;
+    let shrinks = 0;
+    for (;;) {
+      const baseBody = buildBody(currentMessages);
+      try {
+        return await attemptWithFallback(baseBody, opts);
+      } catch (err) {
+        const e = err instanceof Error ? err : new Error(String(err));
+        if (opts.signal?.aborted || isAbortError(e)) throw e;
+        if (shrinks >= HIGH_RISK_MAX_SHRINKS || !isHighRiskBody(e.message)) throw e;
+        shrinks++;
+        currentMessages = shrinkMessages(
+          messages,
+          shrinks === 1 ? SHRINK_LEVEL_1 : SHRINK_LEVEL_2,
+        );
+        await sleep(retryDelayMsFor(shrinks - 1, null, baseRetryDelay), opts.signal);
+      }
+    }
+  }
+
+  /**
+   * Один запрос с ретраями обрыва стрима (VL-103) и non-stream фолбэком
+   * (VL-83). Выделено из streamChat, чтобы внешний shrink-цикл VL-178 мог
+   * перезапустить его с усечённым payload.
+   *
+   * requestWithRetry покрывает только установку соединения/статусы — обрыв
+   * ТЕЛА SSE (terminated/ECONNRESET от undici) случается уже в parseSse,
+   * поэтому стриминг-попытка обёрнута во внешний цикл ретраев с той же
+   * retryDelayMsFor-паузой; в том же цикле живёт non-stream фолбэк — после
+   * исчерпания стрим-попыток либо не-ok статуса стрима.
+   */
+  async function attemptWithFallback(
+    baseBody: Record<string, unknown>,
+    opts: StreamChatOptions,
+  ): Promise<LlmResponse> {
     let lastErr: Error | null = null;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (opts.signal?.aborted) throw new Error('Операция прервана пользователем');
@@ -499,7 +579,21 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
       // Фаза 2: фолбэк non-stream (решение плана VL-83 + риск SSE Cloud.ru).
       try {
         const fallbackRes = await requestWithRetry(false, baseBody, opts.signal);
-        if (!fallbackRes.ok) throw apiError(fallbackRes.status, fallbackRes.statusText);
+        if (!fallbackRes.ok) {
+          // VL-178: тело не-ok ответа читается для детекта «high risk»
+          // (guard typeof — тестовые моки дают только json(); json() после
+          // text() недоступен, но throw происходит до json() — не доходим)
+          let bodySnippet: string | undefined;
+          if (typeof fallbackRes.text === 'function') {
+            try {
+              const bodyText = await fallbackRes.text();
+              if (bodyText) bodySnippet = bodyText.slice(0, 300);
+            } catch {
+              bodySnippet = undefined; // тело не читается — маркер не найден, прежний путь
+            }
+          }
+          throw apiError(fallbackRes.status, fallbackRes.statusText, bodySnippet);
+        }
         let parsedBody: unknown;
         try {
           parsedBody = await fallbackRes.json();

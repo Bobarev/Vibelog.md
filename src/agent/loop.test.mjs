@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 
 import { runLoop, compactWireMessages } from '../../dist/agent/loop.js';
 import { zeroUsage } from '../../dist/agent/llm.js';
+import { TOOL_OUTPUT_MAX_CHARS } from '../../dist/agent/tools.js';
 
 /**
  * Фейковый LLM: очередь элементов.
@@ -757,5 +758,107 @@ describe('compactWireMessages (VL-122)', () => {
     assert.match(wire[1].content, /постановка\n\n\[История усечена: опущено 1 сообщений/);
     // Исходный массив без изменений (транскрипт/jsonl не тронуты)
     assert.equal(msgs[1].content, 'постановка');
+  });
+});
+
+// ── VL-178: усечение MCP-выводов + компакшн на гигантских снапшотах ──
+
+describe('ingestion-cap tool-выводов, включая MCP (VL-178)', () => {
+  it('MCP-подобный spec с выводом 624 КБ → в истории tool-сообщение ≤ 8KB + маркер', async () => {
+    // Внешние MCP-инструменты (chrome_devtools__take_snapshot) шли мимо
+    // VL-110-cap: handler возвращал 624 КБ целиком. Теперь единый cap в loop.
+    const mcpSpec = {
+      name: 'chrome_devtools__take_snapshot',
+      description: 'снапшот страницы',
+      inputSchema: { type: 'object', properties: {} },
+      handler: async () => 'х'.repeat(624 * 1024),
+    };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'chrome_devtools__take_snapshot', arguments: {} }] },
+      { text: 'готово' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [mcpSpec] });
+    assert.equal(res.is_error, false);
+    const toolMsg = res.messages.find((m) => m.role === 'tool');
+    assert.ok(toolMsg, 'tool-сообщение должно быть в истории');
+    assert.ok(
+      toolMsg.content.length <= TOOL_OUTPUT_MAX_CHARS + 200,
+      `длина ${toolMsg.content.length} не должна превышать лимит + маркер`,
+    );
+    assert.match(toolMsg.content, /вывод обрезан/);
+    // Финальный ответ модели не пострадал
+    assert.equal(res.result, 'готово');
+  });
+
+  it('короткий вывод не трогается (регрессия VL-110)', async () => {
+    const { spec } = countingTool('echo_tool');
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'echo_tool', arguments: {} }] },
+      { text: 'ок' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    const toolMsg = res.messages.find((m) => m.role === 'tool');
+    assert.equal(toolMsg.content, 'ok:echo_tool');
+  });
+});
+
+describe('компакшн на гигантских MCP-выводах (VL-178 / VL-122)', () => {
+  it('giant tool-вывод ВНЕ хвоста не попадает в wire-payload после компакшна', async () => {
+    // История: system + постановка + старый парный вывод 624 КБ (вне хвоста)
+    const giant = 'с'.repeat(624 * 1024);
+    const history = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'постановка' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'old1', name: 't', arguments: {} }] },
+      { role: 'tool', tool_call_id: 'old1', content: giant },
+      { role: 'assistant', content: 'старый финал' },
+    ];
+    const { spec } = countingTool('t');
+    const { llm, state } = fakeLlm([
+      // Ответ 1: usage выше порога → якорь компакшна сдвигается перед запросом 2
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }], usage: { input_tokens: 900_000 } },
+      { text: 'итог' },
+    ]);
+    const res = await runLoop({
+      llm,
+      messages: history,
+      tools: [spec],
+      limits: { compactTailMessages: 3 },
+    });
+    assert.equal(res.is_error, false);
+    // Wire-запрос 2: giant-вывод вне хвоста (якорь ≥ позиции giant) → отсутствует
+    const wire = state.messages[1];
+    const giantInWire = wire.some((m) => typeof m.content === 'string' && m.content.length > 100_000);
+    assert.ok(!giantInWire, 'гигантский tool-вывод не должен переживать компакшн в wire');
+    assert.match(wire[1].content, /История усечена/);
+    // Полная история доступна в LoopResult.messages (jsonl/resume не страдают)
+    const full = res.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'old1');
+    assert.equal(full.content, giant);
+  });
+
+  it('giant tool-вывод В хвосте обрезан на ingestion → wire ограничен', async () => {
+    const { spec } = countingTool('t');
+    const { llm, state } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }], usage: { input_tokens: 900_000 } },
+      { text: 'итог' },
+    ]);
+    const res = await runLoop({
+      llm,
+      messages: [
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: 'постановка' },
+        { role: 'assistant', content: 'старый ответ' },
+      ],
+      tools: [spec],
+      limits: { compactTailMessages: 10 },
+    });
+    assert.equal(res.is_error, false);
+    // Второй wire: хвост целиком (tail 10), но tool-вывод ≤ 8KB — cap на ingestion
+    const toolMsg = state.messages[1].find((m) => m.role === 'tool');
+    assert.ok(toolMsg.content.length <= TOOL_OUTPUT_MAX_CHARS + 200);
+    // Общий размер wire ограничен (50 × 8KB ≈ 400KB — инвариант VL-122)
+    const total = state.messages[1].reduce(
+      (n, m) => n + (typeof m.content === 'string' ? m.content.length : 0), 0);
+    assert.ok(total < 50_000, `wire-payload ${total} б — не должен раздуваться`);
   });
 });

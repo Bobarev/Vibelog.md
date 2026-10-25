@@ -72,8 +72,13 @@ vibelog task complete <id>
 
 В проекте подключён MCP-сервер **chrome-devtools** (см. `.qwen/settings.json`): npx chrome-devtools-mcp с Яндекс-браузером (не headless, изолированная сессия).
 
-**Используй для проверки веб-работы:**
-- После запуска `vibelog browser` — открой страницу через `mcp__chrome-devtools__new_page`, сними скриншот (`take_snapshot`/`take_screenshot`), проверь консоль (`list_console_messages`) и сеть (`list_network_requests`).
+**Экономия контекста (VL-178):** `mcp__chrome-devtools__take_screenshot` — **не использовать** (один кадр — десятки КБ в каждом ходе; инцидент VL-178: два вывода по 624 КБ → отказ провайдера «high risk»). Полный `take_snapshot` без `filePath` — тоже избегать.
+
+**Используй вместо скриншотов:**
+- `evaluate_script` — в контекст уходит только нужный кусок данных из DOM (проверка текста, состояния, значений).
+- `take_snapshot` с параметром `filePath` — снапшот пишется на диск, в контекст — только подтверждение записи; полный разбор делай через чтение файла (grep/read_file с диапазоном).
+- `list_console_messages` / `list_network_requests` — как раньше (обычно компактны).
+- После запуска `vibelog browser` — открой страницу через `mcp__chrome-devtools__new_page`, проверь консоль и сеть перечисленными инструментами.
 - Drag-and-drop kanban: `evaluate_script` или `drag` для симуляции перетаскивания; после — убедиться, что PATCH /api/tasks/:id ушёл и файл задачи обновлён.
 - Это НЕ заменяет автотесты — только ручная/визуальная верификация веб-слоя.
 
