@@ -6,7 +6,8 @@
  * Отличия: без Next.js Link — хеш-ссылки <a href="#/...">; без
  * zustand/preference-store — статические пункты; footer вне скоупа.
  *
- * Навигация (VL-165): Канбан (#/); «Настройки» — parent-пункт с подменю:
+ * Навигация (VL-165/VL-177): «Задачи» (#/ — доска/список, активен и на
+ * #/tasks через activeWhen); «Настройки» — parent-пункт с подменю:
  * «Бот» (#/settings, .vibelog/settings.json) и «Конфиг проекта» (#/config,
  * backlog/config.yml). References (#/references, VL-174) — отдельный пункт
  * в группе «Основное», подсвечивается и на #/reference/<id> (activeWhen). Развёрнутый сайдбар — Collapsible + SidebarMenuSub,
@@ -20,13 +21,23 @@ import { Command, FolderCog, Kanban, Library, PlusCircle, Settings, SlidersHoriz
 import { Sidebar, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarRail } from "@/components/ui/sidebar";
 import { NavMain, type NavGroup } from "@/components/layout/nav-main";
 
-/** Группы навигации: Канбан + вложенное меню Настройки (VL-165). */
+/** Группы навигации: «Задачи» + вложенное меню Настройки (VL-165/VL-177). */
 const NAV_GROUPS: NavGroup[] = [
   {
     id: "main",
     label: "Основное",
     items: [
-      { id: "board", title: "Канбан", url: "board", icon: Kanban },
+      // Переименовано «Канбан» → «Задачи» (VL-177): пункт активен и на #/,
+      // и на #/tasks (таблица) — activeWhen в nav-main (lesson-11:
+      // активность по хеш-роуту; поле activeRoutes из плана не нужно —
+      // в NavItem уже есть эквивалентное activeWhen из VL-174)
+      {
+        id: "board",
+        title: "Задачи",
+        url: "board",
+        icon: Kanban,
+        activeWhen: ["tasks"],
+      },
       // References (VL-174): активен и на детальной странице #/reference/<id>
       // (activeWhen в nav-main — у неё свой Route 'reference')
       {

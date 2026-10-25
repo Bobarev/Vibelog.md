@@ -26,11 +26,18 @@ export function App() {
   const refId = useReferenceId()
   const { values } = usePreferences()
 
-  /** Quick Create: вернуться на доску (модалка живёт в Kanban) и открыть её. */
+  /** Quick Create: открыть модалку создания задачи (VL-163/VL-177). */
   function handleQuickCreate() {
-    window.location.hash = "#/"
-    // Флаг — для случая, когда Kanban ещё не смонтирован (другая страница);
-    // событие — когда доска уже открыта. Второе гасится потреблением флага.
+    // На #/tasks модалка создания живёт в TasksPage (VL-177): hash не
+    // трогаем — иначе страница уедет на доску, TasksPage смонтируется и
+    // открытая модалка пропадёт вместе с ним. Остальные страницы ведут на
+    // доску (модалка Kanban), как раньше
+    if (window.location.hash !== "#/tasks") {
+      window.location.hash = "#/"
+    }
+    // Флаг — для случая, когда нужный компонент ещё не смонтирован (другая
+    // страница, hash только что переключился); событие — когда целевая
+    // страница уже открыта. Второе гасится потреблением флага.
     setQuickCreatePending()
     window.dispatchEvent(new CustomEvent(QUICK_CREATE_EVENT))
   }

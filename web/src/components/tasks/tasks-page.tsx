@@ -14,16 +14,19 @@
 
 import * as React from "react";
 
-import { RefreshCw } from "lucide-react";
-
-import { Button } from "@/components/ui/button";
 import { TaskModal } from "@/components/task-modal/task-modal";
+import { QUICK_CREATE_EVENT, consumeQuickCreatePending } from "@/lib/quick-create";
 import type { KanbanTask } from "@/types/kanban";
 
 import { fetchConfig, fetchTasks, type TasksConfig } from "./api";
 import { sortTasks, type SortState } from "./sort-tasks";
 import { TasksFilters } from "./tasks-filters";
 import { TasksTable } from "./tasks-table";
+import {
+  TasksToolbar,
+  filterBySearch,
+  saveBoardView,
+} from "./tasks-toolbar";
 import { filterTasks, useTaskFilters, type TaskFilterKey } from "./use-task-filters";
 
 /** Размер страницы по умолчанию (AC3: 25/50/100). */
@@ -40,13 +43,19 @@ export function TasksPage() {
   const [sort, setSort] = React.useState<SortState>(DEFAULT_SORT);
   const [page, setPage] = React.useState(0);
   const [pageSize, setPageSize] = React.useState(DEFAULT_PAGE_SIZE);
+  // Поиск по id/title из тулбара — до сортировки, после фильтров (VL-177)
+  const [search, setSearch] = React.useState("");
+  // Панель фильтров открыта по умолчанию — как было до появления тулбара
+  const [filtersOpen, setFiltersOpen] = React.useState(true);
   // Фильтры multi-select: состояние + localStorage (VL-176)
   const { filters, setFilter, clearFilter, reset, isEmpty } = useTaskFilters();
-  // Модалка просмотра (по клику на строку) — режим только view (VL-175)
-  const [modal, setModal] = React.useState<{ open: boolean; task: KanbanTask | null }>({
-    open: false,
-    task: null,
-  });
+  // Модалка: view по клику на строку; create — кнопка «Создать задачу»
+  // и Quick Create сайдбара (VL-177)
+  const [modal, setModal] = React.useState<{
+    open: boolean;
+    mode: "view" | "create";
+    task: KanbanTask | null;
+  }>({ open: false, mode: "view", task: null });
 
   /**
    * Начальная загрузка — инлайн promise-цепочка как в config-page:
@@ -76,6 +85,23 @@ export function TasksPage() {
     };
   }, []);
 
+  // Quick Create сайдбара на #/tasks (VL-177, паттерн kanban.tsx:119–133):
+  // событие — если TasksPage уже смонтирована; флаг — если запрос пришёл
+  // до монтирования (App не меняет hash с #/tasks, иначе страница уедет
+  // на доску вместе с открытой модалкой). Оба потребителя (Kanban/TasksPage)
+  // не смонтированы одновременно — взаимного срабатывания нет
+  React.useEffect(() => {
+    const openCreate = () => {
+      consumeQuickCreatePending(); // гасим флаг, чтобы не открыть повторно при remount
+      setModal({ open: true, mode: "create", task: null });
+    };
+    window.addEventListener(QUICK_CREATE_EVENT, openCreate);
+    if (consumeQuickCreatePending()) {
+      queueMicrotask(openCreate);
+    }
+    return () => window.removeEventListener(QUICK_CREATE_EVENT, openCreate);
+  }, []);
+
   /** (Пере)загрузка по кнопке «Обновить» и после сохранения в модалке. */
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -92,13 +118,30 @@ export function TasksPage() {
     }
   }, []);
 
-  // Цепочка VL-176: фильтры → сортировка → слайс страницы (см. шапку файла)
+  // Цепочка VL-176/VL-177: фильтры → поиск → сортировка → слайс страницы (см. шапку файла)
   const filtered = React.useMemo(() => filterTasks(tasks, filters), [tasks, filters]);
+  const searched = React.useMemo(() => filterBySearch(filtered, search), [filtered, search]);
   const sorted = React.useMemo(
-    () => sortTasks(filtered, sort, config ?? { statuses: [], priorities: [], types: [] }),
-    [filtered, sort, config]
+    () => sortTasks(searched, sort, config ?? { statuses: [], priorities: [], types: [] }),
+    [searched, sort, config]
   );
   const filteredCount = sorted.length; // после фильтров (N в «Показано N из M»)
+
+  /**
+   * Таб Board/List в тулбаре — на #/ с записью вида в localStorage,
+   * чтобы Kanban открыл нужный вид; table — уже здесь, хендлер не нужен
+   * (AC1 VL-177). Смена вида не влияет на страницу.
+   */
+  function handleViewChange(next: "board" | "list" | "table") {
+    if (next === "table") return;
+    saveBoardView(next);
+    window.location.hash = "#/";
+  }
+
+  /** «Создать задачу» в тулбаре — локальная модалка create (AC3 VL-177). */
+  function handleAddTask() {
+    setModal({ open: true, mode: "create", task: null });
+  }
 
   /** Смена сортировки — сброс на первую страницу (AC: страница 0 при sort). */
   function handleSortChange(next: SortState) {
@@ -140,14 +183,22 @@ export function TasksPage() {
     // h-full min-h-0 flex flex-col — как Kanban (lesson-14): main остаётся
     // scroll-контейнером, таблица скроллится внутри TasksTable (flex-1 overflow-y-auto)
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border">
-      {/* Шапка: заголовок + кнопка обновления */}
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-3 lg:px-6">
-        <h1 className="font-medium text-base">Задачи — таблица</h1>
-        <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-          <RefreshCw className={loading ? "animate-spin" : undefined} data-icon="inline-start" />
-          Обновить
-        </Button>
-      </div>
+      {/* Тулбар видов (VL-177): view всегда 'table' — Board/List ведут на #/
+          с записью вида в localStorage; поиск/сортировка — локальный state
+          страницы, тот же sortTasks, что и в заголовках таблицы */}
+      <TasksToolbar
+        view="table"
+        onViewChange={handleViewChange}
+        search={search}
+        onSearchChange={setSearch}
+        sort={sort}
+        onSortChange={handleSortChange}
+        filtersOpen={filtersOpen}
+        onToggleFilters={() => setFiltersOpen((prev) => !prev)}
+        onAddTask={handleAddTask}
+        onRefresh={() => void load()}
+        refreshing={loading}
+      />
 
       {error ? (
         <div className="flex flex-1 items-center justify-center p-6">
@@ -159,16 +210,19 @@ export function TasksPage() {
         </div>
       ) : (
         <>
-          {/* Панель фильтров (VL-176) — над таблицей; «Сбросить фильтры» внутри */}
-          <TasksFilters
-            filters={filters}
-            config={config}
-            tasks={tasks}
-            isEmpty={isEmpty}
-            onToggle={handleFilterToggle}
-            onClearGroup={handleFilterClearGroup}
-            onReset={handleFilterReset}
-          />
+          {/* Панель фильтров (VL-176) — раскрывается кнопкой «Фильтр» в
+              тулбаре (VL-177); «Сбросить фильтры» внутри */}
+          {filtersOpen && (
+            <TasksFilters
+              filters={filters}
+              config={config}
+              tasks={tasks}
+              isEmpty={isEmpty}
+              onToggle={handleFilterToggle}
+              onClearGroup={handleFilterClearGroup}
+              onReset={handleFilterReset}
+            />
+          )}
           <TasksTable
             tasks={pageTasks}
             sort={sort}
@@ -177,7 +231,7 @@ export function TasksPage() {
             pageSize={pageSize}
             onPageChange={setPage}
             onPageSizeChange={handlePageSizeChange}
-            onRowClick={(task) => setModal({ open: true, task })}
+            onRowClick={(task) => setModal({ open: true, mode: "view", task })}
             filteredCount={filteredCount}
             total={tasks.length}
           />
@@ -187,10 +241,10 @@ export function TasksPage() {
       <TaskModal
         open={modal.open}
         onOpenChange={(open) => setModal((prev) => ({ ...prev, open }))}
-        mode="view"
+        mode={modal.mode}
         task={modal.task}
         statuses={config?.statuses ?? []}
-        // После сохранения/архивирования (view → edit) — перечитать список
+        // После сохранения/архивирования (view → edit) и создания — перечитать список
         onSaved={() => void load()}
       />
     </div>

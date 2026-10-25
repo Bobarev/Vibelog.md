@@ -173,7 +173,13 @@ function NavCollapsibleItem({
   // хеш-маршрута (defaultOpen не реактивен — risk из плана VL-165)
   const [open, setOpen] = React.useState(isActive);
   React.useEffect(() => {
-    if (isActive) setOpen(true);
+    if (isActive) {
+      // Открытие submenu при смене хеш-маршрута — синхронный setState в
+      // effect по паттерну VL-165 (контролируемый Collapsible; risk из
+      // плана: defaultOpen не реактивен) — подавление ложного срабатывания
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setOpen(true);
+    }
   }, [isActive]);
 
   return (

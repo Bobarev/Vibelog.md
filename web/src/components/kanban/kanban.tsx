@@ -3,7 +3,9 @@
  *
  * Отличия от шаблона:
  * - колонки динамические: статусы из GET /api/config, а не data.ts;
- * - нет тулбара Tabs/Search/Filter/Sort (вне скоупа VL-27);
+ * - тулбар Board/List/Table с поиском/фильтрами/сортировкой (VL-177):
+ *   view board/list персистится в localStorage vibelog.tasks.view,
+ *   таб Table уводит на #/tasks (hash главнее при конфликте — риск VL-177);
  * - после drag-and-drop — PATCH /api/tasks/:id со сменой status;
  *   при ошибке доска откатывается к состоянию до перетаскивания;
  * - директивы клиентского рантайма Next.js не нужны (Vite).
@@ -19,13 +21,31 @@ import {
   DragOverlay,
   type DragStartEvent,
 } from '@dnd-kit/react';
-import { RefreshCw } from 'lucide-react';
 
-import { Button } from '@/components/ui/button';
 import { TaskModal } from '@/components/task-modal/task-modal';
-import { QUICK_CREATE_EVENT, consumeQuickCreatePending } from '@/lib/quick-create';
+import {
+  QUICK_CREATE_EVENT,
+  consumeQuickCreatePending,
+  setQuickCreatePending,
+} from '@/lib/quick-create';
+import { sortTasks, type SortState } from '@/components/tasks/sort-tasks';
+import { TasksFilters } from '@/components/tasks/tasks-filters';
+import { TasksList } from '@/components/tasks/tasks-list';
+import {
+  TasksToolbar,
+  filterBySearch,
+  loadBoardView,
+  saveBoardView,
+  type BoardView,
+  type TaskView,
+} from '@/components/tasks/tasks-toolbar';
+import {
+  filterTasks,
+  useTaskFilters,
+} from '@/components/tasks/use-task-filters';
+import { fetchConfig, type TasksConfig } from '@/components/tasks/api';
 
-import { fetchStatuses, fetchTasks, getTriggerStatus, patchTaskStatus, triggerPhase } from './api';
+import { fetchTasks, getTriggerStatus, patchTaskStatus, triggerPhase } from './api';
 import { KanbanColumn } from './kanban-column';
 import { TaskCard } from './task-card';
 import { buildBoard, findColumnId } from './utils';
@@ -61,6 +81,18 @@ export function Kanban() {
   const [columnOrder, setColumnOrder] = React.useState<string[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  // Конфиг проекта (statuses/priorities/types) — нужен сортировке (VL-177)
+  const [config, setConfig] = React.useState<TasksConfig | null>(null);
+  // Вид board/list: localStorage vibelog.tasks.view (try/catch в loadBoardView);
+  // для table источник истины — hash #/tasks, туда вид не пишем (VL-177)
+  const [view, setView] = React.useState<BoardView>(() => loadBoardView());
+  // Поиск по id/title и единый sort-state тулбара (VL-177)
+  const [search, setSearch] = React.useState('');
+  const [sort, setSort] = React.useState<SortState>(null);
+  // Панель фильтров (VL-176) раскрыта/скрыта кнопкой «Фильтр» в тулбаре
+  const [filtersOpen, setFiltersOpen] = React.useState(false);
+  // Фильтры multi-select: тот же localStorage-ключ, что на #/tasks — синхрон (VL-176)
+  const { filters, setFilter, clearFilter, reset, isEmpty } = useTaskFilters();
   // Модалка задачи (VL-163): просмотр по клику на карточку, создание — Quick Create
   const [modal, setModal] = React.useState<{
     open: boolean;
@@ -83,14 +115,15 @@ export function Kanban() {
     setBoard(next);
   }
 
-  /** (Пере)загрузка доски: задачи + статусы конфига. */
+  /** (Пере)загрузка доски: задачи + конфиг (статусы колонок + порядок сортировки). */
   const load = React.useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [tasks, statuses] = await Promise.all([fetchTasks(), fetchStatuses()]);
-      applyBoard(buildBoard(tasks, statuses));
-      setColumnOrder(statuses);
+      const [tasks, loadedConfig] = await Promise.all([fetchTasks(), fetchConfig()]);
+      applyBoard(buildBoard(tasks, loadedConfig.statuses));
+      setConfig(loadedConfig);
+      setColumnOrder(loadedConfig.statuses);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Неизвестная ошибка загрузки');
     } finally {
@@ -99,6 +132,11 @@ export function Kanban() {
   }, []);
 
   React.useEffect(() => {
+    // Загрузка при монтировании: setState уходят в async-продолжение load
+    // (после await), синхронен только setLoading(true) — паттерн проекта
+    // (VL-27; тот же паттерн в references-page), правило линтера ложно
+    // срабатывает на вызов async-функции из effect
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
 
@@ -120,6 +158,29 @@ export function Kanban() {
   /** Клик по карточке — просмотр задачи в модалке (VL-163). */
   function openView(task: KanbanTask) {
     setModal({ open: true, mode: 'view', task });
+  }
+
+  /**
+   * Переключение таба в тулбаре (VL-177): table — уход на #/tasks (источник
+   * истины hash, вид в localStorage не пишем); board/list — запись вида
+   * перед показом, чтобы перезагрузка открыла тот же вид.
+   */
+  function handleViewChange(next: TaskView) {
+    if (next === 'table') {
+      window.location.hash = '#/tasks';
+      return;
+    }
+    saveBoardView(next);
+    setView(next);
+  }
+
+  /**
+   * «Создать задачу» в тулбаре — тот же Quick Create, что в сайдбаре
+   * (флаг + событие; слушатель выше на этой же странице откроет модалку).
+   */
+  function handleAddTask() {
+    setQuickCreatePending();
+    window.dispatchEvent(new CustomEvent(QUICK_CREATE_EVENT));
   }
 
   /** После сохранения/архивирования — перечитать доску из файлов. */
@@ -224,18 +285,67 @@ export function Kanban() {
     }
   }
 
-  const orderedColumns = columnOrder.filter(status => status in board);
+  // Плоский массив всех загруженных задач — общий источник для опций
+  // TasksFilters, поиска, сортировки и List-вида (VL-177)
+  const allTasks = React.useMemo(() => Object.values(board).flat(), [board]);
+
+  // Цепочка VL-177: фильтры (VL-176) → поиск по id/title → сортировка.
+  // config null только до первой загрузки — пустой fallback стабилен
+  // (status/priority уйдут в конец по configIndex, sort без ключа — копия)
+  const visibleTasks = React.useMemo(() => {
+    const byFilters = filterTasks(allTasks, filters);
+    const bySearch = search.trim() ? filterBySearch(byFilters, search) : byFilters;
+    return sortTasks(bySearch, sort, config ?? { statuses: [], priorities: [], types: [] });
+  }, [allTasks, filters, search, sort, config]);
+
+  // Разбивка в колонки ПОСЛЕ сортировки: порядок карточек внутри колонки
+  // не персистится (PATCH при dnd пишет только status — VL-27), поэтому
+  // сортировать безопасно; dnd-kit move() мутирует сырой board, вид
+  // пересчитывается реактивно из него
+  const visibleBoard = React.useMemo(() => {
+    const next: BoardState = {};
+    for (const status of columnOrder) next[status] = [];
+    for (const task of visibleTasks) {
+      if (!next[task.status]) next[task.status] = [];
+      next[task.status].push(task);
+    }
+    return next;
+  }, [visibleTasks, columnOrder]);
+
+  const orderedColumns = columnOrder.filter(status => status in visibleBoard);
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border">
-      {/* Шапка: заголовок + кнопка обновления (тулбар шаблона вне скоупа VL-27) */}
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-3 lg:px-6">
-        <h1 className="font-medium text-base">Задачи</h1>
-        <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-          <RefreshCw className={loading ? 'animate-spin' : undefined} data-icon="inline-start" />
-          Обновить
-        </Button>
-      </div>
+      {/* Тулбар видов с поиском/фильтром/сортировкой/созданием (VL-177,
+          по образцу ref-2 kanban.tsx:114–173; «Обновить» перенесён из
+          бывшей шапки kanban.tsx:233–237) */}
+      <TasksToolbar
+        view={view}
+        onViewChange={handleViewChange}
+        search={search}
+        onSearchChange={setSearch}
+        sort={sort}
+        onSortChange={setSort}
+        filtersOpen={filtersOpen}
+        onToggleFilters={() => setFiltersOpen(prev => !prev)}
+        onAddTask={handleAddTask}
+        onRefresh={() => void load()}
+        refreshing={loading}
+      />
+
+      {/* Панель фильтров (VL-176) — тот же компонент и localStorage-ключ,
+          что на #/tasks; показ по кнопке «Фильтр» из тулбара */}
+      {filtersOpen && !error && config && (
+        <TasksFilters
+          filters={filters}
+          config={config}
+          tasks={allTasks}
+          isEmpty={isEmpty}
+          onToggle={setFilter}
+          onClearGroup={clearFilter}
+          onReset={reset}
+        />
+      )}
 
       {error ? (
         <div className="flex flex-1 items-center justify-center p-6">
@@ -245,6 +355,9 @@ export function Kanban() {
         <div className="flex flex-1 items-center justify-center p-6">
           <p className="text-muted-foreground text-sm">Загрузка задач…</p>
         </div>
+      ) : view === 'list' ? (
+        // List-вид: те же фильтры/поиск/сортировка, что и у доски (VL-177)
+        <TasksList tasks={visibleTasks} onTaskClick={openView} />
       ) : (
         <DragDropProvider onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
           <div className="scrollbar-thin min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden bg-muted/25 px-4 pt-4 pb-0 [scrollbar-color:var(--border)_transparent] lg:px-5 lg:pt-5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:h-1">
@@ -256,7 +369,7 @@ export function Kanban() {
                 <KanbanColumn
                   key={status}
                   status={status}
-                  tasks={board[status]}
+                  tasks={visibleBoard[status]}
                   runningPhases={runningPhases}
                   onTaskClick={openView}
                 />

@@ -63,6 +63,10 @@ export function ReferenceDetail({ id }: { id: string }) {
   React.useEffect(() => {
     if (!id) return;
     let cancelled = false;
+    // Сброс состояния предыдущего entry перед загрузкой нового id —
+    // паттерн VL-174 (загрузка по смене роута); синхронный сброс в effect
+    // подавлен как ложное срабатывание: setState в fetch-колбэках асинхронны
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setEntry(null);
     setError(null);
     setEditing(false);

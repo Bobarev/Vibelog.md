@@ -59,6 +59,10 @@ export function KanbanColumn({
       </div>
 
       <div
+        // dnd-kit требует ref на drop-цели; ref не читается в рендере,
+        // только передаётся в JSX — ложноположительное срабатывание
+        // react-hooks/refs на API дрэг-энд-дроп (VL-27)
+        // eslint-disable-next-line react-hooks/refs
         ref={taskDropTarget.ref}
         className="scrollbar-thin flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 pb-3 [scrollbar-color:var(--border)_transparent] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1"
       >
