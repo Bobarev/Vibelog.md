@@ -5,7 +5,8 @@
  * поэтому хеш-маршруты (#/settings) не требуют серверной поддержки и работают
  * при любой выдаче статики (в т.ч. npm-пакет без web/dist перезагрузок).
  *
- * Маршруты: 'board' (#/ и всё, кроме явных), 'settings' (#/settings,
+ * Маршруты: 'board' (#/ и всё, кроме явных), 'tasks' (#/tasks — таблица
+ * задач с сортировкой/пагинацией, VL-175), 'settings' (#/settings,
  * .vibelog/settings.json), 'config' (#/config, backlog/config.yml — VL-165),
  * 'references' (#/references — список sources, VL-174) и 'reference'
  * (#/reference/<id> — детальная страница, VL-174).
@@ -14,13 +15,14 @@
 import * as React from 'react';
 
 /** Страницы веб-интерфейса. */
-export type Route = 'board' | 'settings' | 'config' | 'references' | 'reference';
+export type Route = 'board' | 'tasks' | 'settings' | 'config' | 'references' | 'reference';
 
 /** Текущий маршрут по location.hash. */
 function parseHash(hash: string): Route {
   const path = hash.replace(/^#/, '').replace(/^\//, '');
   if (path === 'settings') return 'settings';
   if (path === 'config') return 'config';
+  if (path === 'tasks') return 'tasks';
   if (path === 'references') return 'references';
   // ВАЖНО: 'reference/<id>' — после 'references' (не пересекаются, но рядом:
   // 'references' — список, 'reference/ref-N' — детальная страница VL-174)

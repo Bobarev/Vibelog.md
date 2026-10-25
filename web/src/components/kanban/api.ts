@@ -26,6 +26,11 @@ interface ApiTask {
   assignee: string[];
   description: string;
   comments: Array<{ author?: string; text?: string }>;
+  // Поля для таблицы #/tasks (VL-175): API отдаёт полный Task[] (src/core),
+  // маппинг раньше их терял. Опциональны в старых задачах — нормализация в toKanbanTask.
+  type?: string;
+  milestone?: string;
+  updated_date?: string;
 }
 
 /** Дефолтные статусы — на случай, если конфиг не отдал statuses[]. */
@@ -46,6 +51,10 @@ function toKanbanTask(raw: ApiTask): KanbanTask {
     description: raw.description ?? '',
     commentsCount: comments.length,
     lastComment: last?.text ? { author: last.author ?? '@agent', text: last.text } : null,
+    // Нормализация || '' — иначе сортировка таблицы падает на undefined (VL-175)
+    type: raw.type || '',
+    milestone: raw.milestone || '',
+    updated_date: raw.updated_date || '',
   };
 }
 

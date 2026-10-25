@@ -21,6 +21,12 @@ export interface KanbanTask {
   commentsCount: number;
   /** Последний комментарий (отчёт фазы) — показывается на карточке (VL-28). */
   lastComment: { author: string; text: string } | null;
+  /** Тип задачи (bug/feature/...), нужен таблице #/tasks (VL-175). */
+  type: string;
+  /** Веха задачи (milestone), нужна таблице #/tasks (VL-175). */
+  milestone: string;
+  /** Дата последнего обновления (ISO), сортировка колонки Updated (VL-175). */
+  updated_date: string;
 }
 
 /** Доска: статус → задачи этого статуса. */

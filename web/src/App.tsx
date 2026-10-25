@@ -16,6 +16,7 @@ import { usePreferences } from "@/components/preferences"
 import { ReferencesPage } from "@/components/references/references-page"
 import { ReferenceDetail } from "@/components/references/reference-detail"
 import { SettingsPage } from "@/components/settings/settings"
+import { TasksPage } from "@/components/tasks/tasks-page"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { useHashRoute, useReferenceId } from "@/lib/use-hash-route"
 import { QUICK_CREATE_EVENT, setQuickCreatePending } from "@/lib/quick-create"
@@ -47,7 +48,9 @@ export function App() {
         <AppHeader />
         {/* main — scroll-контейнер (flex-1), header всегда виден (VL-166) */}
         <main className="min-h-0 flex-1 overflow-y-auto p-2">
-          {route === "settings" ? (
+          {route === "tasks" ? (
+            <TasksPage />
+          ) : route === "settings" ? (
             <SettingsPage />
           ) : route === "config" ? (
             <ConfigPage />
