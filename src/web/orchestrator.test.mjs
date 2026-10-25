@@ -1727,6 +1727,120 @@ describe('orchestrator (VL-28)', () => {
     }
   });
 
+  // ── VL-187: статус sameSession, фолбэк-поиск в worktree, мета при resume ──
+
+  it('мета план-сессии только в worktree-каталоге → --resume (VL-187, фолбэк-поиск)', async () => {
+    const root = makeSameRoot('vibelog-orch-vl187-wt-', 'VL-1870');
+    // Мета лежит только в agent-sessions worktree задачи (запуск плана из
+    // worktree без VIBELOG_CWD/со старым dist) — в главном каталоге её нет
+    const wtSessions = join(root, '.vibelog', 'worktrees', 'vl-1870', '.vibelog', 'agent-sessions');
+    mkdirSync(wtSessions, { recursive: true });
+    writeFileSync(
+      join(wtSessions, 'agent-plan-1870.meta.json'),
+      JSON.stringify({ taskId: 'VL-1870', phase: 'plan', cwd: join(root, '.vibelog', 'worktrees', 'vl-1870') }),
+      'utf-8'
+    );
+    mkdirSync(join(root, '.vibelog'), { recursive: true });
+    writeFileSync(join(root, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], code_same_session: true }), 'utf-8');
+    setStubEnv({ VL28_STUB_MARKER: join(root, 'marker-vl187-wt.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0' });
+    try {
+      const res = startPhase(root, 'VL-1870', 'code');
+      assert.equal(res.started, true, JSON.stringify(res));
+      assert.equal(res.sameSession, 'applied', 'статус applied при находке во worktree-каталоге');
+      const run = await waitDone('VL-1870');
+      assert.equal(run.exitCode, 0);
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
+      const idx = argv.indexOf('--resume');
+      assert.ok(idx !== -1, '--resume из worktree-каталога: ' + JSON.stringify(argv));
+      assert.equal(argv[idx + 1], 'agent-plan-1870');
+    } finally {
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('StartResult.sameSession: no-plan-session / off / override-off (VL-187)', async () => {
+    // 1) настройка on, мет нет → no-plan-session
+    const rootNps = makeSameRoot('vibelog-orch-vl187-nps-', 'VL-1871');
+    mkdirSync(join(rootNps, '.vibelog'), { recursive: true });
+    writeFileSync(join(rootNps, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], code_same_session: true }), 'utf-8');
+    setStubEnv({ VL28_STUB_MARKER: join(rootNps, 'marker-nps.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0' });
+    try {
+      const res = startPhase(rootNps, 'VL-1871', 'code');
+      assert.equal(res.started, true, JSON.stringify(res));
+      assert.equal(res.sameSession, 'no-plan-session');
+      await waitDone('VL-1871');
+    } finally {
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      rmSync(rootNps, { recursive: true, force: true });
+    }
+    // 2) дефолт (настройки нет) → off, поведение прежнее
+    const rootOff = makeSameRoot('vibelog-orch-vl187-off2-', 'VL-1872');
+    setStubEnv({ VL28_STUB_MARKER: join(rootOff, 'marker-off2.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0' });
+    try {
+      const res = startPhase(rootOff, 'VL-1872', 'code');
+      assert.equal(res.started, true, JSON.stringify(res));
+      assert.equal(res.sameSession, 'off');
+      await waitDone('VL-1872');
+    } finally {
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      rmSync(rootOff, { recursive: true, force: true });
+    }
+    // 3) явный sameSession:false при включённой настройке → override-off
+    const rootOv = makeSameRoot('vibelog-orch-vl187-ovr-', 'VL-1873');
+    seedPlanSession(rootOv, 'agent-plan-1873', 'VL-1873');
+    mkdirSync(join(rootOv, '.vibelog'), { recursive: true });
+    writeFileSync(join(rootOv, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], code_same_session: true }), 'utf-8');
+    setStubEnv({ VL28_STUB_MARKER: join(rootOv, 'marker-ovr.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0' });
+    try {
+      const res = startPhase(rootOv, 'VL-1873', 'code', undefined, undefined, 'qwen', { sameSession: false });
+      assert.equal(res.started, true, JSON.stringify(res));
+      assert.equal(res.sameSession, 'override-off');
+      const run = await waitDone('VL-1873');
+      assert.equal(run.exitCode, 0);
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
+      assert.ok(!argv.includes('--resume'), 'override-off не передаёт --resume');
+    } finally {
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      rmSync(rootOv, { recursive: true, force: true });
+    }
+  });
+
+  it('reply-resume (--resume) не перезаписывает мету: phase plan сохраняется (VL-187)', async () => {
+    const root = makeSameRoot('vibelog-orch-vl187-keep-', 'VL-1874');
+    saveSessionMetaSyncTest(root, 'agent-plan-1874', { taskId: 'VL-1874', phase: 'plan', cwd: root });
+    setStubEnv({
+      VL28_STUB_MARKER: join(root, 'marker-keep.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RESULT: JSON.stringify({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 1,
+        duration_api_ms: 1, num_turns: 1, result: 'продолжено',
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, total_tokens: 2 },
+        session_id: 'agent-plan-1874',
+      }),
+    });
+    try {
+      // Reply-resume из бота: startResume спавнит phase='prompt' с --resume —
+      // раньше finish() затирал мету plan→prompt (инцидент VL-185: у VL-185
+      // обе сессии (plan и code) оказались с phase='prompt')
+      const res = startResume(root, 'agent-plan-1874', 'Продолжи');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-1874');
+      assert.equal(run.exitCode, 0);
+      // saveSessionMeta fire-and-forget → даём finish() пройти и убеждаемся,
+      // что существующая мета НЕ перезаписана (без фикса стала бы 'prompt')
+      await new Promise((r) => setTimeout(r, 150));
+      const meta = JSON.parse(readFileSync(join(agentSessionsDir(root), 'agent-plan-1874.meta.json'), 'utf-8'));
+      assert.equal(meta.phase, 'plan', 'resume-ран не затирает phase исходной меты');
+      assert.equal(meta.taskId, 'VL-1874');
+    } finally {
+      setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VL28_STUB_RESULT: undefined });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // ── VL-146: очередь close в branch-mode ──
 
   /**

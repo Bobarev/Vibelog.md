@@ -811,6 +811,15 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   // ── /code — Фаза 3 (Code) через headless qwen (VL-53) ──
   // По аналогии с /plan (VL-51), но фаза — Code (шаблон phase-3.md).
   // ID существующей задачи (обычно после /plan).
+  // VL-187: подсказка статуса продолжения plan-сессии (StartResult.sameSession) —
+  // общий текст для /code и кнопки next; статус считается в startPhase (единый
+  // модуль бота и веба), здесь только показ
+  const sameSessionHint = (result: Extract<StartResult, { started: true }>): string =>
+    result.sameSession === 'applied'
+      ? ' — сессия plan продолжена'
+      : result.sameSession === 'no-plan-session'
+        ? '\n⚠️ План-сессия не найдена — code запущен в новой сессии'
+        : '';
   bot.command(['code', 'code:qwen', 'code:vb'], async (ctx) => {
     if (!requireBind(ctx)) return;
     // ctx.command в grammy 1.46 отсутствует — слово команды берём из текста
@@ -857,7 +866,8 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
       return;
     }
-    await sendMd(ctx, `🚀 Фаза Code (${agent}) запущена для *${task.id}*, PID ${result.pid}`);
+    // VL-187: показать статус sameSession (applied / no-plan-session)
+    await sendMd(ctx, `🚀 Фаза Code (${agent}) запущена для *${task.id}*, PID ${result.pid}${sameSessionHint(result)}`);
   });
   // ── /close — Фаза Close (закрытие задачи) через headless qwen (VL-55) ──
   // По аналогии с /code (VL-53): закрывает задачу — статус завершения
@@ -1339,7 +1349,9 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     }
     await sendMd(
       ctx,
-      `🚀 Фаза ${next.label} (${agent}) запущена для *${task.id}*, PID ${result.pid}`
+      // VL-187: подсказка sameSession — только для фазы code (поле есть лишь у неё)
+      `🚀 Фаза ${next.label} (${agent}) запущена для *${task.id}*, PID ${result.pid}` +
+        (next.phase === 'code' ? sameSessionHint(result) : '')
     );
   });
   // ── Ввод комментария (VL-78): ОБЯЗАТЕЛЬНО ДО catch-all пина ──
