@@ -5,7 +5,7 @@
  * читают/пишут markdown-файлы в директории backlog.
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { findBacklogDir, tasksDir, completedDir } from './paths.js';
 import { loadConfig } from './config.js';
@@ -176,6 +176,7 @@ export function addComment(cwd: string, id: string, text: string, author?: strin
 
 /**
  * Архивирует задачу (перемещает из tasks/ в completed/).
+ * Директория completed/ создаётся автоматически, если отсутствует (VL-190).
  *
  * @param cwd — текущая рабочая директория
  * @param id — ID задачи
@@ -194,6 +195,9 @@ export function archiveTaskFile(cwd: string, id: string): void {
 
   const filename = filePath.split('/').pop() as string;
   const dest = join(completedDir(backlogDir), filename);
+  // VL-190: в сторонних проектах backlog/completed/ может не существовать —
+  // renameSync падал с ENOENT; создаём папку идемпотентно перед переносом
+  mkdirSync(completedDir(backlogDir), { recursive: true });
   renameSync(filePath, dest);
 }
 
