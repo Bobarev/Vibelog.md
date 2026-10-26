@@ -13,8 +13,9 @@ source_tasks:
   - VL-180
 linked_tasks:
   - VL-180
+  - VL-189
 created_date: 2026-10-25
-updated_date: 2026-10-25
+updated_date: 2026-10-26
 supersedes: ''
 ---
 ## Проблема
