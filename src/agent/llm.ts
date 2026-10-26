@@ -517,11 +517,27 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
     for (;;) {
       const baseBody = buildBody(currentMessages);
       try {
-        return await attemptWithFallback(baseBody, opts);
+        const res = await attemptWithFallback(baseBody, opts);
+        // VL-199: отказ провайдера приходит валидным текстом при HTTP 200 —
+        // диагностика payload/usage для наблюдаемости content-based отказов
+        // (детект и fail() — в loop.ts, здесь только лог в stderr → logTail).
+        if (isHighRiskBody(res.text ?? '')) {
+          console.error(
+            `[vibelog-agent] high-risk в тексте при HTTP 200: payload=${Buffer.byteLength(JSON.stringify(baseBody), 'utf8')} байт, сообщений=${currentMessages.length}, usage=${JSON.stringify(res.usage)}`,
+          );
+        }
+        return res;
       } catch (err) {
         const e = err instanceof Error ? err : new Error(String(err));
         if (opts.signal?.aborted || isAbortError(e)) throw e;
-        if (shrinks >= HIGH_RISK_MAX_SHRINKS || !isHighRiskBody(e.message)) throw e;
+        if (!isHighRiskBody(e.message)) throw e;
+        // VL-199: размер payload известен только здесь (wire-body) — лог и при
+        // повторе, и при исчерпании shrink-уровней; stderr попадает в logTail
+        // оркестратора. usage в теле ошибки нет.
+        console.error(
+          `[vibelog-agent] high-risk-отказ HTTP: payload=${Buffer.byteLength(JSON.stringify(baseBody), 'utf8')} байт, сообщений=${currentMessages.length}, shrink-уровень=${shrinks}, usage=н/д`,
+        );
+        if (shrinks >= HIGH_RISK_MAX_SHRINKS) throw e;
         shrinks++;
         currentMessages = shrinkMessages(
           messages,

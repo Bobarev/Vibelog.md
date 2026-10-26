@@ -2109,6 +2109,61 @@ process.exit(0);
     }
   });
 
+  // ── VL-199: high-risk-текст при HTTP 200 → is_error в result (без error) → авто-resume ──
+
+  it('VL-199: fail-результат loop с маркером high risk (без error-поля) → авто-resume с --resume', async () => {
+    // Форма, которую теперь produce cli.ts после фикса loop: is_error=true,
+    // маркер — в result (русское пояснение + оригинал), поля error нет.
+    const root = makeSameRoot('vibelog-orch-vl199-', 'VL-1990');
+    const logPath = join(root, 'vl199-argv.log');
+    const hrStub = join(root, 'qwen-hr199-stub.cjs');
+    writeFileSync(hrStub, `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.appendFileSync(process.env.VL199_STUB_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
+fs.writeSync(1, JSON.stringify({
+  type: 'result', is_error: true, duration_ms: 1, duration_api_ms: 1, num_turns: 1,
+  result: 'Отказ провайдера «high risk»: The request was rejected because it was considered high risk — фаза прервана как ошибка (VL-199).',
+  session_id: 'agent-hr199-1',
+  usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, total_tokens: 2 },
+}) + '\\n');
+process.exit(0);
+`, 'utf-8');
+    chmodSync(hrStub, 0o755);
+    setStubEnv({
+      VIBELOG_QWEN_BIN: hrStub,
+      VL199_STUB_LOG: logPath,
+      VL28_STUB_RESULT: undefined,
+      VL28_STUB_MARKER: undefined,
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+    });
+    try {
+      const calls = [];
+      const res = startPhase(root, 'VL-1990', 'spec', (run) => calls.push(run));
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-1990', 8000);
+      await new Promise((r) => setTimeout(r, 100));
+      assert.equal(run.result?.is_error, true, 'финальный record — тоже high-risk');
+      const argvLines = readFileSync(logPath, 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+      assert.equal(argvLines.length, 2, `ожидалось 2 спавна, есть ${argvLines.length}: ${JSON.stringify(argvLines)}`);
+      assert.ok(!argvLines[0].includes('--resume'), '1-й спавн без --resume');
+      assert.ok(argvLines[1].includes('--resume'), '2-й спавн (авто-resume) с --resume');
+      assert.ok(argvLines[1].includes('agent-hr199-1'), 'session_id из result');
+      assert.equal(calls.length, 1, `onExit вызван ${calls.length} раз(а)`);
+      assert.equal(calls[0].result?.session_id, 'agent-hr199-1');
+    } finally {
+      setStubEnv({
+        VIBELOG_QWEN_BIN: undefined,
+        VL199_STUB_LOG: undefined,
+        VL28_STUB_RESULT: undefined,
+        VL28_STUB_MARKER: undefined,
+        VL28_STUB_SLEEP: undefined,
+        VL28_STUB_EXIT: undefined,
+      });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // ── VL-180: общий хелпер startTaskPhase (бот ↔ веб, единая точка входа) ──
 
   it('startTaskPhase: непустой комментарий в файле до спавна, текст в {{comment}}', async () => {
