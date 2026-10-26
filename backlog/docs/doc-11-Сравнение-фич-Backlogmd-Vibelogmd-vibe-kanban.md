@@ -8,6 +8,16 @@ tags:
   - comparison
   - refs
 ---
+---
+id: doc-11
+title: 'Сравнение фич: Backlog.md, Vibelog.md, vibe-kanban'
+type: other
+created_date: 2026-10-06
+tags:
+  - research
+  - comparison
+  - refs
+---
 # Сравнение фич: Backlog.md, Vibelog.md, vibe-kanban
 
 **Дата:** 2026-09-30
@@ -293,7 +303,7 @@ Vibe-kanban создаёт git-worktree с веткой `vk/abc123-task-name` д
 
 Vibe-kanban: внешний MCP-клиент описывает фичу → «turn this plan into issues» → `create_issue` × N → `start_workspace` запускает агента.
 
-**Применимость:** Высокая (P1). Это ровно наш Фаза 1 (Spec) из `/vibelog:spec`. Уже реализовано в PLAN-10. Отличие vibe-kanban: автоматический запуск агента после создания задач. Мы останавливаемся на подтверждении — это правильно для соло-разработки.
+**Применимость:** Высокая (P1). Это ровно наша Фаза Spec. Уже реализовано в PLAN-10 (сейчас фазы запускаются ботом и вебом по workflow, см. VL-188). Отличие vibe-kanban: автоматический запуск агента после создания задач. Мы останавливаемся на подтверждении — это правильно для соло-разработки.
 
 ## 2.3. Параллельное выполнение агентов
 
@@ -366,7 +376,7 @@ Vibe-kanban: UI для настройки MCP-серверов каждого а
 
 - [ ] Documents: CLI (create/list/view/update/search) + MCP (5 инструментов)
 - [ ] Config: CLI (get/set/list)
-- [ ] Drafts: CLI (create/list/promote/edit/archive) + MCP
+- [ ] Drafts: CLI (create/list/promote/edit/archive/view) + MCP
 - [ ] Decisions: CLI (create/list) + MCP
 - [ ] task edit: batch AC/DoD (acceptanceCriteriaCheck: [1,2,3])
 - [ ] task list: --limit, --watch, --max-count, --skip
@@ -456,7 +466,7 @@ Vibe-kanban: UI для настройки MCP-серверов каждого а
 ### 3. Headless-режим агента и интеграция с оркестратором (VL-75, AC#1)
 
 - **Почему:** оркестратор (src/web/orchestrator.ts) спавнит бинарь с промптом шаблона и парсит parseQwenResult (src/web/qwen-result.ts) — если агент печатает тот же JSON type=result, замена qwen → vibelog-agent не требует правок оркестратора и шаблонов.
-- **Результат:** `node dist/agent/cli.mjs <phase> <taskId>` печатает JSON `{type:'result', result, is_error, usage, session_id}`; переключение бинаря одной настройкой (VIBELOG_QWEN_BIN или новая); шаблоны templates/qwen-commands/phase-*.md переиспользуются без изменений; qwen остаётся фолбэком. Контракт подтверждён на исходниках qwen-code 0.24.7 (refs/qwen-code, doc-4 §10.1): JSON-режим пишет строку-массив с `type:'result'` последним элементом (JsonOutputAdapter), NDJSON-вариант — StreamJsonOutputAdapter.
+- **Результат:** `node dist/agent/cli.mjs <phase> <taskId>` печатает JSON `{type:'result', result, is_error, usage, session_id}`; переключение бинаря одной настройкой (VIBELOG_QWEN_BIN или новая); шаблоны templates/phases/phase-*.md переиспользуются без изменений; qwen остаётся фолбэком. Контракт подтверждён на исходниках qwen-code 0.24.7 (refs/qwen-code, doc-4 §10.1): JSON-режим пишет строку-массив с `type:'result'` последним элементом (JsonOutputAdapter), NDJSON-вариант — StreamJsonOutputAdapter.
 - **Приоритет:** P0
 
 ### 4. Loop detection и лимиты: --max-tool-calls, --max-wall-time (VL-75, AC#2)

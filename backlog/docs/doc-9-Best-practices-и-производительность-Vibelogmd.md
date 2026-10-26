@@ -7,6 +7,15 @@ tags:
   - best-practices
   - workflow
 ---
+---
+id: doc-9
+title: Best practices и производительность Vibelog.md
+type: guide
+created_date: 2026-10-06
+tags:
+  - best-practices
+  - workflow
+---
 # Best practices и производительность Vibelog.md
 
 Практики из реальной разработки этого проекта (Vibelog.md ведёт свои же задачи
@@ -17,20 +26,44 @@ tags:
 
 ---
 
-## 1. Workflow с Qwen Code: spec → plan → code
+## 1. Workflow с переходами статус (VL-188)
 
-Флаг `--skills` при `init` создаёт три команды, разбивающие работу на фазы с
-подтверждением пользователя на каждой:
+Фазы spec → plan → code → close запускаются ботом (кнопки карточки), вебом
+(кнопки модалки) и CLI; цепочку переходов задаёт workflow в
+`.vibelog/settings.json` — статус первичен, фаза переводит задачу в новый
+статус. Каждая задача идёт по одному из workflow (`task_workflows` по типу
+задачи, иначе `default`), из статуса доступны только фазы, перечисленные в его
+`transitions`:
 
-```bash
-vibelog init "Мой проект" --skills
+```json
+{
+  "workflows": {
+    "default": {
+      "initial_status": "To Do",
+      "transitions": [
+        { "status": "To Do", "phase": "spec", "produces_status": "Spec" },
+        { "status": "To Do", "phase": "reject", "produces_status": "Rejected" },
+        { "status": "Spec", "phase": "plan", "produces_status": "Planned" },
+        { "status": "Planned", "phase": "code", "produces_status": "Review" },
+        { "status": "Review", "phase": "close", "produces_status": "Done" }
+      ]
+    },
+    "simple": {
+      "initial_status": "To Do",
+      "transitions": [
+        { "status": "To Do", "phase": "do", "produces_status": "Review" },
+        { "status": "Review", "phase": "close", "produces_status": "Done" }
+      ]
+    }
+  },
+  "task_workflows": { "bug": "bugfix", "chore": "simple", "docs": "simple" }
+}
 ```
 
-| Команда | Фаза | Что делает агент |
-|---|---|---|
-| `/vibelog:spec <описание фичи>` | 1 | Исследует репозиторий, разбивает фичу на 2-3 задачи с проверяемыми AC, создаёт их через MCP, ждёт подтверждения |
-| `/vibelog:plan <ID>` | 2 | Составляет план (файлы, строки, порядок, проверки, риски), записывает в задачу, ждёт «да» |
-| `/vibelog:code <ID>` | 3 | Реализует план, запускает проверки, отмечает AC, меняет статус на Done |
+- **Ветвление**: из одного статуса несколько фаз (`To Do → spec` ИЛИ `reject`) — бот предлагает выбор кнопок.
+- **`phase: null`** — финальный статус (Done/Rejected), фаз нет.
+- **Fallback**: нет ключа `workflows` — встроенный default (spec → plan → code → close).
+- **Ручные переходы**: `Backlog → initial_status` кнопкой «Взять в работу» или `/move VL-1 To Do`; перенос на канбан-доске сервер валидирует (`canMoveTo`) — без транзита 400 и откат колонки.
 
 ### Как ставить задачи агенту
 
@@ -160,8 +193,7 @@ MCP-аналог: `backlog_manage_ac` с `index: [1,2,3]` — агент отм�
 
 ## 7. Чего избегать
 
-- **Не дублируйте трекер**: Vibelog.md совместим с Backlog.md — при апгрейде macOS данные просто переходят на оригинал, поэтому держайте всё в `backlog/`, а не в стороннем TODO-файле.
+- **Не дублируйте трекер**: Vibelog.md совместим с Backlog.md — при апгрейде macOS данные просто переходят на оригинал, поэтому держите всё в `backlog/`, а не в стороннем TODO-файле.
 - **Не редактируйте `config.yml` руками** без нужды — `config set` типизирует значения (массивы/boolean/числа) и не затирает соседние ключи.
 - **Не создавайте задачу раньше, чем идея сформулирована** — сначала черновик, потом `promote`.
 - **Не помечайте AC невыполнимыми формулировками** — «сделать хорошо» нельзя проверить; агент не сможет честно отметить такой критерий.
-`;
