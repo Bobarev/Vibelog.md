@@ -25,6 +25,8 @@ import { runBoard } from '../../dist/cli/commands/board.js';
 import { runSearch } from '../../dist/cli/commands/search.js';
 import { runInstructions } from '../../dist/cli/commands/instructions.js';
 import { runAgent } from '../../dist/cli/commands/agent.js';
+import { runBot } from '../../dist/cli/commands/bot.js';
+import { runBrowser } from '../../dist/cli/commands/browser.js';
 import { setSpawnEnvBaseForTests } from '../../dist/web/orchestrator.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -390,5 +392,66 @@ describe('CLI — интеграционные тесты', () => {
     assert.match(errText, /--resume поддерживается только в интерактивном чате/);
     assert.equal(process.exitCode, 1);
     process.exitCode = 0;
+  });
+});
+
+// ── VL-189: env проекта при запуске бота и браузера ──
+// Оба режима используют общий loadProjectEnv — раньше бот грузил .env,
+// а браузер нет (spawn фаз без VIBELOG_LLM_* → «не задан VIBELOG_LLM_API_KEY»)
+describe('VL-189: loadProjectEnv в точках входа бота и браузера', () => {
+  const envKeys = ['TELEGRAM_BOT_TOKEN', 'VIBELOG_LLM_API_KEY', 'VIBELOG_LLM_MODEL'];
+  const saved = Object.fromEntries(envKeys.map((k) => [k, process.env[k]]));
+  let projDir;
+
+  beforeAll(() => {
+    projDir = mkdtempSync(join(tmpdir(), 'vibelog-vl189-env-'));
+    writeFileSync(
+      join(projDir, '.env'),
+      'VIBELOG_LLM_API_KEY=from-file\nVIBELOG_LLM_MODEL=vl189-model\n',
+      'utf-8'
+    );
+  });
+
+  afterAll(() => {
+    // Save/restore обязателен (fileParallelism, isolate:false) — утечка
+    // удалённых ключей сломала бы соседние тесты того же воркера
+    for (const k of envKeys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    rmSync(projDir, { recursive: true, force: true });
+  });
+
+  it('runBot: .env читается при старте (токена нет → ранний возврат, без сети)', async () => {
+    // Чистая env: только .env projDir должен дать LLM-ключи; без токена
+    // runBot возвращается после loadProjectEnv, не доходя до Telegram API
+    delete process.env.TELEGRAM_BOT_TOKEN;
+    delete process.env.VIBELOG_LLM_API_KEY;
+    delete process.env.VIBELOG_LLM_MODEL;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await runBot([], {}, projDir);
+    } finally {
+      errSpy.mockRestore();
+    }
+    assert.equal(process.env.VIBELOG_LLM_API_KEY, 'from-file', 'runBot грузит .env (VL-189)');
+    assert.equal(process.env.VIBELOG_LLM_MODEL, 'vl189-model');
+  });
+
+  it('runBrowser: .env читается при старте, возвращается Server для закрытия', async () => {
+    delete process.env.VIBELOG_LLM_API_KEY;
+    delete process.env.VIBELOG_LLM_MODEL;
+    // console.log перехватываем — startWebServer печатает URL в лог теста
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    let server;
+    try {
+      server = await runBrowser([], { port: '0', 'no-open': true }, projDir);
+      assert.equal(process.env.VIBELOG_LLM_API_KEY, 'from-file', 'runBrowser грузит .env (VL-189)');
+      assert.equal(process.env.VIBELOG_LLM_MODEL, 'vl189-model');
+      assert.ok(server && typeof server.close === 'function', 'runBrowser возвращает Server');
+    } finally {
+      logSpy.mockRestore();
+      server?.close();
+    }
   });
 });

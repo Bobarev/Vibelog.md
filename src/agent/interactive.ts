@@ -12,8 +12,9 @@
  * роутера — ink/react не участвуют в контракте оркестратора).
  *
  * LLM-переменные VIBELOG_LLM_* читаются из окружения либо из .env проекта
- * (loadDotEnv, VL-37 — реальное окружение приоритетнее файла, как у бота):
- * чат запускается человеком напрямую, экспортировать ключи руками неудобно.
+ * (loadProjectEnv, VL-37/VL-189 — реальное окружение приоритетнее файла,
+ * как у бота): чат запускается человеком напрямую, экспортировать ключи
+ * руками неудобно.
  */
 
 import { createLlmClient } from './llm.js';
@@ -22,9 +23,9 @@ import { runLoop } from './loop.js';
 import { getTask } from '../core/store.js';
 import { taskToMarkdown } from '../core/task.js';
 import { agentSessionsDir, createSessionId, loadSession, saveSession } from './session.js';
-// Загрузка .env проекта (VL-37) — общий модуль с ботом, только node:fs/path
-import { loadDotEnv } from '../bot/env.js';
-import { applySettingsEnv } from '../core/settings.js';
+// Загрузка env проекта (VL-37/VL-189) — общий модуль с ботом и браузером
+import { loadProjectEnv } from '../bot/env.js';
+import { ensureLlmEnv } from './llm-env.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { listLocalTools } from './tools.js';
 import type { ToolSpec } from './tools.js';
@@ -93,23 +94,15 @@ export async function runInteractiveAgent(
   options: { taskRef?: string; resume?: string } = {},
 ): Promise<void> {
   const cwd = process.cwd();
-  // .env проекта (VL-37): чат запускается человеком напрямую — VIBELOG_LLM_*
-  // обычно лежат в .env. Реальное окружение приоритетнее файла (dotenv).
-  loadDotEnv(cwd);
-  // Секция env settings.json (VL-143): VIBELOG_LLM_* могут жить и там;
-  // записываются только пустые ключи — реальный env и .env приоритетнее
-  applySettingsEnv(cwd);
+  // .env проекта + секция env settings.json (VL-37/VL-143): чат запускается
+  // человеком напрямую — VIBELOG_LLM_* обычно лежат в .env; реальное
+  // окружение приоритетнее файла (dotenv). Общий хелпер loadProjectEnv
+  // (VL-189) — тот же код в боте и браузере, повторный вызов идемпотентен
+  loadProjectEnv(cwd);
 
   // Env-проверки ДО рендера TUI: ошибка не должна появиться в альтернативном буфере
-  if (!process.env.VIBELOG_LLM_API_KEY) {
-    console.error(
-      'Ошибка: не задан VIBELOG_LLM_API_KEY — чату с агентом нужен доступ к LLM (env VIBELOG_LLM_BASE_URL/VIBELOG_LLM_API_KEY/VIBELOG_LLM_MODEL)',
-    );
-    process.exitCode = 1;
-    return;
-  }
-  if (!process.env.VIBELOG_LLM_MODEL) {
-    console.error('Ошибка: не задана VIBELOG_LLM_MODEL — модель LLM неизвестна');
+  // (общая ensureLlmEnv, VL-189 — тексты ошибок дословно прежние)
+  if (!ensureLlmEnv('чату с агентом')) {
     process.exitCode = 1;
     return;
   }

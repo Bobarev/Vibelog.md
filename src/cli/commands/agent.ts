@@ -16,6 +16,7 @@
 import { startAnalyze } from '../../web/orchestrator.js';
 import type { PhaseRun } from '../../web/orchestrator.js';
 import { resolveDefaultAgent } from '../../bot/settings.js';
+import { loadProjectEnv } from '../../bot/env.js';
 import { taskIdPattern } from '../../core/config.js';
 import { printError } from '../ui.js';
 
@@ -34,6 +35,11 @@ export async function runAgent(
   flags: Record<string, unknown>,
   cwd: string
 ): Promise<void> {
+  // VL-189: env проекта (.env + секция env settings.json) — analyze спавнит
+  // агента из этого процесса (без загрузки — VIBELOG_LLM_* не долетают);
+  // для чата двойная загрузка идемпотентна — dotenv-семантика (вызов
+  // повторится в runInteractiveAgent)
+  loadProjectEnv(cwd);
   // Интерактивный чат (VL-158): без подкоманды либо с <task-id>.
   // TTY-check ДО getTask: в скриптах/CI чат не запускается вовсе —
   // ошибка одинакова для несуществующей задачи и pipe-запуска

@@ -176,6 +176,18 @@ describe('vibelog-agent CLI (VL-85)', () => {
     assert.match(stderr, /VIBELOG_LLM_API_KEY/);
   });
 
+  it('без VIBELOG_LLM_MODEL: exit 1, stderr с ошибкой о модели (VL-189)', async () => {
+    // Общая ensureLlmEnv (VL-189): проверка модели переезжала из cli.ts
+    // в llm-env.ts — регрессия на дословный текст ошибки в stderr
+    const env = llmEnv();
+    delete env.VIBELOG_LLM_MODEL;
+    const { code, stdout, stderr } = await runCli(['comment', 'VL-1', '--no-mcp'], env);
+    assert.equal(code, 1);
+    assert.equal(stdout, '');
+    assert.match(stderr, /VIBELOG_LLM_MODEL/);
+    assert.match(stderr, /модель LLM неизвестна/);
+  });
+
   it('неизвестная фаза: exit 1, stderr с русской ошибкой', async () => {
     const { code, stdout, stderr } = await runCli(['deploy', 'VL-1', '--no-mcp'], llmEnv());
     assert.equal(code, 1);

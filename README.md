@@ -264,7 +264,7 @@ Vibelog.md doctor
 VIBELOG_QWEN_BIN=$(pwd)/bin/vibelog-agent.mjs vibelog browser
 ```
 
-Агент: интерактивный TUI или `--headless` (JSON `type=result`, контракт `parseQwenResult`), loop detection, лимиты tool-calls/wall-time, локальные инструменты + Vibelog MCP. TUI написан на чистом Node.js (zero deps — без Ink/React, работает на Node 20+). LLM — env `VIBELOG_LLM_BASE_URL` / `VIBELOG_LLM_API_KEY` / `VIBELOG_LLM_MODEL` (Cloud.ru). Детали: [backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md).
+Агент: интерактивный TUI или `--headless` (JSON `type=result`, контракт `parseQwenResult`), loop detection, лимиты tool-calls/wall-time, локальные инструменты + Vibelog MCP. TUI написан на чистом Node.js (zero deps — без Ink/React, работает на Node 20+). LLM — env `VIBELOG_LLM_BASE_URL` / `VIBELOG_LLM_API_KEY` / `VIBELOG_LLM_MODEL` (Cloud.ru). `.env` проекта и секция `env` `.vibelog/settings.json` читаются автоматически при старте `vibelog bot`, `vibelog browser` и `vibelog agent` — экспортировать ключи руками не нужно (VL-189). Детали: [backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md).
 
 Выбор агента для запусков фаз: команда бота с суффиксом (`/plan:vb …`) либо настройка проекта `default_agent` в `.vibelog/settings.json` (ключ задаётся через `/set agent vb` или веб-раздел «Настройки → Бот»). Один и тот же `default_agent` используют и бот, и запуск фаз из веб-интерфейса (`POST /api/tasks/:id/trigger`, кнопки карточки, перетаскивание на доске) — общий код (`startTaskPhase`), без хардкода агента в вебе (VL-180).
 

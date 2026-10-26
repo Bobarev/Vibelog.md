@@ -22,6 +22,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createLlmClient } from './llm.js';
 import type { ChatMessage } from './llm.js';
+import { ensureLlmEnv } from './llm-env.js';
 import { runLoop } from './loop.js';
 import { agentSessionsDir, appendSessionMessage, createSessionId, latestSession, loadSession, saveSession, saveSessionMeta } from './session.js';
 import { taskWorktreeDir } from '../core/worktree.js';
@@ -254,16 +255,10 @@ export async function main(argv: string[]): Promise<void> {
   const headless = opts.headless || !process.stdout.isTTY;
   log(`фаза=${phase ?? '(готовый промпт)'} задача=${isPhaseMode ? positionals[1] : '-'} headless=${headless}`);
 
-  // LLM из env: VIBELOG_LLM_BASE_URL / VIBELOG_LLM_API_KEY / VIBELOG_LLM_MODEL
-  if (!process.env.VIBELOG_LLM_API_KEY) {
-    console.error(
-      'Ошибка: не задан VIBELOG_LLM_API_KEY — агенту нужен доступ к LLM (env VIBELOG_LLM_BASE_URL/VIBELOG_LLM_API_KEY/VIBELOG_LLM_MODEL)'
-    );
-    process.exitCode = 1;
-    return;
-  }
-  if (!process.env.VIBELOG_LLM_MODEL) {
-    console.error('Ошибка: не задана VIBELOG_LLM_MODEL — модель LLM неизвестна');
+  // LLM из env (общая проверка ensureLlmEnv, VL-189): VIBELOG_LLM_BASE_URL /
+  // VIBELOG_LLM_API_KEY / VIBELOG_LLM_MODEL; при отсутствии — понятная
+  // ошибка в stderr и exit 1 (контракт оркестратора: лог фазы → logTail)
+  if (!ensureLlmEnv('агенту')) {
     process.exitCode = 1;
     return;
   }

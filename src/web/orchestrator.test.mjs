@@ -1053,6 +1053,7 @@ describe('orchestrator (VL-28)', () => {
       '  envPhaseTaskId: process.env.VIBELOG_PHASE_TASK_ID || null,',
       '  envPhaseName: process.env.VIBELOG_PHASE_NAME || null,',
       '  envCwd: process.env.VIBELOG_CWD || null,',
+      '  envLlmKey: process.env.VIBELOG_LLM_API_KEY || null,',
       '}));',
       "fs.writeSync(1, 'stub env\\n');",
       'process.exit(0);',
@@ -1080,6 +1081,35 @@ describe('orchestrator (VL-28)', () => {
       assert.equal(m.envCwd, null, 'без branch-mode VIBELOG_CWD не задаётся');
     } finally {
       setStubEnv({ VL28_STUB_MARKER: undefined });
+      setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
+      rmSync(envRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('startPhase: VIBELOG_LLM_API_KEY из базы env попадает в процесс агента (VL-189)', async () => {
+    // Общий для бота и браузера спавн (spawnQwenRun): LLM-env наследуется
+    // из baseEnv — раньше браузер не грузил .env и ключ не долетал
+    const envRoot = mkTestRoot('vibelog-orch-llmenv-');
+    mkdirSync(join(envRoot, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(envRoot, 'backlog', 'config.yml'), 'project_name: LLM Env Test\n', 'utf-8');
+    createTaskFile(envRoot, { id: 'VL-89', title: 'Задача LLM-env-теста' });
+    setStubEnv({
+      VIBELOG_QWEN_BIN: writeEnvStub(envRoot, 'llmenv-stub.cjs'),
+      VL28_STUB_MARKER: join(envRoot, 'marker-llmenv.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VIBELOG_LLM_API_KEY: 'llm-from-base',
+    });
+    try {
+      const res = startPhase(envRoot, 'VL-89', 'spec');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-89');
+      assert.equal(run.exitCode, 0);
+      const m = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
+      assert.equal(m.envLlmKey, 'llm-from-base', 'VIBELOG_LLM_API_KEY наследуется spawn-ом (VL-189)');
+    } finally {
+      // Удаление патча обязательно: stubEnv персистентен между тестами файла
+      setStubEnv({ VL28_STUB_MARKER: undefined, VIBELOG_LLM_API_KEY: undefined });
       setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(envRoot, { recursive: true, force: true });
     }
