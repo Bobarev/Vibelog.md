@@ -32,6 +32,8 @@ import type { ToolSpec } from './tools.js';
 import { McpClient, toolsAsSpecs } from './mcp-client.js';
 import { closeExternalMcpClients, connectExternalMcpServers } from './external-mcp.js';
 import { renderPrompt, taskExtraVars } from '../web/phase-prompt.js';
+import { getTask } from '../core/store.js';
+import { getWorkflowForTask, getStatusAfterPhase } from '../core/workflow.js';
 import type { TuiHandle } from './tui.js';
 
 /** Результат агента: QwenResult + type=result (контракт parseQwenResult). */
@@ -286,6 +288,21 @@ export async function main(argv: string[]): Promise<void> {
   }
   let prompt: string;
   try {
+    // VL-188: статус после фазы из workflow — как в оркестраторе (шаблоны
+    // фаз используют {{producesStatus}} вместо хардкода статуса).
+    // Задача уже читалась через taskExtraVars — здесь второе чтение только
+    // для статуса/типа (кэша getTask нет, цена — одно чтение файла).
+    let producesStatus = '';
+    if (isPhaseMode) {
+      const wfTask = getTask(cwd, positionals[1]);
+      if (wfTask) {
+        producesStatus = getStatusAfterPhase(
+          getWorkflowForTask(cwd, wfTask),
+          wfTask.status,
+          positionals[0]
+        ) ?? '';
+      }
+    }
     prompt = isPhaseMode
       ? renderPrompt(
           positionals[0],
@@ -294,11 +311,14 @@ export async function main(argv: string[]): Promise<void> {
             comment: opts.comment ?? '',
             prompt: opts.comment ?? '',
             ...taskVars,
+            producesStatus,
           },
-          // VL-112: close задачи с worktree — тот же выбор шаблона, что в оркестраторе
+          // VL-112: close задачи с worktree — тот же выбор шаблона, что в оркестраторе;
+          // VL-188: cwd — переопределение шаблонов проектом
           {
             closeWorktree:
               positionals[0] === 'close' && existsSync(taskWorktreeDir(cwd, positionals[1])),
+            cwd,
           }
         )
       : positionals[0];

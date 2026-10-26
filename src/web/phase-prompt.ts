@@ -1,15 +1,20 @@
 /**
- * Сборка промптов фаз (VL-85): общий модуль оркестратора и CLI vibelog-agent.
+ * Сборка промптов фаз (VL-85, VL-188): общий модуль оркестратора и CLI vibelog-agent.
  *
- * Логика вынесена из src/web/orchestrator.ts без изменений: шаблоны
- * templates/qwen-commands/phase-*.md + подстановка {{taskId}}/{{key}}.
- * Вынесено, чтобы CLI агента переиспользовал сборку промпта, не таща
- * за собой оркестратор (spawn, поллинг, activeRuns). Путь к шаблонам
- * вычисляется от расположения модуля: dist/web/phase-prompt.js →
- * ../../templates/qwen-commands/ (та же глубина, что была у orchestrator.js).
+ * Логика вынесена из src/web/orchestrator.ts: шаблоны templates/phases/*.md
+ * (VL-188: переименованы phase-1/2/3 → phase-spec/plan/code, перенесены из
+ * templates/qwen-commands/ в корень templates/phases/) + подстановка
+ * {{taskId}}/{{key}}. Вынесено, чтобы CLI агента переиспользовал сборку
+ * промпта, не таща за собой оркестратор (spawn, поллинг, activeRuns). Путь
+ * к шаблонам вычисляется от расположения модуля: dist/web/phase-prompt.js →
+ * ../../templates/phases/ (та же глубина, что была у orchestrator.js).
+ *
+ * Переопределение шаблонов проектом (VL-188): перед встроенным шаблоном
+ * читается .vibelog/prompts/phases/<имя файла> рабочей директории проекта —
+ * проект может переопределить промпт любой фазы, не правя пакет.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTask } from '../core/store.js';
@@ -17,46 +22,93 @@ import { DEFAULT_TASK_TYPES, loadConfig } from '../core/config.js';
 import { loadLessonsForTask } from '../core/lesson.js';
 import type { ChecklistItem, Task } from '../core/task.js';
 
-/** Допустимые фазы. */
-export const PHASES = ['spec', 'plan', 'code', 'close', 'comment', 'prompt', 'analyze', 'reject'] as const;
+/**
+ * Допустимые фазы.
+ *
+ * VL-188: добавлена 'do' — фаза simple workflow (реализация без планирования,
+ * phase-do.md); роль KNOWN_PHASES в проекте выполняет именно эта константа
+ * (отдельной KNOWN_PHASES нет — проверено grep по src/web и src/bot).
+ */
+export const PHASES = ['spec', 'plan', 'code', 'do', 'close', 'comment', 'prompt', 'analyze', 'reject'] as const;
 export type Phase = (typeof PHASES)[number];
 
-/** Шаблон промпта для каждой фазы. */
+/** Шаблон промпта для каждой фазы (VL-188: имена файлов = phase-<имя фазы>.md). */
 const PHASE_FILES: Record<Phase, string> = {
-  spec: 'phase-1.md',
-  plan: 'phase-2.md',
-  code: 'phase-3.md',
+  spec: 'phase-spec.md',
+  plan: 'phase-plan.md',
+  code: 'phase-code.md',
+  do: 'phase-do.md',
   close: 'phase-close.md',
   comment: 'phase-comment.md',
   prompt: 'prompt.md',
   // VL-141: фаза analyze — headless-разбор сессии агента без задачи (как prompt)
   analyze: 'phase-analyze.md',
-  reject: 'reject.md',
+  reject: 'phase-reject.md',
 };
 
 /** Отдельный шаблон close-фазы для задач, работающих в worktree (VL-112). */
 const CLOSE_WORKTREE_FILE = 'phase-close-worktree.md';
 
 /**
- * Путь к headless-промптам. Вычисляется от расположения модуля
- * (dist/web/phase-prompt.js → ../../templates/qwen-commands/), как webDistDir:
+ * Путь к встроенным шаблонам. Вычисляется от расположения модуля
+ * (dist/web/phase-prompt.js → ../../templates/phases/), как webDistDir:
  * команда vibelog browser запускается в репозитории пользователя.
  */
-const templatesDir = fileURLToPath(new URL('../../templates/qwen-commands/', import.meta.url));
+const templatesDir = fileURLToPath(new URL('../../templates/phases/', import.meta.url));
 
-/** Опции сборки промпта (VL-112). */
+/** Подкаталог переопределения шаблонов проектом (VL-188), относительно cwd. */
+export const PROJECT_PROMPTS_DIR = join('.vibelog', 'prompts', 'phases');
+
+/** Опции сборки промпта (VL-112, VL-188). */
 export interface RenderPromptOptions {
   /** Фаза close задачи, работающей в worktree: отдельный шаблон с merge-шагом ветки. */
   closeWorktree?: boolean;
+  /**
+   * Рабочая директория проекта для переопределения шаблонов
+   * (.vibelog/prompts/phases/). undefined/'' — только встроенные шаблоны.
+   */
+  cwd?: string;
 }
 
 /**
- * Собирает промпт фазы: шаблон + подстановка {{taskId}}.
+ * Загружает шаблон фазы с переопределением проектом (VL-188).
  *
- * @param phase — spec | plan | code | close | comment | prompt | analyze | reject
+ * Порядок: <cwd>/.vibelog/prompts/phases/<fileName> → встроенный
+ * templates/phases/<fileName>. Для opts.closeWorktree fileName —
+ * phase-close-worktree.md, ищется в обоих каталогах тем же порядком.
+ *
+ * @param phase — имя фазы (ключ PHASE_FILES); для неизвестной фазы — throw
+ * @param opts — closeWorktree (worktree-вариант close) и cwd (переопределение)
+ * @throws Error при неизвестной фазе или отсутствии шаблона в обоих каталогах
+ */
+export function loadPhaseTemplate(phase: string, opts?: { closeWorktree?: boolean; cwd?: string }): string {
+  if (!PHASES.includes(phase as Phase)) {
+    throw new Error(`Неизвестная фаза: ${phase} (ожидается ${PHASES.join('|')})`);
+  }
+  const fileName =
+    phase === 'close' && opts?.closeWorktree ? CLOSE_WORKTREE_FILE : PHASE_FILES[phase as Phase];
+  // Переопределение проектом приоритетнее встроенного шаблона
+  const projectPath = opts?.cwd ? join(opts.cwd, PROJECT_PROMPTS_DIR, fileName) : null;
+  if (projectPath && existsSync(projectPath)) {
+    return readFileSync(projectPath, 'utf-8');
+  }
+  const bundledPath = join(templatesDir, fileName);
+  try {
+    return readFileSync(bundledPath, 'utf-8');
+  } catch {
+    throw new Error(
+      `Шаблон промпта не найден: ${fileName} (проверь ${PROJECT_PROMPTS_DIR} в проекте и templates/phases/ в пакете)`
+    );
+  }
+}
+
+/**
+ * Собирает промпт фазы: шаблон (с переопределением проектом, VL-188) + подстановка {{taskId}}.
+ *
+ * @param phase — spec | plan | code | do | close | comment | prompt | analyze | reject
  * @param taskId — ID задачи, например VL-28; для analyze может быть '' (без задачи)
- * @param extraVars — доп. подстановки {{key}} -> value ({{comment}} для comment, {{prompt}} для prompt, {{sessionId}} и др. для analyze)
- * @param opts — опции (VL-112: closeWorktree — close задачи с worktree → отдельный шаблон)
+ * @param extraVars — доп. подстановки {{key}} -> value ({{comment}} для comment, {{prompt}} для prompt, {{producesStatus}} и др.)
+ * @param opts — опции: closeWorktree (worktree-вариант close), cwd (переопределение шаблонов проектом)
  * @throws Error при неизвестной фазе или отсутствующем шаблоне
  */
 export function renderPrompt(
@@ -65,18 +117,8 @@ export function renderPrompt(
   extraVars?: Record<string, string>,
   opts?: RenderPromptOptions
 ): string {
-  if (!PHASES.includes(phase as Phase)) {
-    throw new Error(`Неизвестная фаза: ${phase} (ожидается spec|plan|code|close|comment|prompt|analyze|reject)`);
-  }
-  // VL-112: close задачи с worktree сливает ветку из главного репо — отдельный шаблон
-  const fileName = phase === 'close' && opts?.closeWorktree ? CLOSE_WORKTREE_FILE : PHASE_FILES[phase as Phase];
-  const templatePath = join(templatesDir, fileName);
-  let template: string;
-  try {
-    template = readFileSync(templatePath, 'utf-8');
-  } catch {
-    throw new Error(`Шаблон промпта не найден: ${templatePath}`);
-  }
+  // Ошибки «Неизвестная фаза»/«Шаблон не найден» кидает loadPhaseTemplate
+  const template = loadPhaseTemplate(phase, opts);
   let prompt = template.replaceAll('{{taskId}}', taskId);
   if (extraVars) {
     for (const [key, value] of Object.entries(extraVars)) {

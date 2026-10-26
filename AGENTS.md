@@ -87,14 +87,4 @@ vibelog task complete <id>
 - Оригинал: https://github.com/MrLesk/Backlog.md
 - Локально: `backlog/references/data/Backlog.md`
 
-<!-- VIBELOG:SKILLS:BEGIN -->
-## Команды Vibelog
-
-В этом проекте доступны команды Qwen Code:
-
-- `/vibelog:spec <описание>` — уточнить фичу и определить масштаб (Фаза 1)
-- `/vibelog:plan <ID>` — составить план для задачи (Фаза 2)
-- `/vibelog:code <ID>` — реализовать план (Фаза 3)
-
-Workflow: spec → plan → code. Интерактивные команды ждут подтверждения пользователя на каждой фазе; автоматические фазы (web-оркестратор, vibelog-agent) выполняются без подтверждения. Дополнительно есть фазы close (закрытие задачи) и comment (запрос из комментария).
-<!-- VIBELOG:SKILLS:END -->
+<!-- VIBELOG:SKILLS блок удалён в VL-188: qwen-commands (/vibelog:*) — рудимент, используются только фазы -->

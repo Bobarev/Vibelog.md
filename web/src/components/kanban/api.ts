@@ -31,6 +31,9 @@ interface ApiTask {
   type?: string;
   milestone?: string;
   updated_date?: string;
+  // VL-188: поля workflow (server enrich)
+  availablePhases?: string[];
+  startTo?: string | null;
 }
 
 /** Дефолтные статусы — на случай, если конфиг не отдал statuses[]. */
@@ -55,6 +58,8 @@ function toKanbanTask(raw: ApiTask): KanbanTask {
     type: raw.type || '',
     milestone: raw.milestone || '',
     updated_date: raw.updated_date || '',
+    availablePhases: raw.availablePhases ?? [],
+    startTo: raw.startTo ?? null,
   };
 }
 
@@ -106,14 +111,29 @@ export async function fetchStatuses(): Promise<string[]> {
   return FALLBACK_STATUSES;
 }
 
-/** Смена статуса задачи (drag-and-drop). Бросает при ошибке — вызывающий откатывает доску. */
-export async function patchTaskStatus(id: string, status: string): Promise<void> {
+/**
+ * Смена статуса задачи (drag-and-drop, VL-188).
+ *
+ * Возвращает triggerPhase — фазу, производящую новый статус (канбан запускает
+ * её после успешного переноса; null — ручной переход без фазы). Бросает
+ * Error с текстом сервера (400 «Переход … недоступен по workflow») —
+ * вызывающий откатывает доску.
+ */
+export async function patchTaskStatus(
+  id: string,
+  status: string
+): Promise<{ triggerPhase?: string | null }> {
   const res = await fetch(`/api/tasks/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status }),
   });
-  if (!res.ok) throw new Error(`PATCH /api/tasks/${id}: ${res.status}`);
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(errBody.error || `PATCH /api/tasks/${id}: ${res.status}`);
+  }
+  const body = (await res.json().catch(() => ({}))) as { triggerPhase?: string | null };
+  return { triggerPhase: body.triggerPhase ?? null };
 }
 
 /** Создание задачи (модалка VL-163). Бросает при ошибке — текст показывает модалка. */

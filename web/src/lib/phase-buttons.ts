@@ -1,15 +1,14 @@
 /**
- * Маппинг «статус → следующая фаза» для кнопок модалки (VL-172).
+ * Ре-экспорт представления фаз для кнопок модалки (VL-172, VL-188).
  *
- * VL-180: ре-экспорт общего модуля src/core/phase-buttons.ts — раньше здесь
- * была копия логики бота (rich.ts), которая могла разойтись с источником.
- * Теперь бот и веб используют один и тот же код; импорт вне web/ разрешён
- * tsc (модуль чистый TS: функции + export type, без node-импортов) и vite
- * (server.fs.allow в vite.config.ts — для dev-сервера).
+ * VL-180: общий модуль src/core/phase-buttons.ts — раньше здесь была копия
+ * логики бота, которая могла разойтись с источником. VL-188: маппинг
+ * «статус → фаза» (nextPhaseForStatus) удалён — фазы приходят с сервера
+ * (availablePhases из GET /api/tasks/:id, считаются по workflow на бэкенде,
+ * т.к. core/workflow.ts читает fs и не импортируется в веб-бандл).
  *
- * Имена сохранены: task-modal.tsx импортирует nextPhaseForStatus/PHASE_EMOJI,
- * NextPhaseButton — прежнее имя типа (NextPhase из core).
+ * Импорт вне web/ разрешён tsc (модуль чистый TS: функции + export type,
+ * без node-импортов) и vite (server.fs.allow в vite.config.ts).
  */
 
-export { nextPhaseForStatus, PHASE_EMOJI } from '../../../src/core/phase-buttons';
-export type { NextPhase as NextPhaseButton } from '../../../src/core/phase-buttons';
+export { PHASE_EMOJI, PHASE_LABEL, phaseButtonLabel } from '../../../src/core/phase-buttons';

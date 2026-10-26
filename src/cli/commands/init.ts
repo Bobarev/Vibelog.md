@@ -12,9 +12,8 @@
  * - backlog/milestones/
  */
 
-import { mkdirSync, writeFileSync, existsSync, readFileSync, copyFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { getFlag } from '../args.js';
 import type { FlagValues } from '../args.js';
 import { printSuccess, printInfo, printError } from '../ui.js';
@@ -24,8 +23,6 @@ import { findBacklogDir } from '../../core/paths.js';
 import { getGitUserName } from '../../core/git.js';
 import { saveProjectSettings } from '../../core/project-settings.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const templatesDir = join(__dirname, '..', '..', '..', 'templates', 'qwen-commands');
 
 /**
  * Выполняет команду init.
@@ -88,60 +85,8 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
     printSuccess('Кэш git user.name обновлён: .vibelog/settings.json');
   }
 
-  // --- Команды Qwen Code (--skills) ---
-  handleSkills(flags, cwd);
-
   // --- MCP-сервер Qwen Code (по умолчанию включён) ---
   handleMcpSetup(flags, cwd);
-}
-
-/**
- * Обрабатывает флаг --skills: создаёт команды /vibelog:* в .qwen/commands/.
- *
- * @param flags — флаги CLI
- * @param cwd — текущая рабочая директория
- */
-function handleSkills(flags: FlagValues, cwd: string): void {
-  // --no-skills — отключает, даже если default изменится
-  if (flags['no-skills']) return;
-
-  // --skills: boolean (true = qwen) или строка (--skills=qwen)
-  const skillsFlag = flags.skills;
-  if (skillsFlag === undefined) return;
-
-  const agent = skillsFlag === true ? 'qwen' : String(skillsFlag);
-
-  // Заглушка на будущее
-  if (agent !== 'qwen') {
-    printError(`Агент "${agent}" пока не поддерживается. Доступен: qwen`);
-    process.exitCode = 1;
-    return;
-  }
-
-  const commandsDir = join(cwd, '.qwen', 'commands', 'vibelog');
-  const templates = ['spec.md', 'plan.md', 'code.md'];
-  const force = flags.force === true;
-
-  // Идемпотентность
-  if (existsSync(commandsDir) && !force) {
-    printInfo('Команды /vibelog:* уже существуют. Пропускаю.');
-    printInfo('Используйте --force для перезаписи.');
-    return;
-  }
-
-  // Создаём директории и копируем шаблоны
-  mkdirSync(commandsDir, { recursive: true });
-  for (const tpl of templates) {
-    const src = join(templatesDir, tpl);
-    const dest = join(commandsDir, tpl);
-    if (existsSync(src)) {
-      copyFileSync(src, dest);
-    }
-  }
-  printSuccess(`Команды /vibelog:* созданы: ${commandsDir}`);
-
-  // Обновляем AGENTS.md
-  updateAgentsMd(cwd);
 }
 
 /**
@@ -186,36 +131,3 @@ function handleMcpSetup(flags: FlagValues, cwd: string): void {
   printSuccess('MCP-сервер vibelog настроен: .qwen/settings.json (перезапустите Qwen Code)');
 }
 
-/**
- * Дописывает секцию VIBELOG:SKILLS в AGENTS.md (если её ещё нет).
- *
- * @param cwd — текущая рабочая директория
- */
-function updateAgentsMd(cwd: string): void {
-  const agentsPath = join(cwd, 'AGENTS.md');
-  const section = `<!-- VIBELOG:SKILLS:BEGIN -->
-## Команды Vibelog
-
-В этом проекте доступны команды Qwen Code:
-
-- \`/vibelog:spec <описание>\` — уточнить фичу и определить масштаб (Фаза 1)
-- \`/vibelog:plan <ID>\` — составить план для задачи (Фаза 2)
-- \`/vibelog:code <ID>\` — реализовать план (Фаза 3)
-
-Workflow: spec → plan → code. Интерактивные команды ждут подтверждения пользователя на каждой фазе; автоматические фазы (web-оркестратор, vibelog-agent) выполняются без подтверждения. Дополнительно есть фазы close (закрытие задачи) и comment (запрос из комментария).
-<!-- VIBELOG:SKILLS:END -->`;
-
-  let content = '';
-  if (existsSync(agentsPath)) {
-    content = readFileSync(agentsPath, 'utf-8');
-    if (content.includes('VIBELOG:SKILLS:BEGIN')) {
-      printInfo('Секция VIBELOG:SKILLS уже есть в AGENTS.md. Не дублирую.');
-      return;
-    }
-  }
-
-  // Дописываем в конец
-  const separator = content && !content.endsWith('\n') ? '\n\n' : '\n';
-  writeFileSync(agentsPath, content + separator + section + '\n', 'utf-8');
-  printSuccess('AGENTS.md дополнен секцией «Команды Vibelog».');
-}

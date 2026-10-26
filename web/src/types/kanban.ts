@@ -27,6 +27,10 @@ export interface KanbanTask {
   milestone: string;
   /** Дата последнего обновления (ISO), сортировка колонки Updated (VL-175). */
   updated_date: string;
+  /** Фазы workflow, доступные из статуса (VL-188) — кнопки модалки. */
+  availablePhases?: string[];
+  /** Целевой статус «Взять в работу» (Backlog → initial), null — не нужна. */
+  startTo?: string | null;
 }
 
 /** Доска: статус → задачи этого статуса. */
@@ -65,4 +69,5 @@ export interface TaskDetail extends KanbanTask {
   implementationNotes: string;
   finalSummary: string;
   comments: TaskComment[];
+  // availablePhases/startTo унаследованы от KanbanTask (VL-188, GET /api/tasks/:id)
 }

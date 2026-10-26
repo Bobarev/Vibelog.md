@@ -15,8 +15,8 @@ import {
   renderPhaseResultRich,
   chunkRich,
   RICH_LIMIT,
-  nextPhaseForStatus,
   PHASE_EMOJI,
+  phaseButtonLabel,
 } from '../../dist/bot/rich.js';
 
 const fullTask = {
@@ -115,36 +115,34 @@ describe('renderTaskRich (VL-39)', () => {
   });
 });
 
-describe('Кнопка следующего этапа (VL-72)', () => {
-  it('кнопки в центрированном row: next primary + reject danger + comment success (VL-78/144)', () => {
-    const md = renderTaskRich({ ...fullTask, status: 'To Do' });
+describe('Кнопка следующего этапа (VL-72, VL-188)', () => {
+  it('кнопки в центрированном row: ветвление spec+reject + comment (VL-78/144)', () => {
+    // VL-188: кнопки фаз приходят из workflow — To Do ветвится на spec/reject
+    const md = renderTaskRich({ ...fullTask, status: 'To Do' }, ['spec', 'reject']);
     assert.match(
       md,
-      /^# VL-34 — Telegram-бот: каркас\n\n<tg-button-row align="center">\n<tg-button type="callback_data" style="primary" data="next:VL-34">▶ Spec<\/tg-button>\n<tg-button type="callback_data" style="danger" data="reject:VL-34">✖ Reject<\/tg-button>\n<tg-button type="callback_data" style="success" data="comment:VL-34">💬 Комментарий<\/tg-button>\n<\/tg-button-row>/
+      /^# VL-34 — Telegram-бот: каркас\n\n<tg-button-row align="center">\n<tg-button type="callback_data" style="primary" data="phase:VL-34:spec">▶ Spec<\/tg-button>\n<tg-button type="callback_data" style="danger" data="reject:VL-34">✖ Reject<\/tg-button>\n<tg-button type="callback_data" style="success" data="comment:VL-34">💬 Комментарий<\/tg-button>\n<\/tg-button-row>/
     );
   });
 
-  // ── VL-144: кнопка Reject ──
-  it('Reject-кнопка есть только для To Do', () => {
-    for (const status of ['To Do']) {
-      const md = renderTaskRich({ ...fullTask, status });
-      assert.match(md, /data="reject:VL-34">✖ Reject/, `reject-кнопка для ${status}`);
-    }
-    for (const status of ['Spec', 'Planned', 'In Progress', 'Review', 'Done', 'Blocked']) {
-      const md = renderTaskRich({ ...fullTask, status });
-      assert.doesNotMatch(md, /reject:/, `reject-кнопки не должно быть для ${status}`);
-    }
+  // ── VL-144/VL-188: кнопка Reject ──
+  it('Reject-кнопка — когда переход reject есть в workflow', () => {
+    const md = renderTaskRich({ ...fullTask, status: 'To Do' }, ['reject']);
+    assert.match(md, /data="reject:VL-34">✖ Reject/, 'reject-кнопка при ветке reject');
+    const noReject = renderTaskRich({ ...fullTask, status: 'To Do' }, ['spec']);
+    assert.doesNotMatch(noReject, /reject:/, 'без ветки reject — кнопки нет');
+    const final = renderTaskRich({ ...fullTask, status: 'Done' }, []);
+    assert.doesNotMatch(final, /reject:/, 'финальный статус — без reject');
   });
 
-  it('nextPhaseForStatus: маппинг статус → фаза', () => {
-    assert.deepEqual(nextPhaseForStatus('To Do'), { phase: 'spec', label: 'Spec' });
-    assert.deepEqual(nextPhaseForStatus('Spec'), { phase: 'plan', label: 'Plan' });
-    assert.deepEqual(nextPhaseForStatus('Planned'), { phase: 'code', label: 'Code' });
-    assert.deepEqual(nextPhaseForStatus('In Progress'), { phase: 'code', label: 'Code' });
-    assert.deepEqual(nextPhaseForStatus('Review'), { phase: 'close', label: 'Close' });
-    assert.equal(nextPhaseForStatus('Done'), null);
-    assert.equal(nextPhaseForStatus('Blocked'), null);
-    assert.equal(nextPhaseForStatus('QA'), null);
+  it('phaseButtonLabel: подпись фазы (VL-188 — маппинг статус→фаза удалён)', () => {
+    assert.equal(phaseButtonLabel('spec'), '▶ Spec');
+    assert.equal(phaseButtonLabel('plan'), '📋 Plan');
+    assert.equal(phaseButtonLabel('code'), '💻 Code');
+    assert.equal(phaseButtonLabel('do'), '⚡ Do');
+    assert.equal(phaseButtonLabel('close'), '✅ Close');
+    assert.equal(phaseButtonLabel('reject'), '✖ Reject');
+    assert.equal(phaseButtonLabel('custom'), 'custom');
   });
 
   it('next-кнопки нет для Done/Blocked/неизвестного; comment-кнопка всегда (VL-78)', () => {
@@ -186,7 +184,7 @@ describe('Карточка VL-78 (expand-блоки + кнопки)', () => {
   });
 
   it('обе кнопки в одном row: primary + success', () => {
-    const md = renderTaskRich({ ...fullTask, status: 'To Do' });
+    const md = renderTaskRich({ ...fullTask, status: 'To Do' }, ['spec']);
     const row = md.slice(md.indexOf('<tg-button-row'), md.indexOf('</tg-button-row>'));
     assert.match(row, /style="primary" data="next:VL-34"/);
     assert.match(row, /style="success" data="comment:VL-34"/);
@@ -197,15 +195,16 @@ describe('Карточка VL-78 (expand-блоки + кнопки)', () => {
     assert.equal(PHASE_EMOJI.plan, '📋');
     assert.equal(PHASE_EMOJI.code, '💻');
     assert.equal(PHASE_EMOJI.close, '✅');
+    assert.equal(PHASE_EMOJI.do, '⚡');
     const cases = [
-      ['To Do', '▶ Spec'],
-      ['Spec', '📋 Plan'],
-      ['Planned', '💻 Code'],
-      ['In Progress', '💻 Code'],
-      ['Review', '✅ Close'],
+      ['To Do', ['spec'], '▶ Spec'],
+      ['Spec', ['plan'], '📋 Plan'],
+      ['Planned', ['code'], '💻 Code'],
+      ['Review', ['close'], '✅ Close'],
+      ['To Do', ['do'], '⚡ Do'],
     ];
-    for (const [status, label] of cases) {
-      const md = renderTaskRich({ ...fullTask, status });
+    for (const [status, phases, label] of cases) {
+      const md = renderTaskRich({ ...fullTask, status }, phases);
       assert.ok(md.includes(`>${label}</tg-button>`), `label «${label}» для ${status}`);
     }
   });
@@ -340,9 +339,10 @@ describe('Сырые rich-теги в контенте (VL-81)', () => {
       taggedTask({
         description: '<details><summary>Заголовок</summary>...</details>',
         acceptanceCriteria: [{ text: 'Критерий <tg-button>x</tg-button>', checked: false }],
-      })
+      }),
+      ['code']
     );
-    // Кнопки рендера: next (статус Planned → Code) + comment, один row
+    // Кнопки рендера: next (фаза code из workflow) + comment, один row
     assert.match(md, /data="next:VL-34">💻 Code<\/tg-button>/);
     assert.match(md, /data="comment:VL-34">💬 Комментарий<\/tg-button>/);
     assert.equal((md.match(/<tg-button-row/g) || []).length, 1);

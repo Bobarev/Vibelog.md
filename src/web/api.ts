@@ -58,6 +58,7 @@ import {
 } from '../core/lesson.js';
 import type { UpdateLessonInput } from '../core/lesson.js';
 import { loadConfig, saveConfig, defaultConfig } from '../core/config.js';
+import { getAvailablePhases, getWorkflowForTask, canMoveTo, loadWorkflows } from '../core/workflow.js';
 import { globalSearch } from '../core/search.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadBotSettings, saveBotSettings } from '../bot/settings.js';
@@ -88,10 +89,10 @@ export function handleApi(
   queryString: string = ''
 ): ApiResponse {
   try {
-    // GET /api/tasks
+    // GET /api/tasks — с availablePhases по workflow (VL-188): веб-клиент
+    // рендерит кнопки фаз и валидирует drop на канбане без импорта fs-модуля
     if (method === 'GET' && url === '/api/tasks') {
-      const tasks = listTasks(cwd);
-      return { status: 200, body: tasks };
+      return { status: 200, body: listTasks(cwd).map((t) => enrichWithWorkflow(cwd, t)) };
     }
 
     // GET /api/search — глобальный поиск по задачам/lessons/references/
@@ -111,7 +112,10 @@ export function handleApi(
     // GET /api/config
     if (method === 'GET' && url === '/api/config') {
       const config = loadConfig(cwd);
-      return { status: 200, body: config };
+      // initialStatus — статус «Взять в работу» (Backlog → …) из default
+      // workflow (VL-188): кнопка в модалке задачи не хардкодит 'To Do'
+      const initialStatus = loadWorkflows(cwd).workflows.default.initial_status;
+      return { status: 200, body: { ...config, initialStatus } };
     }
 
     // PUT /api/config — патч конфига проекта backlog/config.yml (VL-165).
@@ -443,13 +447,37 @@ export function handleApi(
     if (method === 'GET' && getMatch) {
       const task = getTask(cwd, getMatch[1]);
       if (!task) return { status: 404, body: { error: 'Задача не найдена' } };
-      return { status: 200, body: task };
+      // availablePhases/startTo по workflow задачи (VL-188) — кнопки модалки
+      return { status: 200, body: enrichWithWorkflow(cwd, task) }; 
     }
 
     // PATCH /api/tasks/:id
     if (method === 'PATCH' && getMatch) {
-      const task = updateTaskFile(cwd, getMatch[1], (body || {}) as Partial<Task>);
-      return { status: 200, body: task };
+      const current = getTask(cwd, getMatch[1]);
+      if (!current) return { status: 404, body: { error: 'Задача не найдена' } };
+      const patch = (body || {}) as Partial<Task>;
+      // Предвалидация перехода статуса ДО записи файла (VL-188, lesson-36):
+      // канбан-доска/модалка не должны двигать задачу без транзита workflow.
+      // Смена НЕ статуса (title, priority, …) не проверяется.
+      if (typeof patch.status === 'string' && patch.status !== current.status) {
+        const workflow = getWorkflowForTask(cwd, current);
+        if (!canMoveTo(workflow, current.status, patch.status)) {
+          return {
+            status: 400,
+            body: { error: `Переход «${current.status}» → «${patch.status}» недоступен по workflow задачи` },
+          };
+        }
+      }
+      const task = updateTaskFile(cwd, getMatch[1], patch);
+      // triggerPhase — фаза, производящая новый статус (канбан запускает её
+      // после успешного переноса; смена статуса мимо перехода сюда не попадает)
+      const produced = getWorkflowForTask(cwd, task).transitions.find(
+        (t) => t.status === current.status && t.produces_status === task.status
+      );
+      return {
+        status: 200,
+        body: { ...task, triggerPhase: typeof patch.status === 'string' ? (produced?.phase ?? null) : undefined },
+      };
     }
 
     // DELETE /api/tasks/:id
@@ -478,6 +506,22 @@ export function handleApi(
  * @returns patch — валидированные поля для Object.assign в BotSettings,
  *   либо error — текст ошибки (HTTP 400, файл не меняется)
  */
+/**
+ * Обогащение задачи полями workflow (VL-188): availablePhases — кнопки фаз;
+ * startTo — целевой статус ручного «Взятия в работу» (Backlog → initial_status),
+ * null — кнопка не нужна. Веб не импортирует fs-модуль workflow — считает сервер.
+ */
+function enrichWithWorkflow(cwd: string, task: Task): Record<string, unknown> {
+  const workflow = getWorkflowForTask(cwd, task);
+  const canStart =
+    task.status !== workflow.initial_status && canMoveTo(workflow, task.status, workflow.initial_status);
+  return {
+    ...task,
+    availablePhases: getAvailablePhases(workflow, task.status),
+    startTo: canStart ? workflow.initial_status : null,
+  };
+}
+
 function validateSettingsPatch(
   body: Record<string, unknown> | null
 ): { patch: Partial<BotSettings> } | { error: string } {

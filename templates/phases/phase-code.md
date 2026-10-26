@@ -54,7 +54,7 @@ References: {{taskReferences}}
    - Если lessons не применялись и не создавались — пропусти шаг.
 
 7. Заверши фазу ОДНИМ вызовом backlog_finish_phase — отчёт комментарием + modifiedFiles + статус + батч-отметки AC/DoD (упомяни хэш feat-коммита из шага 6):
-   backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза 3 (Code) выполнена. Изменено: <файлы>, коммит <хэш>. Проверки: <список выполненных>. Что осталось: ...", "modifiedFiles": ["src/foo.ts", "docs/bar.md"], "acChecks": [<индексы выполненных AC из шага 4>], "dodChecks": [<индексы выполненного DoD из шага 4>], "status": "Review"}
+   backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза 3 (Code) выполнена. Изменено: <файлы>, коммит <хэш>. Проверки: <список выполненных>. Что осталось: ...", "modifiedFiles": ["src/foo.ts", "docs/bar.md"], "acChecks": [<индексы выполненных AC из шага 4>], "dodChecks": [<индексы выполненного DoD из шага 4>], "status": "{{producesStatus}}"}
    - type ≠ epic: передавай modifiedFiles (только явные пути ВНЕ backlog/ — код, тесты, шаблоны, docs; файлы задач в backlog/ не включай; если ничего не менял — поле опусти) и status "Review".
    - type=epic: передавай только comment (и acChecks/dodChecks, если отмечал); status эпик НЕ получает — Done ставится в шаге 3, когда все дети Done.
    - acChecks/dodChecks — только если есть реально выполненные пункты; пустой список — поле опусти.

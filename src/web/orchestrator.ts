@@ -16,7 +16,7 @@ import type { ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { renderPrompt, taskBlockText, taskExtraVars } from './phase-prompt.js';
+import { renderPrompt, PHASES, taskBlockText, taskExtraVars } from './phase-prompt.js';
 import type { Phase } from './phase-prompt.js';
 import { addComment, getTask, rejectTaskFile, wasInCode } from '../core/store.js';
 import type { Task } from '../core/task.js';
@@ -32,6 +32,7 @@ import {
   resolveDefaultAgent,
 } from '../bot/settings.js';
 import { taskIdPattern } from '../core/config.js';
+import { getWorkflowForTask, getStatusAfterPhase, isPhaseAllowed } from '../core/workflow.js';
 import { agentSessionsDir, findTaskPhaseSessionSync, listTaskSessionMetas, loadSessionMetaSync, saveSessionMeta } from '../agent/session.js';
 
 // Реэкспорт для обратной совместимости (VL-85): renderPrompt/Phase вынесены
@@ -182,6 +183,25 @@ export function startPhase(
   if (!taskVars) {
     return { error: `Задача не найдена или не читается: ${taskId}` };
   }
+  // VL-188: workflow-фазы проверяются по переходам статуса задачи.
+  // Служебные фазы (comment/prompt/analyze/resume) пропускаются без
+  // проверки — они статуса не меняют и в transitions не участвуют.
+  // Отдельно getTask читается заодно с taskExtraVars (один и тот же файл,
+  // кэша нет — цена одного чтения мала).
+  const wfTask = getTask(cwd, taskId);
+  const workflow = wfTask ? getWorkflowForTask(cwd, wfTask) : null;
+  const taskStatus = wfTask?.status ?? '';
+  // Известность фазы проверяется ДО workflow: неизвестная фаза (deploy и т.п.)
+  // должна падать с прежней ошибкой «Неизвестная фаза» из renderPrompt,
+  // а не с «недопустима из статуса» (контракт тестов VL-66)
+  if (workflow && PHASES.includes(phase as Phase) && !isPhaseAllowed(workflow, taskStatus, phase)) {
+    return { error: `Фаза ${phase} недопустима из статуса ${taskStatus}` };
+  }
+  // {{producesStatus}} — статус после фазы из workflow (VL-188): шаблоны
+  // фаз больше не хардкодят "Spec"/"Planned"/"Review"/"Done".
+  // null (нет перехода — служебная фаза/до- workflow статус) → '' —
+  // в шаблонах служебных фаз {{producesStatus}} не используется.
+  const producesStatus = workflow ? (getStatusAfterPhase(workflow, taskStatus, phase) ?? '') : '';
   let prompt: string;
   try {
     prompt = renderPrompt(
@@ -192,12 +212,16 @@ export function startPhase(
         // не трогаем: подстановки только новыми переменными, порядок merge сохранён)
         ...extraVars,
         ...taskVars,
+        // VL-188: статус после фазы — после taskVars, чтобы workflow-переход
+        // имел приоритет ({{taskStatus}} — исходный статус, {{producesStatus}} — целевой)
+        producesStatus,
         // VL-112: {{branch}}/{{worktreeDir}} — подстановки для close-worktree шаблона
         branch: taskBranchName(taskId),
         worktreeDir: `.vibelog/worktrees/${taskId.toLowerCase()}`,
       },
-      // VL-112: close задачи с worktree — отдельный шаблон с merge-шагом
-      { closeWorktree: phase === 'close' && existsSync(taskWorktreeDir(cwd, taskId)) }
+      // VL-112: close задачи с worktree — отдельный шаблон; VL-188: cwd —
+      // переопределение шаблонов проектом (.vibelog/prompts/phases/)
+      { closeWorktree: phase === 'close' && existsSync(taskWorktreeDir(cwd, taskId)), cwd }
     );
   } catch (err) {
     return { error: (err as Error).message };
@@ -440,7 +464,8 @@ export function startPrompt(
   let prompt: string;
   try {
     // Шаблон prompt.md не содержит {{taskId}} — taskId пустой, важен только {{prompt}}
-    prompt = renderPrompt('prompt', '', { prompt: promptText });
+    // VL-188: cwd — переопределение шаблона проектом (.vibelog/prompts/phases/)
+    prompt = renderPrompt('prompt', '', { prompt: promptText }, { cwd });
   } catch (err) {
     return { error: (err as Error).message };
   }
@@ -489,15 +514,21 @@ export function startAnalyze(
   const meta = loadSessionMetaSync(agentSessionsDir(cwd), bare);
   let prompt: string;
   try {
-    prompt = renderPrompt('analyze', meta?.taskId ?? '', {
-      sessionId: bare,
-      sessionPhase: meta?.phase ?? '(неизвестна)',
-      sessionCwd: meta?.cwd ?? '(неизвестен)',
-      sessionPath: `.vibelog/agent-sessions/${bare}.jsonl`,
-      // VL-169: подставляем всегда (пустая строка без комментария) —
-      // иначе агент увидит literal {{comment}} в шаблоне
-      comment: comment ?? '',
-    });
+    prompt = renderPrompt(
+      'analyze',
+      meta?.taskId ?? '',
+      {
+        sessionId: bare,
+        sessionPhase: meta?.phase ?? '(неизвестна)',
+        sessionCwd: meta?.cwd ?? '(неизвестен)',
+        sessionPath: `.vibelog/agent-sessions/${bare}.jsonl`,
+        // VL-169: подставляем всегда (пустая строка без комментария) —
+        // иначе агент увидит literal {{comment}} в шаблоне
+        comment: comment ?? '',
+      },
+      // VL-188: переопределение шаблона проектом
+      { cwd }
+    );
   } catch (err) {
     return { error: (err as Error).message };
   }
@@ -675,16 +706,18 @@ function spawnQwenRun(
     };
   }
   if (resolveBranchMode(cwd) && branchTask !== '') {
-    // VL-134: worktree создаётся впервые только на фазе plan; для epic — никогда.
-    // Остальные фазы (spec/code/comment/resume) используют worktree ТОЛЬКО если
-    // он уже существует (ensure идемпотентен); иначе — главный cwd.
+    // VL-134: worktree создаётся впервые только на фазе plan (или do —
+    // VL-188: в simple workflow фазы plan нет, первая «кодовая» фаза — do);
+    // для epic — никогда. Остальные фазы (spec/code/comment/resume)
+    // используют worktree ТОЛЬКО если он уже существует (ensure идемпотентен);
+    // иначе — главный cwd.
     const wtDir = taskWorktreeDir(cwd, branchTask);
     const wtExists = existsSync(wtDir);
     const taskType = (getTask(cwd, branchTask)?.type ?? '').toLowerCase();
-    // Вход в блок: готовый worktree либо первое создание (plan, не epic).
+    // Вход в блок: готовый worktree либо первое создание (plan/do, не epic).
     // Иначе блок пропускается целиком: runCwd = главный cwd, VIBELOG_CWD не
     // задаётся, «Режим параллельной разработки» не добавляется в промпт.
-    if (wtExists || (phase === 'plan' && taskType !== 'epic')) {
+    if (wtExists || ((phase === 'plan' || phase === 'do') && taskType !== 'epic')) {
       let runDir: string;
       try {
         runDir = ensureTaskWorktree(cwd, branchTask);
