@@ -100,6 +100,8 @@ task complete <id>
 task archive <id>
 ```
 
+`task view` при наличии в frontmatter поля `token_usage` (VL-198, учёт токенов) печатает секцию «Токены»: input/output/cache/total/requests/duration + разбивку по фазам (`by_phase`).
+
 | Флаг edit | Описание |
 |---|---|
 | `--check-ac N[,N]` | Отметить критерии (несколько через запятую) |
