@@ -68,9 +68,14 @@ describe('runLoop happy path (VL-83)', () => {
     assert.equal(res.result, 'Готово!');
     assert.equal(res.num_turns, 1);
     assert.ok(res.duration_ms >= 0);
-    assert.deepEqual(res.usage, { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 12 });
+    assert.deepEqual(res.usage, { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 12, reasoning_tokens: 0 });
     assert.equal(state.calls, 1);
     assert.equal(tokens.join(''), 'Готово!');
+    // VL-198: usage последнего ответа дописан в assistant-сообщение
+    // (источник для sumUsageFromMessages / fallback finish_phase)
+    const assistant = res.messages.find((m) => m.role === 'assistant');
+    assert.equal(assistant.usage.total_tokens, 12);
+    assert.equal(assistant.usage.reasoning_tokens, 0);
   });
 
   it('tool_calls выполняются, tool-результаты дописываются в messages', async () => {
@@ -126,6 +131,7 @@ describe('runLoop happy path (VL-83)', () => {
       output_tokens: 6,
       cache_read_input_tokens: 0,
       total_tokens: 17,
+      reasoning_tokens: 0,
     });
   });
 });

@@ -54,6 +54,24 @@ export interface TaskComment {
 }
 
 /**
+ * Агрегат токенов задачи из frontmatter token_usage (VL-198).
+ * Дубликат src/core/analytics.ts TokenUsage — web-типы живут без импорта
+ * core (паттерн файла: чистый TS для Vite).
+ */
+export interface TokenUsageView {
+  input: number;
+  output: number;
+  cache: number;
+  total: number;
+  requests: number;
+  reasoning?: number;
+  /** Суммарная длительность ранов (мс). */
+  duration_ms?: number;
+  /** Вклад по фазам (spec/plan/code/…). */
+  by_phase?: Record<string, { input: number; output: number; cache: number; requests: number }>;
+}
+
+/**
  * Полная задача из GET /api/tasks/:id — секции тела для табов
  * модалки просмотра (VL-172): KanbanTask не содержит plan/DoD/comments[].
  */
@@ -73,5 +91,7 @@ export interface TaskDetail extends KanbanTask {
   implementationNotes: string;
   finalSummary: string;
   comments: TaskComment[];
+  /** Агрегат токенов (VL-198); undefined — фазы не запускались/нет данных. */
+  token_usage?: TokenUsageView;
   // availablePhases/startTo унаследованы от KanbanTask (VL-188, GET /api/tasks/:id)
 }

@@ -69,6 +69,11 @@ export function TaskView({
   const notes = d?.implementationNotes ?? '';
   const finalSummary = d?.finalSummary ?? '';
   const comments = d?.comments ?? [];
+  // Агрегат токенов (VL-198): undefined/ноль → таб не показывается
+  const tokenUsage = d?.token_usage;
+  const hasTokens = Boolean(
+    tokenUsage && (tokenUsage.total > 0 || tokenUsage.input > 0 || tokenUsage.requests > 0)
+  );
 
   return (
     <div className="flex min-h-0 flex-col gap-3">
@@ -92,6 +97,7 @@ export function TaskView({
           {filled(finalSummary) ? (
             <TabsTrigger value="final">Final Summary</TabsTrigger>
           ) : null}
+          {hasTokens ? <TabsTrigger value="tokens">Токены</TabsTrigger> : null}
           <TabsTrigger value="comments">Комментарии ({comments.length})</TabsTrigger>
         </TabsList>
 
@@ -131,6 +137,51 @@ export function TaskView({
         {filled(finalSummary) ? (
           <TabsContent value="final">
             <MarkdownView>{finalSummary}</MarkdownView>
+          </TabsContent>
+        ) : null}
+
+        {/* Секция «Токены» (VL-198): totals + вклад по фазам. Деньги не
+            показываем — считаются аналитикой по тарифу (calculateCost). */}
+        {hasTokens && tokenUsage ? (
+          <TabsContent value="tokens">
+            <div className="space-y-3 text-sm">
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1 sm:grid-cols-3">
+                <p>Input: <span className="font-medium tabular-nums">{tokenUsage.input}</span></p>
+                <p>Output: <span className="font-medium tabular-nums">{tokenUsage.output}</span></p>
+                <p>Cache: <span className="font-medium tabular-nums">{tokenUsage.cache}</span></p>
+                <p>Total: <span className="font-medium tabular-nums">{tokenUsage.total}</span></p>
+                <p>Запросы: <span className="font-medium tabular-nums">{tokenUsage.requests}</span></p>
+                {tokenUsage.duration_ms ? (
+                  <p>Длительность: <span className="font-medium tabular-nums">
+                    {Math.round(tokenUsage.duration_ms / 1000)}с
+                  </span></p>
+                ) : null}
+              </div>
+              {tokenUsage.by_phase && Object.keys(tokenUsage.by_phase).length > 0 ? (
+                <table className="w-full border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-1 pr-3 font-medium">Фаза</th>
+                      <th className="py-1 pr-3 text-right font-medium">Input</th>
+                      <th className="py-1 pr-3 text-right font-medium">Output</th>
+                      <th className="py-1 pr-3 text-right font-medium">Cache</th>
+                      <th className="py-1 text-right font-medium">Запросы</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(tokenUsage.by_phase).map(([phase, u]) => (
+                      <tr key={phase} className="border-b last:border-0">
+                        <td className="py-1 pr-3 font-medium">{phase}</td>
+                        <td className="py-1 pr-3 text-right tabular-nums">{u.input}</td>
+                        <td className="py-1 pr-3 text-right tabular-nums">{u.output}</td>
+                        <td className="py-1 pr-3 text-right tabular-nums">{u.cache}</td>
+                        <td className="py-1 text-right tabular-nums">{u.requests}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : null}
+            </div>
           </TabsContent>
         ) : null}
 

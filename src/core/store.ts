@@ -13,6 +13,8 @@ import { resolveGitUserName } from './project-settings.js';
 import { createTask, taskToMarkdown, markdownToTask, taskFilename } from './task.js';
 import type { Task, TaskComment, TaskInput } from './task.js';
 import { nextTaskId } from './id.js';
+import { emptyUsage, hasUsageDelta, usageDelta } from './analytics.js';
+import type { TokenUsage } from './analytics.js';
 
 /**
  * Вход createTaskFile: TaskInput (id опционален — генерируется nextTaskId)
@@ -145,6 +147,66 @@ export function updateTaskFile(cwd: string, id: string, updates: Partial<Task>):
   writeFileSync(filePath, content, 'utf-8');
 
   return updated;
+}
+
+/** Агрегат by_phase: по фазе — input/output/cache/requests (без total/duration). */
+export type PhaseUsage = NonNullable<NonNullable<Task['token_usage']>['by_phase']>[string];
+
+/**
+ * Дозаписывает дельту использования токенов в frontmatter задачи (VL-198).
+ *
+ * Три писателя (backlog_finish_phase, cli post-run, оркестратор) вызывают
+ * эту функцию со СВОЕЙ дельтой (usage − usage_recorded из меты сессии) —
+ * тогда запись идемпотентна и двойного учёта нет (двойной учёт — риск №1
+ * плана VL-198). Ненулевая дельта обновляет total и duration_ms,
+ * ненулевая по фазам — вклад в by_phase[phase].
+ *
+ * @param cwd — директория проекта (в branch-mode — worktree, как у MCP/CLI)
+ * @param taskId — ID задачи
+ * @param phase — фаза (spec/plan/code/close/…); пустая → только total
+ * @param delta — дельта токенов (негативные значения отсекаются usageDelta)
+ * @param durationMsDelta — дельта длительности (мс), 0 → не менять
+ * @returns true, если файл обновлён (дельта ненулевая), иначе false
+ * @throws если задача не найдена (вызывающий глотает — запись не критична)
+ */
+export function addTaskTokenUsage(
+  cwd: string,
+  taskId: string,
+  phase: string | undefined,
+  delta: Partial<TokenUsage>,
+  durationMsDelta = 0,
+): boolean {
+  const task = getTask(cwd, taskId);
+  if (!task) throw new Error(`Задача ${taskId} не найдена.`);
+  // Нормализуем через пустой usage: отрицательные «дельты» не бывают
+  const norm = usageDelta(emptyUsage(), { ...emptyUsage(), ...delta });
+  const addDur = Number.isFinite(durationMsDelta) && durationMsDelta > 0 ? durationMsDelta : 0;
+  if (!hasUsageDelta(norm) && addDur === 0) return false;
+
+  const current = task.token_usage;
+  const merged: NonNullable<Task['token_usage']> = {
+    input: (current?.input ?? 0) + norm.input,
+    output: (current?.output ?? 0) + norm.output,
+    cache: (current?.cache ?? 0) + norm.cache,
+    total: (current?.total ?? 0) + norm.total,
+    requests: (current?.requests ?? 0) + norm.requests,
+    duration_ms: (current?.duration_ms ?? 0) + addDur,
+    ...(current?.reasoning !== undefined || norm.reasoning !== undefined
+      ? { reasoning: (current?.reasoning ?? 0) + (norm.reasoning ?? 0) }
+      : {}),
+    by_phase: { ...(current?.by_phase ?? {}) },
+  };
+  if (phase && hasUsageDelta(norm)) {
+    const p: PhaseUsage = { ...(merged.by_phase![phase] ?? { input: 0, output: 0, cache: 0, requests: 0 }) };
+    merged.by_phase![phase] = {
+      input: p.input + norm.input,
+      output: p.output + norm.output,
+      cache: p.cache + norm.cache,
+      requests: p.requests + norm.requests,
+    };
+  }
+  updateTaskFile(cwd, taskId, { token_usage: merged });
+  return true;
 }
 
 /**

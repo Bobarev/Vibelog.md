@@ -48,6 +48,12 @@ import {
 import type { UpdateLessonInput } from '../core/lesson.js';
 import { findBacklogDir } from '../core/paths.js';
 import type { Task, TaskComment, ChecklistItem } from '../core/task.js';
+import { addTaskTokenUsage } from '../core/store.js';
+import { hasUsageDelta, usageDelta } from '../core/analytics.js';
+import type { TokenUsage } from '../core/analytics.js';
+import {
+  agentSessionsDir, loadSessionMetaSync, sumUsageFromJsonlSync, updateSessionMeta,
+} from '../agent/session.js';
 
 // completeTaskFile импортирован для паритета с оригинальным модулем;
 // в текущей логике инструментов не вызывается (оставлено без изменений).
@@ -389,6 +395,19 @@ export function listTools(): ToolDefinition[] {
           modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Изменённые файлы (полная замена modified_files)' },
           acChecks: { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] }, description: 'Индексы AC для отметки (с 1; батч-отметка, как в manage_ac)' },
           dodChecks: { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] }, description: 'Индексы DoD для отметки (с 1; батч-отметка, как в manage_dod)' },
+          tokenUsage: {
+            type: 'object',
+            description: 'Явный usage токенов сессии для frontmatter (VL-198). Без него MCP резолвит сам: мета текущей сессии (VIBELOG_SESSION_ID) → её jsonl. Резолв не удался — блок пропускается с ошибкой в сводку.',
+            properties: {
+              input: { type: 'number', description: 'Входные токены' },
+              output: { type: 'number', description: 'Выходные токены' },
+              cache: { type: 'number', description: 'Кэшированные входные токены' },
+              total: { type: 'number', description: 'Все токены' },
+              requests: { type: 'number', description: 'Число запросов к LLM' },
+            },
+            additionalProperties: false,
+          },
+          phase: { type: 'string', description: 'Фаза для by_phase (редкий override; по умолчанию env VIBELOG_PHASE_NAME → мета сессии)' },
         },
         required: ['id'],
       },
@@ -1188,7 +1207,102 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
     updateTaskFile(cwd, id, updates);
   }
 
+  // ── token_usage (VL-198): агрегат токенов в frontmatter задачи ─────────
+  // Запись ПОСЛЕ основного updateTaskFile: addTaskTokenUsage перечитывает
+  // файл (updates уже на месте — не затираются). Резолв usage, если явный
+  // tokenUsage не передан: мета текущей сессии (VIBELOG_SESSION_ID от CLI)
+  // → её jsonl (fallback, когда мета старая без usage). Не резолвится
+  // (qwen-ран без env, /prompt) — блок пропускается с ошибкой в сводку,
+  // фаза НЕ падает (паттерн частичного применения инструмента).
+  let tokenPart = '';
+  try {
+    const phaseName = (typeof args.phase === 'string' && args.phase)
+      ? args.phase
+      : process.env.VIBELOG_PHASE_NAME;
+    let usage: TokenUsage | null = null;
+    let usageSource = 'args';
+    if (args.tokenUsage !== undefined && args.tokenUsage !== null) {
+      // Явный аргумент: валидация на границе (lesson-34) — объект с
+      // finite-числами ≥0, без лишних ключей (additionalProperties: false)
+      const raw = typeof args.tokenUsage === 'object' && !Array.isArray(args.tokenUsage)
+        ? (args.tokenUsage as Record<string, unknown>)
+        : null;
+      const keys = ['input', 'output', 'cache', 'total', 'requests'];
+      const badFields = raw
+        ? keys.filter((k) => {
+            const v = raw[k];
+            return v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v < 0);
+          })
+        : [];
+      const unknownKey = raw ? Object.keys(raw).find((k) => !keys.includes(k)) : undefined;
+      if (!raw || badFields.length > 0 || unknownKey) {
+        errors.push(
+          `tokenUsage: ${!raw ? 'ожидается объект' : unknownKey ? `неизвестное поле ${unknownKey}` : `нечисловые поля: ${badFields.join(', ')}`}`,
+        );
+      } else {
+        const n = (k: string): number => (typeof raw[k] === 'number' ? (raw[k] as number) : 0);
+        usage = { input: n('input'), output: n('output'), cache: n('cache'), total: n('total'), requests: n('requests') };
+      }
+    } else {
+      // Fallback: env сессии → мета → jsonl (мета старая без usage)
+      const sessionId = process.env.VIBELOG_SESSION_ID;
+      const sessionsDir = agentSessionsDir(process.env.VIBELOG_CWD ?? cwd);
+      if (sessionId) {
+        const meta = loadSessionMetaSync(sessionsDir, sessionId);
+        if (meta?.usage) {
+          usage = { ...meta.usage };
+        } else {
+          const summed = sumUsageFromJsonlSync(sessionsDir, sessionId);
+          if (summed) {
+            usage = { input: summed.input, output: summed.output, cache: summed.cache, total: summed.total, requests: summed.requests };
+            usageSource = 'jsonl';
+          }
+        }
+        if (usage && !phaseName && meta?.phase) {
+          // фаза берётся из меты, если env не задан
+          (usage as TokenUsage & { __phase?: string }).__phase = meta.phase;
+        }
+      }
+      if (!usage) {
+        errors.push('token_usage: сессия/usage недоступны (нет VIBELOG_SESSION_ID либо у сессии нет usage в мете и jsonl)');
+      }
+    }
+    if (usage) {
+      const metaPhase = (usage as TokenUsage & { __phase?: string }).__phase;
+      delete (usage as TokenUsage & { __phase?: string }).__phase;
+      const finalPhase = phaseName ?? (metaPhase || undefined);
+      if (!finalPhase) {
+        errors.push('token_usage: фаза неизвестна (нет args.phase, VIBELOG_PHASE_NAME и meta.phase)');
+      } else {
+        // Дельта от usage_recorded меты — идемпотентность при повторных
+        // вызовах finish_phase в одном ране (риск №1 плана VL-198)
+        const sessionId = process.env.VIBELOG_SESSION_ID;
+        const sessionsDir = agentSessionsDir(process.env.VIBELOG_CWD ?? cwd);
+        const meta = sessionId ? loadSessionMetaSync(sessionsDir, sessionId) : null;
+        const delta = usageDelta(meta?.usage_recorded ?? {}, usage);
+        if (hasUsageDelta(delta)) {
+          if (addTaskTokenUsage(cwd, id, finalPhase, delta)) {
+            tokenPart = `tokenUsage: input=+${delta.input} (фаза ${finalPhase}, источник ${usageSource})`;
+          }
+        } else {
+          tokenPart = 'tokenUsage: уже записан';
+        }
+        if (sessionId) {
+          // Отметка перенесённого в frontmatter — следующий вызов допишет только дельту
+          try {
+            updateSessionMeta(sessionsDir, sessionId, { cwd, usage_recorded: usage });
+          } catch (err) {
+            errors.push(`token_usage: мета сессии не дополнена — ${(err as Error).message}`);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    errors.push(`token_usage: ${(err as Error).message}`);
+  }
+
   const summary = `${statusPart}; ${commentPart}; отмечено AC: ${acCount}, DoD: ${dodCount}; ${filesPart}` +
+    (tokenPart ? `; ${tokenPart}` : '') +
     (anyField ? '' : '; ничего не менялось') +
     (errors.length > 0 ? `; Ошибки: ${errors.join(' | ')}` : '');
   return summary;

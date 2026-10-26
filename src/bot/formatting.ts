@@ -329,6 +329,22 @@ export function formatTaskDetail(task: Task, phaseRun?: PhaseRun): string {
   if (task.due_date) {
     lines.push(`*Срок:* ${escapeMarkdownV2(task.due_date)}`);
   }
+  // Секция «Токены» (VL-198): агрегат token_usage, только при непустых данных
+  const tu = task.token_usage;
+  if (tu && (tu.total > 0 || tu.input > 0 || tu.requests > 0)) {
+    const head =
+      `*Токены:* input=${tu.input} output=${tu.output} cache=${tu.cache} ` +
+      `total=${tu.total} запросов: ${tu.requests}` +
+      (tu.duration_ms ? ` duration=${Math.round(tu.duration_ms / 1000)}с` : '');
+    lines.push(escapeMarkdownV2(head));
+    const phases = Object.entries(tu.by_phase ?? {});
+    if (phases.length > 0) {
+      const phaseLine = phases
+        .map(([p, v]) => `${p}: in=${v.input} out=${v.output} cache=${v.cache} req=${v.requests}`)
+        .join('; ');
+      lines.push(escapeMarkdownV2(`По фазам: ${phaseLine}`));
+    }
+  }
   if (task.description) {
     // Ограничение: Telegram-сообщение — до 4096 символов
     const desc =

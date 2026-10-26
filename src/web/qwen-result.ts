@@ -32,6 +32,7 @@ export interface QwenResult {
     output_tokens: number;
     cache_read_input_tokens: number;
     total_tokens: number;
+    reasoning_tokens: number;
   };
 }
 
@@ -67,6 +68,7 @@ function toQwenResult(obj: Record<string, unknown>): QwenResult {
       output_tokens: num(usage.output_tokens),
       cache_read_input_tokens: num(usage.cache_read_input_tokens),
       total_tokens: num(usage.total_tokens),
+      reasoning_tokens: num(usage.reasoning_tokens),
     },
   };
 }

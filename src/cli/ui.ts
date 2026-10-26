@@ -177,6 +177,20 @@ export function printTaskDetail(task: Task): void {
       console.log(`  ${mark} ${dod.text}`);
     }
   }
+
+  // Секция «Токены» (VL-198): агрегат token_usage из frontmatter
+  const tu = task.token_usage;
+  if (tu && (tu.total > 0 || tu.input > 0 || tu.requests > 0)) {
+    console.log(`\n${colorize('Токены:', colors.bold)}`);
+    console.log(
+      `  input=${tu.input} output=${tu.output} cache=${tu.cache} total=${tu.total} requests=${tu.requests}` +
+        (tu.duration_ms ? ` duration=${Math.round(tu.duration_ms / 1000)}с` : ''),
+    );
+    const phases = Object.entries(tu.by_phase ?? {});
+    for (const [phase, p] of phases) {
+      console.log(`  ${phase}: input=${p.input} output=${p.output} cache=${p.cache} requests=${p.requests}`);
+    }
+  }
 }
 
 /**

@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderPrompt, PHASES, taskBlockText, taskExtraVars } from './phase-prompt.js';
 import type { Phase } from './phase-prompt.js';
-import { addComment, getTask, rejectTaskFile, wasInCode } from '../core/store.js';
+import { addComment, addTaskTokenUsage, getTask, rejectTaskFile, wasInCode } from '../core/store.js';
 import type { Task } from '../core/task.js';
 import { ensureTaskWorktree, taskBranchName, taskWorktreeDir } from '../core/worktree.js';
 import { explainQwenParse, parseQwenResult } from './qwen-result.js';
@@ -33,7 +33,10 @@ import {
 } from '../bot/settings.js';
 import { taskIdPattern } from '../core/config.js';
 import { getWorkflowForTask, getStatusAfterPhase, isPhaseAllowed } from '../core/workflow.js';
-import { agentSessionsDir, findTaskPhaseSessionSync, listTaskSessionMetas, loadSessionMetaSync, saveSessionMeta } from '../agent/session.js';
+import { agentSessionsDir, findTaskPhaseSessionSync, listTaskSessionMetas, loadSessionMetaSync, saveSessionMeta, updateSessionMeta } from '../agent/session.js';
+import { hasUsageDelta, usageDelta } from '../core/analytics.js';
+import type { TokenUsage } from '../core/analytics.js';
+import { appendBilling } from '../core/billing.js';
 
 // Реэкспорт для обратной совместимости (VL-85): renderPrompt/Phase вынесены
 // в phase-prompt.ts — общий модуль оркестратора и CLI vibelog-agent.
@@ -954,6 +957,10 @@ function spawnQwenRun(
       const existing = isResumeRun
         ? loadSessionMetaSync(agentSessionsDir(cwd), result.session_id)
         : null;
+      // metaWrite — промис записи базовой меты: блок учёта токенов ниже
+      // ждёт его, иначе две перезаписи одного файла гоняются (учёт затёрт
+      // бы saveSessionMeta либо наоборот)
+      let metaWrite: Promise<unknown> = Promise.resolve();
       if (existing?.taskId && existing?.phase) {
         // Resume-ран с записанной метой: исходная фаза/задача сохраняются как
         // есть (cwd тоже не трогаем — сессия создавалась в нём же)
@@ -961,13 +968,73 @@ function spawnQwenRun(
           `[phase ${key}] ${ts()} мета сессии ${result.session_id} сохранена без перезаписи (resume-ран, фаза '${existing.phase}')`
         );
       } else {
-        saveSessionMeta(agentSessionsDir(cwd), result.session_id, {
+        metaWrite = saveSessionMeta(agentSessionsDir(cwd), result.session_id, {
           taskId: phaseTaskId,
           phase,
           cwd: metaCwd,
         }).catch((err) => {
           console.log(`[phase ${key}] ${ts()} мета сессии не записана: ${(err as Error).message}`);
         });
+      }
+      // ── Учёт токенов (VL-198): для qwen-ранов это ОСНОВНОЙ путь ────────
+      // У qwen нет нашего jsonl с usage → finish_phase не резолвит usage →
+      // frontmatter/billing/meta пишем здесь из result (parseQwenResult).
+      // Для vb всё уже записал cli post-run: блок идемпотентен (дельта от
+      // usage_recorded ≈ 0), но подстраховывает vb-раны, где cli упал.
+      // Все шаги fail-safe: учёт не должен ломать завершение фазы.
+      if (result && agent === 'qwen') {
+        metaWrite
+          .then(() => {
+            const sessionsDir = agentSessionsDir(cwd);
+            const metaNow = loadSessionMetaSync(sessionsDir, result.session_id);
+            const runUsage: TokenUsage = {
+              input: result.usage.input_tokens,
+              output: result.usage.output_tokens,
+              cache: result.usage.cache_read_input_tokens,
+              total: result.usage.total_tokens,
+              requests: result.num_turns,
+              ...(result.usage.reasoning_tokens ? { reasoning: result.usage.reasoning_tokens } : {}),
+            };
+            // Кумулятив сессии = прошлые раны (мета) + этот ран (result)
+            const usage: TokenUsage = { ...runUsage };
+            if (metaNow?.usage) {
+              usage.input += metaNow.usage.input;
+              usage.output += metaNow.usage.output;
+              usage.cache += metaNow.usage.cache;
+              usage.total += metaNow.usage.total;
+              usage.requests += metaNow.usage.requests;
+              if (metaNow.usage.reasoning || runUsage.reasoning) {
+                usage.reasoning = (metaNow.usage.reasoning ?? 0) + (runUsage.reasoning ?? 0);
+              }
+            }
+            // Фаза для by_phase — из меты (resume-ран reply идёт с phase='prompt',
+            // но токены относятся к исходной фазе сессии — lesson-40/VL-187)
+            const usagePhase = metaNow?.phase ?? phase;
+            const delta = usageDelta(metaNow?.usage_recorded ?? {}, usage);
+            if (hasUsageDelta(delta)) {
+              addTaskTokenUsage(cwd, phaseTaskId, usagePhase, delta, result.duration_ms);
+            }
+            appendBilling(cwd, phaseTaskId, {
+              sessionId: result.session_id,
+              phase: usagePhase,
+              startedAt: metaNow?.startedAt,
+              finishedAt: new Date().toISOString(),
+              durationMs: result.duration_ms,
+              usage: runUsage,
+              agent: 'qwen',
+            });
+            updateSessionMeta(sessionsDir, result.session_id, {
+              cwd: metaCwd,
+              finishedAt: new Date().toISOString(),
+              durationMs: result.duration_ms,
+              usage,
+              usage_recorded: usage,
+              agent: 'qwen',
+            });
+          })
+          .catch((err) => {
+            console.log(`[phase ${key}] ${ts()} учёт токенов не записан: ${(err as Error).message}`);
+          });
       }
     }
     if (!result) {

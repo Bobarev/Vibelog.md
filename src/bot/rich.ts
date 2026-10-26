@@ -280,6 +280,34 @@ function checklist(items: (ChecklistItem | string)[]): string {
     .join('\n');
 }
 
+/**
+ * Секция «Токены» rich-карточки (VL-198): totals + таблица by_phase.
+ *
+ * Пустой/нулевой агрегат → '' (секция не показывается). Числа проходят
+ * contentSafe неявно — они и так безопасны, но экранирование единообразно.
+ */
+function tokenUsageSection(task: Task): string {
+  const u = task.token_usage;
+  if (!u || (u.total === 0 && u.input === 0 && u.requests === 0)) return '';
+  const lines: string[] = [
+    `**Итого:** input=${u.input} · output=${u.output} · cache=${u.cache} · total=${u.total} · запросов: ${u.requests}`,
+  ];
+  if (u.duration_ms) {
+    lines.push(`**Длительность:** ${formatDuration(u.duration_ms)}`);
+  }
+  const phases = Object.entries(u.by_phase ?? {});
+  if (phases.length > 0) {
+    lines.push(
+      '| Фаза | Input | Output | Cache | Запросы |',
+      '| --- | ---: | ---: | ---: | ---: |',
+      ...phases.map(
+        ([phase, p]) => `| ${phase} | ${p.input} | ${p.output} | ${p.cache} | ${p.requests} |`,
+      ),
+    );
+  }
+  return lines.join('\n\n');
+}
+
 // VL-180: ре-экспорт представления фаз сохраняет публичные имена rich.js;
 // локальный import сверху нужен для внутреннего использования в этом файле.
 export { PHASE_EMOJI, PHASE_LABEL, phaseButtonLabel };
@@ -382,6 +410,12 @@ export function renderTaskRich(
   }
   if (filled(task.finalSummary)) {
     parts.push(section('Final Summary', contentSafe(task.finalSummary)));
+  }
+  // Секция «Токены» (VL-198): агрегат по фазам из frontmatter token_usage;
+  // пустой/нулевой агрегат не показывается (как filled у остальных секций)
+  const tokens = tokenUsageSection(task);
+  if (tokens) {
+    parts.push(section('Токены', tokens));
   }
   if (task.comments.length > 0) {
     const comments = task.comments

@@ -34,10 +34,10 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
 }
 
-/** Сообщение диалога; tool_calls — только у assistant. */
+/** Сообщение диалога; tool_calls — только у assistant; usage — только у assistant (VL-198). */
 export type ChatMessage =
   | { role: 'system' | 'user'; content: string }
-  | { role: 'assistant'; content: string | null; tool_calls?: ToolCall[] }
+  | { role: 'assistant'; content: string | null; tool_calls?: ToolCall[]; usage?: LlmUsage }
   | { role: 'tool'; tool_call_id: string; content: string };
 
 /** Описание инструмента для tool calling: схема — JSON Schema объекта. */
@@ -53,6 +53,11 @@ export interface LlmUsage {
   output_tokens: number;
   cache_read_input_tokens: number;
   total_tokens: number;
+  /**
+   * Reasoning-токены (VL-198, ref-19): из completion_tokens_details.reasoning_tokens.
+   * Отдельное поле — для аналитики, НЕ вычитается из output.
+   */
+  reasoning_tokens: number;
 }
 
 /** Ответ модели одной итерации: финальный/промежуточный текст и tool_calls. */
@@ -84,6 +89,12 @@ export interface LlmClientOptions {
   maxRetries?: number;
   /** Базовая пауза между повторами, мс (дефолт 500); в тестах ставят 1. */
   retryDelayMs?: number;
+  /**
+   * ID сессии агента → заголовок X-Session-Id запросов (VL-198, ref-18):
+   * группировка связанных запросов на дашборде RouterAI. Без него заголовок
+   * не отправляется (совместимость с провайдерами без этой семантики).
+   */
+  sessionId?: string;
 }
 
 /** Публичный интерфейс клиента (loop зависит только от него). */
@@ -108,6 +119,7 @@ export function zeroUsage(): LlmUsage {
     output_tokens: 0,
     cache_read_input_tokens: 0,
     total_tokens: 0,
+    reasoning_tokens: 0,
   };
 }
 
@@ -141,11 +153,19 @@ function mapUsage(raw: unknown): LlmUsage {
     n(u.prompt_cache_hit_tokens) ||
     n(details.cached_tokens);
   const totalTokens = n(u.total_tokens) || inputTokens + outputTokens;
+  // Reasoning (VL-198, ref-19): OpenAI-стиль completion_tokens_details.reasoning_tokens,
+  // альтернативы — прямые поля (qwen thoughtsTokenCount → reasoning_tokens/mimo)
+  const compDetails = (typeof u.completion_tokens_details === 'object' && u.completion_tokens_details !== null
+    ? u.completion_tokens_details
+    : {}) as Record<string, unknown>;
+  const reasoningTokens =
+    n(u.reasoning_tokens) || n(u.thoughts_token_count) || n(u.thoughtsTokenCount) || n(compDetails.reasoning_tokens);
   return {
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     cache_read_input_tokens: cacheRead,
     total_tokens: totalTokens,
+    reasoning_tokens: reasoningTokens,
   };
 }
 
@@ -158,6 +178,7 @@ export function addUsage(target: LlmUsage, add: LlmUsage): void {
   target.output_tokens += add.output_tokens;
   target.cache_read_input_tokens += add.cache_read_input_tokens;
   target.total_tokens += add.total_tokens;
+  target.reasoning_tokens += add.reasoning_tokens ?? 0;
 }
 
 /**
@@ -243,16 +264,21 @@ function retryDelayMsFor(attempt: number, res: Response | null, baseMs: number):
 /** Приводит наши сообщения к wire-формату (tool_calls.arguments — JSON-строка). */
 function toWireMessages(messages: ChatMessage[]): unknown[] {
   return messages.map((m) => {
-    if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
-      return {
-        role: 'assistant',
-        content: m.content,
-        tool_calls: m.tool_calls.map((tc) => ({
-          id: tc.id,
-          type: 'function',
-          function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
-        })),
-      };
+    if (m.role === 'assistant') {
+      // usage (VL-198) — наше поле для учёта в JSONL; провайдеру оно НЕ уходит
+      // (строгие API отвечают 400 на неизвестных полях сообщений — риск №3 плана)
+      if (m.tool_calls && m.tool_calls.length > 0) {
+        return {
+          role: 'assistant',
+          content: m.content,
+          tool_calls: m.tool_calls.map((tc) => ({
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+          })),
+        };
+      }
+      return { role: 'assistant', content: m.content };
     }
     // VL-178: wire-cap tool-выводов — защита при resume старых jsonl-сессий,
     // где гигантские MCP-выводы (624 КБ) уже записаны: в запрос провайдера
@@ -445,6 +471,7 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
   const fetchImpl: typeof fetch = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const maxRetries = options.maxRetries ?? MAX_RETRIES_DEFAULT;
   const baseRetryDelay = options.retryDelayMs ?? RETRY_DELAY_DEFAULT;
+  const sessionId = options.sessionId ?? '';
   if (!model) {
     throw new Error('Не задана модель LLM: установи env VIBELOG_LLM_MODEL');
   }
@@ -471,6 +498,9 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
           headers: {
             'Content-Type': 'application/json',
             ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+            // X-Session-Id (VL-198, ref-18): группировка запросов сессии
+            // на дашборде RouterAI; пустой sessionId → заголовка нет
+            ...(sessionId ? { 'X-Session-Id': sessionId } : {}),
           },
           body: JSON.stringify(stream ? { ...body, stream: true, stream_options: { include_usage: true } } : body),
           signal,
