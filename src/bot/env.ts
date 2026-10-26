@@ -14,7 +14,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { registerFileEnvKeys, fileLoadedEnvKeys } from '../core/settings.js';
+import { registerFileEnvKeys, fileLoadedEnvKeys, applySettingsEnv } from '../core/settings.js';
 
 // Re-export по плану VL-143: набор файловых ключей удобно брать из env.js
 export { fileLoadedEnvKeys };
@@ -62,4 +62,27 @@ export function loadDotEnv(cwd: string): void {
     }
   }
   registerFileEnvKeys(written);
+}
+
+/**
+ * Общая загрузка env проекта (VL-189): .env → секция `env` settings.json.
+ *
+ * Единая точка входа для всех режимов, которым нужен env проекта при
+ * старте: бот (`vibelog bot`), веб-интерфейс (`vibelog browser`) и CLI
+ * агента (`vibelog agent`, включая `analyze`). Раньше пара вызовов
+ * loadDotEnv + applySettingsEnv дублировалась в боте и чате и ОТСУТСТВОВАЛА
+ * в браузере (баг VL-189): spawn фаз из browser шёл без VIBELOG_LLM_* из
+ * .env и агент падал с «не задан VIBELOG_LLM_API_KEY».
+ *
+ * Порядок критичен (VL-143): обе функции записывают только пустые ключи,
+ * поэтому строгое чередование loadDotEnv → applySettingsEnv даёт приоритет
+ * реальный env → .env → секция `env` settings.json. Вызов идемпотентен —
+ * повторная загрузка (например, runAgent + runInteractiveAgent) ничего
+ * не перезаписывает (dotenv-семантика).
+ *
+ * @param cwd — директория проекта (там же лежат .env и .vibelog/settings.json)
+ */
+export function loadProjectEnv(cwd: string): void {
+  loadDotEnv(cwd);
+  applySettingsEnv(cwd);
 }

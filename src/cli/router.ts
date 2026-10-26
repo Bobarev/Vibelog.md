@@ -81,7 +81,10 @@ export async function route(args: string[]): Promise<void> {
     case 'mcp':
       return runMcp(subcommand, positional, flags, cwd);
     case 'browser':
-      return runBrowser(positional, flags, cwd);
+      // VL-189: runBrowser возвращает Server (для закрытия в тестах) —
+      // route: Promise<void>, поэтому прямой return Server не типизируется
+      await runBrowser(positional, flags, cwd);
+      return;
     case 'bot':
       return runBot(positional, flags, cwd);
     case 'qwen-debug':

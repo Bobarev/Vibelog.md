@@ -739,7 +739,8 @@ function spawnQwenRun(
   // vb — встроенный vibelog-agent: VIBELOG_AGENT_BIN либо bin/vibelog-agent.mjs
   // относительно dist/web/ (import.meta.url). Флаги спавна не меняются —
   // агент qwen-совместим по CLI (VL-85). LLM env (VIBELOG_LLM_*) наследуются
-  // из process.env: бот кладёт туда .env через loadDotEnv (VL-37), доп.
+  // из process.env: бот И браузер загружают .env/settings-env через общий
+  // loadProjectEnv при старте (VL-37, фикс browser-режима VL-189), доп.
   // настройка не нужна; при отсутствии ключа агент сам печатает is_error JSON.
   const bin =
     agent === 'vb'
