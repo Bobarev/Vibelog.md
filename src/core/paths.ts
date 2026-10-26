@@ -136,6 +136,18 @@ export function referencesDataDir(backlogDir: string): string {
 }
 
 /**
+ * Возвращает путь к каталогу markdown-кэша references (VL-194).
+ *
+ * cache/ — внутри references/, но в .gitignore: кэш — воспроизводимые данные
+ * (скачанный HTML → markdown), пересоздаётся через `reference sync`.
+ * Отдельный каталог, а не data/: в data/ лежат клоны репозиториев по имени —
+ * коллизия, если у репо имя «cache».
+ */
+export function referencesCacheDir(backlogDir: string): string {
+  return join(backlogDir, 'references', 'cache');
+}
+
+/**
  * Возвращает путь к директории lessons (VL-153).
  *
  * Уроки (lessons learned) — workflow-опыт из закрытых задач: markdown-файлы

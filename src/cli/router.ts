@@ -243,17 +243,21 @@ vibelog doc <subcommand> [опции]
 vibelog reference <subcommand> [опции]
 
 Внешние источники знаний (VL-152). Метаданные: backlog/references/<id>-<slug>.md;
-клоны репозиториев: backlog/references/data/ (в .gitignore).
+клоны репозиториев: backlog/references/data/, markdown-кэш: backlog/references/cache/
+(оба в .gitignore).
 
 Подкоманды:
   list [--type repo|url|file|doc|spec] [--tags a,b] [--json]
-  add <title> [--type T] [--url ...] [--path ...] [--tags ...] [-d desc] [--no-clone]
-      (type=repo по умолчанию клонирует в data/<dir>; --no-clone — только метаданные)
-  view <id>
+  add <title> [--type T] [--url ...] [--path ...] [--tags ...] [-d desc] [--no-clone] [--cache]
+      (type=repo по умолчанию клонирует в data/<dir>; --no-clone — только метаданные;
+       --cache — скачать url и сохранить markdown в cache/<id>.md)
+  view <id>                           — при наличии кэша печатает markdown-кэш
   search <query>
   link <refId> <taskId> [--remove]   — двусторонняя связь: linked_tasks ↔ task.references
   remove <id>                        — удаляет метаданные; клон в data/ сохраняется
-  sync                               — доклонировать отсутствующие репозитории (type=repo)`,
+  sync [ref-id] [--all]              — без аргументов: доклонировать отсутствующие (type=repo);
+                                       ref-id: перекачать кэш одного (сверка source_hash);
+                                       --all: клоны + кэши всех url/doc/spec`,
 
     lesson: `
 vibelog lesson <subcommand> [опции]

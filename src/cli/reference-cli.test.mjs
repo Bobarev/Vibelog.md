@@ -7,11 +7,11 @@
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, rmSync, mkdtempSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync, existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +29,26 @@ function runCli(args, env = {}) {
     env: { ...gitEnv, VIBELOG_SKIP_UPDATE_CHECK: 'true', ...env },
   });
   return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+}
+
+/**
+ * Асинхронный запуск CLI — для тестов с loopback-HTTP-сервером в этом же
+ * процессе: spawnSync замораживает event loop, и сервер не смог бы
+ * отвечать на запросы дочернего процесса (VL-194).
+ */
+function runCliAsync(args, env = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('node', [cliPath, ...args], {
+      cwd: testRoot,
+      env: { ...gitEnv, VIBELOG_SKIP_UPDATE_CHECK: 'true', ...env },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', d => { stdout += d; });
+    child.stderr.on('data', d => { stderr += d; });
+    child.on('error', reject);
+    child.on('close', status => resolve({ status, stdout, stderr }));
+  });
 }
 
 beforeAll(() => {
@@ -132,6 +152,97 @@ describe('VL-152 CLI — clone (add --type repo) и sync', () => {
     const add = runCli(['reference', 'add', 'Local repo again', '--type', 'repo', '--url', url, '--path', 'data/cli-repo']);
     assert.equal(add.status, 0);
     assert.match(add.stdout, /уже клонирован/);
+  });
+});
+
+// ── VL-194: локальный markdown-кэш (add --cache, sync <id>/--all) ──
+
+describe('VL-194 CLI — кэш: add --cache, view, sync', () => {
+  /** Loopback-сервер: guard VL-132 пропускает только 127.0.0.1. */
+  let server;
+  let base;
+  /** Текущее «содержимое страницы» — меняем между тестами для смены hash. */
+  let pageBody;
+
+  beforeAll(async () => {
+    const http = await import('node:http');
+    pageBody = '<html><head><title>Doc</title></head><body><header>nav</header><h1>Док</h1><p>v1</p></body></html>';
+    server = http.createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(pageBody);
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${server.address().port}`;
+  });
+
+  afterAll(async () => {
+    if (server) await new Promise(resolve => server.close(resolve));
+  });
+
+  it('add --cache скачивает HTML → cache/<id>.md, view печатает кэш', async () => {
+    const add = await runCliAsync(['reference', 'add', 'Cached doc', '--type', 'doc', '--url', `${base}/doc`, '--cache']);
+    assert.equal(add.status, 0, add.stderr);
+    assert.match(add.stdout, /Reference ref-\d+ создан/);
+    assert.match(add.stdout, /закэшировано/, add.stdout);
+
+    // id узнаём из list (номер зависит от порядка тестов файла)
+    const list = await runCliAsync(['reference', 'list', '--type', 'doc']);
+    const id = list.stdout.match(/(ref-\d+)\s+Cached doc/)?.[1];
+    assert.ok(id, `id не найден в list: ${list.stdout}`);
+
+    const cacheFile = join(backlogDir, 'references', 'cache', `${id}.md`);
+    assert.ok(existsSync(cacheFile), 'файл кэша создан');
+    const md = readFileSync(cacheFile, 'utf-8');
+    assert.ok(md.includes('# Док'), `markdown: ${md}`);
+    assert.ok(!md.includes('nav'), 'header/nav вычищен');
+    assert.ok(!md.includes('<'), 'HTML-тегов нет');
+
+    const view = await runCliAsync(['reference', 'view', id]);
+    assert.equal(view.status, 0, view.stderr);
+    assert.match(view.stdout, /Кэш \(/, 'view печатает блок кэша');
+    assert.match(view.stdout, /# Док/, 'view печатает markdown кэша');
+    assert.match(view.stdout, new RegExp(`кэш: references/cache/${id}`), 'метаданные кэша в шапке');
+  });
+
+  it('sync <id>: hash совпал → без изменений; тело изменилось → обновление', async () => {
+    const list = await runCliAsync(['reference', 'list', '--type', 'doc']);
+    const id = list.stdout.match(/(ref-\d+)\s+Cached doc/)?.[1];
+    assert.ok(id);
+
+    const sync1 = await runCliAsync(['reference', 'sync', id]);
+    assert.equal(sync1.status, 0, sync1.stderr);
+    assert.match(sync1.stdout, /без изменений/, sync1.stdout);
+
+    pageBody = '<html><body><h1>Док</h1><p>v2</p></body></html>';
+    try {
+      const sync2 = await runCliAsync(['reference', 'sync', id]);
+      assert.equal(sync2.status, 0, sync2.stderr);
+      assert.match(sync2.stdout, /кэш обновлён/, sync2.stdout);
+      const md = readFileSync(join(backlogDir, 'references', 'cache', `${id}.md`), 'utf-8');
+      assert.ok(md.includes('v2'), `после обновления: ${md}`);
+    } finally {
+      pageBody = '<html><head><title>Doc</title></head><body><header>nav</header><h1>Док</h1><p>v1</p></body></html>';
+    }
+  });
+
+  it('sync несуществующего id → exit 1, понятная ошибка', async () => {
+    const res = await runCliAsync(['reference', 'sync', 'ref-999']);
+    assert.equal(res.status, 1);
+    assert.match(res.stdout + res.stderr, /не найден/);
+  });
+
+  it('sync без аргументов — прежнее поведение: только клоны, без кэша', async () => {
+    const sync = await runCliAsync(['reference', 'sync']);
+    assert.equal(sync.status, 0, sync.stderr);
+    // Строка итогов кэша НЕ печатается (обратная совместимость вывода)
+    assert.ok(!/Кэш обновлено/.test(sync.stdout), sync.stdout);
+    assert.match(sync.stdout, /Клонировано:/);
+  });
+
+  it('add --cache без url → exit 1 с понятной ошибкой', async () => {
+    const res = await runCliAsync(['reference', 'add', 'No url doc', '--type', 'doc', '--cache']);
+    assert.equal(res.status, 1);
+    assert.match(res.stdout + res.stderr, /нужен --url/);
   });
 });
 

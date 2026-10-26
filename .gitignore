@@ -2,6 +2,8 @@ node_modules/
 dist/
 # Клоны референсных репозиториев (VL-152), см. vibelog reference sync
 backlog/references/data/
+# Markdown-кэш doc/url references (VL-194), см. vibelog reference add --cache
+backlog/references/cache/
 # Секреты (токены) — не коммитить
 .env
 .vibelog/
