@@ -90,6 +90,16 @@ describe('VL-144 — rejectTaskFile (механика отказа)', () => {
   it('несуществующая задача — ошибка', () => {
     assert.throws(() => rejectTaskFile(testDir, 'rjt-999'), /не найдена/);
   });
+
+  it('VL-190: completed/ отсутствует — reject создаёт папку, без ENOENT', () => {
+    // Воспроизведение: убираем completed/, как в стороннем проекте без init
+    rmSync(completedDir, { recursive: true, force: true });
+    const rejected = rejectTaskFile(testDir, task.id);
+    assert.equal(rejected.status, 'Rejected');
+    assert.ok(existsSync(completedDir), 'completed/ создаётся автоматически');
+    const inCompleted = readdirSync(completedDir).filter(f => f.includes(task.id));
+    assert.equal(inCompleted.length, 1, `файл ${task.id} должен быть в completed/`);
+  });
 });
 
 describe('VL-144 — wasInCode (детектор бывшей в Code)', () => {
