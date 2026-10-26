@@ -21,9 +21,17 @@
  * уведомление во все привязанные чаты. Успех фазы = exitCode 0 И смена
  * статуса задачи (нет смены → нет прогресса → retry, защита от цикла
  * «фаза отработала, агент не сделал finish»).
+ *
+ * Retry через --resume (VL-200): перезапуск упавшей фазы приносит в
+ * startTaskPhase extraArgs ['--resume', sessionId] последней сессии ЭТОЙ
+ * фазы — агент дописывает существующий JSONL вместо новой сессии (инцидент
+ * VL-197: потеря 36 tool-вызовов/34 мин исследования). attempts>0 ⇔ это
+ * retry: успех фазы сбрасывает счётчик в 0 (finishCurrentPhase).
  */
 
 import type { Bot } from 'grammy';
+import { existsSync, realpathSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   addQueueTasks,
   formatAutoQueue,
@@ -36,8 +44,10 @@ import {
 } from '../core/auto-queue.js';
 import type { AutoQueue, AutoQueueTask } from '../core/auto-queue.js';
 import { getTask } from '../core/store.js';
+import { taskWorktreeDir } from '../core/worktree.js';
 import { getAvailablePhases, getWorkflowForTask } from '../core/workflow.js';
 import type { Workflow } from '../core/workflow.js';
+import { agentSessionsDir, findTaskPhaseSessionSync, loadSessionMetaSync } from '../agent/session.js';
 import { loadBotSettings, resolveDefaultAgent } from './settings.js';
 import { startTaskPhase } from '../web/orchestrator.js';
 import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
@@ -46,6 +56,19 @@ import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
 let autoActive = false;
 /** Пол-timer ожидания dep-блокированных pending; null — не запущен. */
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Тестовый шов VL-200: подмена startTaskPhase (паттерн setSpawnEnvBaseForTests
+ * VL-140). autoTick вызывает через шов — тест захватывает opts вызовов
+ * (--resume retry-рана) без реального спавна. null → вернуть оригинал;
+ * СБРАСЫВАТЬ в finally теста — isolate:false, шов утечёт в другие файлы.
+ */
+let startPhaseImpl = startTaskPhase;
+export function setStartPhaseForTests(
+  fn: ((...args: Parameters<typeof startTaskPhase>) => ReturnType<typeof startTaskPhase>) | null
+): void {
+  startPhaseImpl = fn ?? startTaskPhase;
+}
 
 /** Интервал повторной проверки очереди, мс (dep-зависимости могут созреть). */
 export const AUTO_POLL_INTERVAL_MS = 60_000;
@@ -73,6 +96,56 @@ export function pickAutoPhase(workflow: Workflow, status: string): string | null
  */
 export function nextFailureAction(attempts: number, maxRepeats: number): 'retry' | 'failed' {
   return attempts <= maxRepeats ? 'retry' : 'failed';
+}
+
+/**
+ * extraArgs для retry-рана фазы: ['--resume', sessionId] либо [] (VL-200).
+ *
+ * Ищет последнюю сессию ЭТОЙ фазы (findTaskPhaseSessionSync — тот же
+ * механизм, что у code_same_session, VL-147) ТОЛЬКО в каталоге главного
+ * репо: в branch-mode агент пишет/читает сессии через VIBELOG_CWD=главный
+ * cwd (cli.ts, инцидент VL-107 fix) — сессия, лежащая только в worktree
+ * (legacy без VIBELOG_CWD), агенту недоступна, resume упал бы на
+ * «Сессия не найдена» и сжёг бы попытки endless-retry'ем → fail-open:
+ * новая сессия, поведение прежнее.
+ *
+ * Guard'ы передачи флага:
+ * - jsonl существует рядом с meta (meta без транскрипта — resume бессилен);
+ * - meta.cwd (VL-98, session.ts) указывает на главный cwd либо worktree
+ *   ЭТОЙ задачи — сессия из чужого каталога не возобновляется, иначе
+ *   правки уйдут не в ту копию кода (инцидент VL-98).
+ *
+ * @param cwd — рабочая директория проекта (главный репо)
+ * @param taskId — ID задачи
+ * @param phase — фаза, чью сессию возобновляем (spec/plan/code/…)
+ * @returns ['--resume', sid] либо [] — пусто при любом непрохождении guard'ов
+ */
+export function retryResumeArgs(cwd: string, taskId: string, phase: string): string[] {
+  const dir = agentSessionsDir(cwd);
+  const sid = findTaskPhaseSessionSync(dir, taskId, phase);
+  if (!sid) return [];
+  if (!existsSync(join(dir, `${sid}.jsonl`))) {
+    console.log(`[auto VL-200] сессия ${sid} фазы ${phase}: jsonl отсутствует — retry в новой сессии`);
+    return [];
+  }
+  const meta = loadSessionMetaSync(dir, sid);
+  if (meta?.cwd) {
+    const real = (p: string): string => {
+      try {
+        return realpathSync(p);
+      } catch {
+        return p; // каталог исчез — сравниваем как есть
+      }
+    };
+    const allowed = [real(cwd), real(taskWorktreeDir(cwd, taskId))];
+    if (!allowed.includes(real(meta.cwd))) {
+      console.log(
+        `[auto VL-200] сессия ${sid} создана в чужом каталоге ${meta.cwd} (ожидалось ${allowed.join(' | ')}) — resume пропущен`
+      );
+      return [];
+    }
+  }
+  return ['--resume', sid];
 }
 
 /**
@@ -244,9 +317,15 @@ export function autoTick(bot: Bot, cwd: string): void {
     // Продолжение: очередь могла остановиться (stop/пусто) — tick сам проверит
     setImmediate(() => autoTick(bot, cwd));
   };
-  const result = startTaskPhase(cwd, item.id, phase, {
+  // VL-200: retry (attempts>0 — успех фазы сбрасывает счётчик в 0) продолжает
+  // последнюю сессию ЭТОЙ фазы через --resume; первая попытка — новая сессия.
+  // attempts/max_retries не затронуты — меняются только extraArgs спавна.
+  const isRetry = (item.attempts ?? 0) > 0;
+  const extraArgs = isRetry ? retryResumeArgs(cwd, item.id, phase) : [];
+  const result = startPhaseImpl(cwd, item.id, phase, {
     onExit,
     agent: resolveDefaultAgent(cwd),
+    extraArgs,
   });
   if ('error' in result) {
     // Ошибка запуска (409 «уже выполняется», валидация) — та же retry-машинa

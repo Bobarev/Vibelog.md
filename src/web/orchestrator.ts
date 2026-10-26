@@ -109,6 +109,8 @@ interface QueuedClose {
   onExit?: PhaseExitCallback;
   extraVars?: Record<string, string>;
   agent: 'qwen' | 'vb';
+  /** VL-200: --resume retry-рана — иначе close в очереди branch-mode теряет флаг */
+  extraArgs?: string[];
 }
 
 /**
@@ -151,7 +153,10 @@ export function setSpawnEnvBaseForTests(env: NodeJS.ProcessEnv | null): void {
  *   общий для обоих агентов — одновременно активен только один запуск фазы
  * @param opts — VL-147: sameSession — явное переопределение настройки
  *   code_same_session для фазы code (продолжение plan-сессии через --resume);
- *   undefined — брать настройку из settings.json
+ *   undefined — брать настройку из settings.json.
+ *   VL-200: extraArgs — доп. флаги в argv спавна (['--resume', sessionId] при
+ *   retry автоочереди); при наличии --resume резолв план-сессии (sameSession)
+ *   пропускается — retry-сессия приоритетнее, дубль флага запрещён (lesson-18)
  */
 export function startPhase(
   cwd: string,
@@ -160,7 +165,7 @@ export function startPhase(
   onExit?: PhaseExitCallback,
   extraVars?: Record<string, string>,
   agent: 'qwen' | 'vb' = resolveDefaultAgent(cwd),
-  opts?: { sameSession?: boolean }
+  opts?: { sameSession?: boolean; extraArgs?: string[] }
 ): StartResult {
   // Защита HTTP-границы (VL-66): api.ts пропускает произвольный phase из
   // POST-body — без guard'а qwen получил бы шаблон prompt.md с неподставленным
@@ -232,7 +237,9 @@ export function startPhase(
   // (opts.sameSession) переопределяет её в обе стороны. Источник sessionId —
   // меты .vibelog/agent-sessions/*.meta.json (пишет CLI при старте задачной
   // сессии; для qwen дополнительно дописывает оркестратор в finish, VL-147).
-  let extraArgs: string[] = [];
+  // VL-200: extraArgs из opts — стартовое значение (retry автоочереди приносит
+  // ['--resume', sid] упавшей фазы); без него — [], как раньше.
+  let extraArgs: string[] = opts?.extraArgs ?? [];
   const sameSession = opts?.sameSession ?? resolveCodeSameSession(cwd);
   // VL-187: статус продолжения plan-сессии — считается ТОЛЬКО здесь (общий
   // модуль бота и веба) и возвращается в StartResult: API-ответ 202 и
@@ -241,7 +248,10 @@ export function startPhase(
   let sameSessionStatus: 'applied' | 'no-plan-session' | 'off' | 'override-off' | undefined;
   if (phase === 'code') {
     sameSessionStatus = opts?.sameSession === false ? 'override-off' : 'off';
-    if (sameSession) {
+    // VL-200: явный --resume из extraArgs (retry автоочереди продолжает
+    // УПАВШУЮ code-сессию) приоритетнее plan-сессии — резолв пропускаем,
+    // sameSessionStatus остаётся 'off' (дубль --resume запрещён, lesson-18)
+    if (sameSession && !extraArgs.includes('--resume')) {
       // Основной каталог меты — главный репо; фолбэк (VL-187, ветка B) —
       // каталог сессий worktree задачи: мета план-сессии могла попасть туда
       // при запуске плана из worktree без VIBELOG_CWD/со старым dist.
@@ -293,7 +303,7 @@ export function startPhase(
       return { error: `Close уже в очереди: ${canon}` };
     }
     if (closeActive) {
-      closeQueue.push({ cwd, taskId, onExit, extraVars, agent });
+      closeQueue.push({ cwd, taskId, onExit, extraVars, agent, extraArgs: opts?.extraArgs });
       return { started: true, pid: 0, queued: true };
     }
     closeActive = true;
@@ -343,7 +353,9 @@ export function startPhase(
  * @param opts — comment: текст комментария (непустой после trim → addComment
  *   до старта); onExit: колбэк завершения фазы; agent: явный агент
  *   (перекрывает default_agent); sameSession: переопределение настройки
- *   code_same_session для фазы code (VL-147)
+ *   code_same_session для фазы code (VL-147);
+ *   extraArgs: доп. флаги argv спавна — VL-200: retry автоочереди передаёт
+ *   ['--resume', sessionId] упавшей фазы (проброс в startPhase)
  * @returns StartResult — вызывающий по opts.comment сам знает, писался ли
  *   комментарий (нужно для 409-текста api и «⚠️»-сообщений бота)
  */
@@ -356,6 +368,7 @@ export function startTaskPhase(
     onExit?: PhaseExitCallback;
     agent?: 'qwen' | 'vb';
     sameSession?: boolean;
+    extraArgs?: string[];
   }
 ): StartResult {
   // VL-180: агент — явный параметр либо default_agent проекта (fallback qwen)
@@ -368,6 +381,7 @@ export function startTaskPhase(
   }
   return startPhase(cwd, taskId, phase, opts?.onExit, comment ? { comment } : undefined, agent, {
     sameSession: opts?.sameSession,
+    extraArgs: opts?.extraArgs,
   });
 }
 
@@ -387,7 +401,9 @@ function drainCloseQueue(): void {
     return;
   }
   closeActive = false;
-  const res = startPhase(next.cwd, next.taskId, 'close', next.onExit, next.extraVars, next.agent);
+  const res = startPhase(next.cwd, next.taskId, 'close', next.onExit, next.extraVars, next.agent, {
+    extraArgs: next.extraArgs,
+  });
   if ('error' in res) {
     next.onExit?.({ running: false, phase: 'close', exitCode: 1, logTail: res.error });
     drainCloseQueue();
