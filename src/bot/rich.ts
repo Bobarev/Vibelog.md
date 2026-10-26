@@ -23,6 +23,8 @@ import { formatDuration } from './formatting.js';
 // сами фазы считаются по workflow (core/workflow.ts) и приходят в renderTaskRich
 // вторым аргументом из handlers (lesson-37: одна логика — один модуль)
 import { phaseButtonLabel, PHASE_EMOJI, PHASE_LABEL } from '../core/phase-buttons.js';
+import type { PhaseButtonStyles } from '../core/phase-buttons.js';
+import { loadPhaseStyles } from '../core/phase-styles.js';
 
 /** Лимит Rich Message по спецификации Telegram (символов UTF-8). */
 export const RICH_LIMIT = 32768;
@@ -289,13 +291,14 @@ export { PHASE_EMOJI, PHASE_LABEL, phaseButtonLabel };
  * @param availablePhases — фазы workflow, доступные из текущего статуса
  *   (VL-188: getAvailablePhases в handlers; [] — только comment-кнопка)
  * @param opts — canStart: показать кнопку «Взять в работу» (Backlog →
- *   initial_status, ручной переход не-фазой)
+ *   initial_status, ручной переход не-фазой); phaseStyles: подписи/эмодзи
+ *   из настроек проекта (VL-195, loadPhaseStyles в handlers)
  * @returns GFM-разметка для InputRichMessage.markdown
  */
 export function renderTaskRich(
   task: Task,
   availablePhases: string[] = [],
-  opts?: { canStart?: boolean }
+  opts?: { canStart?: boolean; phaseStyles?: PhaseButtonStyles }
 ): string {
   const parts: string[] = [];
 
@@ -322,12 +325,12 @@ export function renderTaskRich(
   if (nonReject.length === 1 && availablePhases.length === 1 && !opts?.canStart) {
     const phase = nonReject[0];
     buttons.push(
-      `<tg-button type="callback_data" style="primary" data="next:${task.id}">${phaseButtonLabel(phase)}</tg-button>`
+      `<tg-button type="callback_data" style="primary" data="next:${task.id}">${phaseButtonLabel(phase, opts?.phaseStyles)}</tg-button>`
     );
   } else {
     for (const phase of nonReject) {
       buttons.push(
-        `<tg-button type="callback_data" style="primary" data="phase:${task.id}:${phase}">${phaseButtonLabel(phase)}</tg-button>`
+        `<tg-button type="callback_data" style="primary" data="phase:${task.id}:${phase}">${phaseButtonLabel(phase, opts?.phaseStyles)}</tg-button>`
       );
     }
   }
@@ -336,7 +339,7 @@ export function renderTaskRich(
   // механического/LLM-отката живёт в отдельном обработчике reject:<id>
   if (availablePhases.includes('reject')) {
     buttons.push(
-      `<tg-button type="callback_data" style="danger" data="reject:${task.id}">✖ Reject</tg-button>`
+      `<tg-button type="callback_data" style="danger" data="reject:${task.id}">${phaseButtonLabel('reject', opts?.phaseStyles)}</tg-button>`
     );
   }
   // VL-191: автоочередь — «у всех статусов, у которых возможен запуск

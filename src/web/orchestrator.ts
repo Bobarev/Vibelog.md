@@ -753,9 +753,10 @@ function spawnQwenRun(
   // Корневая причина задержки устранена настройками памяти qwen (VL-58);
   // stream-json и VIBELOG_QWEN_EXTRA_ARGS откачены. Дебаг: vibelog qwen-debug.
   // --output-format json — для ВСЕХ фаз; --allowed-mcp-server-names vibelog —
-  // только для spec/plan/analyze: чужие серверы (chrome-devtools и др.) для
-  // планирования не нужны; analyze — backlog-MCP нужен для рекомендаций
-  // (VL-141; у vb флаг игнорируется — безвреден).
+  // только для не-кодовых фаз (spec/plan/analyze/reject/investigate/materialize,
+  // VL-195): чужие серверы (chrome-devtools и др.) для планирования,
+  // расследования и материализации не нужны; backlog-MCP нужен для
+  // рекомендаций/документов (VL-141; у vb флаг игнорируется — безвреден).
   // Для prompt флагов нет (как у comment) — шаблон не требует Vibelog MCP.
   //
   // VL-63 (reopen): --json-file/--json-fd НЕ используем — в headless-режиме
@@ -766,7 +767,12 @@ function spawnQwenRun(
   // MCP-сервера), пришедшая между частями гигантской JSON-строки stdout,
   // вклинивалась в её середину и result терялся «в половине случаев».
   const phaseFlags =
-    phase === 'spec' || phase === 'plan' || phase === 'analyze' || phase === 'reject'
+    phase === 'spec' ||
+    phase === 'plan' ||
+    phase === 'analyze' ||
+    phase === 'reject' ||
+    phase === 'investigate' ||
+    phase === 'materialize'
       ? ['--allowed-mcp-server-names', 'vibelog']
       : [];
   // VL-93: extraArgs сразу после позиционного промпта (--resume <sessionId>);

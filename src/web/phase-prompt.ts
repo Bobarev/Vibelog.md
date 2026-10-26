@@ -29,10 +29,22 @@ import type { ChecklistItem, Task } from '../core/task.js';
  * phase-do.md); роль KNOWN_PHASES в проекте выполняет именно эта константа
  * (отдельной KNOWN_PHASES нет — проверено grep по src/web и src/bot).
  */
-export const PHASES = ['spec', 'plan', 'code', 'do', 'close', 'comment', 'prompt', 'analyze', 'reject'] as const;
+export const PHASES = [
+  'spec',
+  'plan',
+  'code',
+  'do',
+  'close',
+  'comment',
+  'prompt',
+  'analyze',
+  'reject',
+  'investigate',
+  'materialize',
+] as const;
 export type Phase = (typeof PHASES)[number];
 
-/** Шаблон промпта для каждой фазы (VL-188: имена файлов = phase-<имя фазы>.md). */
+/** Шаблон промпта для каждой фазы (VL-188: имена файлов = phase-<имя фазы>.md; VL-195: +investigate/materialize). */
 const PHASE_FILES: Record<Phase, string> = {
   spec: 'phase-spec.md',
   plan: 'phase-plan.md',
@@ -44,6 +56,10 @@ const PHASE_FILES: Record<Phase, string> = {
   // VL-141: фаза analyze — headless-разбор сессии агента без задачи (как prompt)
   analyze: 'phase-analyze.md',
   reject: 'phase-reject.md',
+  // VL-195: investigation-workflow — расследование инцидента и создание
+  // задач из согласованных предложений (workflow investigation в settings.json)
+  investigate: 'phase-investigate.md',
+  materialize: 'phase-materialize.md',
 };
 
 /** Отдельный шаблон close-фазы для задач, работающих в worktree (VL-112). */
@@ -105,7 +121,7 @@ export function loadPhaseTemplate(phase: string, opts?: { closeWorktree?: boolea
 /**
  * Собирает промпт фазы: шаблон (с переопределением проектом, VL-188) + подстановка {{taskId}}.
  *
- * @param phase — spec | plan | code | do | close | comment | prompt | analyze | reject
+ * @param phase — spec | plan | code | do | close | comment | prompt | analyze | reject | investigate | materialize
  * @param taskId — ID задачи, например VL-28; для analyze может быть '' (без задачи)
  * @param extraVars — доп. подстановки {{key}} -> value ({{comment}} для comment, {{prompt}} для prompt, {{producesStatus}} и др.)
  * @param opts — опции: closeWorktree (worktree-вариант close), cwd (переопределение шаблонов проектом)

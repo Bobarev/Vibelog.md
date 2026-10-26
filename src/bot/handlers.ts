@@ -13,6 +13,7 @@ import type { Task } from '../core/task.js';
 import { getGitLog, getGitStatus } from '../core/git.js';
 // VL-188: workflow переходов — общий источник фаз для карточек и кнопок
 import { canMoveTo, getAvailablePhases, getWorkflowForTask, getNextPhase, getStatusAfterPhase, isPhaseAllowed } from '../core/workflow.js';
+import { loadPhaseStyles } from '../core/phase-styles.js';
 import type { DiffFile, GitStatus, GitCommit } from '../core/git.js';
 import { getDocument, listDocuments, searchDocuments } from '../core/document.js';
 import type { DocumentEntry } from '../core/document.js';
@@ -136,7 +137,9 @@ async function sendTaskView(
       workflow !== null &&
       task.status !== workflow.initial_status &&
       canMoveTo(workflow, task.status, workflow.initial_status);
-    const rich = renderTaskRich(task, availablePhases, { canStart });
+    // VL-195: подписи/эмодзи кнопок фаз из настроек (phase_labels/phase_emojis)
+    const phaseStyles = cwd !== undefined ? loadPhaseStyles(cwd) : undefined;
+    const rich = renderTaskRich(task, availablePhases, { canStart, phaseStyles });
     for (const part of chunkRich(rich)) {
       await bot.api.sendRichMessage(chatId, { markdown: part });
     }

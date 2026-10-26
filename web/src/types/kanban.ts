@@ -31,6 +31,10 @@ export interface KanbanTask {
   availablePhases?: string[];
   /** Целевой статус «Взять в работу» (Backlog → initial), null — не нужна. */
   startTo?: string | null;
+  /** Подписи кнопок фаз из настроек проекта (VL-195), fallback — phaseButtonLabel. */
+  phaseLabels?: Record<string, string>;
+  /** Эмодзи кнопок фаз из настроек проекта (VL-195), fallback — phaseButtonLabel. */
+  phaseEmojis?: Record<string, string>;
 }
 
 /** Доска: статус → задачи этого статуса. */

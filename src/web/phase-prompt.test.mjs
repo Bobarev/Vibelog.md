@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   renderPrompt,
+  PHASES,
   formatChecklist,
   taskExtraVars,
   taskBlockText,
@@ -585,6 +586,34 @@ describe('VL-188 — шаблоны фаз: имена и переопредел
     ]) {
       const text = readFileSync(join(templatesDir, file), 'utf-8');
       assert.ok(!text.includes(status), `${file}: хардкод ${status} удалён`);
+    }
+  });
+
+  it('VL-195: шаблоны investigate/materialize — {{producesStatus}} без хардкода статусов', () => {
+    for (const file of ['phase-investigate.md', 'phase-materialize.md']) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      assert.ok(text.includes('{{producesStatus}}'), `${file}: подстановка producesStatus`);
+      assert.ok(!text.includes('"status": "Review"'), `${file}: хардкод Review отсутствует`);
+      assert.ok(!text.includes('"status": "Done"'), `${file}: хардкод Done отсутствует`);
+    }
+    // Инвариант описания VL-195: создание задач — только фаза materialize
+    const investigate = readFileSync(join(templatesDir, 'phase-investigate.md'), 'utf-8');
+    assert.match(investigate, /НЕ создавать задачи/, 'investigate запрещает создавать задачи');
+  });
+
+  it('VL-195: PHASES включает investigate/materialize; рендер без остатков {{...}}', () => {
+    for (const phase of ['investigate', 'materialize']) {
+      assert.ok(PHASES.includes(phase), `${phase} в PHASES`);
+      const prompt = renderPrompt(phase, 'VL-195', {
+        ...TASK_VARS,
+        taskLessons: '(нет)',
+        availableTypes: 'task',
+        availablePriorities: 'High, Medium, Low',
+        comment: '',
+      });
+      assert.ok(prompt.includes('VL-195'), `${phase}: taskId подставлен`);
+      assert.ok(prompt.includes('Review'), `${phase}: producesStatus подставлен`);
+      assert.ok(!prompt.includes('{{'), `${phase}: неподставленных {{...}} не остаётся`);
     }
   });
 

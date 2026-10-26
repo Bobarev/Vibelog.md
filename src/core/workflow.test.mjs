@@ -23,6 +23,7 @@ import {
   isPhaseAllowed,
   canMoveTo,
 } from '../../dist/core/workflow.js';
+import { pickAutoPhase } from '../../dist/bot/auto-runner.js';
 import { settingsPath } from '../../dist/core/settings.js';
 
 /** Минимальная задача для getWorkflowForTask/getWorkflowName (нужен type). */
@@ -215,5 +216,91 @@ describe('workflow (VL-188)', () => {
   it('canMoveTo: initial_status без исходящих транзишенов-фаз из from', () => {
     // From = статус с исходящими фазами → вход в initial_status мимо переходов запрещён
     assert.equal(canMoveTo(DEFAULT_WORKFLOW, 'Spec', 'To Do'), false);
+  });
+});
+
+// ── VL-195: investigation-workflow (расследование инцидентов) ──
+
+describe('investigation workflow (VL-195)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibelog-investigation-'));
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Проект с investigation-workflow: ни одна фаза не производит In Progress (R1). */
+  const dir = (() => {
+    const d = join(root, 'project');
+    mkdirSync(join(d, '.vibelog'), { recursive: true });
+    writeFileSync(
+      settingsPath(d),
+      JSON.stringify(
+        {
+          workflows: {
+            investigation: {
+              initial_status: 'To Do',
+              transitions: [
+                { status: 'To Do', phase: 'investigate', produces_status: 'Review' },
+                { status: 'Review', phase: 'materialize', produces_status: 'Done' },
+                { status: 'Review', phase: 'reject', produces_status: 'Done' },
+                { status: 'Done', phase: null, produces_status: null },
+              ],
+            },
+          },
+          task_workflows: { investigation: 'investigation' },
+        },
+        null,
+        2
+      ),
+      'utf-8'
+    );
+    return d;
+  })();
+
+  it('тип investigation получает свой workflow; In Progress не производится', () => {
+    const wf = getWorkflowForTask(dir, task('investigation'));
+    assert.equal(wf.initial_status, 'To Do');
+    assert.deepEqual(getAvailablePhases(wf, 'To Do'), ['investigate']);
+    assert.ok(
+      wf.transitions.every((t) => t.produces_status !== 'In Progress'),
+      'ни одна фаза не ведёт в In Progress (инвариант после ревью)'
+    );
+  });
+
+  it('цепочка: To Do →[investigate]→ Review →[materialize]→ Done, ветвление reject', () => {
+    const wf = getWorkflowForTask(dir, task('investigation'));
+    assert.equal(getStatusAfterPhase(wf, 'To Do', 'investigate'), 'Review');
+    assert.equal(getStatusAfterPhase(wf, 'Review', 'materialize'), 'Done');
+    assert.equal(getStatusAfterPhase(wf, 'Review', 'reject'), 'Done');
+    assert.deepEqual(getAvailablePhases(wf, 'Review'), ['materialize', 'reject']);
+    assert.equal(getNextPhase(wf, 'Review'), 'materialize', 'reject не первый для «следующего этапа»');
+  });
+
+  it('isPhaseAllowed: каждая фаза только из своего статуса', () => {
+    const wf = getWorkflowForTask(dir, task('investigation'));
+    assert.equal(isPhaseAllowed(wf, 'To Do', 'investigate'), true);
+    assert.equal(isPhaseAllowed(wf, 'Review', 'investigate'), false, 'investigate не из Review');
+    assert.equal(isPhaseAllowed(wf, 'To Do', 'materialize'), false, 'materialize не из To Do');
+  });
+
+  it('canMoveTo: To Do → Review и Review → Done возможны; To Do → In Progress — нет', () => {
+    const wf = getWorkflowForTask(dir, task('investigation'));
+    assert.equal(canMoveTo(wf, 'To Do', 'Review'), true);
+    assert.equal(canMoveTo(wf, 'Review', 'Done'), true);
+    assert.equal(canMoveTo(wf, 'To Do', 'In Progress'), false);
+    assert.equal(canMoveTo(wf, 'To Do', 'Done'), false);
+  });
+
+  it('pickAutoPhase: авто-цепочка To Do → investigate → Review → materialize → Done', () => {
+    const wf = getWorkflowForTask(dir, task('investigation'));
+    let status = 'To Do';
+    const path = [status];
+    for (let i = 0; i < 4; i++) {
+      const phase = pickAutoPhase(wf, status);
+      if (!phase) break;
+      status = getStatusAfterPhase(wf, status, phase);
+      path.push(status);
+    }
+    assert.deepEqual(path, ['To Do', 'Review', 'Done']);
   });
 });
