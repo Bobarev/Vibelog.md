@@ -303,6 +303,28 @@ vibelog doctor [--json]
 
 Диагностика: Node.js >= 20, `vibelog` в PATH, симлинк/pnpm shim, MCP-инструменты (36), `backlog/`, конфиг, round-trip с Backlog.md. `--json` — структурированный результат.
 
+Пример вывода:
+
+```
+Vibelog.md doctor
+────────────────
+
+✓ node: v22.8.0
+✓ path: /usr/local/bin/vibelog
+✓ symlink: /usr/local/bin/vibelog (pnpm shim → .../bin/vibelog.mjs)
+✓ sources_match: ok
+✓ mcp_tools_count: 36
+✓ mcp_tools_list: ["backlog_add_comment", ...]
+✓ backlog_dir: ./backlog
+✓ config: {"project_name":"My Project","task_prefix":"LB"}
+✓ tasks_count: 6
+✓ roundtrip: 5
+
+⚠ Qwen Code: MCP-сервер мог быть закэширован. Перезапусти Qwen.
+```
+
+Если Qwen Code не видит новые MCP-инструменты — MCP-сервер закэширован: перезапустите Qwen Code, он подхватит обновлённый список инструментов.
+
 ---
 
 ## vibelog-agent
@@ -328,6 +350,29 @@ vibelog help              Общая справка
 vibelog <команда> --help  Справка по команде
 vb …                      Алиас vibelog (тот же бинарь)
 (без аргументов)          В интерактивном TTY — TUI-чат с агентом (VL-102)
+```
+
+Примеры вывода версии:
+
+```
+$ vibelog --version
+vibelog.md 1.9.0
+  bin:  /usr/local/bin/vibelog
+  src:  /path/to/Vibelog.md/bin/vibelog.mjs
+  node: v22.8.0
+
+$ vibelog -v
+1.9.0
+
+$ vibelog --version --json
+{
+  "name": "vibelog.md",
+  "version": "1.9.0",
+  "bin": "/usr/local/bin/vibelog",
+  "src": "/path/to/Vibelog.md/bin/vibelog.mjs",
+  "node": "v22.8.0",
+  "engines": { "node": ">=20" }
+}
 ```
 
 ---
@@ -358,4 +403,3 @@ VIBELOG_SKIP_UPDATE_CHECK=true vibelog task list
 
 - команды `mcp`, `browser`, `bot`, `qwen-debug` (долгоживущие/JSON-RPC — уведомление не нужно);
 - флаги `-v` / `--version`.
-
