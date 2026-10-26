@@ -21,6 +21,7 @@ import {
   parseRestartCommand,
   parseSetCommand,
   parseSpecCommand,
+  parseAutoCommand,
 } from '../../dist/bot/commands.js';
 
 describe('parseCreateCommand (VL-35)', () => {
@@ -616,6 +617,37 @@ describe('parseSetCommand (VL-94)', () => {
     const empty = parseSetCommand('');
     assert.ok('error' in empty);
     assert.match(empty.error, /code-same-session <on\|off>/);
+  });
+});
+
+describe('parseAutoCommand (VL-191)', () => {
+  it('add нескольких ID: нормализация к верхнему регистру, дубли схлопываются', () => {
+    assert.deepEqual(parseAutoCommand('add vl-1 VL-2 vl-1'), {
+      action: 'add',
+      ids: ['VL-1', 'VL-2'],
+    });
+    assert.deepEqual(parseAutoCommand('add VL-10'), { action: 'add', ids: ['VL-10'] });
+  });
+
+  it('start / stop / status — без аргументов', () => {
+    assert.deepEqual(parseAutoCommand('start'), { action: 'start' });
+    assert.deepEqual(parseAutoCommand('stop'), { action: 'stop' });
+    assert.deepEqual(parseAutoCommand('status'), { action: 'status' });
+    assert.deepEqual(parseAutoCommand('  START  '), { action: 'start' });
+  });
+
+  it('ошибки: пусто, add без ID, мусор вместо ID, неизвестное действие, аргументы у start', () => {
+    for (const bad of ['', 'add', 'add foo bar', 'foo', 'start now', 'status 1']) {
+      const r = parseAutoCommand(bad);
+      assert.ok('error' in r, '"' + bad + '" → error');
+      assert.match(r.error, /Синтаксис/);
+    }
+  });
+
+  it('add только мусор → error с подсказкой про VL-N', () => {
+    const r = parseAutoCommand('add abc def');
+    assert.ok('error' in r);
+    assert.match(r.error, /VL-N/);
   });
 });
 

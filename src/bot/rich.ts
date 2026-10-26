@@ -339,6 +339,15 @@ export function renderTaskRich(
       `<tg-button type="callback_data" style="danger" data="reject:${task.id}">✖ Reject</tg-button>`
     );
   }
+  // VL-191: автоочередь — «у всех статусов, у которых возможен запуск
+  // следующей фазы»: есть не-reject фаза либо ручной вход (canStart →
+  // To Do, откуда авто начнёт spec). Формат data auto:<id> не трогает
+  // старые ветки callback (lesson-43) — только новая кнопка.
+  if (nonReject.length > 0 || opts?.canStart) {
+    buttons.push(
+      `<tg-button type="callback_data" style="link" data="auto:${task.id}">🤖 Auto</tg-button>`
+    );
+  }
   buttons.push(
     `<tg-button type="callback_data" style="success" data="comment:${task.id}">💬 Комментарий</tg-button>`
   );

@@ -116,13 +116,27 @@ describe('renderTaskRich (VL-39)', () => {
 });
 
 describe('Кнопка следующего этапа (VL-72, VL-188)', () => {
-  it('кнопки в центрированном row: ветвление spec+reject + comment (VL-78/144)', () => {
-    // VL-188: кнопки фаз приходят из workflow — To Do ветвится на spec/reject
+  it('кнопки в центрированном row: ветвление spec+reject + auto + comment (VL-78/144/191)', () => {
+    // VL-188: кнопки фаз приходят из workflow — To Do ветвится на spec/reject;
+    // VL-191: auto-кнопка добавлена перед comment, старые ветки не тронуты
     const md = renderTaskRich({ ...fullTask, status: 'To Do' }, ['spec', 'reject']);
     assert.match(
       md,
-      /^# VL-34 — Telegram-бот: каркас\n\n<tg-button-row align="center">\n<tg-button type="callback_data" style="primary" data="phase:VL-34:spec">▶ Spec<\/tg-button>\n<tg-button type="callback_data" style="danger" data="reject:VL-34">✖ Reject<\/tg-button>\n<tg-button type="callback_data" style="success" data="comment:VL-34">💬 Комментарий<\/tg-button>\n<\/tg-button-row>/
+      /^# VL-34 — Telegram-бот: каркас\n\n<tg-button-row align="center">\n<tg-button type="callback_data" style="primary" data="phase:VL-34:spec">▶ Spec<\/tg-button>\n<tg-button type="callback_data" style="danger" data="reject:VL-34">✖ Reject<\/tg-button>\n<tg-button type="callback_data" style="link" data="auto:VL-34">🤖 Auto<\/tg-button>\n<tg-button type="callback_data" style="success" data="comment:VL-34">💬 Комментарий<\/tg-button>\n<\/tg-button-row>/
     );
+  });
+
+  // ── VL-191: кнопка автоочерери ──
+  it('auto-кнопка — при любой доступной не-reject фазе; без фаз — нет', () => {
+    const withPhase = renderTaskRich({ ...fullTask, status: 'Spec' }, ['plan']);
+    assert.match(withPhase, /data="auto:VL-34">🤖 Auto/, 'есть фаза → auto-кнопка есть');
+    for (const status of ['Done', 'Rejected']) {
+      const md = renderTaskRich({ ...fullTask, status }, []);
+      assert.doesNotMatch(md, /auto:/, `без фаз (${status}) — auto-кнопки нет`);
+    }
+    // canStart (Backlog → To Do): запуск следующей фазы возможен после входа
+    const backlog = renderTaskRich({ ...fullTask, status: 'Backlog' }, [], { canStart: true });
+    assert.match(backlog, /data="auto:VL-34">🤖 Auto/, 'canStart → auto-кнопка есть');
   });
 
   // ── VL-144/VL-188: кнопка Reject ──

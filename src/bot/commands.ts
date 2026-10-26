@@ -87,6 +87,13 @@ export type SetCommand =
   /** Code в сессии Plan (VL-147); по умолчанию выключен. */
   | { key: 'code-same-session'; value: boolean };
 
+/** Разбор /auto (VL-191): добавление задач в автоочередь или управление ею. */
+export type AutoCommand =
+  | { action: 'add'; ids: string[] }
+  | { action: 'start' }
+  | { action: 'stop' }
+  | { action: 'status' };
+
 /** Результат разбора /prompt (VL-66/92): запрос без задачи + агент-исполнитель. */
 export interface PromptCommand {
   text: string;
@@ -388,6 +395,43 @@ export function parseSetCommand(text: string): SetCommand | { error: string } {
     };
   }
   return { key, value: n };
+}
+
+/**
+ * Разбор /auto — автоочередь фаз (VL-191): add | start | stop | status.
+ *
+ * add принимает один или несколько ID (регистр не важен, нормализация к
+ * верхнему регистру как в parseRestartCommand); start/stop/status — без
+ * аргументов. Валидация существования задач — в хендлере (getTask).
+ *
+ * @param text — аргументы команды (без слова /auto)
+ * @returns {action, ids?} или {error} с подсказкой
+ */
+export function parseAutoCommand(text: string): AutoCommand | { error: string } {
+  const hint = 'Синтаксис: /auto add <VL-N> [VL-M …] | start | stop | status';
+  const trimmed = text.trim();
+  if (trimmed === '') return { error: hint };
+  const spaceIdx = trimmed.indexOf(' ');
+  const action = (spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx)).trim().toLowerCase();
+  const rest = spaceIdx === -1 ? '' : trimmed.slice(spaceIdx + 1).trim();
+  if (action === 'start' || action === 'stop' || action === 'status') {
+    if (rest !== '') return { error: `${action} не принимает аргументов. ${hint}` };
+    return { action };
+  }
+  if (action === 'add') {
+    if (rest === '') return { error: `add требует ID задач. ${hint}` };
+    const ids = rest
+      .split(/\s+/)
+      .map((s) => s.toUpperCase())
+      // Нормализация: валидность ID проверяет хендлер через getTask — здесь
+      // только форма, чтобы опечатка «VL-» без номера давала понятный отказ
+      .filter((s) => /^VL-\d+$/.test(s));
+    if (ids.length === 0) return { error: `Нет корректных ID (ожидается VL-N). ${hint}` };
+    // Дубли в одном вызове схлопываем (порядок сохраняем — FIFO)
+    const unique = [...new Set(ids)];
+    return { action: 'add', ids: unique };
+  }
+  return { error: `Неизвестное действие: ${action}. ${hint}` };
 }
 
 /**
