@@ -1,7 +1,7 @@
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
@@ -48,6 +48,9 @@ function startServer() {
   delete env.VIBELOG_CWD;
   delete env.VIBELOG_PHASE_TASK_ID;
   delete env.VIBELOG_PHASE_NAME;
+  // VL-198: сессия тестового окружения не должна утекать в fallback
+  // finish_phase (иначе мета/jsonl реального репо попадут в фикстуры)
+  delete env.VIBELOG_SESSION_ID;
   proc = spawn('node', [cliPath, 'mcp', 'start'], {
     cwd: testDir,
     env,
@@ -453,6 +456,190 @@ describe('MCP-сервер', () => {
       assert.equal(fin.result.isError, true, 'несуществующая задача — фатальная ошибка');
       assert.ok(fin.result.content[0].text.includes('не найдена'),
         `нет сообщения «не найдена»: ${fin.result.content[0].text}`);
+    });
+  });
+
+  // ============================================================
+  // VL-198 — backlog_finish_phase: token_usage в frontmatter
+  // ============================================================
+  describe('tools/call — backlog_finish_phase tokenUsage (VL-198)', () => {
+    async function createTask(title) {
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_create_task', arguments: { title } } },
+      ]);
+      return responses.find(r => r.id === 2).result.content[0].text.match(/mcp-\d+/)[0];
+    }
+
+    it('явный tokenUsage + phase → frontmatter token_usage (total + by_phase)', async () => {
+      const id = await createTask('Tokens: explicit');
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: {
+          id,
+          phase: 'plan',
+          tokenUsage: { input: 100, output: 50, cache: 20, total: 170, requests: 3 },
+        } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      assert.ok(!fin.result.isError, `вызов не должен падать: ${fin.result.content[0].text}`);
+      assert.ok(fin.result.content[0].text.includes('tokenUsage: input=+100'), `нет tokenUsage в сводке: ${fin.result.content[0].text}`);
+
+      const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
+      assert.ok(data.token_usage, 'token_usage должен появиться в frontmatter');
+      assert.equal(data.token_usage.input, 100);
+      assert.equal(data.token_usage.output, 50);
+      assert.equal(data.token_usage.cache, 20);
+      assert.equal(data.token_usage.total, 170);
+      assert.equal(data.token_usage.requests, 3);
+      assert.ok(data.token_usage.by_phase.plan, 'by_phase.plan должен записаться');
+      assert.equal(data.token_usage.by_phase.plan.input, 100);
+      assert.equal(data.token_usage.by_phase.plan.requests, 3);
+    });
+
+    it('args-passthrough без env сессии: каждый вызов пишет переданную сумму целиком', async () => {
+      const id = await createTask('Tokens: additive');
+      const finish = (sum) => callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: {
+          id, phase: 'code', tokenUsage: { input: sum, output: 0, cache: 0, total: sum, requests: 1 },
+        } } },
+      ]).then((rs) => rs.find(r => r.id === 2).result.content[0].text);
+      await finish(10);
+      await finish(10);
+      // Без sessionId usage_recorded негде хранить → каждый вызов args
+      // прибавляет всю сумму (идемпотентность обеспечивает боевой путь с
+      // VIBELOG_SESSION_ID — см. fallback-тест ниже; args-only — ручной)
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: {
+          id, phase: 'code', tokenUsage: { input: 25, output: 0, cache: 0, total: 25, requests: 1 },
+        } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      assert.ok(fin.result.content[0].text.includes('input=+25'), `сумма не прибавилась: ${fin.result.content[0].text}`);
+      const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
+      assert.equal(data.token_usage.input, 45, 'вклад накапливается: 10 + 10 + 25');
+      assert.equal(data.token_usage.by_phase.code.input, 45);
+    });
+
+    it('невалидный tokenUsage → ошибка в сводке, статус/комментарий применяются', async () => {
+      const id = await createTask('Tokens: invalid');
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: {
+          id, status: 'Done', comment: 'ок', phase: 'code', tokenUsage: { input: -5, extra: 1 },
+        } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
+      ]);
+      const text = responses.find(r => r.id === 2).result.content[0].text;
+      assert.ok(!responses.find(r => r.id === 2).result.isError, 'частичное применение не падает');
+      assert.ok(text.includes('tokenUsage'), `нет ошибки tokenUsage: ${text}`);
+      assert.ok(text.includes('Статус: Done') && text.includes('отчёт добавлен'), `валидные поля не применились: ${text}`);
+      const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
+      assert.equal(data.status, 'Done');
+      assert.equal(data.token_usage, undefined, 'битый tokenUsage не должен записаться');
+    });
+
+    it('без args и без VIBELOG_SESSION_ID → ошибка в сводке, вызов не падает', async () => {
+      const id = await createTask('Tokens: no source');
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, status: 'Done' } } },
+      ]);
+      const text = responses.find(r => r.id === 2).result.content[0].text;
+      assert.ok(!responses.find(r => r.id === 2).result.isError, `не должен падать: ${text}`);
+      assert.ok(text.includes('token_usage') && text.includes('недоступны'), `нет ошибки резолва: ${text}`);
+      assert.ok(text.includes('Статус: Done'), `статус должен примениться: ${text}`);
+    });
+
+    // ── Fallback JSONL + идемпотентность: отдельный сервер с env сессии ──
+    it('fallback: meta без usage → jsonl; повтор → «уже записан» (дельта-идемпотентность)', async () => {
+      const sessionId = 'agent-vl198fix';
+      const sessionsDir = join(testDir, '.vibelog', 'agent-sessions');
+      mkdirSync(sessionsDir, { recursive: true });
+      // jsonl с usage в assistant-сообщениях (loop дописывает — VL-198)
+      writeFileSync(join(sessionsDir, `${sessionId}.jsonl`), [
+        JSON.stringify({ role: 'user', content: 'x' }),
+        JSON.stringify({ role: 'assistant', content: 'ответ', usage: { input_tokens: 300, output_tokens: 120, cache_read_input_tokens: 60, total_tokens: 420, reasoning_tokens: 5 } }),
+        '',
+      ].join('\n'), 'utf-8');
+      // meta СТАРАЯ (без usage) — но с фазой: провоцирует fallback на jsonl
+      writeFileSync(join(sessionsDir, `${sessionId}.meta.json`), JSON.stringify({
+        cwd: testDir, phase: 'close',
+      }), 'utf-8');
+
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_create_task', arguments: { title: 'Tokens: jsonl fallback' } } },
+      ]);
+      const id = responses.find(r => r.id === 2).result.content[0].text.match(/mcp-\d+/)[0];
+
+      // Сервер с env сессии — как cli спавнит MCP в бою (VL-198)
+      const env = { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' };
+      delete env.VIBELOG_CWD;
+      delete env.VIBELOG_PHASE_TASK_ID;
+      delete env.VIBELOG_PHASE_NAME;
+      env.VIBELOG_SESSION_ID = sessionId;
+      const srv = spawn('node', [cliPath, 'mcp', 'start'], { cwd: testDir, env, stdio: ['pipe', 'pipe', 'pipe'] });
+      try {
+        const call = (requests) => new Promise((resolve, reject) => {
+          const out = [];
+          let buf = '';
+          const onData = (chunk) => {
+            buf += chunk.toString();
+            const lines = buf.split('\n');
+            buf = lines.pop();
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              try {
+                const msg = JSON.parse(line);
+                if (requests.some((r) => r.id === msg.id)) out.push(msg);
+              } catch { /* ignore */ }
+            }
+            if (out.length === requests.length) {
+              srv.stdout.off('data', onData);
+              clearTimeout(timer);
+              resolve(out);
+            }
+          };
+          const timer = setTimeout(() => reject(new Error('timeout MCP')), 15000);
+          srv.stdout.on('data', onData);
+          srv.stdin.write(requests.map((r) => JSON.stringify(r)).join('\n') + '\n');
+        });
+
+        const batch1 = await call([
+          { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+          { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, comment: 'первый' } } },
+        ]);
+        const fin1 = batch1.find((r) => r.id === 2);
+        assert.ok(!fin1.result.isError, `не должен падать: ${fin1.result.content[0].text}`);
+        assert.ok(fin1.result.content[0].text.includes('фаза close'), `фаза из меты не использована: ${fin1.result.content[0].text}`);
+        assert.ok(fin1.result.content[0].text.includes('источник jsonl'), `fallback на jsonl не сработал: ${fin1.result.content[0].text}`);
+
+        // Повторный вызов той же сессии: usage_recorded == jsonl → дельта 0
+        const batch2 = await call([
+          { jsonrpc: '2.0', id: 3, method: 'initialize', params: {} },
+          { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, comment: 'второй' } } },
+          { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
+        ]);
+        const fin2 = batch2.find((r) => r.id === 4);
+        assert.ok(fin2.result.content[0].text.includes('уже записан'), `повтор не идемпотентен: ${fin2.result.content[0].text}`);
+
+        const data = JSON.parse(batch2.find((r) => r.id === 5).result.content[0].text);
+        assert.equal(data.token_usage.input, 300, 'frontmatter содержит ровно одну порцию jsonl');
+        assert.equal(data.token_usage.total, 420);
+        assert.equal(data.token_usage.requests, 1);
+        assert.ok(data.token_usage.by_phase.close, 'by_phase.close из меты сессии');
+        // usage_recorded дописан в мету (следующий ран начнёт с новой дельты)
+        const meta = JSON.parse(readFileSync(join(sessionsDir, `${sessionId}.meta.json`), 'utf-8'));
+        assert.equal(meta.usage_recorded.input, 300);
+        assert.equal(meta.phase, 'close', 'фаза меты не должна затираться (lesson-40)');
+      } finally {
+        srv.kill('SIGTERM');
+      }
     });
   });
 

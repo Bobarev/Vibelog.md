@@ -10,9 +10,10 @@
  */
 
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { ChatMessage } from './llm.js';
+import type { TokenUsage } from '../core/analytics.js';
 
 /** Каталог хранения сессий агента: `<cwd>/.vibelog/agent-sessions`. */
 export function agentSessionsDir(cwd: string): string {
@@ -129,17 +130,96 @@ export interface SessionMeta {
   phase?: string;
   /** Рабочая директория агента при создании сессии (worktree или главный cwd). */
   cwd: string;
+  /** ID сессии (дубликат имени файла — самодостаточность меты, VL-198). */
+  sessionId?: string;
+  /** Начало сессии (ISO 8601), проставляется при создании (VL-198). */
+  startedAt?: string;
+  /** Окончание последнего рана (ISO), дописывается post-run (VL-198). */
+  finishedAt?: string;
+  /** Длительность последнего рана (мс), дописывается post-run (VL-198). */
+  durationMs?: number;
+  /**
+   * Кумулятивное использование токенов сессии (VL-198): сумма по всем
+   * сообщениям jsonl (при resume включает прошлые раны) — самодостаточно
+   * для сверки с провайдером.
+   */
+  usage?: TokenUsage;
+  /**
+   * Сколько usage уже перенесено в frontmatter задачи (VL-198).
+   * Три писателя (finish_phase/cli/оркестратор) дописывают только дельту
+   * от этой отметки — иначе двойной учёт (риск №1 плана VL-198).
+   */
+  usage_recorded?: TokenUsage;
+  /** Модель LLM (если известна), VL-198. */
+  model?: string;
+  /** Агент-исполнитель: 'vb' | 'qwen', VL-198. */
+  agent?: string;
 }
 
 /**
  * Сохраняет метаданные сессии (<id>.meta.json).
+ *
+ * Полная запись — для СОЗДАНИЯ сессии; дописывание полей пост-фактум —
+ * только через updateSessionMeta (merge), иначе затрутся taskId/phase
+ * resume-рана (lesson-40, инцидент VL-185).
  *
  * @throws Error при невалидном sessionId (path traversal) либо ошибке записи
  */
 export async function saveSessionMeta(dir: string, sessionId: string, meta: SessionMeta): Promise<void> {
   assertSafeSessionId(sessionId);
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, `${sessionId}.meta.json`), JSON.stringify(meta), 'utf-8');
+  // sessionId/startedAt — при создании (VL-198); готовая мета (оркестратор
+  // перезаписывает идемпотентно) не теряет их: значения идентичны
+  const enriched: SessionMeta = {
+    sessionId,
+    ...(meta.startedAt ? {} : { startedAt: new Date().toISOString() }),
+    ...meta,
+  };
+  await writeFile(join(dir, `${sessionId}.meta.json`), JSON.stringify(enriched), 'utf-8');
+}
+
+/**
+ * Точечное обновление меты сессии merge'ем (VL-198).
+ *
+ * Читает существующую мету и накладывает patch поверх неё: taskId/phase/cwd
+ * прошлых ранов сохраняются (lesson-40: resume-ран не затирает фазу —
+ * инцидент VL-185), новые поля (usage/finishedAt/…) дописываются. Меты нет —
+ * создаёт из patch (cwd обязателен в patch иначе Error). Синхронная форма:
+ * вызывается из post-run/cli-путей, где async-цепочки уже завершены.
+ *
+ * @throws Error при невалидном sessionId либо отсутствии cwd в patch без меты
+ */
+export function updateSessionMeta(
+  dir: string,
+  sessionId: string,
+  patch: Partial<SessionMeta>,
+): SessionMeta {
+  assertSafeSessionId(sessionId);
+  const path = join(dir, `${sessionId}.meta.json`);
+  let existing: SessionMeta | null = null;
+  if (existsSync(path)) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        existing = parsed as SessionMeta;
+      }
+    } catch {
+      existing = null; // битая мета — начинаем с patch, но не роняем вызов
+    }
+  }
+  if (!existing && !patch.cwd) {
+    throw new Error(`updateSessionMeta ${sessionId}: нет меты и не передан cwd`);
+  }
+  const merged: SessionMeta = {
+    cwd: patch.cwd ?? existing!.cwd,
+    ...(existing ?? {}),
+    ...patch,
+    sessionId,
+  };
+  // mkdir: при отсутствии меты (и каталога) файл создаётся с нуля
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(merged), 'utf-8');
+  return merged;
 }
 
 /**
@@ -238,4 +318,64 @@ function assertSafeSessionId(sessionId: string): void {
   if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) {
     throw new Error(`Недопустимый идентификатор сессии: ${sessionId}`);
   }
+}
+
+/**
+ * Суммирует usage по assistant-сообщениям транскрипта (VL-198).
+ *
+ * Каждый ответ модели в JSONL несёт `usage` (loop дописывает при push —
+ * VL-198); requests — число assistant-сообщений с usage (≈ число запросов
+ * к API). Старые jsonl без usage → нули, НЕ ошибка: вызывающий сверяет
+ * дельту и пропускает пустую запись.
+ */
+export function sumUsageFromMessages(messages: ChatMessage[]): TokenUsage & { requests: number } {
+  const sum: TokenUsage & { requests: number } = {
+    input: 0,
+    output: 0,
+    cache: 0,
+    total: 0,
+    requests: 0,
+    reasoning: 0,
+  };
+  for (const m of messages) {
+    if (m.role !== 'assistant' || !m.usage) continue;
+    sum.input += m.usage.input_tokens;
+    sum.output += m.usage.output_tokens;
+    sum.cache += m.usage.cache_read_input_tokens;
+    sum.total += m.usage.total_tokens;
+    sum.reasoning = (sum.reasoning ?? 0) + (m.usage.reasoning_tokens ?? 0);
+    sum.requests += 1;
+  }
+  // reasoning не нужен нулём в агрегатах без reasoning-моделей — убираем
+  if (sum.reasoning === 0) delete sum.reasoning;
+  return sum;
+}
+
+/**
+ * Синхронная сумма usage по jsonl-файлу сессии (VL-198, fallback finish_phase).
+ *
+ * toolFinishPhase синхронен — async loadSession не подходит. Битые строки
+ * пропускаются (как в loadSessionDiff-паттерне резюме): fallback не должен
+ * ронять завершение фазы. Нет файла/каталога → null (вызывающий решает).
+ */
+export function sumUsageFromJsonlSync(dir: string, sessionId: string): (TokenUsage & { requests: number }) | null {
+  assertSafeSessionId(sessionId);
+  const path = join(dir, `${sessionId}.jsonl`);
+  if (!existsSync(path)) return null;
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf-8');
+  } catch {
+    return null;
+  }
+  const messages: ChatMessage[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      messages.push(JSON.parse(line) as ChatMessage);
+    } catch {
+      // битая строка — пропуск: остальные сообщения учтены
+    }
+  }
+  return sumUsageFromMessages(messages);
 }

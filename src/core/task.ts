@@ -16,6 +16,7 @@
  */
 
 import { parseFrontmatter, serializeFrontmatter } from './frontmatter.js';
+import type { TokenUsage } from './analytics.js';
 
 /** Маркеры секций тела задачи */
 interface SectionMarkers {
@@ -72,6 +73,15 @@ export interface Task {
   documentation: string[];
   modified_files: string[];
   lessons: string[];
+  /**
+   * Агрегат токенов по фазам (VL-198): фронтматтер `token_usage` с вложенным
+   * by_phase. Отсутствие поля (старые/новые задачи без запусков) — норма:
+   * в taskToMarkdown не пишется, чтобы compat-формат не менялся.
+   */
+  token_usage?: TokenUsage & {
+    duration_ms?: number;
+    by_phase?: Record<string, Pick<TokenUsage, 'input' | 'output' | 'cache' | 'requests'>>;
+  };
   // Тело (секции)
   description: string;
   /** Строки — уже отформатированные `- [ ] #N ...`; объекты — сырые данные. */
@@ -106,6 +116,7 @@ export interface TaskInput {
   documentation?: string[];
   modified_files?: string[];
   lessons?: string[];
+  token_usage?: Task['token_usage'];
   acceptanceCriteria?: (ChecklistItem | string)[];
   definitionOfDone?: (ChecklistItem | string)[];
   implementationPlan?: string;
@@ -146,6 +157,7 @@ export function createTask(input: TaskInput, config: Record<string, unknown>): T
     documentation: input.documentation || [],
     modified_files: input.modified_files || [],
     lessons: input.lessons || [],
+    ...(input.token_usage ? { token_usage: input.token_usage } : {}),
     // Тело (секции)
     description: input.description || '',
     acceptanceCriteria: input.acceptanceCriteria || [],
@@ -186,6 +198,11 @@ export function taskToMarkdown(task: Task): string {
     modified_files: task.modified_files || [],
     lessons: task.lessons || [],
   };
+  // token_usage пишем ТОЛЬКО при наличии (VL-198): пустое поле не должно
+  // менять сериализацию старых задач — compat-тесты сравнивают байты
+  if (task.token_usage) {
+    frontmatter.token_usage = task.token_usage;
+  }
 
   // Тело — собираем секции
   const sections: string[] = [];
@@ -276,6 +293,27 @@ export function taskToMarkdown(task: Task): string {
 }
 
 /**
+ * Валидирует значение frontmatter `token_usage` (VL-198): объект с числовыми
+ * полями. Битое поле (строка, массив, мусор) → false — задача читается без
+ * него, парсинг не падает (паттерн loadSettings).
+ */
+function isTokenUsage(value: unknown): value is Task['token_usage'] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  const num = (x: unknown): boolean => x === undefined || (typeof x === 'number' && Number.isFinite(x));
+  if (!num(v.input) || !num(v.output) || !num(v.cache) || !num(v.total) || !num(v.requests)) {
+    return false;
+  }
+  if (v.by_phase !== undefined) {
+    if (typeof v.by_phase !== 'object' || v.by_phase === null || Array.isArray(v.by_phase)) return false;
+    for (const entry of Object.values(v.by_phase as Record<string, unknown>)) {
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Десериализует markdown-строку в объект задачи.
  */
 export function markdownToTask(content: string): Task {
@@ -312,6 +350,7 @@ export function markdownToTask(content: string): Task {
     documentation: Array.isArray(data.documentation) ? (data.documentation as string[]) : (data.documentation ? [data.documentation as string] : []),
     modified_files: Array.isArray(data.modified_files) ? (data.modified_files as string[]) : (data.modified_files ? [data.modified_files as string] : []),
     lessons: Array.isArray(data.lessons) ? (data.lessons as string[]) : (data.lessons ? [data.lessons as string] : []),
+    ...(isTokenUsage(data.token_usage) ? { token_usage: data.token_usage } : {}),
     // Тело
     description,
     acceptanceCriteria: ac,

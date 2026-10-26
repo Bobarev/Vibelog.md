@@ -59,6 +59,8 @@ describe('parseQwenResult (VL-64)', () => {
       output_tokens: 19,
       cache_read_input_tokens: 10944,
       total_tokens: 10975,
+      // VL-198: новое поле reasoning (0 у провайдеров без него)
+      reasoning_tokens: 0,
     });
   });
 
@@ -123,6 +125,7 @@ describe('parseQwenResult (VL-64)', () => {
       output_tokens: 0,
       cache_read_input_tokens: 0,
       total_tokens: 0,
+      reasoning_tokens: 0,
     });
   });
 });

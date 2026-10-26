@@ -318,7 +318,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // Финальный ответ дописывается в диалог (VL-95): транскрипт сессии
       // должен заканчиваться assistant-сообщением — иначе при resume
       // история обрывается на tool-сообщении и LLM API её отклонит
-      await pushMessage({ role: 'assistant', content: response.text });
+      await pushMessage({ role: 'assistant', content: response.text, usage: { ...response.usage } });
       return {
         result: response.text,
         is_error: false,
@@ -356,6 +356,10 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       role: 'assistant',
       content: response.text || null,
       tool_calls: response.toolCalls,
+      // usage ответа в транскрипт (VL-198): jsonl становится источником для
+      // sumUsageFromMessages/fallback finish_phase; копия — аккумулятор
+      // `usage` мутируется addUsage, привязывать ссылку нельзя
+      usage: { ...response.usage },
     });
 
     for (const call of response.toolCalls) {

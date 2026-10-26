@@ -49,6 +49,41 @@ vibelog browser
 
 Остальные команды, флаги и диагностика — в [CLI-справочнике](backlog/docs/doc-7-CLI-справочник-Vibelogmd.md).
 
+## Учёт токенов (billing)
+
+Сколько LLM-токенов потрачено на задачу и по фазам — три уровня хранения
+(деньги НЕ хранятся: тариф меняется, стоимость считается на лету):
+
+1. **Мета сессии** `.vibelog/agent-sessions/<sessionId>.meta.json` —
+   `usage {input, output, cache, total, requests}`, `startedAt/finishedAt/durationMs`,
+   `model`, `agent` (vb/qwen) — самодостаточно для сверки с провайдером.
+2. **Frontmatter задачи** `token_usage` — агрегат по всем сессиям:
+   totals + `duration_ms` + `by_phase: {spec/plan/…: {input, output, cache, requests}}`.
+   Показывается в карточке (web-таб «Токены», `/task` в боте, `task view` в CLI).
+3. **`.vibelog/billing/<taskId>.json`** — append-only журнал сессий
+   (источник правды: одна запись на ран).
+
+Записывают все три писателя с дельта-идемпотентностью (отметка
+`usage_recorded` в мете): `backlog_finish_phase` (поле `tokenUsage`,
+fallback — мета сессии → её jsonl), CLI-пост-ран и finish-блок
+оркестратора (основной путь для qwen-ранов). Requests/usage в JSONL
+сессии дописывает loop в каждое assistant-сообщение.
+
+Стоимость — только в аналитике: `calculateCost(usage, pricing)`,
+тарифы — секция `pricing` `.vibelog/settings.json`:
+
+```json
+{
+  "pricing": {
+    "mimo-v2.6-pro": { "input_per_1m": 1.2, "output_per_1m": 6, "cache_per_1m": 0.3 }
+  }
+}
+```
+
+`reasoning_tokens` хранится отдельно (из `completion_tokens_details`, ref-19) —
+для аналитики, не вычитается из output. Запросы LLM несут заголовок
+`X-Session-Id` (ref-18) — группировка сессии на дашборде RouterAI.
+
 ## Документация
 
 | Документ | Для чего |

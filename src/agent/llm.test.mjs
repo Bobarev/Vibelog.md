@@ -48,9 +48,10 @@ function jsonResponse(obj, { status = 200, statusText = 'OK' } = {}) {
 
 /** Обёртка fetchImpl со счётчиком вызовов, телами запросов и очередью ответов/ошибок. */
 function fakeFetch(script) {
-  const state = { calls: 0, bodies: [] };
+  const state = { calls: 0, bodies: [], headers: [] };
   const impl = async (_url, init) => {
     state.bodies.push(typeof init?.body === 'string' ? init.body : '');
+    state.headers.push(init?.headers ?? {});
     const step = script[state.calls] ?? script[script.length - 1];
     state.calls++;
     if (step instanceof Error) throw step;
@@ -144,6 +145,8 @@ describe('createLlmClient / streamChat (VL-83)', () => {
       output_tokens: 5,
       cache_read_input_tokens: 0,
       total_tokens: 15,
+      // VL-198: reasoning_tokens читается mapUsage, 0 без completion_tokens_details
+      reasoning_tokens: 0,
     });
   });
 
@@ -482,5 +485,36 @@ describe('отказ «high risk» → shrink-повтор (VL-178)', () => {
     assert.match(toolMsg.content, /вывод обрезан/);
     // Структура цела: tool_call_id не изменился (парность tool_calls ↔ tool)
     assert.equal(toolMsg.tool_call_id, 'c1');
+  });
+
+  it('VL-198: usage из assistant-сообщения НЕ уходит провайдеру в wire', async () => {
+    const { impl, state } = fakeFetch([okStream()]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    await client.streamChat(
+      [
+        { role: 'user', content: 'x' },
+        {
+          role: 'assistant',
+          content: 'ответ',
+          usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 12, reasoning_tokens: 0 },
+        },
+      ],
+      [],
+    );
+    const body = JSON.parse(state.bodies[0]);
+    const assistant = body.messages.find((m) => m.role === 'assistant');
+    assert.equal(assistant.content, 'ответ');
+    assert.equal('usage' in assistant, false, 'usage — наше поле, провайдеру не уходить');
+  });
+
+  it('VL-198: X-Session-Id уходит только при заданном sessionId', async () => {
+    const { impl, state } = fakeFetch([okStream(), okStream()]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl, sessionId: 'agent-123' });
+    await client.streamChat([{ role: 'user', content: 'x' }], []);
+    assert.equal(state.headers[0]['X-Session-Id'], 'agent-123');
+    // без sessionId заголовка нет
+    const plain = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    await plain.streamChat([{ role: 'user', content: 'x' }], []);
+    assert.equal('X-Session-Id' in state.headers[1], false);
   });
 });

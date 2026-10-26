@@ -24,7 +24,7 @@ import { createLlmClient } from './llm.js';
 import type { ChatMessage } from './llm.js';
 import { ensureLlmEnv } from './llm-env.js';
 import { runLoop } from './loop.js';
-import { agentSessionsDir, appendSessionMessage, createSessionId, latestSession, loadSession, saveSession, saveSessionMeta } from './session.js';
+import { agentSessionsDir, appendSessionMessage, createSessionId, latestSession, loadSession, loadSessionMetaSync, saveSession, saveSessionMeta, sumUsageFromMessages, updateSessionMeta } from './session.js';
 import { taskWorktreeDir } from '../core/worktree.js';
 import { taskIdPattern } from '../core/config.js';
 import { buildSystemPrompt } from './system-prompt.js';
@@ -33,8 +33,11 @@ import type { ToolSpec } from './tools.js';
 import { McpClient, toolsAsSpecs } from './mcp-client.js';
 import { closeExternalMcpClients, connectExternalMcpServers } from './external-mcp.js';
 import { renderPrompt, taskExtraVars } from '../web/phase-prompt.js';
-import { getTask } from '../core/store.js';
+import { addTaskTokenUsage, getTask } from '../core/store.js';
 import { getWorkflowForTask, getStatusAfterPhase } from '../core/workflow.js';
+import { hasUsageDelta, usageDelta } from '../core/analytics.js';
+import type { TokenUsage } from '../core/analytics.js';
+import { appendBilling } from '../core/billing.js';
 import type { TuiHandle } from './tui.js';
 
 /** Результат агента: QwenResult + type=result (контракт parseQwenResult). */
@@ -51,6 +54,8 @@ interface AgentJsonResult {
     output_tokens: number;
     cache_read_input_tokens: number;
     total_tokens: number;
+    /** Reasoning-токены (VL-198); 0 у провайдеров без этого поля. */
+    reasoning_tokens: number;
   };
 }
 
@@ -262,9 +267,9 @@ export async function main(argv: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  // Оба ключа env проверены — createLlmClient не бросит (падает только без модели)
-  const llm = createLlmClient();
-
+  // Оба ключа env проверены — createLlmClient не бросит (падает только без модели).
+  // Создание НИЖЕ резолва sessionId (VL-198): клиенту нужен sessionId для
+  // заголовка X-Session-Id (ref-18); до runLoop llm нигде не используется.
   const cwd = process.cwd();
 
   // Промпт фазы собирается до инициализации сессий: ошибка шаблона завершает
@@ -351,6 +356,10 @@ export async function main(argv: string[]): Promise<void> {
     sessionId = createSessionId();
   }
 
+  // LLM-клиент после резолва sessionId (VL-198): sessionId уходит в
+  // заголовок X-Session-Id запросов (ref-18, группировка на дашборде RouterAI)
+  const llm = createLlmClient({ sessionId });
+
   // Метаданные сессии (VL-110/114): два источника taskId/phase — позиционные
   // <фаза> <taskId> (прямой CLI-запуск, без фильтров — task_prefix
   // конфигурируем) и env оркестратора VIBELOG_PHASE_TASK_ID/NAME (боевой
@@ -392,7 +401,16 @@ export async function main(argv: string[]): Promise<void> {
   const wantMcp = !opts.noMcp && phase !== 'prompt';
   if (wantMcp) {
     try {
-      const mcp = await McpClient.create({ cwd });
+      // VIBELOG_SESSION_ID/VIBELOG_PHASE_NAME (VL-198): finish_phase резолвит
+      // сессию/фазу в toolFinishPhase — иначе fallback на JSONL невозможен
+      const mcp = await McpClient.create({
+        cwd,
+        env: {
+          ...process.env,
+          VIBELOG_SESSION_ID: sessionId,
+          ...(isPhaseMode && phase ? { VIBELOG_PHASE_NAME: phase } : {}),
+        },
+      });
       mcpClients.push(mcp);
       externalTools = toolsAsSpecs(mcp, await mcp.listTools());
       log(`MCP: подключено инструментов — ${externalTools.length}`);
@@ -568,6 +586,99 @@ export async function main(argv: string[]): Promise<void> {
     await saveSession(sessionsDir, sessionId, loopResult.messages);
   } catch (err) {
     console.error(`Предупреждение: сессия ${sessionId} не сохранена — ${(err as Error).message}`);
+  }
+
+  // ── Post-run учёт токенов (VL-198) ─────────────────────────────────────
+  // Три действия: мета сессии (usage/finishedAt/duration/model/agent) →
+  // frontmatter-дельта задачи → billing. Каждое в своём try/catch с
+  // предупреждением в stderr: запись учёта не должна менять exit-код
+  // уже выполненной фазы. Prompt-режим/анализ без taskId — пропуск.
+  try {
+    const sum = sumUsageFromMessages(loopResult.messages);
+    const sessionUsage: TokenUsage = {
+      input: sum.input,
+      output: sum.output,
+      cache: sum.cache,
+      total: sum.total,
+      requests: sum.requests,
+      ...(sum.reasoning !== undefined ? { reasoning: sum.reasoning } : {}),
+    };
+    const existing = loadSessionMetaSync(sessionsDir, sessionId);
+    // taskCwd — где живут файлы задач: в branch-mode VIBELOG_CWD указывает
+    // на главный репо (сессии/настройки там же, lesson-13)
+    const taskCwd = process.env.VIBELOG_CWD ?? cwd;
+    const phaseName = existing?.phase ?? (isPhaseMode ? phase : process.env.VIBELOG_PHASE_NAME);
+    // env-taskId фильтруем по префиксу конфига (VL-118, как при создании меты):
+    // чужой id не должен получить ни frontmatter, ни меты пост-фактум
+    const envTaskId = process.env.VIBELOG_PHASE_TASK_ID;
+    const taskId = existing?.taskId
+      ?? (isPhaseMode
+        ? positionals[1]
+        : envTaskId && taskIdPattern(cwd).test(envTaskId) ? envTaskId : undefined);
+    if (taskId) {
+      // 1) Дельта в frontmatter (идемпотентно через usage_recorded: в ране
+      // finish_phase уже мог дописать часть токенов)
+      try {
+        const delta = usageDelta(existing?.usage_recorded ?? {}, sessionUsage);
+        if (hasUsageDelta(delta)) {
+          addTaskTokenUsage(taskCwd, taskId, phaseName, delta, loopResult.duration_ms);
+          updateSessionMeta(sessionsDir, sessionId, { cwd, usage_recorded: sessionUsage });
+        } else if (existing && !existing.usage_recorded) {
+          // дельта 0 (старый jsonl без usage в сообщениях) — отметку всё равно
+          // ставим, чтобы finish_phase следующего рана не пытался переписать
+          updateSessionMeta(sessionsDir, sessionId, { cwd, usage_recorded: sessionUsage });
+        }
+      } catch (err) {
+        console.error(`Предупреждение: token_usage задачи ${taskId} не обновлён — ${(err as Error).message}`);
+      }
+      // 2) Billing — append-only источник правды (каждый ран = запись).
+      // usage записи — ЗА РАН (loopResult.usage накапливает только ответы
+      // этого запуска), а не кумулятив сессии: иначе resume-записи давали
+      // бы двойной счёт при суммировании журнала
+      try {
+        const runUsage: TokenUsage = {
+          input: loopResult.usage.input_tokens,
+          output: loopResult.usage.output_tokens,
+          cache: loopResult.usage.cache_read_input_tokens,
+          total: loopResult.usage.total_tokens,
+          requests: loopResult.num_turns,
+          ...(loopResult.usage.reasoning_tokens
+            ? { reasoning: loopResult.usage.reasoning_tokens }
+            : {}),
+        };
+        appendBilling(taskCwd, taskId, {
+          sessionId,
+          phase: phaseName,
+          startedAt: existing?.startedAt,
+          finishedAt: new Date().toISOString(),
+          durationMs: loopResult.duration_ms,
+          usage: runUsage,
+          model: llm.model || undefined,
+          agent: 'vb',
+        });
+      } catch (err) {
+        console.error(`Предупреждение: billing задачи ${taskId} не дополнен — ${(err as Error).message}`);
+      }
+    }
+    // 3) Мета сессии — merge (lesson-40: taskId/phase resume-рана не затираются).
+    // /prompt и интерактивные сессии без меты и без taskId — по-прежнему
+    // без меты (поведение VL-110 не меняем: отсутствие меты — не ошибка)
+    if (existing || taskId) {
+      try {
+        updateSessionMeta(sessionsDir, sessionId, {
+          cwd,
+          finishedAt: new Date().toISOString(),
+          durationMs: loopResult.duration_ms,
+          usage: sessionUsage,
+          model: llm.model || undefined,
+          agent: 'vb',
+        });
+      } catch (err) {
+        console.error(`Предупреждение: мета сессии ${sessionId} не дополнена — ${(err as Error).message}`);
+      }
+    }
+  } catch (err) {
+    console.error(`Предупреждение: учёт токенов сессии не выполнен — ${(err as Error).message}`);
   }
 
   // Единственная строка stdout — JSON type=result (контракт parseQwenResult).
