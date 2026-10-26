@@ -10,6 +10,8 @@
 
 ### Исправлено
 
+- **VL-190: ENOENT при reject/complete без папки backlog/completed** — `archiveTaskFile` (`src/core/store.ts`) теперь создаёт `backlog/completed/` (`mkdirSync(recursive:true)`) перед `renameSync`: reject (CLI, web, бот, LLM-onExit) и complete в сторонних проектах без `init` больше не падают с `ENOENT: no such file or directory, rename`; тест-воспроизведение в `src/core/reject.test.mjs`.
+
 - **VL-189: VIBELOG_LLM_API_KEY при запуске фаз в режиме browser** — `vibelog browser` теперь читает `.env` проекта и секцию `env` settings.json при старте (как бот), поэтому spawn фаз наследует `VIBELOG_LLM_BASE_URL/VIBELOG_LLM_API_KEY/VIBELOG_LLM_MODEL` без ручного экспорта в shell; то же — `vibelog agent` (чат и `analyze`). Дедупликация env-кода (доведение VL-180 до конца): общий `loadProjectEnv` (`src/bot/env.ts`, порядок `loadDotEnv → applySettingsEnv` сохранён) в bot/browser/agent/interactive и общий `ensureLlmEnv` (`src/agent/llm-env.ts`) вместо пары копий проверок LLM-env с дословными текстами ошибок. `runBrowser` возвращает `Promise<Server>` (тестируемость), router — `await`.
 
 ## [1.9.0] — 2026-10-25
