@@ -39,6 +39,9 @@ import {
 } from '../core/reference.js';
 import type { UpdateReferenceInput } from '../core/reference.js';
 import {
+  cacheReference, refreshReferenceCache, readReferenceCache, syncReferenceCaches,
+} from '../core/reference-cache.js';
+import {
   listLessons, getLesson, createLessonFile,
   updateLesson, searchLessons, linkLesson, supersedeLesson,
 } from '../core/lesson.js';
@@ -415,6 +418,7 @@ export function listTools(): ToolDefinition[] {
           tags: { type: 'array', items: { type: 'string' }, description: 'Метки' },
           description: { type: 'string', description: 'Markdown-описание (тело)' },
           clone: { type: 'boolean', description: 'Клонировать ли repo (default=true; false — только метаданные)' },
+          cache: { type: 'boolean', description: 'Скачать url и сохранить markdown-кэш сейчас (для url/doc/spec)' },
         },
         required: ['title', 'type'],
       },
@@ -480,8 +484,14 @@ export function listTools(): ToolDefinition[] {
     },
     {
       name: 'reference_sync',
-      description: 'Клонировать отсутствующие репозитории для всех references type=repo в backlog/references/data/.',
-      inputSchema: { type: 'object', properties: {} },
+      description: 'Синхронизация references: без аргументов — доклонировать отсутствующие репозитории (type=repo) в backlog/references/data/; с id — перекачать markdown-кэш одного reference (сверка source_hash); all=true — клоны + кэши всех url/doc/spec в backlog/references/cache/.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'ID reference (ref-N) — перекачать его кэш' },
+          all: { type: 'boolean', description: 'Обновить кэши всех url/doc/spec references (плюс клоны)' },
+        },
+      },
     },
     // === Lessons learned — уроки из задач (VL-153) ===
     {
@@ -1433,7 +1443,7 @@ function toolReferenceList(args: ToolArgs, cwd: string): string {
   return JSON.stringify(entries.map(e => e.reference), null, 2);
 }
 
-function toolReferenceAdd(args: ToolArgs, cwd: string): string {
+async function toolReferenceAdd(args: ToolArgs, cwd: string): Promise<string> {
   const ref = writeReference(cwd, {
     title: args.title as string,
     type: args.type as string,
@@ -1448,16 +1458,31 @@ function toolReferenceAdd(args: ToolArgs, cwd: string): string {
     const res = cloneReferenceRepo(cwd, ref);
     cloneMessage = '\n' + res.message;
   }
-  return `Reference ${ref.id} создан: ${ref.title} (${ref.type})${cloneMessage}`;
+  // Кэш (VL-194): cache=true скачивает url → markdown в cache/<id>.md;
+  // ошибка кэширования НЕ роняет создание — уходит в сообщение (как clone)
+  let cacheMessage = '';
+  if (args.cache === true) {
+    if (!ref.url) {
+      cacheMessage = '\nДля cache=true нужен url.';
+    } else {
+      const res = await cacheReference(cwd, ref);
+      cacheMessage = '\n' + res.message;
+    }
+  }
+  return `Reference ${ref.id} создан: ${ref.title} (${ref.type})${cloneMessage}${cacheMessage}`;
 }
 
 function toolReferenceView(args: ToolArgs, cwd: string): string {
   const entry = getReference(cwd, args.id as string);
   if (!entry) throw new Error(`Reference ${args.id} не найден.`);
+  // Локальный markdown-кэш (VL-194): если есть — Plan-фаза читает его и не
+  // делает web_fetch; поле отсутствует (null) → прежний fallback на url
+  const cachedMarkdown = readReferenceCache(cwd, entry.reference);
   return JSON.stringify({
     ...entry.reference,
     body: entry.body,
     path: entry.path,
+    cached_markdown: cachedMarkdown,
   }, null, 2);
 }
 
@@ -1493,9 +1518,27 @@ function toolReferenceLink(args: ToolArgs, cwd: string): string {
     : `Связь Reference ${args.referenceId} ↔ задача ${args.taskId} удалена.`;
 }
 
-function toolReferenceSync(_args: ToolArgs, cwd: string): string {
-  const result = syncReferenceRepos(cwd);
-  return JSON.stringify(result, null, 2);
+async function toolReferenceSync(args: ToolArgs, cwd: string): Promise<string> {
+  // Без аргументов — прежнее поведение (только клоны, VL-152);
+  // id — кэш одного; all — клоны + кэши url/doc/spec (VL-194)
+  const cloneResult = syncReferenceRepos(cwd);
+  if (args.id === undefined && args.all !== true) {
+    return JSON.stringify(cloneResult, null, 2);
+  }
+  let cacheResult;
+  if (typeof args.id === 'string') {
+    const entry = getReference(cwd, args.id);
+    if (!entry) throw new Error(`Reference ${args.id} не найден.`);
+    const res = await refreshReferenceCache(cwd, entry.reference);
+    const single = { updated: [] as string[], skipped: [] as string[], failed: [] as { id: string; error: string }[] };
+    if (res.updated) single.updated.push(entry.reference.id);
+    else if (res.message.includes('ошибка')) single.failed.push({ id: entry.reference.id, error: res.message });
+    else single.skipped.push(entry.reference.id);
+    cacheResult = single;
+  } else {
+    cacheResult = await syncReferenceCaches(cwd, { all: true });
+  }
+  return JSON.stringify({ ...cloneResult, ...cacheResult }, null, 2);
 }
 
 // ============================================================

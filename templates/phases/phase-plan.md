@@ -33,8 +33,9 @@ Plan — единственная фаза, которая создаёт нов
 
 References (внешние источники знаний, поле References из блока задачи):
 - Для каждого ID (ref-N) вызови reference_view {"id": "<ref-N>"}.
+- Если reference_view вернул `cached_markdown` (локальный markdown-кэш) — используй его; web_fetch и парсинг HTML не нужны.
 - type=repo — читай код/документацию в backlog/references/data/<dir>/ (grep/sed).
-- type=url — fetch URL через web_fetch, если инструмент доступен.
+- type=url без кэша — fetch URL через web_fetch, если инструмент доступен.
 - type=file — прочитай файл через sed/grep.
 - Используй найденные источники в плане, ссылайся на них («как в ref-N / backlog/references/data/<dir>/»).
 - Если в ходе изучения нашёл новый релевантный источник — добавь через reference_add и свяжи с задачей через reference_link {"referenceId": ..., "taskId": "{{taskId}}"}.

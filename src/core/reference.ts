@@ -21,7 +21,7 @@ import {
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseFrontmatter, serializeFrontmatter } from './frontmatter.js';
-import { findBacklogDir, referencesDir, referencesDataDir } from './paths.js';
+import { findBacklogDir, referencesDir, referencesDataDir, referencesCacheDir } from './paths.js';
 import { getTask, updateTaskFile } from './store.js';
 
 /** Типы референсов. */
@@ -37,6 +37,12 @@ export interface Reference {
   tags: string[];
   created_date: string;
   linked_tasks: string[];
+  /** Относительный (от backlog/) путь к markdown-кэшу, если скачивался (VL-194). */
+  cached_path?: string;
+  /** ISO-8601 UTC момент последнего обновления кэша (VL-194). */
+  cached_at?: string;
+  /** sha256 сырого HTML-ответа — для проверки устаревания при sync (VL-194). */
+  source_hash?: string;
 }
 
 /** Входные данные reference. */
@@ -136,6 +142,11 @@ export function referenceToMarkdown(ref: Reference, body?: string): string {
   frontmatter.tags = ref.tags || [];
   frontmatter.created_date = ref.created_date;
   frontmatter.linked_tasks = ref.linked_tasks || [];
+  // Поля кэша (VL-194): пишем только если заданы — старые файлы без кэша
+  // остаются без «висячих» ключей, frontmatter чистый.
+  if (ref.cached_path) frontmatter.cached_path = ref.cached_path;
+  if (ref.cached_at) frontmatter.cached_at = ref.cached_at;
+  if (ref.source_hash) frontmatter.source_hash = ref.source_hash;
   return serializeFrontmatter(frontmatter, body || '');
 }
 
@@ -144,21 +155,24 @@ export function referenceToMarkdown(ref: Reference, body?: string): string {
  */
 export function markdownToReference(content: string): { reference: Reference; body: string } {
   const { data, body } = parseFrontmatter(content);
-  return {
-    reference: {
-      id: (data.id as string) || '',
-      title: (data.title as string) || '',
-      type: (data.type as string) || 'repo',
-      url: (data.url as string) || undefined,
-      path: (data.path as string) || undefined,
-      tags: Array.isArray(data.tags) ? (data.tags as string[]) : (data.tags ? [data.tags as string] : []),
-      created_date: (data.created_date as string) || '',
-      linked_tasks: Array.isArray(data.linked_tasks)
-        ? (data.linked_tasks as string[])
-        : (data.linked_tasks ? [data.linked_tasks as string] : []),
-    },
-    body: body || '',
+  const reference: Reference = {
+    id: (data.id as string) || '',
+    title: (data.title as string) || '',
+    type: (data.type as string) || 'repo',
+    url: (data.url as string) || undefined,
+    path: (data.path as string) || undefined,
+    tags: Array.isArray(data.tags) ? (data.tags as string[]) : (data.tags ? [data.tags as string] : []),
+    created_date: (data.created_date as string) || '',
+    linked_tasks: Array.isArray(data.linked_tasks)
+      ? (data.linked_tasks as string[])
+      : (data.linked_tasks ? [data.linked_tasks as string] : []),
   };
+  // Поля кэша (VL-194): в старых файлах их нет — ключи не создаём,
+  // чтобы round-trip давал строго равный объект (см. VL-152 round-trip тест)
+  if (data.cached_path) reference.cached_path = data.cached_path as string;
+  if (data.cached_at) reference.cached_at = data.cached_at as string;
+  if (data.source_hash) reference.source_hash = data.source_hash as string;
+  return { reference, body: body || '' };
 }
 
 /** Текущая дата YYYY-MM-DD — для created_date по умолчанию. */
@@ -244,6 +258,10 @@ export interface UpdateReferenceInput {
   tags?: string[];
   linked_tasks?: string[];
   content?: string;
+  /** Поля кэша (VL-194): записываются reference-cache, иначе merge их сотрёт. */
+  cached_path?: string;
+  cached_at?: string;
+  source_hash?: string;
 }
 
 /**
@@ -268,6 +286,11 @@ export function updateReference(
     path: updates.path !== undefined ? updates.path : entry.reference.path,
     tags: updates.tags !== undefined ? updates.tags : entry.reference.tags,
     linked_tasks: updates.linked_tasks !== undefined ? updates.linked_tasks : entry.reference.linked_tasks,
+    // Кэш-поля (VL-194): без них в merge любой update (link/rename/tags)
+    // молча стирал бы cached_path/cached_at/source_hash
+    cached_path: updates.cached_path !== undefined ? updates.cached_path : entry.reference.cached_path,
+    cached_at: updates.cached_at !== undefined ? updates.cached_at : entry.reference.cached_at,
+    source_hash: updates.source_hash !== undefined ? updates.source_hash : entry.reference.source_hash,
   };
   const body = updates.content !== undefined ? updates.content : entry.body;
 
@@ -349,6 +372,16 @@ export function findByTask(cwd: string, taskId: string): ReferenceEntry[] {
   return listReferences(cwd).filter(e =>
     (e.reference.linked_tasks || []).some(t => String(t).toLowerCase() === needle)
   );
+}
+
+/**
+ * Абсолютный путь markdown-кэша reference (VL-194).
+ *
+ * Имя файла — по id, не по title: переименование reference не ломает кэш.
+ */
+export function referenceCachePath(cwd: string, ref: Reference): string {
+  const backlogDir = requireBacklogDir(cwd);
+  return join(referencesCacheDir(backlogDir), `${ref.id}.md`);
 }
 
 /**

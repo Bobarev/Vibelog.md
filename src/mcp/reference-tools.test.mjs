@@ -216,3 +216,104 @@ describe('VL-164 — reference_update', () => {
     );
   });
 });
+
+// ── VL-194: локальный markdown-кэш через MCP (cache=true, sync id/all) ──
+
+describe('VL-194 — MCP кэш: reference_add{cache}, reference_view, reference_sync', () => {
+  /** Loopback-сервер: guard VL-132 пропускает только 127.0.0.1. */
+  let server;
+  let base;
+  let pageBody;
+
+  beforeAll(async () => {
+    const http = await import('node:http');
+    pageBody = '<html><head><title>T</title></head><body><header>nav</header><h1>MCP док</h1><p>v1</p></body></html>';
+    server = http.createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(pageBody);
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${server.address().port}`;
+  });
+
+  afterAll(async () => {
+    if (server) await new Promise(resolve => server.close(resolve));
+  });
+
+  it('add{cache:true} → view содержит cached_markdown', async () => {
+    const out = await handleToolCall('reference_add', {
+      title: 'MCP cached', type: 'doc', url: `${base}/mcp-doc`, cache: true,
+    }, testRoot);
+    assert.match(out, /закэшировано/, out);
+
+    const id = out.match(/Reference (ref-\d+)/)?.[1];
+    assert.ok(id, out);
+    const view = JSON.parse(await handleToolCall('reference_view', { id }, testRoot));
+    assert.equal(typeof view.cached_markdown, 'string', JSON.stringify(Object.keys(view)));
+    assert.match(view.cached_markdown, /# MCP док/, view.cached_markdown);
+    assert.doesNotMatch(view.cached_markdown, /nav/, 'header вычищен');
+    assert.ok(view.cached_path.endsWith(`${id}.md`), view.cached_path);
+    assert.ok(view.cached_at, 'cached_at в метаданных');
+    assert.match(view.source_hash, /^[0-9a-f]{64}$/, view.source_hash);
+  });
+
+  it('view без кэша → cached_markdown: null (fallback на url)', async () => {
+    const out = await handleToolCall('reference_add', {
+      title: 'MCP no cache', type: 'url', url: `${base}/plain`,
+    }, testRoot);
+    const id = out.match(/Reference (ref-\d+)/)?.[1];
+    const view = JSON.parse(await handleToolCall('reference_view', { id }, testRoot));
+    assert.equal(view.cached_markdown, null, 'нет кэша → null');
+    assert.ok(view.url, 'url остаётся для fallback');
+  });
+
+  it('add{cache:true} без url → сообщение об ошибке, создание не падает', async () => {
+    const out = await handleToolCall('reference_add', {
+      title: 'MCP cache no url', type: 'doc', cache: true,
+    }, testRoot);
+    assert.match(out, /Reference ref-\d+ создан/, out);
+    assert.match(out, /нужен url/, out);
+  });
+
+  it('reference_sync{id}: сверка source_hash (без изменений / обновление)', async () => {
+    const list = JSON.parse(await handleToolCall('reference_list', { type: 'doc' }, testRoot));
+    const cached = list.find(r => r.title === 'MCP cached');
+    assert.ok(cached, JSON.stringify(list));
+
+    const res1 = JSON.parse(await handleToolCall('reference_sync', { id: cached.id }, testRoot));
+    assert.ok(res1.skipped.includes(cached.id), `res1: ${JSON.stringify(res1)}`);
+
+    pageBody = '<html><body><h1>MCP док</h1><p>v2</p></body></html>';
+    try {
+      const res2 = JSON.parse(await handleToolCall('reference_sync', { id: cached.id }, testRoot));
+      assert.ok(res2.updated.includes(cached.id), `res2: ${JSON.stringify(res2)}`);
+      const view = JSON.parse(await handleToolCall('reference_view', { id: cached.id }, testRoot));
+      assert.match(view.cached_markdown, /v2/, view.cached_markdown);
+    } finally {
+      pageBody = '<html><head><title>T</title></head><body><header>nav</header><h1>MCP док</h1><p>v1</p></body></html>';
+    }
+  });
+
+  it('reference_sync{id} несуществующего → ошибка', async () => {
+    await assert.rejects(
+      handleToolCall('reference_sync', { id: 'ref-999' }, testRoot),
+      /не найден/,
+    );
+  });
+
+  it('reference_sync{all:true} → клоны + кэши url/doc/spec', async () => {
+    const res = JSON.parse(await handleToolCall('reference_sync', { all: true }, testRoot));
+    // Клоны — прежнее поведение сохраняется
+    assert.ok(Array.isArray(res.cloned), JSON.stringify(res));
+    assert.ok(Array.isArray(res.updated), JSON.stringify(res));
+    assert.ok(Array.isArray(res.failed), JSON.stringify(res));
+    // Хэши уже синхронизированы предыдущими тестами → skipped или updated
+    assert.ok(res.updated.length + res.skipped.length > 0, JSON.stringify(res));
+  });
+
+  it('reference_sync без аргументов — прежнее поведение (только клон-поля)', async () => {
+    const res = JSON.parse(await handleToolCall('reference_sync', {}, testRoot));
+    assert.ok('cloned' in res, JSON.stringify(Object.keys(res)));
+    assert.ok(!('updated' in res), 'без аргументов полей кэша нет');
+  });
+});

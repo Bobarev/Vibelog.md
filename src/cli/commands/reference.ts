@@ -24,6 +24,9 @@ import {
   cloneReferenceRepo, syncReferenceRepos, linkReferenceTask,
   REFERENCE_TYPES,
 } from '../../core/reference.js';
+import {
+  cacheReference, refreshReferenceCache, readReferenceCache, syncReferenceCaches,
+} from '../../core/reference-cache.js';
 
 /**
  * Выполняет команду reference.
@@ -60,7 +63,7 @@ export async function runReference(
     case 'remove':
       return referenceRemove(positional, cwd);
     case 'sync':
-      return referenceSync(cwd);
+      return referenceSync(positional, flags, cwd);
     default:
       printError(`Неизвестная подкоманда: ${subcommand}`);
       printInfo('Доступные: list, add, view, search, link, remove, sync');
@@ -94,11 +97,11 @@ function referenceList(flags: FlagValues, cwd: string): void {
   console.log(`\n  ${entries.length} references`);
 }
 
-function referenceAdd(positional: string[], flags: FlagValues, cwd: string): void {
+function referenceAdd(positional: string[], flags: FlagValues, cwd: string): Promise<void> {
   const title = positional.join(' ');
   if (!title) {
-    printError('Укажите заголовок: vibelog reference add <title> [--type T] [--url ...] [--path ...] [--tags ...] [-d desc] [--no-clone]');
-    return;
+    printError('Укажите заголовок: vibelog reference add <title> [--type T] [--url ...] [--path ...] [--tags ...] [-d desc] [--no-clone] [--cache]');
+    return Promise.resolve();
   }
   try {
     const tags = getFlagArray(flags, 'tags')
@@ -118,9 +121,23 @@ function referenceAdd(positional: string[], flags: FlagValues, cwd: string): voi
       if (res.cloned) printSuccess(res.message);
       else printInfo(res.message);
     }
+    // Кэш (VL-194): --cache скачивает и конвертирует url/doc прямо при add
+    if (hasFlag(flags, 'cache')) {
+      if (!ref.url) {
+        printError('Для --cache нужен --url (или --type repo клонируется сам).');
+        process.exitCode = 1;
+        return Promise.resolve();
+      }
+      return cacheReference(cwd, ref).then(res => {
+        if (res.cached) printSuccess(res.message);
+        else { printError(res.message); process.exitCode = 1; }
+      });
+    }
+    return Promise.resolve();
   } catch (err) {
     printError((err as Error).message);
     process.exitCode = 1;
+    return Promise.resolve();
   }
 }
 
@@ -142,11 +159,19 @@ function referenceView(positional: string[], cwd: string): void {
   if (r.url) console.log(`  url: ${r.url}`);
   if (r.path) console.log(`  path: ${r.path}`);
   console.log(`  linked_tasks: ${r.linked_tasks.length ? r.linked_tasks.join(', ') : '(нет)'}`);
+  if (r.cached_path) console.log(`  кэш: ${r.cached_path} (${r.cached_at || '?'})`);
   console.log(`  файл: ${entry.path}\n`);
   if (entry.body.trim()) {
     console.log(entry.body.trim());
   } else {
     printInfo('(описание пустое)');
+  }
+  // Локальный markdown-кэш (VL-194): Plan-фаза читает его вместо web_fetch;
+  // без кэша печатается только url выше — вызывающий фолбэчит сам
+  const cached = readReferenceCache(cwd, r);
+  if (cached) {
+    console.log(`\n--- Кэш (${r.cached_at || 'без даты'}) ---\n`);
+    console.log(cached);
   }
 }
 
@@ -200,13 +225,49 @@ function referenceRemove(positional: string[], cwd: string): void {
   printSuccess(`Reference ${id} удалён (клон в data/ сохранён).`);
 }
 
-function referenceSync(cwd: string): void {
-  const result = syncReferenceRepos(cwd);
-  for (const id of result.cloned) printSuccess(`Клонирован: ${id}`);
-  for (const id of result.skipped) printInfo(`Уже клонирован (пропуск): ${id}`);
-  for (const f of result.failed) printError(`Ошибка: ${f.id} — ${f.error}`);
-  console.log(`\n  Клонировано: ${result.cloned.length}, пропущено: ${result.skipped.length}, ошибок: ${result.failed.length}`);
-  if (result.failed.length > 0) process.exitCode = 1;
+/**
+ * sync — синхронизация references (VL-152 клоны + VL-194 markdown-кэш).
+ *
+ * - `sync` — прежнее поведение: доклонировать отсутствующие репозитории;
+ * - `sync <ref-id>` — перекачать кэш одного reference (сверка source_hash);
+ * - `sync --all` — клоны + перекачать кэши всех url/doc/spec.
+ */
+async function referenceSync(positional: string[], flags: FlagValues, cwd: string): Promise<void> {
+  const id = positional[0];
+  const wantAll = hasFlag(flags, 'all');
+
+  // Клоны репозиториев: всегда (как и прежде), при --all — тоже
+  const cloneResult = syncReferenceRepos(cwd);
+  for (const cid of cloneResult.cloned) printSuccess(`Клонирован: ${cid}`);
+  for (const cid of cloneResult.skipped) printInfo(`Уже клонирован (пропуск): ${cid}`);
+  for (const f of cloneResult.failed) printError(`Ошибка: ${f.id} — ${f.error}`);
+
+  // Кэш (VL-194): id → один; --all → все url/doc/spec; иначе — ничего
+  let cacheResult = { updated: [] as string[], skipped: [] as string[], failed: [] as { id: string; error: string }[] };
+  if (id) {
+    const entry = getReference(cwd, id);
+    if (!entry) {
+      printError(`Reference ${id} не найден.`);
+      process.exitCode = 1;
+      return;
+    }
+    const res = await refreshReferenceCache(cwd, entry.reference);
+    if (res.updated) { printSuccess(res.message); cacheResult.updated.push(entry.reference.id); }
+    else if (res.message.includes('без изменений') || res.message.includes('пропуск')) {
+      printInfo(res.message); cacheResult.skipped.push(entry.reference.id);
+    } else { printError(res.message); cacheResult.failed.push({ id: entry.reference.id, error: res.message }); }
+  } else if (wantAll) {
+    cacheResult = await syncReferenceCaches(cwd, { all: true });
+    for (const cid of cacheResult.updated) printSuccess(`Кэш обновлён: ${cid}`);
+    for (const cid of cacheResult.skipped) printInfo(`Кэш без изменений: ${cid}`);
+    for (const f of cacheResult.failed) printError(`Ошибка кэша: ${f.id} — ${f.error}`);
+  }
+
+  console.log(`\n  Клонировано: ${cloneResult.cloned.length}, пропущено: ${cloneResult.skipped.length}, ошибок: ${cloneResult.failed.length}`);
+  if (id || wantAll) {
+    console.log(`  Кэш обновлено: ${cacheResult.updated.length}, без изменений: ${cacheResult.skipped.length}, ошибок: ${cacheResult.failed.length}`);
+  }
+  if (cloneResult.failed.length > 0 || cacheResult.failed.length > 0) process.exitCode = 1;
 }
 
 export { REFERENCE_TYPES };
