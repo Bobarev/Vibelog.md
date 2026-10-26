@@ -12,7 +12,7 @@
  * partial-результат накапливается и дописывается к тексту ошибки).
  */
 
-import { addUsage, zeroUsage, type ChatMessage, type LlmClient, type LlmUsage, type ToolDef } from './llm.js';
+import { addUsage, zeroUsage, isHighRiskBody, type ChatMessage, type LlmClient, type LlmUsage, type ToolDef } from './llm.js';
 import type { ToolSpec } from './tools.js';
 import { truncateToolOutput } from './tools.js';
 
@@ -313,6 +313,16 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       if (!response.text || response.text.trim() === '') {
         return fail(
           'Пустой ответ модели: финальный текст без tool_calls пуст — фаза прервана как ошибка (VL-110).',
+        );
+      }
+      // VL-199: отказ провайдера может прийти валидным финальным текстом при
+      // HTTP 200 (инцидент VL-197) — без этого guard'а фаза завершается
+      // ложным успехом (is_error=false, exit 0) и авто-resume (VL-178,
+      // требует is_error===true) не срабатывает. Маркер «high risk» обязателен
+      // в тексте ошибки: guard оркестратора матчит его по result.result+logTail.
+      if (isHighRiskBody(response.text)) {
+        return fail(
+          `Отказ провайдера «high risk»: ${response.text.slice(0, 300)} — фаза прервана как ошибка (VL-199).`,
         );
       }
       // Финальный ответ дописывается в диалог (VL-95): транскрипт сессии

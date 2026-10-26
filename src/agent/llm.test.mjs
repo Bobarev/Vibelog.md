@@ -456,6 +456,54 @@ describe('отказ «high risk» → shrink-повтор (VL-178)', () => {
     assert.ok(toolMsg.content.length <= 1024 + 200, `L2-длина ${toolMsg.content.length}`);
   });
 
+  it('VL-199: high-risk в тексте при HTTP 200 → диагностический лог payload/usage, ответ возвращается', async () => {
+    const HR = 'The request was rejected because it was considered high risk';
+    const { impl } = fakeFetch([
+      sseResponse([
+        JSON.stringify({ choices: [{ delta: { content: HR } }], usage: { prompt_tokens: 7, completion_tokens: 2, total_tokens: 9 } }),
+      ]),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const origError = console.error;
+    const captured = [];
+    console.error = (...args) => captured.push(args.join(' '));
+    let res;
+    try {
+      res = await client.streamChat(bigToolMessages(), []);
+    } finally {
+      console.error = origError;
+    }
+    // Детект текста — работа loop.ts; клиент только логирует и возвращает ответ
+    assert.equal(res.text, HR, 'ответ возвращается как есть');
+    const line = captured.find((l) => l.includes('high-risk в тексте при HTTP 200'));
+    assert.ok(line, `нет диагностического лога, captured: ${JSON.stringify(captured)}`);
+    assert.match(line, /payload=\d+ байт/, 'размер wire-payload');
+    assert.ok(Number(line.match(/payload=(\d+)/)[1]) > 0, 'payload > 0');
+    assert.match(line, /usage=\{/, 'данные usage');
+    assert.match(line, /input_tokens/, 'usage-токены в логе');
+  });
+
+  it('VL-199: high-risk-отказ HTTP (не-ok) → диагностический лог payload и shrink-уровня', async () => {
+    const { impl } = fakeFetch([
+      sseResponse([], { status: 400, statusText: 'Bad Request', bodyText: HIGH_RISK_BODY }),
+      jsonResponse({ error: HIGH_RISK_BODY }, { status: 400, statusText: 'Bad Request' }),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const origError = console.error;
+    const captured = [];
+    console.error = (...args) => captured.push(args.join(' '));
+    try {
+      await assert.rejects(() => client.streamChat(bigToolMessages(), []), /high risk/i);
+    } finally {
+      console.error = origError;
+    }
+    const lines = captured.filter((l) => l.includes('high-risk-отказ HTTP'));
+    assert.ok(lines.length > 0, `нет диагностического лога, captured: ${JSON.stringify(captured)}`);
+    assert.match(lines[0], /payload=\d+ байт/, 'размер wire-payload');
+    assert.match(lines[0], /shrink-уровень=0/, 'уровень до повтора');
+    assert.match(lines[0], /usage=н\/д/, 'usage в теле ошибки нет');
+  });
+
   it('обычный 400 без маркера → без shrink-повторов (регрессия VL-83)', async () => {
     const { impl, state } = fakeFetch([
       sseResponse([], { status: 400, statusText: 'Bad Request', bodyText: '{"error":"bad"}' }),

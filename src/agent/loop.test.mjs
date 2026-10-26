@@ -443,6 +443,30 @@ describe('runLoop guard пустого финального ответа (VL-110
   });
 });
 
+describe('runLoop guard high-risk-финала при HTTP 200 (VL-199)', () => {
+  const HR_TEXT = 'The request was rejected because it was considered high risk';
+
+  it('финальный текст с маркером high risk → is_error, русское пояснение, маркер в result', async () => {
+    const { llm } = fakeLlm([{ text: HR_TEXT }]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [] });
+    assert.equal(res.is_error, true, 'отказ провайдера — не успех');
+    assert.match(res.result, /Отказ провайдера «high risk»/, 'русское пояснение');
+    assert.match(res.result, /VL-199/);
+    assert.ok(res.result.includes(HR_TEXT), 'оригинальный текст сохранён для guard авто-resume');
+    assert.equal(res.num_turns, 1);
+    // Контракт resume VL-103: транскрипт заканчивается assistant-сообщением
+    assert.equal(res.messages.at(-1).role, 'assistant');
+    assert.match(res.messages.at(-1).content, /high risk/);
+  });
+
+  it('обычный финальный текст без маркера → is_error=false (регрессия VL-83)', async () => {
+    const { llm } = fakeLlm([{ text: 'Готово, фаза завершена.' }]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [] });
+    assert.equal(res.is_error, false);
+    assert.equal(res.result, 'Готово, фаза завершена.');
+  });
+});
+
 describe('runLoop guard по намерению (VL-119)', () => {
   const INTENT = 'Приступаю к реализации… уточню якоря.';
 
