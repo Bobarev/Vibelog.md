@@ -338,6 +338,48 @@ describe('checkShellCommandInProject: экранированные скобки 
   });
 });
 
+describe('checkShellCommandInProject: слэш-паттерны в позиции паттерна (VL-201)', () => {
+  // Лексическая проверка, cwd фиктивный — как в VL-99/VL-179.
+  const CWD = '/tmp/vibelog-vl201-fake-project';
+
+  it('слэш-паттерны команд-фильтров без метасимволов не отклоняются (AC-1)', () => {
+    const allowed = [
+      // из AC-1: паттерны /auto, /web — штатный объект поиска в документации
+      'grep -n "/auto" backlog/docs/doc-6*.md',
+      'grep -n "/web start" backlog/docs/doc-10-*.md',
+      // другие фильтры и формы записи паттерна
+      'rg "/web start" src',
+      'sed -n "/auto/p" src/agent/tools.ts',
+      'grep -e "/auto" backlog/docs',
+      // позиция паттерна определяется по команде после разделителя
+      'git log --oneline | grep "/auto"',
+      'cd backlog && grep -n "/web" docs',
+      // значение -m не смещает границу паттерн/файл
+      'grep -m 2 "/auto" backlog/docs',
+    ];
+    for (const cmd of allowed) {
+      assert.equal(checkShellCommandInProject(cmd, CWD), null, 'неожиданный отказ: ' + cmd);
+    }
+  });
+
+  it('опасные пути отклоняются по-прежнему, файл после паттерна тоже (AC-2)', () => {
+    const rejected = [
+      'ls /etc', // абсолютный путь вне проекта, ls не фильтр
+      'cat ~/x', // тилда (верхнеуровневая проверка)
+      'cat ../outside', // .. наружу
+      'grep x /etc/passwd', // паттерн x пропущен, файловый аргумент отклонён
+      'grep -rn "/auto" /etc/passwd', // слэш-паттерн пропущен, файл отклонён
+    ];
+    for (const cmd of rejected) {
+      assert.match(
+        checkShellCommandInProject(cmd, CWD),
+        /Команда отклонена/,
+        'не отклонён: ' + cmd,
+      );
+    }
+  });
+});
+
 describe('run_shell_command: команда с путями вне проекта (VL-99)', () => {
   it('ls ~ отклоняется до запуска процесса', async () => {
     const out = await byName.get('run_shell_command').handler({ command: 'ls ~' });

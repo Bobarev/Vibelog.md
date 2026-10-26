@@ -256,6 +256,42 @@ function makeEdit(cwd: string): ToolSpec {
 const SPECIAL_FILES = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/stdin']);
 
 /**
+ * Команды-фильтры (VL-201): первый не-флаг-аргумент которых — паттерн
+ * (поиск/скрипт), а не путь. Слэш-паттерны `/auto`, `/web start` — штатный
+ * объект поиска в документации, они не читают файлы и пропускаются целиком.
+ */
+const FILTER_COMMANDS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'sed', 'awk']);
+
+/**
+ * Три класса флагов-фильтров со СПРАВОЧНЫМ значением (VL-201).
+ *
+ * Граница «паттерн ↔ файловый аргумент» у grep/rg/sed смещается только этими
+ * флагами: пропуск флага из таблицы даёт ложный отказ (fail-safe), ложное
+ * включение boolean-флага может сместить границу и пропустить файловый
+ * аргумент (дыра). Поэтому в таблицы включены только флаги с гарантированной
+ * семантикой GNU grep/rg и POSIX sed.
+ */
+// Значение — сам паттерн (grep/rg/sed: -e, --regexp): следующий токен не путь.
+const PATTERN_VALUE_FLAGS = new Set(['-e', '--regexp']);
+// Значение — файл паттернов (-f, --file): путь проверяется, паттерн считается заданным.
+const PATH_VALUE_FLAGS = new Set(['-f', '--file']);
+// Значение — число/действие (-m 2, -A 3, -d ACTION): проверяется как обычный
+// токен, но НЕ считается паттерном — иначе `grep -m 2 "/auto" f` сместит
+// границу и "/auto" ложно отклонится как файл вне проекта.
+const CONTEXT_VALUE_FLAGS = new Set([
+  '-m',
+  '-A',
+  '-B',
+  '-C',
+  '-d',
+  '-D',
+  '--max-count',
+  '--after-context',
+  '--before-context',
+  '--context',
+]);
+
+/**
  * Токен похож на regex/глоб-паттерн grep/sed, а не на путь (VL-104).
  *
  * Метасимволы в двух видах: экранированные (\|, \(, \[) — штатный
@@ -290,6 +326,16 @@ function isRegexPatternToken(token: string): boolean {
  * `\"` не разбивают токен, route-группы `src/app/\(main\)/...` проверяются
  * как единый относительный путь; фрагменты после разбиения на разделителе
  * не возникают и не считаются абсолютными путями.
+ * VL-201: позиционный (контекстный) анализ — токен в позиции аргумента-паттерна
+ * команды-фильтра (grep/rg/sed/awk: первый не-флаг-аргумент либо значение
+ * -e/--regexp) не является путём по семантике утилиты и пропускается целиком —
+ * слэш-паттерны `/auto`, `/web start` без regex-метасимволов больше не
+ * отклоняются как абсолютные пути. Токенизатор ловит разделители `;|&()<>`,
+ * чтобы команда после `|`/`&&`/`;` распознавалась как новая. Инвариант VL-99
+ * сохранён: ~, $HOME (обе верхнеуровневые проверки — ДО токенизации, поэтому
+ * `cat ~/x` отклоняется и в позиции паттерна), `..` наружу и реальные
+ * абсолютные пути — по-прежнему (в т.ч. файловые аргументы после паттерна:
+ * `grep x /etc/passwd`).
  */
 export function checkShellCommandInProject(command: string, cwd: string): ValidateResult {
   // Отказ с одинаковым текстом для всех срабатываний проверок.
@@ -309,8 +355,22 @@ export function checkShellCommandInProject(command: string, cwd: string): Valida
   // `\(`, `\)`, `\'`, `\"` и т.п. не разбивают токен на разделителе, иначе
   // route-группа `src/app/\(main\)/dashboard/` превращалась в фрагмент
   // `/dashboard/...`, который ложно считался абсолютным путём вне проекта.
+  // VL-201: разделители `;|&()<>` — отдельные токены, чтобы команда после
+  // `|`/`&&`/`;`/`(` распознавалась как новая (грань нужна позиционному
+  // анализу паттерна). Кавычечные альтернативы стоят первыми — `|` внутри
+  // кавычек и `\|` внутри escape-ветки токен не разбивают.
   const tokens =
-    command.match(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:\\[^\s]|[^\s;|&()<>])+/g) ?? [];
+    command.match(
+      /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:\\[^\s]|[^\s;|&()<>])+|[;|&()<>]/g,
+    ) ?? [];
+  // VL-201: состояние позиционного анализа — живёт в пределах одного сегмента
+  // команды (между разделителями).
+  let commandName: string | null = null; // командное слово текущего сегмента
+  let startOfSegment = false; // текущий токен — первое слово сегмента (команда)
+  let patternSupplied = false; // паттерн команды уже занят
+  // Ожидаемое значение справа от value-флага: pattern (пропустить как паттерн),
+  // path (проверить как путь + паттерн задан), value (проверить, но не паттерн).
+  let expect: 'none' | 'pattern' | 'path' | 'value' = 'none';
   for (const raw of tokens) {
     const token = raw.replace(/^["']|["']$/g, '');
     // VL-179: снимаем экранирование ТОЛЬКО скобок — src/app/\(main\)/...
@@ -318,10 +378,72 @@ export function checkShellCommandInProject(command: string, cwd: string): Valida
     // НЕ делаем: \.\. в regex-паттерне не должен превращаться в сегмент
     // '..' (ложный reject).
     const path = token.replace(/\\([()])/g, '$1');
+    // VL-201: разделитель — конец сегмента: следующий токен новая команда
+    // (в `git log | grep "/auto"` паттерн относится к grep, а не к git).
+    if (/^[;|&()<>]$/.test(token)) {
+      commandName = null;
+      startOfSegment = false;
+      patternSupplied = false;
+      expect = 'none';
+      continue;
+    }
+    // Первое слово сегмента — команда; её саму проверяем как обычный путь ниже
+    // (командное слово от путевых проверок не освобождается: /usr/bin/foo — отказ).
+    if (commandName === null) {
+      commandName = token;
+      startOfSegment = true;
+      patternSupplied = false;
+      expect = 'none';
+    } else {
+      startOfSegment = false;
+    }
+    // VL-201: позиция аргумента-паттерна — не путь по семантике утилиты,
+    // пропускается целиком (слэш-паттерн `/auto` файлы не читает). Проверка ДО
+    // ветки `~`: `grep "~" docs` — паттерн, а не обращение к дому.
+    const isPatternPosition =
+      expect === 'pattern' ||
+      (!startOfSegment &&
+        expect === 'none' &&
+        FILTER_COMMANDS.has(commandName) &&
+        !patternSupplied &&
+        !token.startsWith('-'));
+    if (isPatternPosition) {
+      patternSupplied = true;
+      expect = 'none';
+      continue;
+    }
+    // Значение -f/--file: токЕН сам — путь (проверяется ниже), а паттерн уже
+    // задан файлом — следующий не-флаг-аргумент уже файловый.
+    if (expect === 'path') {
+      expect = 'none';
+      patternSupplied = true;
+    } else if (expect === 'value') {
+      // Число/действие (-m 2, -A 3): проверяется как обычный токен, но граница
+      // паттерна не смещается — `grep -m 2 "/auto" f` → "/auto" остаётся паттерном.
+      expect = 'none';
+    }
     // Тилда после снятия кавычек — та же домашняя директория (~, ~/...).
     if (token === '~' || token.startsWith('~/')) return reject('~');
-    // Флаги, переменные и подстановки путями не считаем — резолвить нечего.
-    if (token.startsWith('-') || token.startsWith('$') || token.includes('`')) continue;
+    // Флаги: переменные и подстановки путями не считаем — резолвить нечего;
+    // флаги команд-фильтров двигают контекст позиционного анализа (VL-201).
+    if (token.startsWith('-')) {
+      if (FILTER_COMMANDS.has(commandName)) {
+        if (PATTERN_VALUE_FLAGS.has(token)) {
+          expect = 'pattern';
+        } else if (PATH_VALUE_FLAGS.has(token)) {
+          expect = 'path';
+        } else if (CONTEXT_VALUE_FLAGS.has(token)) {
+          expect = 'value';
+        } else if (/^--(?:regexp|file)=/.test(token) || /^-[ef].+/.test(token)) {
+          // Attached/equals-формы (-eX, --regexp=X): паттерн уже задан.
+          // Значение внутри `=` не валидируется — как и любой `-`-токен (VL-99),
+          // остаточный риск, не регрессия.
+          patternSupplied = true;
+        }
+      }
+      continue;
+    }
+    if (token.startsWith('$') || token.includes('`')) continue;
     // Спецфайлы POSIX (VL-104): /dev/null и др. — не пути к данным пользователя.
     if (SPECIAL_FILES.has(token)) continue;
     // Regex-паттерны grep/sed (VL-104): токен с метасимволами — паттерн,
