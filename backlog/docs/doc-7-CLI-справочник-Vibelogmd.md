@@ -142,7 +142,7 @@ vibelog search "query" [--status S] [--type T] [--priority P] [--limit N] [--jso
 vibelog browser [--port N] [--no-open]
 ```
 
-Веб-интерфейс (kanban с drag-and-drop). `--port` — порт (по умолчанию 6420), `--no-open` — не открывать браузер.
+Веб-интерфейс (kanban с drag-and-drop). `--port` — порт (по умолчанию 6420), `--no-open` — не открывать браузер. При старте читает `.env` проекта и секцию `env` `.vibelog/settings.json` через общий `loadProjectEnv` (VL-189, как бот) — spawn фаз наследует `VIBELOG_LLM_*` без ручного экспорта в shell.
 
 ---
 

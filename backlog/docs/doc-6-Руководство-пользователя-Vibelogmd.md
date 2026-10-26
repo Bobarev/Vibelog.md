@@ -390,7 +390,7 @@ vibelog browser --port 8080 --no-open
 | без суффикса, `:qwen` | qwen (дефолт) | `VIBELOG_QWEN_BIN` или `qwen` в PATH |
 | `:vb` | встроенный Vibelog | `VIBELOG_AGENT_BIN` или `bin/vibelog-agent.mjs` |
 
-`/prompt:vb <запрос>` запускает встроенный агент Vibelog (VL-85, `docs/agent.md`): те же qwen-совместимые флаги, тот же JSON-контракт результата. Переменные `VIBELOG_LLM_BASE_URL` / `VIBELOG_LLM_API_KEY` / `VIBELOG_LLM_MODEL` берутся из `.env` или секции `env` в `.vibelog/settings.json` — бот применяет их в process.env через `loadDotEnv` → `applySettingsEnv` (VL-37/143, приоритет: реальное окружение → `.env` → `env`-секция), отдельная настройка не нужна. Неизвестный суффикс (`/prompt:foo`) — подсказка синтаксиса, без запуска.
+`/prompt:vb <запрос>` запускает встроенный агент Vibelog (VL-85, `docs/agent.md`): те же qwen-совместимые флаги, тот же JSON-контракт результата. Переменные `VIBELOG_LLM_BASE_URL` / `VIBELOG_LLM_API_KEY` / `VIBELOG_LLM_MODEL` берутся из `.env` или секции `env` в `.vibelog/settings.json` — `vibelog bot`, `vibelog browser` и `vibelog agent` применяют их в process.env через общий `loadProjectEnv` = `loadDotEnv` → `applySettingsEnv` (VL-37/143/189, приоритет: реальное окружение → `.env` → `env`-секция), отдельная настройка не нужна. Неизвестный суффикс (`/prompt:foo`) — подсказка синтаксиса, без запуска.
 
 **Настройки бота** (`/set`, VL-94/104/107/122/147): команда принимает шесть параметров.
 
