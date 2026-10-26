@@ -37,12 +37,27 @@ export const PHASE_EMOJI: Record<string, string> = {
 };
 
 /**
+ * Переопределения стилей кнопок фаз из настроек (VL-195).
+ *
+ * Значения приходят из .vibelog/settings.json (core/phase-styles.ts):
+ * бот передаёт их в renderTaskRich через opts, веб — из полей задачи
+ * phaseLabels/phaseEmojis (серверный enrich GET /api/tasks/:id).
+ */
+export interface PhaseButtonStyles {
+  /** Подписи фаз (settings.phase_labels). */
+  labels?: Record<string, string>;
+  /** Эмодзи фаз (settings.phase_emojis). */
+  emojis?: Record<string, string>;
+}
+
+/**
  * Label кнопки фазы: «эмодзи Подпись»; неизвестная фаза — просто имя.
  *
  * @param phase — имя фазы из workflow (spec/plan/code/do/close/reject/…)
+ * @param styles — стили из настроек (VL-195): settings > хардкод > имя фазы
  */
-export function phaseButtonLabel(phase: string): string {
-  const emoji = PHASE_EMOJI[phase];
-  const label = PHASE_LABEL[phase] ?? phase;
+export function phaseButtonLabel(phase: string, styles?: PhaseButtonStyles): string {
+  const emoji = styles?.emojis?.[phase] ?? PHASE_EMOJI[phase];
+  const label = styles?.labels?.[phase] ?? PHASE_LABEL[phase] ?? phase;
   return emoji ? `${emoji} ${label}` : label;
 }

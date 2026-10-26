@@ -365,6 +365,24 @@ describe('Сырые rich-теги в контенте (VL-81)', () => {
     assert.match(raw, /<details><summary>Acceptance Criteria<\/summary>/);
     assert.doesNotMatch(raw, /<details><summary>Заголовок/);
   });
+
+  it('подписи фаз из opts.phaseStyles (VL-195); без opts — прежний рендер', () => {
+    const styles = {
+      labels: { investigate: 'Расследование', materialize: 'Создать задачи', reject: 'Отклонить' },
+      emojis: { investigate: '🔍', materialize: '📦', reject: '🛑' },
+    };
+    const md = renderTaskRich(taggedTask({}), ['investigate', 'materialize'], { phaseStyles: styles });
+    assert.match(md, /data="phase:VL-34:investigate">🔍 Расследование<\/tg-button>/);
+    assert.match(md, /data="phase:VL-34:materialize">📦 Создать задачи<\/tg-button>/);
+    // reject-кнопка тоже берёт стили из настроек
+    const withReject = renderTaskRich(taggedTask({}), ['investigate', 'reject'], { phaseStyles: styles });
+    assert.match(withReject, /data="reject:VL-34">🛑 Отклонить<\/tg-button>/);
+    // без styles — кастомная фаза рендерится как имя (fallback), default не меняется
+    const plain = renderTaskRich(taggedTask({}), ['investigate'], {});
+    assert.match(plain, /data="next:VL-34">investigate<\/tg-button>/);
+    const code = renderTaskRich(taggedTask({}), ['code'], {});
+    assert.match(code, /data="next:VL-34">💻 Code<\/tg-button>/);
+  });
 });
 
 describe('renderPhaseResultRich (VL-71)', () => {

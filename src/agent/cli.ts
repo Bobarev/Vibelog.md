@@ -90,7 +90,7 @@ const USAGE = `Использование:
   vibelog-agent <фаза> <taskId> [флаги]   — выполнить фазу задачи
   vibelog-agent <промпт> [флаги]          — выполнить готовый промпт (qwen-совместимо)
 
-Фазы: spec | plan | code | close | comment | prompt
+Фазы: spec | plan | code | do | close | comment | prompt | analyze | reject | investigate | materialize
 Флаги:
   --headless               — JSON-результат в stdout (дефолт без TTY)
   --no-mcp                 — не подключать MCP-инструменты Vibelog

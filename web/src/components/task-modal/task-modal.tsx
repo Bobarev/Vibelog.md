@@ -273,6 +273,10 @@ function TaskModalBody({
   // startTo — ручной переход «Взять в работу» (Backlog → initial_status)
   const phases = (task?.availablePhases ?? []).filter((p) => p !== 'reject');
   const showReject = (task?.availablePhases ?? []).includes('reject');
+  // VL-195: подписи/эмодзи кнопок фаз из настроек (enrich GET /api/tasks/:id);
+  // fallback на дефолтный хардкод/имя фазы — внутри phaseButtonLabel
+  const phaseLabel = (p: string): string =>
+    phaseButtonLabel(p, { labels: task?.phaseLabels, emojis: task?.phaseEmojis });
   const startTo = task?.startTo ?? null;
 
   return (
@@ -343,12 +347,12 @@ function TaskModalBody({
                   onClick={() => void handlePhase(phase)}
                   title={`Запустить фазу ${phase}${commentText.trim() ? ' с комментарием' : ''}`}
                 >
-                  {phaseButtonLabel(phase)}
+                  {phaseLabel(phase)}
                 </Button>
               ))}
               {showReject ? (
                 <Button variant="outline" disabled={submitting} onClick={() => void handleReject()}>
-                  ✖ Reject
+                  {phaseLabel('reject')}
                 </Button>
               ) : null}
               <Button

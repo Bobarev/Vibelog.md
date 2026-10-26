@@ -59,6 +59,7 @@ import {
 import type { UpdateLessonInput } from '../core/lesson.js';
 import { loadConfig, saveConfig, defaultConfig } from '../core/config.js';
 import { getAvailablePhases, getWorkflowForTask, canMoveTo, loadWorkflows } from '../core/workflow.js';
+import { loadPhaseStyles } from '../core/phase-styles.js';
 import { globalSearch } from '../core/search.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadBotSettings, saveBotSettings } from '../bot/settings.js';
@@ -515,10 +516,15 @@ function enrichWithWorkflow(cwd: string, task: Task): Record<string, unknown> {
   const workflow = getWorkflowForTask(cwd, task);
   const canStart =
     task.status !== workflow.initial_status && canMoveTo(workflow, task.status, workflow.initial_status);
+  // VL-195: phaseLabels/phaseEmojis — подписи/эмодзи кнопок из настроек
+  // (settings > хардкод phase-buttons > имя фазы — fallback считает клиент)
+  const styles = loadPhaseStyles(cwd);
   return {
     ...task,
     availablePhases: getAvailablePhases(workflow, task.status),
     startTo: canStart ? workflow.initial_status : null,
+    phaseLabels: styles.labels,
+    phaseEmojis: styles.emojis,
   };
 }
 

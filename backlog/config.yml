@@ -33,6 +33,7 @@ types:
   - chore
   - docs
   - spike
+  - investigation
   - epic
 definition_of_done:
   - Тесты проходят
