@@ -305,19 +305,33 @@ vibelog config set default_editor nvim           # строка
         { "status": "To Do", "phase": "do", "produces_status": "Review" },
         { "status": "Review", "phase": "close", "produces_status": "Done" }
       ]
+    },
+    "investigation": {
+      "initial_status": "To Do",
+      "transitions": [
+        { "status": "To Do", "phase": "investigate", "produces_status": "Review" },
+        { "status": "Review", "phase": "materialize", "produces_status": "Done" },
+        { "status": "Review", "phase": "reject", "produces_status": "Done" },
+        { "status": "Done", "phase": null, "produces_status": null }
+      ]
     }
   },
-  "task_workflows": { "bug": "bugfix", "chore": "simple", "docs": "simple", "spike": "simple" }
+  "task_workflows": { "bug": "bugfix", "chore": "simple", "docs": "simple", "spike": "simple", "investigation": "investigation" },
+  "phase_labels": { "investigate": "Расследование", "materialize": "Создать задачи" },
+  "phase_emojis": { "investigate": "🔍", "materialize": "📦" }
 }
 ```
 
 - **Назначение workflow типу**: `task_workflows[тип задачи]` → имя из `workflows`; тип не указан или имя неизвестно — `default`.
+- **Тип `investigation` (VL-195)** — расследование инцидента: фаза `investigate` собирает и анализирует данные (сессии, логи, git, код), создаёт документ с выводами и предложениями задач, но сами задачи НЕ создаёт → Review; фаза `materialize` создаёт согласованные предложения через `backlog_create_task` → Done; ветка `reject` → Done (фактически reject ставит Rejected и архивирует). Каждая фаза запускается ровно один раз; во время фазы статус задачи не меняется (смена — только в finish_phase).
+- **Подписи и эмодзи кнопок фаз**: ключи `phase_labels` и `phase_emojis` в `.vibelog/settings.json` (по имени фазы) приоритетнее встроенных подписей: приоритет settings → встроенный хардкод default-фаз → имя фазы. Фазы investigation/materialize в хардкод не входят — без settings кнопки подпишутся именем фазы.
+- ⚠️ **`.vibelog/settings.json` входит в `.gitignore`** — workflow, `task_workflows`, `phase_labels` и `phase_emojis` в новый клон не переносятся сами: после клонирования перенеси их вручную (или скопируй файл целиком), иначе investigation-задачи пойдут по default-workflow.
 - **Fallback**: ключей `workflows` нет (или файл битый) — встроенный `DEFAULT_WORKFLOW` (spec → plan → code → close + reject), поведение до VL-188.
 - **Ветвление**: из одного статуса несколько фаз (в default: `To Do → spec` ИЛИ `reject`) — бот и веб показывают выбор кнопок; `getNextPhase` для «следующего этапа» выбирает первую не-reject фазу.
 - **Ручной переход `Backlog → initial_status`** — не фаза: кнопка «▶ Взять в работу» в вебе и карточке бота либо команда `/move VL-1 "To Do"`. Финальные статусы (phase null) исходящих переходов не имеют.
 - **Серверная валидация переносов**: `PATCH /api/tasks/:id` проверяет переход `canMoveTo` — перенос без транзита (например Spec → Done колонкой) → 400 «Переход … недоступен по workflow задачи» и откат доски. Кнопка фазы вне workflow → 409 «Фаза X недопустима из статуса Y». Исключение — CLI/MCP-правка `--status` и бот-команда `/status` (ручной escape-hatch без валидации).
 - **Переопределение промптов фаз**: файл проекта `.vibelog/prompts/phases/phase-<имя>.md` приоритетнее встроенного `templates/phases/phase-<имя>.md` (worktree-вариант — `phase-<имя>-worktree.md` ищется в обоих каталогах); системный промпт vibelog-agent — `.vibelog/prompts/agent-prompt.md`. Если шаблон не найден ни там, ни в `templates/` — ошибка запуска.
-- **Шаблоны фаз** лежат в `templates/phases/` (`phase-spec.md`, `phase-plan.md`, `phase-code.md`, `phase-do.md`, `phase-close.md`, `phase-reject.md` и служебные); статус после фазы подставляется в промпт как `{{producesStatus}}` — в шаблонах нет захардкоженных статусов.
+- **Шаблоны фаз** лежат в `templates/phases/` (`phase-spec.md`, `phase-plan.md`, `phase-code.md`, `phase-do.md`, `phase-close.md`, `phase-reject.md`, `phase-investigate.md`, `phase-materialize.md` и служебные); статус после фазы подставляется в промпт как `{{producesStatus}}` — в шаблонах нет захардкоженных статусов.
 
 ---
 
