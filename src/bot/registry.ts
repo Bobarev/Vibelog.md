@@ -40,6 +40,9 @@ export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'status', description: 'Сменить статус задачи', examples: ['/status VL-1 In Progress'] },
   { command: 'move', description: 'Ручной переход статуса по workflow (Backlog → To Do и др.)', usage: '/move <id> <статус>', examples: ['/move VL-1 To Do'] },
   { command: 'set', description: 'Настройки бота: агент, лимиты фаз, режим веток, компакшн', usage: '/set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off>', examples: ['/set agent vb', '/set max-wall-time 1800', '/set branch-mode on', '/set compact off'] },
+  // Порядок = порядок bot.command в handlers.ts (VL-191: auto после /set, перед /comment —
+  // тест registry.test «реестр покрывает все bot.command» сверяет имена и порядок)
+  { command: 'auto', description: 'Автоочередь фаз: /auto add|start|stop|status', usage: '/auto add VL-N … | start | stop | status', examples: ['/auto add VL-1 VL-2', '/auto start', '/auto status'] },
   { command: 'comment', description: 'Комментарий + Фаза Comment: /comment[:agent] VL-1 текст', usage: '/comment[:agent] VL-1 <текст>', examples: ['/comment VL-1 добавь тесты', '/comment:vb VL-1 перепиши план'] },
   { command: 'spec', description: 'Фаза 1 (Spec): /spec[:agent] описание фичи', usage: '/spec[:agent] <описание>', examples: ['/spec добавь экспорт задач в CSV'] },
   { command: 'plan', description: 'Фаза 2 (Plan): /plan[:agent] VL-<id> [комментарий]', usage: '/plan[:agent] VL-<id> [комментарий]', examples: ['/plan VL-12', '/plan:vb VL-12 учти замечания'] },

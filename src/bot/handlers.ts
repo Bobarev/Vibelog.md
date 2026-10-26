@@ -50,10 +50,13 @@ import type { PhaseExitCallback, PhaseRun, StartResult } from '../web/orchestrat
 // VL-180: startTaskPhase — общий с вебом хелпер «комментарий → фаза»
 // (агент default_agent, addComment до старта); startPhase больше не нужен
 import { getRun, startAnalyze, startTaskPhase, startPrompt, startResume, rejectTask } from '../web/orchestrator.js';
+// VL-191: автоочередь фаз — add/start/stop/status делят раннер с callback-кнопкой
+import { autoQueueStatusText, enqueueAutoTasks, resumeAutoRunner, startAutoRunner, stopAutoRunner } from './auto-runner.js';
 import {
   extractSessionRef,
   richToText,
   parseAnalyzeCommand,
+  parseAutoCommand,
   parseCloseCommand,
   parseCodeCommand,
   parseCommitsCommand,
@@ -736,6 +739,51 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     }
   });
 
+  // ── /auto — автоочередь фаз (VL-191) ──
+  // add — задачи в очередь .vibelog/auto-queue.json; start/stop/status —
+  // управление автопрогоном (stop останавливает ПОСЛЕ текущей фазы)
+  bot.command('auto', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const parsed = parseAutoCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, parsed.error);
+      return;
+    }
+    try {
+      if (parsed.action === 'add') {
+        // Валидация существования — как в /status: несуществующие ID → отказ
+        const missing = parsed.ids.filter((id) => getTask(deps.cwd, id) === null);
+        if (missing.length > 0) {
+          await sendMd(
+            ctx,
+            'Задачи не найдены: ' + escapeMarkdownV2(missing.join(', '))
+          );
+          return;
+        }
+        const res = enqueueAutoTasks(bot, deps.cwd, parsed.ids);
+        const parts: string[] = [];
+        if (res.added.length > 0) parts.push('добавлены: ' + escapeMarkdownV2(res.added.join(', ')));
+        if (res.skipped.length > 0) parts.push('уже в очереди: ' + escapeMarkdownV2(res.skipped.join(', ')));
+        await sendMd(ctx, '🤖 Auto-очередь: ' + parts.join('; '));
+        return;
+      }
+      if (parsed.action === 'start') {
+        startAutoRunner(bot, deps.cwd);
+        await sendMd(ctx, '▶ Автоочередь запущена (текущая/следующая фаза стартует сразу)');
+        return;
+      }
+      if (parsed.action === 'stop') {
+        stopAutoRunner(deps.cwd);
+        await sendMd(ctx, '⏸ Автоочередь остановится после текущей фазы');
+        return;
+      }
+      // status — без requireBind? requireBind уже выше; текст очереди экранируем
+      await sendMd(ctx, '```\n' + autoQueueStatusText(deps.cwd) + '\n```');
+    } catch (err) {
+      await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
   // ── /comment — комментарий + Фаза Comment (VL-35/60), агент — VL-94 ──
   bot.command(['comment', 'comment:qwen', 'comment:vb'], async (ctx) => {
     if (!requireBind(ctx)) return;
@@ -1318,7 +1366,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendDocView(bot, chatId, entry);
       return;
     }
-    if (!data.startsWith('next:') && !data.startsWith('reject:') && !data.startsWith('phase:') && !data.startsWith('start:')) return; // чужие callback не трогаем (VL-188: +phase:/start:)
+    if (!data.startsWith('next:') && !data.startsWith('reject:') && !data.startsWith('phase:') && !data.startsWith('start:') && !data.startsWith('auto:')) return; // чужие callback не трогаем (VL-188: +phase:/start:; VL-191: +auto:)
     // ── Кнопка «Reject» (VL-144): data = reject:<id> ──
     // Никогда не бывшая в Code задача отклоняется синхронно (механика:
     // Rejected + архив), бывшая — запускает LLM-фазу reject (откат начатых
@@ -1364,6 +1412,34 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         ctx,
         `🚀 Фаза Reject запущена для *${task.id}*, PID ${result.pid}: после завершения задача будет переведена в Rejected и архивирована`
       );
+      return;
+    }
+    // ── Кнопка «Auto» (VL-191): data = auto:<id> — задача в автоочередь ──
+    // Идемпотентно: уже в очереди → «уже в очереди». Запуск фаз — только
+    // через /auto start (running:true), кнопка лишь наполняет очередь.
+    if (data.startsWith('auto:')) {
+      const id = data.slice('auto:'.length).trim();
+      if (!requireBind(ctx)) {
+        await ctx
+          .answerCallbackQuery({ text: 'Бот не привязан к чату — выполните /start' })
+          .catch(() => {});
+        return;
+      }
+      const chatId = ctx.chat?.id;
+      if (chatId === undefined) return;
+      if (!getTask(deps.cwd, id)) {
+        await ctx.answerCallbackQuery({ text: `Задача ${id} не найдена.` }).catch(() => {});
+        return;
+      }
+      const res = enqueueAutoTasks(bot, deps.cwd, [id]);
+      await ctx
+        .answerCallbackQuery({
+          text: res.skipped.length > 0 ? `🤖 ${id} уже в очереди` : `🤖 ${id} добавлена в auto-очередь`,
+        })
+        .catch(() => {});
+      if (res.added.length > 0) {
+        await sendText(bot, chatId, `🤖 *${escapeMarkdownV2(id)}* в auto-очереди. Запуск: /auto start`);
+      }
       return;
     }
     // ── Кнопка «Взять в работу» (VL-188): data = start:<id> ──
@@ -1592,5 +1668,8 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     }
   });
 
-
+  // VL-191: возобновление автоочерери при старте бота — running-элементы →
+  // pending (onExit процесса-предшественника потерян), при running:true
+  // цикл продолжается. Без await: tick асинхронен, polling не блокируем.
+  resumeAutoRunner(bot, deps.cwd);
 }
