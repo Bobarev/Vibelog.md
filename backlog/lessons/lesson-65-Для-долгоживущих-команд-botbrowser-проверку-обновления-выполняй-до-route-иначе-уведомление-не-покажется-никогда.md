@@ -14,7 +14,7 @@ linked_tasks:
   - VL-206
 created_date: 2026-10-27
 updated_date: 2026-10-27
-supersedes: ''
+supersedes: lesson-67
 ---
 ## Проблема
 
