@@ -62,6 +62,14 @@ export interface LoopResult {
    * диалог), чтобы resume не начинал беседу с чистого листа.
    */
   messages: ChatMessage[];
+  /**
+   * Байты wire-body последнего LLM-запроса фазы (VL-203): диагностика
+   * для logTail оркестратора — отличаем content-based отказ от размерного.
+   * undefined, если ответы пришли от мока без payloadBytes.
+   */
+  last_payload_bytes?: number;
+  /** Максимум payload по всем ходам фазы (VL-203) — пик запроса. */
+  max_payload_bytes?: number;
 }
 
 /** Опции запуска loop. */
@@ -233,6 +241,10 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // messages/jsonl при этом не мутируются — усекается только wire-payload.
   let compactFrom: number | null = null;
   let lastPromptTokens = 0;
+  // VL-203: учёт wire-payload по ходам. Объявлены ДО fail() — иначе
+  // возвраты ошибок не содержат диагностику (fail определяется раньше цикла).
+  let lastPayload: number | undefined;
+  let maxPayload: number | undefined;
 
   const duration = (): number => Date.now() - startedAt;
 
@@ -256,6 +268,8 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       duration_ms: duration(),
       usage,
       messages,
+      last_payload_bytes: lastPayload,
+      max_payload_bytes: maxPayload,
     };
   };
 
@@ -297,6 +311,12 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
     }
     addUsage(usage, response.usage);
     numTurns++;
+    // VL-203: wire-payload этого хода — для JSONL (payload_bytes в
+    // assistant-сообщении) и итоговой диагностики LoopResult
+    if (response.payloadBytes !== undefined) {
+      lastPayload = response.payloadBytes;
+      maxPayload = Math.max(maxPayload ?? 0, response.payloadBytes);
+    }
     // Порог компакшна запоминается после ответа — триггер сработает на
     // следующей итерации, когда в messages уже дописаны assistant/tool
     lastPromptTokens = response.usage.input_tokens + response.usage.cache_read_input_tokens;
@@ -328,7 +348,15 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // Финальный ответ дописывается в диалог (VL-95): транскрипт сессии
       // должен заканчиваться assistant-сообщением — иначе при resume
       // история обрывается на tool-сообщении и LLM API её отклонит
-      await pushMessage({ role: 'assistant', content: response.text, usage: { ...response.usage } });
+      await pushMessage({
+        role: 'assistant',
+        content: response.text,
+        usage: { ...response.usage },
+        // VL-203: wire-диагностика в JSONL-транскрипт (плоские поля,
+        // optional — мок-ответы без payloadBytes их не несут)
+        ...(response.payloadBytes !== undefined ? { payload_bytes: response.payloadBytes } : {}),
+        ...(response.shrinkLevel !== undefined ? { shrink_level: response.shrinkLevel } : {}),
+      });
       return {
         result: response.text,
         is_error: false,
@@ -336,6 +364,8 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         duration_ms: duration(),
         usage,
         messages,
+        last_payload_bytes: lastPayload,
+        max_payload_bytes: maxPayload,
       };
     }
     // Guard зацикливания намерений (VL-119, инцидент VL-98): N ходов подряд
@@ -370,6 +400,10 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // sumUsageFromMessages/fallback finish_phase; копия — аккумулятор
       // `usage` мутируется addUsage, привязывать ссылку нельзя
       usage: { ...response.usage },
+      // VL-203: размер тела запроса и уровень компакшна tool-выводов —
+      // AC3: JSONL фиксирует по ходам; провайдеру поля не уходят
+      ...(response.payloadBytes !== undefined ? { payload_bytes: response.payloadBytes } : {}),
+      ...(response.shrinkLevel !== undefined ? { shrink_level: response.shrinkLevel } : {}),
     });
 
     for (const call of response.toolCalls) {

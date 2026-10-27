@@ -691,6 +691,14 @@ export async function main(argv: string[]): Promise<void> {
           usage: sessionUsage,
           model: llm.model || undefined,
           agent: 'vb',
+          // VL-203: wire-payload последнего/пикового запроса — JSONL-мета
+          // фиксирует размер тела запроса для диагностики отказов
+          ...(loopResult.last_payload_bytes !== undefined
+            ? { last_payload_bytes: loopResult.last_payload_bytes }
+            : {}),
+          ...(loopResult.max_payload_bytes !== undefined
+            ? { max_payload_bytes: loopResult.max_payload_bytes }
+            : {}),
         });
       } catch (err) {
         console.error(`Предупреждение: мета сессии ${sessionId} не дополнена — ${(err as Error).message}`);
@@ -699,6 +707,16 @@ export async function main(argv: string[]): Promise<void> {
   } catch (err) {
     console.error(`Предупреждение: учёт токенов сессии не выполнен — ${(err as Error).message}`);
   }
+
+  // VL-203 (AC1): итоговая диагностика фазы в stderr → logTail оркестратора
+  // (хвост 50 строк): байты payload последнего запроса + usage по фазе —
+  // по ним отличаем content-based отказ провайдера от размерного.
+  // Печатается ПОСЛЕ tui.unmount() — альтернативный буфер закрыт, рендер цел.
+  console.error(
+    `[vibelog-agent] фаза: запросов=${loopResult.num_turns}, ` +
+      `payload последнего запроса=${loopResult.last_payload_bytes ?? 'н/д'} байт ` +
+      `(макс ${loopResult.max_payload_bytes ?? 'н/д'}), usage=${JSON.stringify(loopResult.usage)}`,
+  );
 
   // Единственная строка stdout — JSON type=result (контракт parseQwenResult).
   // duration_api_ms loop не меряет отдельно — приравнен к общему duration_ms.

@@ -34,10 +34,24 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
 }
 
-/** Сообщение диалога; tool_calls — только у assistant; usage — только у assistant (VL-198). */
+/**
+ * Сообщение диалога; tool_calls — только у assistant; usage — только у assistant (VL-198).
+ * payload_bytes/shrink_level — диагностика wire-запроса в JSONL-транскрипте
+ * (VL-203): провайдеру НЕ уходят (toWireMessages/messagesToInput собирают
+ * assistant явно — паттерн VL-198).
+ */
 export type ChatMessage =
   | { role: 'system' | 'user'; content: string }
-  | { role: 'assistant'; content: string | null; tool_calls?: ToolCall[]; usage?: LlmUsage }
+  | {
+      role: 'assistant';
+      content: string | null;
+      tool_calls?: ToolCall[];
+      usage?: LlmUsage;
+      /** Байты wire-body запроса, породившего ответ (VL-203). */
+      payload_bytes?: number;
+      /** Уровень shrink-усечения tool-выводов: 0=full, 1=4096, 2=1024 (VL-203). */
+      shrink_level?: number;
+    }
   | { role: 'tool'; tool_call_id: string; content: string };
 
 /** Описание инструмента для tool calling: схема — JSON Schema объекта. */
@@ -65,6 +79,14 @@ export interface LlmResponse {
   text: string;
   toolCalls: ToolCall[];
   usage: LlmUsage;
+  /**
+   * Байты фактического wire-body последнего запроса (VL-203): JSON-строки,
+   * ушедшей в fetch, включая stream/stream_options — по ним отличаем
+   * content-based отказ от размерного (инцидент VL-197: 140 КБ vs 1.25 МБ).
+   */
+  payloadBytes?: number;
+  /** Уровень shrink-усечения tool-выводов этого запроса: 0=full, 1=4096, 2=1024 (VL-203). */
+  shrinkLevel?: number;
 }
 
 /**
@@ -715,6 +737,14 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
 
   const url = apiMode === 'responses' ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
 
+  // VL-203: диагностика wire-запроса в closure клиента. lastRequestBytes —
+  // байты ПОСЛЕДНЕЙ сериализованной JSON-строки (включая stream-флаги) —
+  // пишется до fetch, чтобы байты были от фактического тела даже при отказе.
+  // lastUsage — usage последнего УСПЕШНОГО ответа: в теле ошибки его нет,
+  // но по нему диагностируем отказ (AC2 задачи VL-203).
+  let lastRequestBytes = 0;
+  let lastUsage: LlmUsage | null = null;
+
   /**
    * Один HTTP-запрос с ретраями на 429/5xx/сетевые ошибки.
    * `stream` управляет телом; последняя попытка возвращает response как есть
@@ -730,6 +760,19 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
       if (signal?.aborted) throw new Error('Операция прервана пользователем');
       let res: Response;
       try {
+        // VL-203: сериализация вынесена до fetch — байты считаем от того же
+        // wire-body, что реально уходит провайдеру (включая stream-флаги)
+        const wireBody = JSON.stringify(
+          stream
+            ? apiMode === 'responses'
+              // VL-205: stream_options — chat-специфика; строгий
+              // Responses-провайдер ответит 400 на неизвестное поле.
+              // usage в стриме приходит в response.completed
+              ? { ...body, stream: true }
+              : { ...body, stream: true, stream_options: { include_usage: true } }
+            : body,
+        );
+        lastRequestBytes = Buffer.byteLength(wireBody, 'utf8');
         res = await fetchImpl(url, {
           method: 'POST',
           headers: {
@@ -739,16 +782,7 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
             // на дашборде RouterAI; пустой sessionId → заголовка нет
             ...(sessionId ? { 'X-Session-Id': sessionId } : {}),
           },
-          body: JSON.stringify(
-            stream
-              ? apiMode === 'responses'
-                // VL-205: stream_options — chat-специфика; строгий
-                // Responses-провайдер ответит 400 на неизвестное поле.
-                // usage в стриме приходит в response.completed
-                ? { ...body, stream: true }
-                : { ...body, stream: true, stream_options: { include_usage: true } }
-              : body,
-          ),
+          body: wireBody,
           signal,
         });
       } catch (err) {
@@ -808,9 +842,14 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
         // (детект и fail() — в loop.ts, здесь только лог в stderr → logTail).
         if (isHighRiskBody(res.text ?? '')) {
           console.error(
-            `[vibelog-agent] high-risk в тексте при HTTP 200: payload=${Buffer.byteLength(JSON.stringify(baseBody), 'utf8')} байт, сообщений=${currentMessages.length}, usage=${JSON.stringify(res.usage)}`,
+            `[vibelog-agent] high-risk в тексте при HTTP 200: payload=${lastRequestBytes} байт, сообщений=${currentMessages.length}, usage=${JSON.stringify(res.usage)}`,
           );
         }
+        // VL-203: диагностика wire-запроса наружу — loop пишет её в JSONL
+        // и LoopResult, фазовый stderr-строку печатает cli.ts
+        res.payloadBytes = lastRequestBytes;
+        res.shrinkLevel = shrinks;
+        lastUsage = res.usage;
         return res;
       } catch (err) {
         const e = err instanceof Error ? err : new Error(String(err));
@@ -818,9 +857,10 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
         if (!isHighRiskBody(e.message)) throw e;
         // VL-199: размер payload известен только здесь (wire-body) — лог и при
         // повторе, и при исчерпании shrink-уровней; stderr попадает в logTail
-        // оркестратора. usage в теле ошибки нет.
+        // оркестратора. В теле ошибки usage нет — VL-203: подставляем usage
+        // последнего УСПЕШНОГО запроса (если он был), иначе «н/д».
         console.error(
-          `[vibelog-agent] high-risk-отказ HTTP: payload=${Buffer.byteLength(JSON.stringify(baseBody), 'utf8')} байт, сообщений=${currentMessages.length}, shrink-уровень=${shrinks}, usage=н/д`,
+          `[vibelog-agent] high-risk-отказ HTTP: payload=${lastRequestBytes} байт, сообщений=${currentMessages.length}, shrink-уровень=${shrinks}, usage=${lastUsage ? `${JSON.stringify(lastUsage)} (предыдущего успешного запроса)` : 'н/д'}`,
         );
         if (shrinks >= HIGH_RISK_MAX_SHRINKS) throw e;
         shrinks++;
