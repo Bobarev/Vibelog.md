@@ -31,8 +31,15 @@ const FETCH_RACE_MS = 3000;
 /** Timeout для дочернего процесса npm view (как в Qwen Code). */
 const NPM_TIMEOUT_MS = 5000;
 
-/** Команды, при которых проверка пропускается: долгоживущие / JSON-RPC по stdout. */
-const SKIP_COMMANDS = ['mcp', 'browser', 'bot', 'qwen-debug'];
+/** Команды, при которых проверка пропускается: JSON-RPC по stdout / отладка. */
+const SKIP_COMMANDS = ['mcp', 'qwen-debug'];
+
+/**
+ * Команды, у которых уведомление выполняется при запуске ДО route (VL-206):
+ * bot/browser долгоживущие — route() для них не завершается до остановки
+ * сервиса, поэтому пост-route вызов из bin/vibelog.mjs никогда бы не наступил.
+ */
+export const STARTUP_NOTIFY_COMMANDS = ['bot', 'browser'];
 
 /** Значения env-гарда, означающие «отключить проверку обновлений». */
 const SKIP_ENV_VALUES = ['true', '1', 'yes'];
@@ -188,7 +195,9 @@ function writeCache(path: string, entry: UpdateCacheEntry): void {
  * Нужно ли пропустить проверку обновлений.
  *
  * Пропускаем: env-гард VIBELOG_SKIP_UPDATE_CHECK=true|1|yes,
- * долгоживущие/JSON-RPC-команды (mcp печатает JSON-RPC по stdout),
+ * долгоживущие/отладочные команды (mcp печатает JSON-RPC по stdout,
+ * qwen-debug — отладка; bot/browser НЕ пропускаются — их уведомление
+ * показывается при запуске до route, см. shouldNotifyAtStartup, VL-206),
  * флаги -v/--version — контракт Backlog.md: `-v` выводит только номер версии.
  */
 export function shouldSkip(argv: string[] = [], env: NodeJS.ProcessEnv = process.env): boolean {
@@ -198,6 +207,21 @@ export function shouldSkip(argv: string[] = [], env: NodeJS.ProcessEnv = process
   if (cmd && SKIP_COMMANDS.includes(cmd)) return true;
   if (argv.includes('-v') || argv.includes('--version')) return true;
   return false;
+}
+
+/**
+ * Нужно ли выполнить проверку обновления при запуске ДО route (VL-206).
+ *
+ * Для bot/browser: route() долгоживущий, пост-route вызов в bin не наступит
+ * до остановки сервиса — уведомление печатается сразу после старта (stderr),
+ * раньше любого вывода сервиса. Остальные команды — проверка после route,
+ * как в VL-101. Env-гард и -v/--version отсекает сам maybeNotifyUpdate.
+ *
+ * @returns true, если первая не-флаговая команда ∈ STARTUP_NOTIFY_COMMANDS
+ */
+export function shouldNotifyAtStartup(argv: string[] = process.argv.slice(2)): boolean {
+  const cmd = argv.find((a) => !a.startsWith('-'));
+  return cmd !== undefined && STARTUP_NOTIFY_COMMANDS.includes(cmd);
 }
 
 /**

@@ -15,6 +15,7 @@ import {
   compareVersions,
   fetchLatestVersion,
   shouldSkip,
+  shouldNotifyAtStartup,
   maybeNotifyUpdate,
   defaultCachePath,
 } from '../../dist/cli/update-check.js';
@@ -145,17 +146,43 @@ describe('shouldSkip — когда проверка пропускается', 
     assert.equal(shouldSkip(['task', 'list'], {}), false);
   });
 
-  it('долгоживущие команды mcp/browser/bot/qwen-debug', () => {
+  it('долгоживущие/отладочные команды mcp/qwen-debug (VL-206: bot/browser не пропускаются)', () => {
     assert.equal(shouldSkip(['mcp', 'start'], {}), true);
-    assert.equal(shouldSkip(['browser'], {}), true);
-    assert.equal(shouldSkip(['bot'], {}), true);
     assert.equal(shouldSkip(['qwen-debug'], {}), true);
+    // VL-206: bot/browser убраны из SKIP_COMMANDS — уведомление при запуске
+    assert.equal(shouldSkip(['browser'], {}), false);
+    assert.equal(shouldSkip(['bot'], {}), false);
     assert.equal(shouldSkip(['task', 'list'], {}), false);
+  });
+
+  it('bot/browser всё ещё пропускаются по env-гарду и -v/--version (VL-206)', () => {
+    assert.equal(shouldSkip(['browser'], { VIBELOG_SKIP_UPDATE_CHECK: 'true' }), true);
+    assert.equal(shouldSkip(['bot'], { VIBELOG_SKIP_UPDATE_CHECK: '1' }), true);
+    assert.equal(shouldSkip(['browser', '-v'], {}), true);
+    assert.equal(shouldSkip(['bot', '--version'], {}), true);
   });
 
   it('флаги -v / --version (контракт Backlog.md)', () => {
     assert.equal(shouldSkip(['-v'], {}), true);
     assert.equal(shouldSkip(['--version'], {}), true);
+  });
+});
+
+describe('shouldNotifyAtStartup — VL-206: проверка до route для bot/browser', () => {
+  it('bot/browser → true (с флагами команды тоже)', () => {
+    assert.equal(shouldNotifyAtStartup(['browser']), true);
+    assert.equal(shouldNotifyAtStartup(['bot']), true);
+    assert.equal(shouldNotifyAtStartup(['browser', '--no-open']), true);
+    assert.equal(shouldNotifyAtStartup(['bot', '--help']), true);
+  });
+
+  it('остальные команды, mcp, пустой argv, голые флаги → false', () => {
+    assert.equal(shouldNotifyAtStartup(['task', 'list']), false);
+    assert.equal(shouldNotifyAtStartup(['mcp', 'start']), false);
+    assert.equal(shouldNotifyAtStartup(['qwen-debug']), false);
+    assert.equal(shouldNotifyAtStartup([]), false);
+    assert.equal(shouldNotifyAtStartup(['-v']), false);
+    assert.equal(shouldNotifyAtStartup(['--version']), false);
   });
 });
 
@@ -282,6 +309,41 @@ describe('maybeNotifyUpdate — уведомление', () => {
     }
     assert.equal(exec.calls.length, 0);
     assert.equal(err.lines.length, 0);
+  });
+
+  it('VL-206: browser/bot — устаревший кэш + новая версия → уведомление в stderr', async () => {
+    writeCache({ checkedAt: NOW - DAY_MS - 1, latest: '1.0.0', current: '1.0.0' });
+    const exec = mockExec('"1.7.0"');
+    const err = mockStderr();
+    try {
+      await maybeNotifyUpdate(['browser'], {}, baseDeps(exec.fn));
+      // Кэш общий: перед второй командой снова устареваем его (TTL 24 ч)
+      writeCache({ checkedAt: NOW - DAY_MS - 1, latest: '1.0.0', current: '1.0.0' });
+      await maybeNotifyUpdate(['bot'], {}, baseDeps(exec.fn));
+    } finally {
+      err.restore();
+    }
+    // Уведомление показано (раньше shouldSkip глушил bot/browser)
+    assert.equal(err.lines.length, 2, JSON.stringify(err.lines));
+    assert.ok(err.lines[0].includes('Доступна новая версия'), err.lines[0]);
+    assert.ok(err.lines[0].includes('npm install -g vibelog.md'), err.lines[0]);
+  });
+
+  it('VL-206: browser — свежий кэш (записан обычной командой) → exec НЕ вызывается', async () => {
+    // Общий кэш с обычными командами: сначала task-команда написала кэш…
+    const exec = mockExec('"1.7.0"');
+    const err = mockStderr();
+    try {
+      await maybeNotifyUpdate(['task', 'list'], {}, baseDeps(exec.fn));
+      assert.equal(exec.calls.length, 1);
+      assert.equal(err.lines.length, 1);
+      // …теперь browser с тем же cachePath — кэш свежий, ни проверки, ни показа
+      await maybeNotifyUpdate(['browser'], {}, baseDeps(exec.fn));
+      assert.equal(exec.calls.length, 1, 'повторная проверка в пределах 24 ч не идёт');
+      assert.equal(err.lines.length, 1, 'повторный показ не идёт');
+    } finally {
+      err.restore();
+    }
   });
 
   it('env-гард и команда mcp → exec не вызывается', async () => {

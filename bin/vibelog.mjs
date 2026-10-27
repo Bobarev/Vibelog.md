@@ -14,13 +14,24 @@
 // ESM-импорты выполняются до тела модуля, фильтр должен встать раньше графа.
 import './warn-filter.mjs';
 import { route } from '../dist/cli/router.js';
-import { maybeNotifyUpdate } from '../dist/cli/update-check.js';
+import { maybeNotifyUpdate, shouldNotifyAtStartup } from '../dist/cli/update-check.js';
 
-route(process.argv.slice(2))
+const argv = process.argv.slice(2);
+// VL-206: bot/browser — долгоживущие, route() для них не завершается до
+// остановки сервиса → проверка обновления выполняется при запуске ДО route
+// (уведомление в stderr раньше любого вывода сервиса, задержка ≤3 с раз в сутки)
+const notifyFirst = shouldNotifyAtStartup(argv);
+
+const flow = notifyFirst
+  ? maybeNotifyUpdate(argv).then(() => route(argv))
+  : route(argv);
+
+flow
   .catch(err => {
     console.error(`Ошибка: ${err.message}`);
     process.exit(1);
   })
-  // VL-101: после выполнения команды — тихая проверка обновления
-  // (уведомление в stderr, не чаще раза в сутки; см. src/cli/update-check.ts)
-  .then(() => maybeNotifyUpdate(process.argv.slice(2)));
+  // VL-101/VL-206: после выполнения команды — тихая проверка обновления
+  // (уведомление в stderr, не чаще раза в сутки); для bot/browser проверка
+  // уже была при запуске — пост-route вызов пропускаем
+  .then(() => (notifyFirst ? undefined : maybeNotifyUpdate(argv)));
