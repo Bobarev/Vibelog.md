@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { parseQwenResult } from '../../dist/web/qwen-result.js';
 import { parseArgs } from '../../dist/agent/cli.js';
+import { loadApiMode } from '../../dist/agent/llm-env.js';
 import { createTaskFile } from '../../dist/core/store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -267,6 +268,35 @@ describe('vibelog-agent CLI (VL-85)', () => {
     assert.throws(() => parseArgs(['x', '--compact-tail']), /требует значение/);
     assert.throws(() => parseArgs(['x', '--compact-at-tokens', '-5']), /положительное целое/);
     assert.throws(() => parseArgs(['x', '--compact-at-tokens']), /требует значение/);
+  });
+
+  // ── VL-205: parseArgs --api-mode и loadApiMode ──
+
+  it('parseArgs: --api-mode responses/chat → opts.apiMode (VL-205)', () => {
+    assert.equal(parseArgs(['фаза', 'VL-1', '--api-mode', 'responses']).apiMode, 'responses');
+    assert.equal(parseArgs(['фаза', 'VL-1', '--api-mode', 'chat']).apiMode, 'chat');
+    assert.equal(parseArgs(['x']).apiMode, undefined, 'без флага — читается settings.json');
+  });
+
+  it('parseArgs: --api-mode foo / без значения — throw (VL-205)', () => {
+    assert.throws(() => parseArgs(['x', '--api-mode', 'foo']), /chat\|responses/);
+    assert.throws(() => parseArgs(['x', '--api-mode']), /требует значение/);
+  });
+
+  it('loadApiMode: settings.json api_mode → режим, дефолт/мусор → chat (VL-205)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-apimode-'));
+    try {
+      // нет файла → chat (текущее поведение)
+      assert.equal(loadApiMode(dir), 'chat');
+      mkdirSync(join(dir, '.vibelog'), { recursive: true });
+      writeFileSync(join(dir, '.vibelog', 'settings.json'), JSON.stringify({ api_mode: 'responses' }));
+      assert.equal(loadApiMode(dir), 'responses');
+      // битое значение → chat: конфиг не должен ронять агента
+      writeFileSync(join(dir, '.vibelog', 'settings.json'), JSON.stringify({ api_mode: 'xxx' }));
+      assert.equal(loadApiMode(dir), 'chat');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   // ── VL-95: интеграция — хранение и resume сессий ──

@@ -8,7 +8,7 @@
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
-import { createLlmClient } from '../../dist/agent/llm.js';
+import { createLlmClient, messagesToInput, parseNonStreamResponses } from '../../dist/agent/llm.js';
 
 /** Фейковый Response со SSE-телом: строки data: {...} / data: [DONE]. */
 function sseResponse(events, { status = 200, statusText = 'OK', bodyText = '' } = {}) {
@@ -48,8 +48,9 @@ function jsonResponse(obj, { status = 200, statusText = 'OK' } = {}) {
 
 /** Обёртка fetchImpl со счётчиком вызовов, телами запросов и очередью ответов/ошибок. */
 function fakeFetch(script) {
-  const state = { calls: 0, bodies: [], headers: [] };
+  const state = { calls: 0, bodies: [], headers: [], urls: [] };
   const impl = async (_url, init) => {
+    state.urls.push(_url);
     state.bodies.push(typeof init?.body === 'string' ? init.body : '');
     state.headers.push(init?.headers ?? {});
     const step = script[state.calls] ?? script[script.length - 1];
@@ -564,5 +565,234 @@ describe('отказ «high risk» → shrink-повтор (VL-178)', () => {
     const plain = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
     await plain.streamChat([{ role: 'user', content: 'x' }], []);
     assert.equal('X-Session-Id' in state.headers[1], false);
+  });
+});
+
+// ── VL-205: Responses API — переключатель api_mode ──
+
+describe('messagesToInput (VL-205)', () => {
+  it('system/user → message-итемы, assistant → message + function_call, tool → function_call_output', () => {
+    const input = messagesToInput([
+      { role: 'system', content: 'ты — ассистент' },
+      { role: 'user', content: 'привет' },
+      {
+        role: 'assistant',
+        content: 'сейчас посмотрю',
+        tool_calls: [{ id: 'call_1', name: 'read_file', arguments: { path: 'a.ts' } }],
+        usage: { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 7, reasoning_tokens: 0 },
+      },
+      { role: 'tool', tool_call_id: 'call_1', content: 'содержимое файла' },
+    ]);
+    assert.deepEqual(input, [
+      { type: 'message', role: 'system', content: 'ты — ассистент' },
+      { type: 'message', role: 'user', content: 'привет' },
+      { type: 'message', role: 'assistant', content: 'сейчас посмотрю' },
+      { type: 'function_call', call_id: 'call_1', name: 'read_file', arguments: '{"path":"a.ts"}' },
+      { type: 'function_call_output', call_id: 'call_1', output: 'содержимое файла' },
+    ]);
+    // usage (VL-198) не утекает провайдеру
+    assert.equal(JSON.stringify(input).includes('usage'), false);
+  });
+
+  it('assistant content=null с tool_calls → message-итем пропускается, остаются function_call', () => {
+    const input = messagesToInput([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'c1', name: 'glob', arguments: {} }] },
+    ]);
+    assert.deepEqual(input, [
+      { type: 'function_call', call_id: 'c1', name: 'glob', arguments: '{}' },
+    ]);
+  });
+
+  it('tool-вывод усекается через truncateTool (wire-cap VL-178)', () => {
+    const input = messagesToInput(
+      [{ role: 'tool', tool_call_id: 'c1', content: 'x'.repeat(100) }],
+      (s) => s.slice(0, 10) + '…[усечён]',
+    );
+    assert.equal(input[0].output, 'xxxxxxxxxx…[усечён]');
+  });
+});
+
+describe('Responses API non-stream parsing (VL-205)', () => {
+  it('output[] → текст из message/output_text + tool_calls из function_call + usage из details', () => {
+    const res = parseNonStreamResponses({
+      id: 'resp_1',
+      output: [
+        { type: 'reasoning', content: [], summary: [] },
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [
+            { type: 'output_text', text: 'Ответ ' },
+            { type: 'output_text', text: 'модели' },
+          ],
+        },
+        { type: 'function_call', call_id: 'fc_1', name: 'read_file', arguments: '{"path":"a.ts"}' },
+      ],
+      usage: {
+        input_tokens: 100,
+        output_tokens: 40,
+        total_tokens: 140,
+        input_tokens_details: { cached_tokens: 30 },
+        output_tokens_details: { reasoning_tokens: 12 },
+      },
+    });
+    assert.equal(res.text, 'Ответ модели');
+    assert.equal(res.toolCalls.length, 1);
+    assert.deepEqual(res.toolCalls[0], {
+      id: 'fc_1',
+      name: 'read_file',
+      arguments: { path: 'a.ts' },
+    });
+    assert.equal(res.usage.input_tokens, 100);
+    assert.equal(res.usage.output_tokens, 40);
+    assert.equal(res.usage.cache_read_input_tokens, 30);
+    assert.equal(res.usage.reasoning_tokens, 12);
+    assert.equal(res.usage.total_tokens, 140);
+  });
+
+  it('битое тело (нет output[]) → пустой ответ, без throw', () => {
+    const res = parseNonStreamResponses({ id: 'resp_2' });
+    assert.equal(res.text, '');
+    assert.deepEqual(res.toolCalls, []);
+    assert.equal(res.usage.input_tokens, 0);
+  });
+});
+
+describe('Responses API streaming + переключатель api_mode (VL-205)', () => {
+  it('typed-события: output_text.delta → текст, function_call → tool_calls, completed → usage', async () => {
+    const events = [
+      JSON.stringify({ type: 'response.created', response: { id: 'resp_1' } }),
+      JSON.stringify({ type: 'response.output_text.delta', delta: 'Привет' }),
+      JSON.stringify({ type: 'response.output_text.delta', delta: ', мир!' }),
+      JSON.stringify({
+        type: 'response.output_item.added',
+        output_index: 1,
+        item: { type: 'function_call', call_id: 'fc_9', name: 'glob', arguments: '' },
+      }),
+      JSON.stringify({
+        type: 'response.function_call_arguments.delta',
+        output_index: 1,
+        delta: '{"pattern":',
+      }),
+      JSON.stringify({
+        type: 'response.function_call_arguments.delta',
+        output_index: 1,
+        delta: '"*.ts"}',
+      }),
+      JSON.stringify({
+        type: 'response.function_call_arguments.done',
+        output_index: 1,
+        arguments: '{"pattern":"*.ts"}',
+      }),
+      JSON.stringify({
+        type: 'response.completed',
+        response: { usage: { input_tokens: 10, output_tokens: 4, output_tokens_details: { reasoning_tokens: 2 } } },
+      }),
+    ];
+    const { impl, state } = fakeFetch([sseResponse(events)]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl, apiMode: 'responses' });
+    const tokens = [];
+    const res = await client.streamChat([{ role: 'user', content: 'x' }], undefined, {
+      onToken: (t) => tokens.push(t),
+    });
+    assert.equal(res.text, 'Привет, мир!');
+    assert.deepEqual(tokens, ['Привет', ', мир!']);
+    assert.equal(res.toolCalls.length, 1);
+    assert.deepEqual(res.toolCalls[0], { id: 'fc_9', name: 'glob', arguments: { pattern: '*.ts' } });
+    assert.equal(res.usage.input_tokens, 10);
+    assert.equal(res.usage.output_tokens, 4);
+    assert.equal(res.usage.reasoning_tokens, 2);
+    // URL и тело: /responses, input[] (не messages), stream без stream_options
+    assert.equal(state.urls[0], 'https://llm.test/v1/responses');
+    const body = JSON.parse(state.bodies[0]);
+    assert.ok(Array.isArray(body.input), 'input[] вместо messages');
+    assert.equal('messages' in body, false);
+    assert.equal(body.stream, true);
+    assert.equal('stream_options' in body, false, 'stream_options — chat-специфика');
+  });
+
+  it('error-событие → throw с текстом провайдера', async () => {
+    const { impl } = fakeFetch([
+      sseResponse([JSON.stringify({ type: 'error', message: 'модель недоступна' })]),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl, apiMode: 'responses', maxRetries: 0 });
+    await assert.rejects(
+      () => client.streamChat([{ role: 'user', content: 'x' }], []),
+      /Ошибка API \(Responses\): модель недоступна/,
+    );
+  });
+
+  it('session_id в теле запроса (ref-18: приоритет тела), tools — плоский формат', async () => {
+    const { impl, state } = fakeFetch([sseResponse([])]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl, apiMode: 'responses', sessionId: 'agent-77' });
+    await client.streamChat(
+      [{ role: 'user', content: 'x' }],
+      [{ name: 'read_file', description: 'чтение', inputSchema: { type: 'object' } }],
+    );
+    const body = JSON.parse(state.bodies[0]);
+    assert.equal(body.session_id, 'agent-77');
+    assert.deepEqual(body.tools, [
+      { type: 'function', name: 'read_file', description: 'чтение', parameters: { type: 'object' } },
+    ]);
+    // X-Session-Id дублируется заголовком (оба поддержаны, ref-18)
+    assert.equal(state.headers[0]['X-Session-Id'], 'agent-77');
+  });
+
+  it('stateless (MVP): previous_response_id не передаётся, input несёт всю историю', async () => {
+    const history = [
+      { role: 'user', content: 'задача' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'c1', name: 'glob', arguments: {} }] },
+      { role: 'tool', tool_call_id: 'c1', content: 'найдено' },
+      { role: 'user', content: 'продолжай' },
+    ];
+    const { impl, state } = fakeFetch([sseResponse([])]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl, apiMode: 'responses' });
+    await client.streamChat(history, []);
+    const raw = state.bodies[0];
+    assert.equal(raw.includes('previous_response_id'), false, 'ref-20: MiMo не поддерживает, stateless');
+    assert.equal(raw.includes('"store"'), false);
+    const body = JSON.parse(raw);
+    assert.equal(body.input.length, 4, 'вся история уходит каждый ход');
+    // assistant-вызов → function_call, tool → function_call_output (связка по call_id)
+    assert.deepEqual(body.input[1], {
+      type: 'function_call',
+      call_id: 'c1',
+      name: 'glob',
+      arguments: '{}',
+    });
+    assert.deepEqual(body.input[2], { type: 'function_call_output', call_id: 'c1', output: 'найдено' });
+  });
+
+  it('переключатель: дефолт chat → /chat/completions + messages (регрессия)', async () => {
+    const { impl, state } = fakeFetch([sseResponse([])]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    await client.streamChat([{ role: 'user', content: 'x' }], []);
+    assert.equal(state.urls[0], 'https://llm.test/v1/chat/completions');
+    const body = JSON.parse(state.bodies[0]);
+    assert.ok(Array.isArray(body.messages));
+    assert.equal('input' in body, false);
+    assert.equal(body.stream_options.include_usage, true, 'chat: usage в стриме через stream_options');
+  });
+
+  it('apiMode chat явно → тот же /chat/completions (эквивалент дефолта)', async () => {
+    const { impl, state } = fakeFetch([sseResponse([])]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl, apiMode: 'chat' });
+    await client.streamChat([{ role: 'user', content: 'x' }], []);
+    assert.equal(state.urls[0], 'https://llm.test/v1/chat/completions');
+  });
+
+  it('responses non-stream фолбэк → parseNonStreamResponses (обрыв стрима)', async () => {
+    const { impl, state } = fakeFetch([
+      new Error('terminated'), // стрим упал сетевой ошибкой
+      jsonResponse({
+        output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'из фолбэка' }] }],
+        usage: { input_tokens: 3, output_tokens: 2 },
+      }),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl, apiMode: 'responses', maxRetries: 0 });
+    const res = await client.streamChat([{ role: 'user', content: 'x' }], []);
+    assert.equal(res.text, 'из фолбэка');
+    assert.equal(res.usage.input_tokens, 3);
+    assert.equal(state.calls, 2);
   });
 });

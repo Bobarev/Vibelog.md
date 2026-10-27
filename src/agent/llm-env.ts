@@ -9,6 +9,9 @@
  * матчат тесты (cli.test.mjs: /VIBELOG_LLM_API_KEY/) и их видит пользователь.
  */
 
+import { loadSettings } from '../core/settings.js';
+import type { ApiMode } from './llm.js';
+
 /**
  * Проверяет, что LLM-переменные окружения заданы; при отсутствии печатает
  * понятную ошибку в stderr.
@@ -31,4 +34,19 @@ export function ensureLlmEnv(subject: 'агенту' | 'чату с агенто
     return false;
   }
   return true;
+}
+
+/**
+ * Читает режим LLM API из .vibelog/settings.json (VL-205).
+ *
+ * Ключ `api_mode`: "chat" | "responses"; дефолт "chat" (текущее поведение).
+ * Битое/отсутствующее значение → "chat": конфиг пользователя не должен
+ * ронять агента (паттерн loadSettings). Общая точка для headless-CLI,
+ * TUI-чата и веб-чата (lesson-37 — дедупликация слоёв).
+ *
+ * @param cwd — директория проекта (в branch-mode вызывающий передаёт
+ *   VIBELOG_CWD ?? cwd — settings.json живёт в главном репо, не в worktree)
+ */
+export function loadApiMode(cwd: string): ApiMode {
+  return loadSettings(cwd).api_mode === 'responses' ? 'responses' : 'chat';
 }

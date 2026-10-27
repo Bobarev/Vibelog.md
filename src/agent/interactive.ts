@@ -25,7 +25,7 @@ import { taskToMarkdown } from '../core/task.js';
 import { agentSessionsDir, createSessionId, loadSession, saveSession } from './session.js';
 // Загрузка env проекта (VL-37/VL-189) — общий модуль с ботом и браузером
 import { loadProjectEnv } from '../bot/env.js';
-import { ensureLlmEnv } from './llm-env.js';
+import { ensureLlmEnv, loadApiMode } from './llm-env.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { listLocalTools } from './tools.js';
 import type { ToolSpec } from './tools.js';
@@ -106,7 +106,8 @@ export async function runInteractiveAgent(
     process.exitCode = 1;
     return;
   }
-  const llm = createLlmClient();
+  // apiMode (VL-205): режим LLM API из settings.json api_mode (дефолт chat)
+  const llm = createLlmClient({ apiMode: loadApiMode(cwd) });
   const tools: ToolSpec[] = listLocalTools(cwd);
   // VL-107 fix: как в cli.ts — при запуске из worktree сессии хранятся
   // в главном репо (VIBELOG_CWD от оркестратора), чтобы resume из бота

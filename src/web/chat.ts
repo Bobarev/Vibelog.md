@@ -28,6 +28,7 @@ import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ChatMessage, LlmClient, ToolCall, ToolDef } from '../agent/llm.js';
 import { createLlmClient } from '../agent/llm.js';
+import { loadApiMode } from '../agent/llm-env.js';
 import { listTools, handleToolCall } from '../mcp/tools.js';
 import { globalSearch } from '../core/search.js';
 import { truncateToolOutput } from '../agent/tools.js';
@@ -324,7 +325,8 @@ async function produce(
       return;
     }
     try {
-      llm = createLlmClient({ sessionId: threadId });
+      // apiMode (VL-205): режим LLM API из settings.json api_mode (дефолт chat)
+      llm = createLlmClient({ sessionId: threadId, apiMode: loadApiMode(cwd) });
     } catch (err) {
       queue.push({ type: 'error', message: err instanceof Error ? err.message : String(err) });
       return;
