@@ -1,0 +1,165 @@
+/**
+ * Тесты VL-196 — transient In Progress (core/phase-transient.ts).
+ *
+ * Покрытие: eligibility (workflow-фазы vs служебные), mark (кэш + статус),
+ * finalize (успех → produces_status, провал → откат + комментарий, «агент
+ * сам зафиксировал» — не перетираем), recovery (мёртвый pid → откат, живой →
+ * пропуск) и fail-open (битый путь кэша не роняет фазу).
+ *
+ * Фикстуры — временные каталоги /tmp; workflow — DEFAULT_WORKFLOW (без
+ * settings.json): Spec + plan → Planned, чтобы проверять реальные переходы.
+ */
+
+import { describe, it, afterAll } from 'vitest';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import {
+  isTransientEligible,
+  markPhaseStarted,
+  finalizePhaseStatus,
+  recoverStalePhaseStatuses,
+  phaseTransientCachePath,
+} from '../../dist/core/phase-transient.js';
+import { createTaskFile, getTask, updateTaskFile } from '../../dist/core/store.js';
+import { stringifyYaml } from '../../dist/core/yaml.js';
+
+describe('phase-transient (VL-196)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibelog-transient-'));
+  const cacheFile = phaseTransientCachePath(root);
+
+  // Backlog-фикстура: префикс VL → ключи задач вида VL-90N (taskIdPattern)
+  mkdirSync(join(root, 'backlog', 'tasks'), { recursive: true });
+  writeFileSync(join(root, 'backlog', 'config.yml'), stringifyYaml({
+    project_name: 'Transient Test',
+    task_prefix: 'VL',
+    default_status: 'To Do',
+    statuses: ['To Do', 'Spec', 'Planned', 'In Progress', 'Review', 'Done', 'Rejected'],
+    definition_of_done: [],
+  }), 'utf-8');
+  createTaskFile(root, { id: 'VL-901', title: 'Транзиент: успех', status: 'Spec' });
+  createTaskFile(root, { id: 'VL-902', title: 'Транзиент: провал', status: 'Spec' });
+  createTaskFile(root, { id: 'VL-903', title: 'Транзиент: агент зафиксировал', status: 'Spec' });
+  createTaskFile(root, { id: 'VL-904', title: 'Транзиент: recovery, мёртвый pid', status: 'Spec' });
+  createTaskFile(root, { id: 'VL-905', title: 'Транзиент: recovery, живой pid', status: 'Spec' });
+  createTaskFile(root, { id: 'VL-906', title: 'Транзиент: финальный статус', status: 'Done' });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Текущее содержимое кэша (файл обязан существовать после mark). */
+  const readCache = () => JSON.parse(readFileSync(cacheFile, 'utf-8'));
+
+  it('eligibility: plan из Spec — да; comment/фаза без перехода/чужой ключ — нет', () => {
+    assert.equal(isTransientEligible(root, 'VL-901', 'plan'), true, 'переход Spec → plan есть');
+    assert.equal(isTransientEligible(root, 'VL-901', 'comment'), false, 'SERVICE_PHASES');
+    assert.equal(isTransientEligible(root, 'VL-901', 'code'), false, 'перехода Spec → code нет');
+    assert.equal(isTransientEligible(root, 'XX-1', 'plan'), false, 'префикс не проекта');
+    assert.equal(isTransientEligible(root, 'prompt', 'prompt'), false, 'не задачный ключ');
+  });
+
+  it('mark: статус In Progress + запись кэша {prevStatus, phase, pid}', () => {
+    rmSync(cacheFile, { force: true });
+    markPhaseStarted(root, 'VL-901', 'plan', 424242);
+    assert.equal(getTask(root, 'VL-901').status, 'In Progress');
+    const entry = readCache()['VL-901'];
+    assert.ok(entry, 'запись в кэше');
+    assert.equal(entry.prevStatus, 'Spec');
+    assert.equal(entry.phase, 'plan');
+    assert.equal(entry.pid, 424242);
+    assert.ok(entry.startedAt, 'startedAt записан');
+  });
+
+  it('finalize успех: produces_status (Spec+plan → Planned), кэш очищен, без комментариев', () => {
+    finalizePhaseStatus(root, 'VL-901', 'plan', { exitCode: 0, result: { type: 'result' } });
+    assert.equal(getTask(root, 'VL-901').status, 'Planned', 'produces_status от исходного Spec');
+    assert.equal('VL-901' in readCache(), false, 'запись удалена');
+    assert.equal(getTask(root, 'VL-901').comments.length, 0, 'успех без комментария');
+  });
+
+  it('finalize провал: откат к Spec + комментарий-причина (@agent, код выхода)', () => {
+    rmSync(cacheFile, { force: true });
+    markPhaseStarted(root, 'VL-902', 'plan', 424243);
+    assert.equal(getTask(root, 'VL-902').status, 'In Progress');
+    finalizePhaseStatus(root, 'VL-902', 'plan', {
+      exitCode: 1,
+      result: { is_error: true },
+      logTail: 'ошибка: stack trace',
+    });
+    const task = getTask(root, 'VL-902');
+    assert.equal(task.status, 'Spec', 'откат к исходному статусу');
+    assert.equal(task.comments.length, 1, 'ровно один комментарий');
+    assert.equal(task.comments[0].author, '@agent');
+    assert.match(task.comments[0].text, /Фаза plan не удалась \(код выхода 1\)/);
+    assert.match(task.comments[0].text, /stack trace/, 'хвост лога в причине');
+    assert.match(task.comments[0].text, /возвращён к Spec/);
+    assert.equal('VL-902' in readCache(), false, 'запись удалена');
+  });
+
+  it('агент сам зафиксировал статус mid-фазы → finalize не перетирает (даже при провале)', () => {
+    rmSync(cacheFile, { force: true });
+    markPhaseStarted(root, 'VL-903', 'plan', 424244);
+    // Имитация backlog_finish_phase агентом во время фазы
+    updateTaskFile(root, 'VL-903', { status: 'Planned' });
+    finalizePhaseStatus(root, 'VL-903', 'plan', { exitCode: 1, result: { is_error: true } });
+    assert.equal(getTask(root, 'VL-903').status, 'Planned', 'запись агента приоритетна');
+    assert.equal('VL-903' in readCache(), false, 'запись кэша всё равно удалена');
+  });
+
+  it('recovery: мёртвый pid → откат + комментарий; живой pid → пропуск', () => {
+    rmSync(cacheFile, { force: true });
+    // Живой pid (текущий процесс) — запись не трогаем
+    markPhaseStarted(root, 'VL-905', 'plan', process.pid);
+    // Мёртвый pid — реально завершённый процесс (spawnSync дождался выхода)
+    const deadPid = spawnSync(process.execPath, ['-e', '']).pid;
+    markPhaseStarted(root, 'VL-904', 'plan', deadPid);
+    assert.equal(getTask(root, 'VL-904').status, 'In Progress');
+
+    recoverStalePhaseStatuses(root);
+
+    const t4 = getTask(root, 'VL-904');
+    assert.equal(t4.status, 'Spec', 'мёртвый pid → откат к prevStatus');
+    assert.match(t4.comments.at(-1).text, /прервана остановкой процесса — статус возвращён к Spec/);
+    const t5 = getTask(root, 'VL-905');
+    assert.equal(t5.status, 'In Progress', 'живой pid → фаза ещё идёт, статус не трогаем');
+    const cache = readCache();
+    assert.equal('VL-904' in cache, false, 'мёртвая запись удалена');
+    assert.equal('VL-905' in cache, true, 'живая запись сохранена');
+    rmSync(cacheFile, { force: true });
+    // Прибираем живую запись: VL-905 остаётся в In Progress осознанно —
+    // кэша нет, recovery его не тронет (проверка «запись есть ⇔ откат»)
+    updateTaskFile(root, 'VL-905', { status: 'Spec' });
+  });
+
+  it('mark для финального статуса (Done, перехода нет) — статус и кэш не трогаются', () => {
+    rmSync(cacheFile, { force: true });
+    markPhaseStarted(root, 'VL-906', 'close', 424245);
+    assert.equal(getTask(root, 'VL-906').status, 'Done');
+    assert.equal(existsSync(cacheFile), false, 'кэш не создавался');
+  });
+
+  it('fail-open: .vibelog как файл — mark не бросает, статус не меняется', () => {
+    const root2 = mkdtempSync(join(tmpdir(), 'vibelog-transient-fail-'));
+    try {
+      mkdirSync(join(root2, 'backlog', 'tasks'), { recursive: true });
+      writeFileSync(join(root2, 'backlog', 'config.yml'), stringifyYaml({
+        project_name: 'Fail Open',
+        task_prefix: 'VL',
+        default_status: 'To Do',
+        statuses: ['To Do', 'Spec', 'In Progress'],
+        definition_of_done: [],
+      }), 'utf-8');
+      createTaskFile(root2, { id: 'VL-999', title: 'fail-open', status: 'Spec' });
+      // .vibelog — обычный файл: mkdirSync при записи кэша упадёт
+      writeFileSync(join(root2, '.vibelog'), 'не каталог', 'utf-8');
+      markPhaseStarted(root2, 'VL-999', 'plan', 424246); // не должно бросить
+      assert.equal(getTask(root2, 'VL-999').status, 'Spec', 'без транзиента — как раньше');
+    } finally {
+      rmSync(root2, { recursive: true, force: true });
+    }
+  });
+});

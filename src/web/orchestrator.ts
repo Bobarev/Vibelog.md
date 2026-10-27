@@ -33,6 +33,9 @@ import {
 } from '../bot/settings.js';
 import { taskIdPattern } from '../core/config.js';
 import { getWorkflowForTask, getStatusAfterPhase, isPhaseAllowed } from '../core/workflow.js';
+// VL-196: транзиентный In Progress на время workflow-фазы — mark после спавна,
+// finalize в finish() до onExit (единая точка spawnQwenRun для всех запусков)
+import { markPhaseStarted, finalizePhaseStatus } from '../core/phase-transient.js';
 import { agentSessionsDir, findTaskPhaseSessionSync, listTaskSessionMetas, loadSessionMetaSync, saveSessionMeta, updateSessionMeta } from '../agent/session.js';
 import { hasUsageDelta, usageDelta } from '../core/analytics.js';
 import type { TokenUsage } from '../core/analytics.js';
@@ -810,6 +813,10 @@ function spawnQwenRun(
 
   activeRuns.set(key, { phase, child, onExit, agent });
   lastRuns.delete(key);
+  // VL-196: транзиентный In Progress — задачные workflow-фазы после успешного
+  // спавна (гарды до этого места уже прошли — при ошибке запуска статус не
+  // меняется, откат ретраям не нужен); служебные фазы внутри — выход без действий
+  markPhaseStarted(cwd, key, phase, child.pid);
 
   // VL-63 (reopen): два независимых буфера. `log` — ТОЛЬКО stdout (источник
   // для parseQwenResult), `stderrLog` — только stderr (диагностика/фолбэк).
@@ -1107,6 +1114,10 @@ function spawnQwenRun(
         return; // текущий record в lastRuns остался; onExit уйдёт по финальному
       }
     }
+    // VL-196: финализация транзиентного In Progress ДО onExit — авто-очередь
+    // (progressed по статусу) и rejectTask-onExit видят уже финальный статус;
+    // high-risk авто-resume выше делает return — на время повтора транзиент жив
+    finalizePhaseStatus(cwd, key, phase, record);
     // VL-48: уведомление о завершении (бот). Fire-and-forget в try/catch:
     // сетевые ошибки Telegram не должны ронять polling оркестратора.
     try {

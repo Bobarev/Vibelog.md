@@ -18,6 +18,7 @@ import { handleApi } from './api.js';
 import { runChat } from './chat.js';
 import { getAssetsHtml } from './assets.js';
 import { serveStatic } from './static.js';
+import { recoverStalePhaseStatuses } from '../core/phase-transient.js';
 
 // Путь к собранному React UI. Вычисляется от расположения этого модуля
 // (dist/web/server.js → ../../web/dist), а не от cwd: команда vibelog browser
@@ -32,6 +33,13 @@ const webDistDir = fileURLToPath(new URL('../../web/dist', import.meta.url));
  * @param openBrowser — открывать ли браузер автоматически
  */
 export function startWebServer(cwd: string, port = 3030, openBrowser = true, staticDir: string = webDistDir): Server {
+  // VL-196: recovery «зависших» транзиентных In Progress после рестарта
+  // процесса (AC3) — сбой recovery не должен мешать подъёму сервера
+  try {
+    recoverStalePhaseStatuses(cwd);
+  } catch (err) {
+    console.log(`[phase-transient] recovery при старте web не удалась: ${(err as Error).message}`);
+  }
   const server = createServer((req, res) => {
     // Сырой URL сохраняем ДО отрезки '?': handleApi получает query string
     // отдельным 5-м параметром (VL-185 — GET /api/search?q=...)

@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 import { renderPrompt, startAnalyze, startPhase, startPrompt, startResume, startTaskPhase, getRun, setSpawnEnvBaseForTests } from '../../dist/web/orchestrator.js';
 import { handleApi } from '../../dist/web/api.js';
-import { addComment, createTaskFile, getTask } from '../../dist/core/store.js';
+import { addComment, createTaskFile, getTask, updateTaskFile } from '../../dist/core/store.js';
 import { ensureTaskWorktree } from '../../dist/core/worktree.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { agentSessionsDir, saveSessionMeta } from '../../dist/agent/session.js';
@@ -2232,5 +2232,116 @@ process.exit(0);
     assert.ok(prompt.includes('{{comment}}'), 'ожидался литеральный {{comment}} (контракт VL-80)');
     assert.equal(getTask(testRoot, task.id).comments.length, 0, 'комментариев не добавлено');
     resetStubEnv();
+  });
+});
+
+// ── VL-196: transient In Progress на время workflow-фазы ──
+//
+// Отдельный проектный корень с DEFAULT_WORKFLOW (без settings.json):
+// Spec + plan → Planned, чтобы проверять реальные produces_status, а не
+// identity-переходы permissive-воркфлоу первого describe. Собственный стаб-
+// бинарь обязателен: testRoot первого describe удаляется в его afterAll.
+describe('transient In Progress (VL-196)', () => {
+  const trRoot = mkdtempSync(join(tmpdir(), 'vibelog-tr-test-'));
+  const trBacklog = join(trRoot, 'backlog');
+  const trStub = join(trRoot, 'qwen-stub.cjs');
+  const trCache = join(trRoot, '.vibelog', 'phase-in-progress.json');
+
+  beforeAll(() => {
+    mkdirSync(join(trBacklog, 'tasks'), { recursive: true });
+    writeFileSync(join(trBacklog, 'config.yml'), stringifyYaml({
+      project_name: 'Transient Orch Test',
+      task_prefix: 'VL',
+      default_status: 'To Do',
+      statuses: ['To Do', 'Spec', 'Planned', 'In Progress', 'Review', 'Done', 'Rejected'],
+      definition_of_done: [],
+    }), 'utf-8');
+    writeFileSync(trStub, STUB, 'utf-8');
+    chmodSync(trStub, 0o755);
+  });
+
+  afterAll(() => {
+    resetStubEnv();
+    rmSync(trRoot, { recursive: true, force: true });
+  });
+
+  it('старт plan → In Progress во время фазы, успех → produces_status, кэш чист (AC1/AC2)', async () => {
+    const task = createTaskFile(trRoot, { id: 'VL-901', title: 'транзиент: успех', status: 'Spec' });
+    setStubEnv({ VIBELOG_QWEN_BIN: trStub, VL28_STUB_SLEEP: '400', VL28_STUB_EXIT: '0' });
+    try {
+      const res = startPhase(trRoot, task.id, 'plan');
+      assert.equal(res.started, true, JSON.stringify(res));
+      // Синхронно после старта: статус уже виден на канбане (AC1)
+      assert.equal(getTask(trRoot, 'VL-901').status, 'In Progress', 'In Progress во время фазы');
+      assert.ok(existsSync(trCache), 'кэш .vibelog/phase-in-progress.json создан');
+      const run = await waitDone('VL-901');
+      assert.equal(run.exitCode, 0, run.logTail ?? '');
+      assert.equal(getTask(trRoot, 'VL-901').status, 'Planned', 'produces_status от исходного Spec');
+      const cache = JSON.parse(readFileSync(trCache, 'utf-8'));
+      assert.equal('VL-901' in cache, false, 'запись кэша удалена после успеха');
+    } finally {
+      resetStubEnv();
+    }
+  });
+
+  it('провал фазы → откат к исходному статусу + комментарий-причина (AC2)', async () => {
+    const task = createTaskFile(trRoot, { id: 'VL-902', title: 'транзиент: провал', status: 'Spec' });
+    setStubEnv({ VIBELOG_QWEN_BIN: trStub, VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '1' });
+    // Статус в момент onExit — критичен для авто-очереди: finalize обязан
+    // откатить ДО колбэка, иначе pickAutoPhase возьмёт code из In Progress
+    let statusAtExit = null;
+    try {
+      const res = startPhase(trRoot, task.id, 'plan', (run) => {
+        statusAtExit = getTask(trRoot, 'VL-902').status;
+      });
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-902');
+      assert.notEqual(run.exitCode, 0, 'фаза должна упасть');
+      const fresh = getTask(trRoot, 'VL-902');
+      assert.equal(fresh.status, 'Spec', 'откат к статусу старта');
+      assert.equal(statusAtExit, 'Spec', 'статус откачен К МОМЕНТУ onExit (порядок finalize → onExit)');
+      assert.ok(
+        fresh.comments.some((c) => /Фаза plan не удалась/.test(c.text)),
+        'причина зафиксирована комментарием'
+      );
+      assert.ok(fresh.comments.some((c) => c.author === '@agent'), 'автор @agent');
+      const cache = existsSync(trCache) ? JSON.parse(readFileSync(trCache, 'utf-8')) : {};
+      assert.equal('VL-902' in cache, false, 'запись кэша удалена после провала');
+    } finally {
+      resetStubEnv();
+    }
+  });
+
+  it('служебная фаза comment не трогает статус (AC1 — только workflow-фазы)', async () => {
+    const task = createTaskFile(trRoot, { id: 'VL-903', title: 'транзиент: comment', status: 'Review' });
+    setStubEnv({ VIBELOG_QWEN_BIN: trStub, VL28_STUB_SLEEP: '300', VL28_STUB_EXIT: '0' });
+    try {
+      const res = startTaskPhase(trRoot, task.id, 'comment', { comment: 'просто комментарий' });
+      assert.equal(res.started, true, JSON.stringify(res));
+      assert.equal(getTask(trRoot, 'VL-903').status, 'Review', 'comment не переводит в In Progress');
+      const run = await waitDone('VL-903');
+      assert.equal(run.exitCode, 0, run.logTail ?? '');
+      assert.equal(getTask(trRoot, 'VL-903').status, 'Review', 'статус не изменился после фазы');
+    } finally {
+      resetStubEnv();
+    }
+  });
+
+  it('статус, зафиксированный агентом во время фазы, приоритетен финализации (AC2)', async () => {
+    const task = createTaskFile(trRoot, { id: 'VL-904', title: 'транзиент: агент зафиксировал', status: 'Spec' });
+    setStubEnv({ VIBELOG_QWEN_BIN: trStub, VL28_STUB_SLEEP: '400', VL28_STUB_EXIT: '0' });
+    try {
+      const res = startPhase(trRoot, task.id, 'plan');
+      assert.equal(res.started, true, JSON.stringify(res));
+      // Имитация backlog_finish_phase агентом ПОСЛЕ старта фазы
+      updateTaskFile(trRoot, 'VL-904', { status: 'Planned' });
+      const run = await waitDone('VL-904');
+      assert.equal(run.exitCode, 0, run.logTail ?? '');
+      assert.equal(getTask(trRoot, 'VL-904').status, 'Planned', 'финализация не перетирает запись агента');
+      const cache = existsSync(trCache) ? JSON.parse(readFileSync(trCache, 'utf-8')) : {};
+      assert.equal('VL-904' in cache, false, 'кэш почищен');
+    } finally {
+      resetStubEnv();
+    }
   });
 });
