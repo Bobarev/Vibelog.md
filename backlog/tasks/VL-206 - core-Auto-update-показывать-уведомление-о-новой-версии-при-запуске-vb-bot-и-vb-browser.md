@@ -1,11 +1,11 @@
 ---
 id: VL-206
 title: Уведомление о новой версии при запуске vb bot и vb browser
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-27 15:19'
-updated_date: '2026-10-27 17:33'
+updated_date: '2026-10-27 21:21'
 due_date: ''
 labels:
   - core
@@ -80,7 +80,7 @@ token_usage:
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -156,5 +156,10 @@ author: @agent
 created: 2026-10-27 16:52
 ---
 Фаза 3 (Code) выполнена. Изменено: src/cli/update-check.ts (SKIP_COMMANDS → ['mcp','qwen-debug']; новый экспорт STARTUP_NOTIFY_COMMANDS + shouldNotifyAtStartup с JSDoc; комментарий shouldSkip обновлён), bin/vibelog.mjs (notifyFirst: для bot/browser — maybeNotifyUpdate АВАЙТ до route, пост-route вызов пропущен; для остальных — как раньше после route; catch-семантика сохранена), src/cli/update-check.test.mjs (split shouldSkip: mcp/qwen-debug true, browser/bot false; +env-гард/-v для bot/browser; новый describe shouldNotifyAtStartup 8 проверок; +2 теста момента показа: уведомление для browser/bot при устаревшем кэше и общий кэш с task-командой), src/cli/cli.test.mjs (интеграционный spawn-тест: фейковый npm через PATH-обёртку, TMPDIR-изолированный кэш — уведомление в stderr не протекает в stdout, повторный запуск тихо, env-гард тихо). Коммит 4c9163f (4 файла, 157+/11-). Проверки: pnpm build (tsc strict 0 ошибок), pnpm lint (node --check OK), vitest run — 80 файлов / 1443 теста / 0 падений (прогон полный; одиночный флак orchestrator.test.mjs в первом прогоне прошёл при повторе и в финальном полном прогоне). Ручная проверка: browser --help со стёртым кэшем и фейковым npm → уведомление в stderr (покрыто интеграционным тестом). Что осталось: документация (doc-6/doc-7, раздел «Автообновление») по правилам фазы НЕ обновлялась в Code — её пишет Фаза Close после слияния; DoD «Документация обновлена» не закрыт намеренно.
+---
+author: @agent
+created: 2026-10-27 21:21
+---
+Фаза Close выполнена. Статус: Done. Коммиты: feat 4c9163f (код из Фазы 3, уже был закоммичен), docs eddf11d (CHANGELOG.md — запись VL-206 в Unreleased; doc-6 — уточнение «для vb bot / vb browser проверка при запуске»; doc-7 §Автообновление был обновлён ранее в 3191dcf). Не закоммичено: backlog/tasks/VL-207… (файл чужой параллельной задачи VL-207 — не трогал). DoD «Документация обновлена» закрыт.
 ---
 <!-- COMMENTS:END -->
