@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Изменено
+
+- **VL-202: правило пакетного чтения файлов в промптах фаз** — в шаблоны phase-plan/phase-code/phase-do/phase-investigate и system-prompt (agent-prompt.md) добавлено: целевой файл — один read_file (чанки offset/limit подряд при >200 строк, без промежуточного grep-поиска границ), точечные правки после полного чтения, связанные проверочные команды через &&; переформулирован лимит >200 строк в phase-do (sed/grep → read_file). Тест phase-prompt.test.mjs (+VL-202).
+
 ### Добавлено
 
 - **VL-206: уведомление о новой версии при запуске `vb bot` и `vb browser`** — команды `bot`/`browser` убраны из skip-списка `shouldSkip()` в `src/cli/update-check.ts` (остались только `mcp` и `qwen-debug`), добавлен экспорт `shouldNotifyAtStartup(argv)`: для первой не-флаговой команды из `STARTUP_NOTIFY_COMMANDS = ['bot', 'browser']` в `bin/vibelog.mjs` вызов `maybeNotifyUpdate()` выполняется с `await` **до** `route()` — иначе уведомление для долгоживущих сервисов не наступало никогда (диагноз VL-101: вызов стоял после route, который для bot/browser не завершается). Уведомление печатается в stderr сразу после старта и раньше любого вывода сервиса; для остальных команд — после route, как раньше (catch-семантика ошибок сохранена). Логика проверки не менялась: общий кэш `<tmpdir>/vibelog-update-check.json` с TTL 24 ч, задержка ≤3 с (`Promise.race`), ошибки сети молча + `error: true` в кэш, env-гард `VIBELOG_SKIP_UPDATE_CHECK` и флаги `-v`/`--version`. Тесты: split-тест `shouldSkip` (mcp/qwen-debug → true, bot/browser → false), `describe('shouldNotifyAtStartup')`, тесты момента показа, интеграционный spawn-тест в `cli.test.mjs` с фейковым npm через PATH-обёртку и изолированным TMPDIR (уведомление в stderr не протекает в stdout, повторный запуск тихо, env-гард тихо). Документация: doc-7 §Автообновление, doc-6.
