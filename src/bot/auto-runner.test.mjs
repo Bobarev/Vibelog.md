@@ -63,6 +63,19 @@ describe('auto-runner (VL-191)', () => {
     assert.equal(pickAutoPhase(DEFAULT_WORKFLOW, 'In Progress'), 'code');
   });
 
+  // ── VL-196: авто-retry после отката транзиентного In Progress ──
+  //
+  // Провал workflow-фазы → finalizePhaseStatus откатывает статус ДО onExit
+  // авто-очереди (см. statusAtExit в orchestrator.test.mjs): pickAutoPhase
+  // читает уже исходный статус и выбирает ТУ ЖЕ фазу. Без отката статус
+  // остался бы In Progress → phase code → чужая фаза и падение retry
+  // («нет фазы из статуса» — регрессия, которую закрывает AC2/AC3 VL-196).
+  it('VL-196: retry после отката — фаза из исходного статуса, а не code из In Progress', () => {
+    assert.equal(pickAutoPhase(DEFAULT_WORKFLOW, 'Spec'), 'plan', 'после отката — та же фаза');
+    assert.equal(pickAutoPhase(DEFAULT_WORKFLOW, 'In Progress'), 'code', 'застревание без отката — то, чего избегаем');
+    assert.equal(nextFailureAction(1, 1), 'retry', 'первая ошибка → повтор той же фазы');
+  });
+
   it('pickAutoPhase: только reject-ветка → null (reject — только вручную); финалы → null', () => {
     const rejectOnly = {
       initial_status: 'X',
@@ -374,7 +387,15 @@ process.exit(1);
       const ri = runs[1].indexOf('--resume');
       assert.ok(ri >= 0, `retry-spawn без --resume: ${JSON.stringify(runs[1])}`);
       assert.equal(runs[1][ri + 1], 'agent-vl200', '--resume со sessionId сессии фазы');
-      assert.equal(runs[1][0], runs[0][0], 'промпт retry идентичен первому — штатный фазовый (AC1)');
+      // VL-196: retry-промпт идентичен первому, кроме «Последний комментарий» —
+      // туда finalize дописал причину провала (чтобы агент видел, что упало)
+      const stripLast = (p) => p.replace(/Последний комментарий: [^\n]*/g, 'Последний комментарий: <…>');
+      assert.equal(
+        stripLast(runs[1][0]),
+        stripLast(runs[0][0]),
+        'промпт retry идентичен первому — штатный фазовый (AC1)'
+      );
+      assert.match(runs[1][0], /Фаза spec не удалась/, 'retry видит причину предыдущего провала (VL-196)');
 
       // Терминал: 2 ошибки при max_retries=1 → failed; третьего спавна нет
       await waitFor(

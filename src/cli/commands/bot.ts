@@ -12,6 +12,7 @@ import { loadProjectEnv } from '../../bot/env.js';
 import { generatePin } from '../../bot/pin.js';
 import { registerHandlers } from '../../bot/handlers.js';
 import { syncCommands } from '../../bot/registry.js';
+import { recoverStalePhaseStatuses } from '../../core/phase-transient.js';
 
 /**
  * Выполняет команду bot.
@@ -29,6 +30,13 @@ export async function runBot(
   // просто "vibelog bot", без node --env-file (VL-37, просьба Pavel);
   // общий хелпер loadProjectEnv (VL-189) — тот же код в браузере и чате
   loadProjectEnv(cwd);
+  // VL-196: recovery «зависших» транзиентных In Progress после рестарта
+  // процесса (AC3) — бот так же долго живёт и запускает фазы, как и веб
+  try {
+    recoverStalePhaseStatuses(cwd);
+  } catch (err) {
+    console.log(`[phase-transient] recovery при старте бота не удалась: ${(err as Error).message}`);
+  }
   const token = resolveToken(cwd);
   if (!token) {
     console.error(
