@@ -2,7 +2,7 @@
 id: ref-16
 title: Standard Readme (спецификация оформления README)
 type: spec
-url: 'https://github.com/noffle/standard-readme'
+url: 'https://github.com/RichardLitt/standard-readme/'
 tags: []
 created_date: 2026-10-26
 linked_tasks:

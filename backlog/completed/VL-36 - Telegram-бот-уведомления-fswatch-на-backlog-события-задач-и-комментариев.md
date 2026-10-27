@@ -1,11 +1,11 @@
 ---
 id: VL-36
 title: 'Telegram-бот: уведомления — fs.watch на backlog/, события задач и комментариев'
-status: To Do
+status: Rejected
 assignee: []
 reporter: ''
 created_date: '2026-10-02 18:32'
-updated_date: '2026-10-25 13:58'
+updated_date: '2026-10-26 00:08'
 due_date: ''
 labels: []
 dependencies:
