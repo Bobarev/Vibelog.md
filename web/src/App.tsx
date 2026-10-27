@@ -10,6 +10,7 @@
  */
 
 import { Kanban } from "@/components/kanban/kanban"
+import { ChatPage } from "@/components/chat/thread"
 import { ConfigPage } from "@/components/config/config-page"
 import { DocumentDetail } from "@/components/documents/document-detail"
 import { DocumentsPage } from "@/components/documents/documents-page"
@@ -60,10 +61,14 @@ export function App() {
       />
       <SidebarInset>
         <AppHeader />
-        {/* main — scroll-контейнер (flex-1), header всегда виден (VL-166) */}
-        <main className="min-h-0 flex-1 overflow-y-auto p-2">
+        {/* main — scroll-контейнер (flex-1), header всегда виден (VL-166).
+            Чат (VL-204) — overflow-hidden: скроллится viewport внутри
+            Thread, двойного скролла быть не должно (lesson-14) */}
+        <main className={`min-h-0 flex-1 ${route === "chat" ? "overflow-hidden" : "overflow-y-auto p-2"}`}>
           {route === "tasks" ? (
             <TasksPage />
+          ) : route === "chat" ? (
+            <ChatPage />
           ) : route === "settings" ? (
             <SettingsPage />
           ) : route === "config" ? (

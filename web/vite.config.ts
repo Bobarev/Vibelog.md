@@ -6,6 +6,11 @@ import { defineConfig } from "vite"
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // Workaround issue #3223 (VL-204): assistant-ui/zustand обращаются к
+  // process.env в браузерном бандле; без define Vite падает при сборке
+  define: {
+    "process.env": JSON.stringify({ NODE_ENV: "production" }),
+  },
   // Dev-прокси: /api уходит на сервер vibelog browser (порт по умолчанию
   // 3030), чтобы pnpm dev в web/ видел работающий API без CORS-проблем
   server: {

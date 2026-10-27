@@ -49,6 +49,27 @@ vibelog browser
 
 Остальные команды, флаги и диагностика — в [CLI-справочнике](backlog/docs/doc-7-CLI-справочник-Vibelogmd.md).
 
+## Веб-чат (#/chat)
+
+Чат с LLM прямо в веб-интерфейсе (`vibelog browser` → пункт «Чат» в
+сайдбаре или `#/chat`): обсуждение проекта, вопросы по задачам и создание
+задач через tool-calling (VL-204, на базе assistant-ui).
+
+- **Env**: нужны те же переменные, что и агенту —
+  `VIBELOG_LLM_BASE_URL` / `VIBELOG_LLM_API_KEY` / `VIBELOG_LLM_MODEL`
+  (обычно лежат в `.env` проекта). Без них чат ответит событием error.
+- **Инструменты модели**: `backlog_search`, `backlog_view_task`
+  (выполняются сразу) и `backlog_create_task` — **только с подтверждением**:
+  ассистент показывает карточку «Создание задачи» с кнопками
+  «Разрешить»/«Отклонить» (human-in-the-loop), задача попадает в `backlog/`
+  лишь после Allow.
+- **История**: `<проект>/.vibelog/chat-sessions/<threadId>.jsonl`
+  (по строке на сообщение; каталог в `.gitignore`).
+- **Протокол**: `POST /api/chat` — SSE (`text/event-stream`), события
+  `text`/`tool_start`/`tool_end`/`approval`/`done`/`error`.
+- Замечание для `pnpm dev` в `web/`: dev-прокси `/api` → :3030 пропускает
+  SSE стримом; при подозрении на буферизацию проверяй через `vibelog browser`.
+
 ## Учёт токенов (billing)
 
 Сколько LLM-токенов потрачено на задачу и по фазам — три уровня хранения
