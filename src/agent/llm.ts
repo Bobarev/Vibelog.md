@@ -67,6 +67,12 @@ export interface LlmResponse {
   usage: LlmUsage;
 }
 
+/**
+ * Режим LLM API (VL-205): chat — Chat Completions (/chat/completions,
+ * текущее поведение), responses — Responses API (/responses, ref-18/20/21).
+ */
+export type ApiMode = 'chat' | 'responses';
+
 /** Опции одного вызова streamChat. */
 export interface StreamChatOptions {
   /** Вызывается на каждый фрагмент текста (стриминг в TUI/CLI). */
@@ -95,6 +101,11 @@ export interface LlmClientOptions {
    * не отправляется (совместимость с провайдерами без этой семантики).
    */
   sessionId?: string;
+  /**
+   * Режим LLM API (VL-205): 'chat' (дефолт — Chat Completions, текущее
+   * поведение) либо 'responses' (Responses API, ref-18/20/21).
+   */
+  apiMode?: ApiMode;
 }
 
 /** Публичный интерфейс клиента (loop зависит только от него). */
@@ -143,10 +154,14 @@ function mapUsage(raw: unknown): LlmUsage {
   const inputTokens = n(u.prompt_tokens) || n(u.input_tokens);
   const outputTokens = n(u.completion_tokens) || n(u.output_tokens);
   // Кэш-токены (VL-96): прямые поля (Anthropic/DeepSeek-стиль) важнее
-  // вложенного prompt_tokens_details (OpenAI-стиль, его отдаёт Cloud.ru)
-  const details = (typeof u.prompt_tokens_details === 'object' && u.prompt_tokens_details !== null
+  // вложенного prompt_tokens_details (OpenAI-стиль, его отдаёт Cloud.ru);
+  // input_tokens_details — Responses API (VL-205, ref-18/21)
+  const details = ((typeof u.prompt_tokens_details === 'object' && u.prompt_tokens_details !== null
     ? u.prompt_tokens_details
-    : {}) as Record<string, unknown>;
+    : null) ??
+    (typeof u.input_tokens_details === 'object' && u.input_tokens_details !== null
+      ? u.input_tokens_details
+      : null) ?? {}) as Record<string, unknown>;
   const cacheRead =
     n(u.cache_read_input_tokens) ||
     n(u.cache_read_tokens) ||
@@ -154,10 +169,14 @@ function mapUsage(raw: unknown): LlmUsage {
     n(details.cached_tokens);
   const totalTokens = n(u.total_tokens) || inputTokens + outputTokens;
   // Reasoning (VL-198, ref-19): OpenAI-стиль completion_tokens_details.reasoning_tokens,
-  // альтернативы — прямые поля (qwen thoughtsTokenCount → reasoning_tokens/mimo)
-  const compDetails = (typeof u.completion_tokens_details === 'object' && u.completion_tokens_details !== null
+  // альтернативы — прямые поля (qwen thoughtsTokenCount → reasoning_tokens/mimo);
+  // output_tokens_details — Responses API (VL-205, ref-18/21)
+  const compDetails = ((typeof u.completion_tokens_details === 'object' && u.completion_tokens_details !== null
     ? u.completion_tokens_details
-    : {}) as Record<string, unknown>;
+    : null) ??
+    (typeof u.output_tokens_details === 'object' && u.output_tokens_details !== null
+      ? u.output_tokens_details
+      : null) ?? {}) as Record<string, unknown>;
   const reasoningTokens =
     n(u.reasoning_tokens) || n(u.thoughts_token_count) || n(u.thoughtsTokenCount) || n(compDetails.reasoning_tokens);
   return {
@@ -298,6 +317,70 @@ function toWireTools(tools: ToolDef[]): unknown[] {
   }));
 }
 
+/**
+ * Приводит инструменты к wire-формату Responses API (VL-205): плоский
+ * объект { type, name, description, parameters } без обёртки function —
+ * как в ref-20 (MiMo) и каноне OpenAI (ref-21). strict не передаём
+ * (дефолт false у обоих провайдеров).
+ */
+function toWireToolsResponses(tools: ToolDef[]): unknown[] {
+  return tools.map((t) => ({
+    type: 'function',
+    name: t.name,
+    description: t.description,
+    parameters: t.inputSchema,
+  }));
+}
+
+/**
+ * Конвертирует ChatMessage[] в input[] итемы Responses API (VL-205):
+ * system/user/assistant → message-итемы, assistant с tool_calls →
+ * function_call-итемы (call_id/name/arguments), tool → function_call_output
+ * с call_id (НЕ role:tool). usage провайдеру не уходит (паттерн VL-198);
+ * tool-вывод усекается через truncateTool (wire-cap VL-178).
+ *
+ * @param messages — история диалога
+ * @param truncateTool — усечение tool-вывода (truncateToolOutput из tools.js)
+ */
+export function messagesToInput(
+  messages: ChatMessage[],
+  truncateTool: (s: string) => string = (s) => s,
+): unknown[] {
+  const out: unknown[] = [];
+  for (const m of messages) {
+    if (m.role === 'assistant') {
+      // content=null (только tool_calls) → message-итем не создаём:
+      // строгие провайдеры отвечают 400 на null content (риск №5 плана)
+      if (m.content !== null && m.content !== '') {
+        out.push({ type: 'message', role: 'assistant', content: m.content });
+      }
+      if (m.tool_calls) {
+        for (const tc of m.tool_calls) {
+          out.push({
+            type: 'function_call',
+            call_id: tc.id,
+            name: tc.name,
+            arguments: JSON.stringify(tc.arguments),
+          });
+        }
+      }
+      continue;
+    }
+    if (m.role === 'tool') {
+      out.push({
+        type: 'function_call_output',
+        call_id: m.tool_call_id,
+        output: truncateTool(m.content),
+      });
+      continue;
+    }
+    // system / user — обычный message-итем (ref-21: text-only входы
+    // совместимы, content строкой)
+    out.push({ type: 'message', role: m.role, content: m.content });
+  }
+  return out;
+}
+
 /** Склейка фрагментов tool_calls из SSE-delta по индексу. */
 interface PartialCall {
   id: string;
@@ -388,6 +471,119 @@ async function parseSse(
   return { text, toolCalls, usage };
 }
 
+/**
+ * Разбирает SSE-поток Responses API (VL-205): typed-события по полю type —
+ * response.output_text.delta → текст, response.output_item.added(function_call)
+ * + function_call_arguments.delta/.done → склейка tool_calls по output_index,
+ * response.completed → usage. Битые data и неизвестные типы событий
+ * пропускаются (терпимость к новым событиям провайдера — паттерн parseSse);
+ * type=error — ошибка наружу (не-retryable, уходит через attemptWithFallback).
+ */
+async function parseSseResponses(
+  res: Response,
+  onToken: ((t: string) => void) | undefined,
+): Promise<LlmResponse> {
+  if (!res.body) throw new Error('Ошибка API Cloud.ru: пустое тело SSE-ответа');
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let text = '';
+  let usage = zeroUsage();
+  const calls = new Map<number, PartialCall>();
+
+  const handleEvent = (payload: string): void => {
+    const trimmed = payload.trim();
+    if (!trimmed || trimmed === '[DONE]') return;
+    let chunk: unknown;
+    try {
+      chunk = JSON.parse(trimmed);
+    } catch {
+      return; // битый чанк — пропускаем, остальной поток валиден
+    }
+    const obj = (typeof chunk === 'object' && chunk !== null ? chunk : {}) as Record<string, unknown>;
+    const type = typeof obj.type === 'string' ? obj.type : '';
+    switch (type) {
+      case 'response.output_text.delta': {
+        const delta = typeof obj.delta === 'string' ? obj.delta : '';
+        if (delta) {
+          text += delta;
+          onToken?.(delta);
+        }
+        return;
+      }
+      case 'response.output_item.added': {
+        const item = (typeof obj.item === 'object' && obj.item !== null
+          ? obj.item
+          : {}) as Record<string, unknown>;
+        if (item.type !== 'function_call') return;
+        const index = typeof obj.output_index === 'number' ? obj.output_index : 0;
+        calls.set(index, {
+          id: typeof item.call_id === 'string' ? item.call_id : '',
+          name: typeof item.name === 'string' ? item.name : '',
+          argsRaw: typeof item.arguments === 'string' ? item.arguments : '',
+        });
+        return;
+      }
+      case 'response.function_call_arguments.delta': {
+        const index = typeof obj.output_index === 'number' ? obj.output_index : 0;
+        const cur = calls.get(index) ?? { id: '', name: '', argsRaw: '' };
+        if (typeof obj.delta === 'string') cur.argsRaw += obj.delta;
+        calls.set(index, cur);
+        return;
+      }
+      case 'response.function_call_arguments.done': {
+        // done несёт ПОЛНЫЕ аргументы — перезапись идемпотентна поверх delta-склейки
+        const index = typeof obj.output_index === 'number' ? obj.output_index : 0;
+        const cur = calls.get(index) ?? { id: '', name: '', argsRaw: '' };
+        if (typeof obj.arguments === 'string') cur.argsRaw = obj.arguments;
+        calls.set(index, cur);
+        return;
+      }
+      case 'response.completed': {
+        // usage приходит только в финальном событии (stream_options у Responses нет)
+        const resp = (typeof obj.response === 'object' && obj.response !== null
+          ? obj.response
+          : {}) as Record<string, unknown>;
+        usage = mapUsage(resp.usage);
+        return;
+      }
+      case 'error': {
+        const message =
+          typeof obj.message === 'string' && obj.message
+            ? obj.message
+            : JSON.stringify(obj).slice(0, 300);
+        throw new Error(`Ошибка API (Responses): ${message}`);
+      }
+      default:
+        return; // response.created / output_item.done / прочие — пропуск
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sepIndex = buffer.indexOf('\n\n');
+    while (sepIndex !== -1) {
+      const rawEvent = buffer.slice(0, sepIndex);
+      buffer = buffer.slice(sepIndex + 2);
+      for (const line of rawEvent.split('\n')) {
+        if (line.startsWith('data:')) handleEvent(line.slice(5));
+      }
+      sepIndex = buffer.indexOf('\n\n');
+    }
+  }
+  // Хвост буфера без завершающего \n\n — тоже событие.
+  for (const line of buffer.split('\n')) {
+    if (line.startsWith('data:')) handleEvent(line.slice(5));
+  }
+
+  const toolCalls: ToolCall[] = [...calls.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, c]) => ({ id: c.id, name: c.name, arguments: parseToolArguments(c.argsRaw) }));
+  return { text, toolCalls, usage };
+}
+
 /** Non-stream ответ: choices[0].message → текст + tool_calls + usage. */
 function parseNonStream(body: unknown): LlmResponse {
   const obj = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>;
@@ -409,6 +605,45 @@ function parseNonStream(body: unknown): LlmResponse {
         name: typeof fn.name === 'string' ? fn.name : '',
         arguments: parseToolArguments(typeof fn.arguments === 'string' ? fn.arguments : ''),
       });
+    }
+  }
+  return { text, toolCalls, usage: mapUsage(obj.usage) };
+}
+
+/**
+ * Non-stream ответ Responses API (VL-205): output[] итемы → текст из
+ * message/output_text, tool_calls из function_call (call_id/name/arguments);
+ * reasoning-итемы пропускаются (MVP), usage — mapUsage (input_tokens/
+ * output_tokens/details уже поддерживаются).
+ */
+export function parseNonStreamResponses(body: unknown): LlmResponse {
+  const obj = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>;
+  let text = '';
+  const toolCalls: ToolCall[] = [];
+  if (Array.isArray(obj.output)) {
+    for (const itemRaw of obj.output) {
+      const item = (typeof itemRaw === 'object' && itemRaw !== null
+        ? itemRaw
+        : {}) as Record<string, unknown>;
+      if (item.type === 'message') {
+        if (Array.isArray(item.content)) {
+          for (const partRaw of item.content) {
+            const part = (typeof partRaw === 'object' && partRaw !== null
+              ? partRaw
+              : {}) as Record<string, unknown>;
+            if (part.type === 'output_text' && typeof part.text === 'string') {
+              text += part.text;
+            }
+          }
+        }
+      } else if (item.type === 'function_call') {
+        toolCalls.push({
+          id: typeof item.call_id === 'string' ? item.call_id : '',
+          name: typeof item.name === 'string' ? item.name : '',
+          arguments: parseToolArguments(typeof item.arguments === 'string' ? item.arguments : ''),
+        });
+      }
+      // type === 'reasoning' и прочие итемы — пропуск (MVP VL-205)
     }
   }
   return { text, toolCalls, usage: mapUsage(obj.usage) };
@@ -472,11 +707,13 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
   const maxRetries = options.maxRetries ?? MAX_RETRIES_DEFAULT;
   const baseRetryDelay = options.retryDelayMs ?? RETRY_DELAY_DEFAULT;
   const sessionId = options.sessionId ?? '';
+  // VL-205: режим API; дефолт chat — текущее поведение без изменений
+  const apiMode: ApiMode = options.apiMode ?? 'chat';
   if (!model) {
     throw new Error('Не задана модель LLM: установи env VIBELOG_LLM_MODEL');
   }
 
-  const url = `${baseUrl}/chat/completions`;
+  const url = apiMode === 'responses' ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
 
   /**
    * Один HTTP-запрос с ретраями на 429/5xx/сетевые ошибки.
@@ -502,7 +739,16 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
             // на дашборде RouterAI; пустой sessionId → заголовка нет
             ...(sessionId ? { 'X-Session-Id': sessionId } : {}),
           },
-          body: JSON.stringify(stream ? { ...body, stream: true, stream_options: { include_usage: true } } : body),
+          body: JSON.stringify(
+            stream
+              ? apiMode === 'responses'
+                // VL-205: stream_options — chat-специфика; строгий
+                // Responses-провайдер ответит 400 на неизвестное поле.
+                // usage в стриме приходит в response.completed
+                ? { ...body, stream: true }
+                : { ...body, stream: true, stream_options: { include_usage: true } }
+              : body,
+          ),
           signal,
         });
       } catch (err) {
@@ -532,11 +778,20 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
     tools: ToolDef[] | undefined,
     opts: StreamChatOptions = {},
   ): Promise<LlmResponse> {
-    const buildBody = (msgs: ChatMessage[]): Record<string, unknown> => ({
-      model,
-      messages: toWireMessages(msgs),
-      ...(tools && tools.length > 0 ? { tools: toWireTools(tools) } : {}),
-    });
+    const buildBody = (msgs: ChatMessage[]): Record<string, unknown> =>
+      apiMode === 'responses'
+        ? {
+            model,
+            input: messagesToInput(msgs, truncateToolOutput),
+            ...(tools && tools.length > 0 ? { tools: toWireToolsResponses(tools) } : {}),
+            // session_id в теле (VL-205, ref-18): приоритет тела над заголовком
+            ...(sessionId ? { session_id: sessionId } : {}),
+          }
+        : {
+            model,
+            messages: toWireMessages(msgs),
+            ...(tools && tools.length > 0 ? { tools: toWireTools(tools) } : {}),
+          };
 
     // VL-178: внешний цикл усечения при отказе провайдера «high risk».
     // Детект — по телу не-ok ответа (apiError включает фрагмент тела, маркер
@@ -604,7 +859,12 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
       // Фаза 1: стриминг (предпочтительный путь — onToken для TUI).
       try {
         const streamRes = await requestWithRetry(true, baseBody, opts.signal);
-        if (streamRes.ok) return await parseSse(streamRes, onToken);
+        if (streamRes.ok) {
+          // VL-205: два парсера SSE — chat (delta-чанки) и responses (typed-события)
+          return apiMode === 'responses'
+            ? await parseSseResponses(streamRes, onToken)
+            : await parseSse(streamRes, onToken);
+        }
         // Статус не-ok: requestWithRetry уже отработал свои ретраи 429/5xx —
         // идём в non-stream фолбэк (ниже), ошибкой стрима это не считается
       } catch (err) {
@@ -650,7 +910,7 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
             cause: jsonErr,
           });
         }
-        const response = parseNonStream(parsedBody);
+        const response = apiMode === 'responses' ? parseNonStreamResponses(parsedBody) : parseNonStream(parsedBody);
         // Текст режем по словам — эквивалент стриминга для onToken.
         if (response.text && opts.onToken) {
           for (const word of response.text.split(/(?<=\s)/)) opts.onToken(word);

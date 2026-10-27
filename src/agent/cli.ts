@@ -21,8 +21,8 @@ import { existsSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createLlmClient } from './llm.js';
-import type { ChatMessage } from './llm.js';
-import { ensureLlmEnv } from './llm-env.js';
+import type { ApiMode, ChatMessage } from './llm.js';
+import { ensureLlmEnv, loadApiMode } from './llm-env.js';
 import { runLoop } from './loop.js';
 import { agentSessionsDir, appendSessionMessage, createSessionId, latestSession, loadSession, loadSessionMetaSync, saveSession, saveSessionMeta, sumUsageFromMessages, updateSessionMeta } from './session.js';
 import { taskWorktreeDir } from '../core/worktree.js';
@@ -87,6 +87,11 @@ export interface CliOptions {
   resume?: string;
   /** --continue: продолжить последнюю сессию текущего каталога (VL-95). */
   continue?: boolean;
+  /**
+   * --api-mode chat|responses: режим LLM API (VL-205); приоритет над
+   * settings.json api_mode; без флага — api_mode из settings (дефолт chat).
+   */
+  apiMode?: ApiMode;
   /** --help: показать справку. */
   help: boolean;
 }
@@ -109,6 +114,7 @@ const USAGE = `Использование:
   --no-compact             — отключить компакшн истории (VL-122; по умолчанию включён)
   --resume <sessionId>     — продолжить сохранённую сессию (VL-95; префикс vb: игнорируется)
   --continue               — продолжить последнюю сессию текущего каталога (VL-95)
+  --api-mode <chat|responses> — режим LLM API (VL-205; дефолт chat либо settings.json api_mode)
   --help, -h               — эта справка
 Qwen-совместимость: --approval-mode <...>, --output-format json (= --headless),
 --allowed-mcp-server-names <...> — принимаются и игнорируются.
@@ -186,6 +192,13 @@ export function parseArgs(argv: string[]): CliOptions {
       opts.resume = takeValue(arg, argv[++i]).replace(/^vb:/, '');
     } else if (arg === '--continue') {
       opts.continue = true;
+    } else if (arg === '--api-mode') {
+      // VL-205: валидация значения; флаг читается ниже в точке createLlmClient
+      const raw = takeValue(arg, argv[++i]);
+      if (raw !== 'chat' && raw !== 'responses') {
+        throw new Error(`--api-mode: ожидается chat|responses, получено: ${raw}`);
+      }
+      opts.apiMode = raw;
     } else if (arg === '--approval-mode' || arg === '--allowed-mcp-server-names') {
       // qwen-совместимость: значение съедается и игнорируется (AC#4 VL-85)
       takeValue(arg, argv[++i]);
@@ -357,8 +370,14 @@ export async function main(argv: string[]): Promise<void> {
   }
 
   // LLM-клиент после резолва sessionId (VL-198): sessionId уходит в
-  // заголовок X-Session-Id запросов (ref-18, группировка на дашборде RouterAI)
-  const llm = createLlmClient({ sessionId });
+  // заголовок X-Session-Id запросов (ref-18, группировка на дашборде RouterAI).
+  // apiMode (VL-205): флаг --api-mode приоритетнее settings.json api_mode;
+  // settings читаем по VIBELOG_CWD ?? cwd — в branch-mode агент в worktree,
+  // а settings.json в главном репо (паттерн external-mcp.ts)
+  const llm = createLlmClient({
+    sessionId,
+    apiMode: opts.apiMode ?? loadApiMode(process.env.VIBELOG_CWD ?? cwd),
+  });
 
   // Метаданные сессии (VL-110/114): два источника taskId/phase — позиционные
   // <фаза> <taskId> (прямой CLI-запуск, без фильтров — task_prefix
