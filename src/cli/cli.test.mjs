@@ -228,6 +228,55 @@ describe('CLI — интеграционные тесты', () => {
     assert.ok(output.includes('уже инициализирован') || output.includes('Backlog уже'), `Output: ${output}`);
   });
 
+  it('VL-206: browser --help — уведомление о новой версии в stderr сразу при запуске', () => {
+    // Интеграция процесса: фейковый npm в PATH отдаёт "9.9.9" (нет сети),
+    // TMPDIR изолирован → кэш проверки обновления свой на каждый прогон
+    const wrapDir = mkdtempSync(join(tmpdir(), 'vl206-npm-'));
+    const cacheDir = mkdtempSync(join(tmpdir(), 'vl206-cache-'));
+    const fakeNpm = join(wrapDir, 'npm');
+    writeFileSync(fakeNpm, '#!/usr/bin/env node\nconsole.log(\'"9.9.9"\');\n', 'utf-8');
+    chmodSync(fakeNpm, 0o755);
+    const baseEnv = {
+      ...process.env,
+      PATH: `${wrapDir}:${process.env.PATH ?? ''}`,
+      TMPDIR: cacheDir,
+      VIBELOG_SKIP_UPDATE_CHECK: '', // пусто — НЕ отключает проверку
+    };
+    try {
+      // 1) Первый запуск: устаревшего кэша нет → проверка → уведомление в stderr
+      const first = spawnSync('node', [cliPath, 'browser', '--help'], {
+        cwd: testDir, encoding: 'utf-8', timeout: 10000,
+        stdio: ['pipe', 'pipe', 'pipe'], env: baseEnv,
+      });
+      assert.equal(first.status, 0, `exit=${first.status}; stderr=${first.stderr}`);
+      assert.ok(first.stderr.includes('Доступна новая версия'), `нет уведомления в stderr: ${first.stderr}`);
+      assert.ok(first.stderr.includes('npm install -g vibelog.md'), first.stderr);
+      // stdout — справка, без уведомления (контракт stdout не сломан, AC2)
+      assert.ok(first.stdout.includes('browser'), `нет справки: ${first.stdout.slice(0, 200)}`);
+      assert.ok(!first.stdout.includes('Доступна новая версия'), 'уведомление протекло в stdout');
+
+      // 2) Повторный запуск с тем же TMPDIR → кэш свежий (TTL 24 ч) → тихо
+      const second = spawnSync('node', [cliPath, 'browser', '--help'], {
+        cwd: testDir, encoding: 'utf-8', timeout: 10000,
+        stdio: ['pipe', 'pipe', 'pipe'], env: baseEnv,
+      });
+      assert.equal(second.status, 0, `exit=${second.status}`);
+      assert.ok(!second.stderr.includes('Доступна новая версия'), `повторный показ: ${second.stderr}`);
+
+      // 3) VIBELOG_SKIP_UPDATE_CHECK=true и свежий TMPDIR → проверки нет вовсе
+      const guarded = spawnSync('node', [cliPath, 'browser', '--help'], {
+        cwd: testDir, encoding: 'utf-8', timeout: 10000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...baseEnv, TMPDIR: mkdtempSync(join(tmpdir(), 'vl206-guard-')), VIBELOG_SKIP_UPDATE_CHECK: 'true' },
+      });
+      assert.equal(guarded.status, 0, `exit=${guarded.status}`);
+      assert.ok(!guarded.stderr.includes('Доступна новая версия'), `env-гард не сработал: ${guarded.stderr}`);
+    } finally {
+      rmSync(wrapDir, { recursive: true, force: true });
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
   // ── VL-141: vibelog agent analyze — CLI-паритет /analyze бота ──
 
   /** Перехват console.error (printError печатает туда) + console.log. */
