@@ -65,6 +65,14 @@ vibelog browser
   лишь после Allow.
 - **История**: `<проект>/.vibelog/chat-sessions/<threadId>.jsonl`
   (по строке на сообщение; каталог в `.gitignore`).
+- **Треды и навигация** (VL-207): активный тред закреплён в hash-роуте —
+  `#/chat/<threadId>` (localStorage не используется). При входе на `#/chat`
+  подгружается последний тред с сервера, история не теряется при уходе
+  на другие страницы; список тредов — в сайдбаре **справа** (слева занят
+  сайдбаром приложения), там же кнопка «Новый» и переключение тредов.
+- **API тредов**: `GET /api/chat/threads` — список тредов (id, title,
+  updatedAt, messageCount) без тел сообщений; `GET /api/chat/threads/:id` —
+  история треда для восстановления.
 - **Протокол**: `POST /api/chat` — SSE (`text/event-stream`), события
   `text`/`tool_start`/`tool_end`/`approval`/`done`/`error`.
 - Замечание для `pnpm dev` в `web/`: dev-прокси `/api` → :3030 пропускает
