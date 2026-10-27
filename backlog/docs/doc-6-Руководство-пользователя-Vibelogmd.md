@@ -323,7 +323,7 @@ vibelog config set default_editor nvim           # строка
 ```
 
 - **Назначение workflow типу**: `task_workflows[тип задачи]` → имя из `workflows`; тип не указан или имя неизвестно — `default`.
-- **Тип `investigation` (VL-195)** — расследование инцидента: фаза `investigate` собирает и анализирует данные (сессии, логи, git, код), создаёт документ с выводами и предложениями задач, но сами задачи НЕ создаёт → Review; фаза `materialize` создаёт согласованные предложения через `backlog_create_task` → Done; ветка `reject` → Done (фактически reject ставит Rejected и архивирует). Каждая фаза запускается ровно один раз; во время фазы статус задачи не меняется (смена — только в finish_phase).
+- **Тип `investigation` (VL-195)** — расследование инцидента: фаза `investigate` собирает и анализирует данные (сессии, логи, git, код), создаёт документ с выводами и предложениями задач, но сами задачи НЕ создаёт → Review; фаза `materialize` создаёт согласованные предложения через `backlog_create_task` → Done; ветка `reject` → Done (фактически reject ставит Rejected и архивирует). Каждая фаза запускается ровно один раз; на время выполнения workflow-фазы статус задачи транзиентно становится In Progress (см. подраздел «Transient In Progress» ниже), а итоговый статус применяется при завершении фазы.
 - **Подписи и эмодзи кнопок фаз**: ключи `phase_labels` и `phase_emojis` в `.vibelog/settings.json` (по имени фазы) приоритетнее встроенных подписей: приоритет settings → встроенный хардкод default-фаз → имя фазы. Фазы investigation/materialize в хардкод не входят — без settings кнопки подпишутся именем фазы.
 - **Учёт токенов и pricing (VL-198)**: usage каждой фазы пишется в три уровня — мета сессии `.vibelog/agent-sessions/<sessionId>.meta.json`, frontmatter задачи `token_usage` (суммы + разбивка `by_phase`, видна в `task view`, карточке бота и веб-вкладке «Токены») и append-only `.vibelog/billing/<taskId>.json` (все сессии задачи). Деньги в задачу не пишутся: секция `pricing` в `.vibelog/settings.json` — `{ "<model>": { "input_per_1m": …, "output_per_1m": …, "cache_per_1m": … } }` (доллары за миллион токенов), стоимость считается на лету через `calculateCost`. Запись дельтами (lesson-58) — повторные вызовы `backlog_finish_phase` не задваивают счёт.
 - ⚠️ **`.vibelog/settings.json` входит в `.gitignore`** — workflow, `task_workflows`, `phase_labels` и `phase_emojis` в новый клон не переносятся сами: после клонирования перенеси их вручную (или скопируй файл целиком), иначе investigation-задачи пойдут по default-workflow.
@@ -333,6 +333,18 @@ vibelog config set default_editor nvim           # строка
 - **Серверная валидация переносов**: `PATCH /api/tasks/:id` проверяет переход `canMoveTo` — перенос без транзита (например Spec → Done колонкой) → 400 «Переход … недоступен по workflow задачи» и откат доски. Кнопка фазы вне workflow → 409 «Фаза X недопустима из статуса Y». Исключение — CLI/MCP-правка `--status` и бот-команда `/status` (ручной escape-hatch без валидации).
 - **Переопределение промптов фаз**: файл проекта `.vibelog/prompts/phases/phase-<имя>.md` приоритетнее встроенного `templates/phases/phase-<имя>.md` (worktree-вариант — `phase-<имя>-worktree.md` ищется в обоих каталогах); системный промпт vibelog-agent — `.vibelog/prompts/agent-prompt.md`. Если шаблон не найден ни там, ни в `templates/` — ошибка запуска.
 - **Шаблоны фаз** лежат в `templates/phases/` (`phase-spec.md`, `phase-plan.md`, `phase-code.md`, `phase-do.md`, `phase-close.md`, `phase-reject.md`, `phase-investigate.md`, `phase-materialize.md` и служебные); статус после фазы подставляется в промпт как `{{producesStatus}}` — в шаблонах нет захардкоженных статусов.
+
+### Transient In Progress — статус задачи на время фазы (VL-196)
+
+Запуск любой workflow-фазы (`spec`/`plan`/`code`/`do`/`close`/`reject` и фазы других workflow) временно переводит задачу в **In Progress** — на канбане и в карточке видно, что задача «в работе». Это транзиентный статус на время выполнения фазы, а не результат перехода workflow:
+
+- фаза завершилась успешно → статус меняется на `produces_status` текущего перехода (Spec + plan → Planned, Planned + code → Review, Review + close → Done);
+- фаза провалилась → статус возвращается к тому, с которого фаза стартовала; причина (код выхода, хвост лога) добавляется комментарием от @agent;
+- агент сам зафиксировал статус через `backlog_finish_phase` во время фазы — его запись приоритетна, оркестратор не перетирает её;
+- служебные фазы (comment/prompt/analyze/resume) статус не меняют;
+- рестарт веба/бота: «зависшие» In Progress откатываются автоматически по кэшу `.vibelog/phase-in-progress.json` (исходный статус, фаза, pid процесса; запись с живым pid не трогается — фаза ещё идёт), поэтому задача не может навсегда остаться в In Progress без доступной фазы.
+
+In Progress никогда не «производится» ни одной фазой — статус только занимается на время выполнения фазы и применяется по правилам workflow. Ручной перенос канбана из In Progress ограничен переходами workflow (только code/reject), как и раньше.
 
 ---
 
