@@ -48,14 +48,22 @@ type ChatEvent =
   | { type: "error"; message: string }
 
 /**
- * Текущий threadId (MVP: один тред на страницу). Событие thread записывает,
- * resume-запросы читают. При новой загрузке страницы — undefined → сервер
- * создаст новый тред.
+ * Текущий threadId (VL-207: id приходит из hash при восстановлении,
+ * событие thread записывает id при первом ходе в новом треде). Resume и
+ * следующие ходы продолжают тот же jsonl. Выставляется провайдером при
+ * смене треда (useEffect — до первого действия пользователя).
  */
 let activeThreadId: string | undefined
 
 /** Решения, уже отправленные на сервер (идемпотентность resume). */
 const sentApprovals = new Set<string>()
+
+/**
+ * Уведомление о создании нового треда сервером (VL-207): провайдер
+ * регистрирует колбэк, ChatPage переводит hash на `#/chat/<id>` — без
+ * перезагрузки рантайма (id сравнивается с уже загруженным).
+ */
+let notifyThreadCreated: ((id: string) => void) | null = null
 
 /** Последний user-текст из messages рантайма. */
 function lastUserText(messages: ChatModelRunOptions["messages"]): string {
@@ -117,6 +125,8 @@ function applyEvent(parts: Part[], ev: ChatEvent): boolean {
   switch (ev.type) {
     case "thread":
       activeThreadId = ev.threadId
+      // VL-207: новый тред создан → ChatPage переводит hash на #/chat/<id>
+      notifyThreadCreated?.(ev.threadId)
       return false
     case "text": {
       // дельты склеиваем в последний text-part
@@ -274,8 +284,44 @@ const chatAdapter: ChatModelAdapter = {
   },
 }
 
-/** Провайдер чата: один adapter на страницу (threadIds — module state). */
-export function ChatRuntimeProvider({ children }: { children: React.ReactNode }) {
-  const runtime = useLocalRuntime(chatAdapter)
+/**
+ * Провайдер чата (VL-207): threadId приходит из hash — при восстановлении
+ * существующего треда серверные сообщения уходят в initialMessages, а
+ * activeThreadId выставляется до первого хода (иначе resume/продолжение
+ * ушло бы на новый тред). Смена треда — через key на провайдере:
+ * useLocalRuntime создаётся заново, module-state (activeThreadId,
+ * sentApprovals) синхронизируется в эффекте.
+ */
+export function ChatRuntimeProvider({
+  threadId,
+  initialMessages,
+  onThreadCreated,
+  children,
+}: {
+  /** id треда из hash (undefined — новый тред, сервер создаст при первом ходе). */
+  threadId?: string
+  /** Восстановленная история (initialMessages для useLocalRuntime). */
+  initialMessages?: import("@assistant-ui/react").ThreadMessageLike[]
+  /** Новый тред создан сервером → обновить hash на #/chat/<id>. */
+  onThreadCreated?: (id: string) => void
+  children: React.ReactNode
+}) {
+  const runtime = useLocalRuntime(chatAdapter, { initialMessages })
+
+  // Колбэк через ref: adapter — module-level, не пересоздаём его на каждый рендер
+  const createdRef = React.useRef(onThreadCreated)
+  React.useEffect(() => {
+    createdRef.current = onThreadCreated
+  })
+
+  React.useEffect(() => {
+    activeThreadId = threadId
+    sentApprovals.clear()
+    notifyThreadCreated = id => createdRef.current?.(id)
+    return () => {
+      notifyThreadCreated = null
+    }
+  }, [threadId])
+
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
 }

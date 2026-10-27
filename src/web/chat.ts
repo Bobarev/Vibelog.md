@@ -24,7 +24,7 @@
  * resume-запроса).
  */
 
-import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, appendFileSync, readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ChatMessage, LlmClient, ToolCall, ToolDef } from '../agent/llm.js';
 import { createLlmClient } from '../agent/llm.js';
@@ -98,6 +98,54 @@ function appendChatMessages(cwd: string, threadId: string, messages: ChatMessage
   mkdirSync(dir, { recursive: true });
   const lines = messages.map(m => JSON.stringify(m)).join('\n') + '\n';
   appendFileSync(sessionFile(cwd, threadId), lines, 'utf8');
+}
+
+/** Элемент списка тредов для сайдбара (VL-207): метаданные без тел сообщений. */
+export interface ChatThreadSummary {
+  threadId: string;
+  /** Заголовок — первая строка первого user-сообщения (обрезка 80 символов). */
+  title: string;
+  /** mtime файла истории (ISO) — для сортировки «недавние сверху». */
+  updatedAt: string;
+  /** Число сообщений в jsonl (для индикации «пустой тред»). */
+  messageCount: number;
+}
+
+/**
+ * Список тредов чата, отсортированный по времени изменения (свежие сверху).
+ * Каталог отсутствует (не было чата) — пустой массив, не ошибка.
+ */
+export function listChatThreads(cwd: string): ChatThreadSummary[] {
+  const dir = chatSessionsDir(cwd);
+  if (!existsSync(dir)) return [];
+  const out: ChatThreadSummary[] = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.jsonl')) continue;
+    const threadId = name.slice(0, -'.jsonl'.length);
+    // Имя файла — тот же валидатор, что и в runChat (защита от мусора в каталоге)
+    if (!THREAD_ID_RE.test(threadId)) continue;
+    const history = loadChatHistory(cwd, threadId);
+    const firstUser = history.find(m => m.role === 'user');
+    const rawTitle =
+      firstUser && firstUser.role === 'user' ? firstUser.content.trim().split('\n')[0] ?? '' : '';
+    out.push({
+      threadId,
+      title: (rawTitle || 'Пустой тред').slice(0, 80),
+      updatedAt: statSync(sessionFile(cwd, threadId)).mtime.toISOString(),
+      messageCount: history.length,
+    });
+  }
+  return out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+}
+
+/**
+ * История треда для восстановления на клиенте (VL-207, GET /api/chat/threads/:id).
+ * Невалидный id или отсутствующий файл — null (404 на уровне API).
+ */
+export function getChatThread(cwd: string, threadId: string): ChatMessage[] | null {
+  if (!THREAD_ID_RE.test(threadId)) return null;
+  if (!existsSync(sessionFile(cwd, threadId))) return null;
+  return loadChatHistory(cwd, threadId);
 }
 
 /** Новый threadId: валидный по THREAD_ID_RE, машиночитаемый префикс. */

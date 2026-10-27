@@ -44,6 +44,8 @@ export function GlobalSearch() {
     if (!q) {
       // Гасим seq: опоздавший ответ на очищенный запрос тоже игнорируется
       seqRef.current += 1;
+      // Debounce-ветка эффекта: сброс dropdown при очистке ввода
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setResults(null);
       setOpen(false);
       return;
@@ -88,6 +90,8 @@ export function GlobalSearch() {
     if (kind === "task") {
       requestOpenTask(id);
     } else {
+      // Хэш-роутинг из обработчика клика — не рендер/эффект компонента
+      // eslint-disable-next-line react-hooks/immutability
       window.location.hash = `#/${kind}/${encodeURIComponent(id)}`;
     }
     // Закрыть dropdown и очистить запрос после перехода

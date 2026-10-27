@@ -5,6 +5,8 @@
  * - GET  /api/tasks          — список задач
  * - POST /api/tasks          — создать задачу
  * - GET  /api/search         — глобальный поиск по 4 типам сущностей (VL-185)
+ * - GET  /api/chat/threads   — список тредов чата без тел сообщений (VL-207)
+ * - GET  /api/chat/threads/:id — история треда (messages) для восстановления (VL-207)
  * - GET  /api/tasks/:id      — детали задачи
  * - PATCH /api/tasks/:id     — обновить задачу
  * - DELETE /api/tasks/:id    — архивировать задачу
@@ -61,6 +63,7 @@ import { loadConfig, saveConfig, defaultConfig } from '../core/config.js';
 import { getAvailablePhases, getWorkflowForTask, canMoveTo, loadWorkflows } from '../core/workflow.js';
 import { loadPhaseStyles } from '../core/phase-styles.js';
 import { globalSearch } from '../core/search.js';
+import { listChatThreads, getChatThread } from './chat.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadBotSettings, saveBotSettings } from '../bot/settings.js';
 import type { BotSettings } from '../bot/settings.js';
@@ -108,6 +111,24 @@ export function handleApi(
       }
       const q = new URLSearchParams(queryString).get('q') ?? '';
       return { status: 200, body: globalSearch(cwd, q) };
+    }
+
+    // GET /api/chat/threads — список тредов чата (VL-207): сайдбар тредов и
+    // восстановление последнего при входе на #/chat. Только метаданные
+    // (title/updatedAt/messageCount), тела сообщений — в GET :id ниже.
+    if (method === 'GET' && url === '/api/chat/threads') {
+      return { status: 200, body: listChatThreads(cwd) };
+    }
+
+    // GET /api/chat/threads/:id — история треда (VL-207): клиент подгружает
+    // её при навигации в существующий тред (AC1). Валидация threadId —
+    // внутри getChatThread (тот же THREAD_ID_RE, что и в runChat): мусор или
+    // отсутствующий файл → 404, без чтения за пределы chat-sessions.
+    const chatThreadMatch = url.match(/^\/api\/chat\/threads\/([^/]+)$/);
+    if (chatThreadMatch && method === 'GET') {
+      const messages = getChatThread(cwd, chatThreadMatch[1]);
+      if (!messages) return { status: 404, body: { error: 'Тред не найден' } };
+      return { status: 200, body: { threadId: chatThreadMatch[1], messages } };
     }
 
     // GET /api/config

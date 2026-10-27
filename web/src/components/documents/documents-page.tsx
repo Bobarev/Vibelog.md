@@ -66,6 +66,9 @@ export function DocumentsPage() {
   }, []);
 
   React.useEffect(() => {
+    // Загрузка списка при монтировании: setState уходят в async-продолжение
+    // load (после await), паттерн VL-174
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
 

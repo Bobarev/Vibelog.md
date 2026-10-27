@@ -73,6 +73,8 @@ export function DocumentDetail({ id }: { id: string }) {
   React.useEffect(() => {
     if (!id) return;
     let cancelled = false;
+    // Сброс формы при смене id — до fetch ниже (паттерн VL-174)
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setEntry(null);
     setError(null);
     setEditing(false);

@@ -17,6 +17,7 @@
  */
 
 import * as React from 'react';
+import { parseChatThreadId } from './chat-threads';
 
 /** Страницы веб-интерфейса. */
 export type Route =
@@ -40,6 +41,9 @@ function parseHash(hash: string): Route {
   if (path === 'tasks') return 'tasks';
   // Чат с LLM (VL-204): точное совпадение до детальных префиксов
   if (path === 'chat') return 'chat';
+  // Тред чата (VL-207): #/chat/<threadId> — тот же экран «чат», id далее
+  // достаёт useChatThreadId; проверка ПОСЛЕ точного 'chat' и ДО списков
+  if (path.startsWith('chat/')) return 'chat';
   if (path === 'references') return 'references';
   // ВАЖНО: списки — точным совпадением ДО детальных префиксов
   // ('documents' — список, 'document/<id>' — детальная страница VL-181)
@@ -106,6 +110,22 @@ export function useDocumentId(): string | null {
   const [id, setId] = React.useState<string | null>(() => parseDocumentId(window.location.hash));
   React.useEffect(() => {
     const onChange = () => setId(parseDocumentId(window.location.hash));
+    window.addEventListener('hashchange', onChange);
+    return () => window.removeEventListener('hashchange', onChange);
+  }, []);
+  return id;
+}
+
+/**
+ * Подписка на id треда чата из хеша `#/chat/<threadId>` (VL-207).
+ * null — на странице `#/chat` без треда (новый/восстановление);
+ * 'new' — явный запрос нового пустого треда (кнопка «Новый тред»);
+ * строка — существующий тред, история подгружается с сервера.
+ */
+export function useChatThreadId(): string | null {
+  const [id, setId] = React.useState<string | null>(() => parseChatThreadId(window.location.hash));
+  React.useEffect(() => {
+    const onChange = () => setId(parseChatThreadId(window.location.hash));
     window.addEventListener('hashchange', onChange);
     return () => window.removeEventListener('hashchange', onChange);
   }, []);
