@@ -80,6 +80,10 @@ VIBELOG_LLM_API_KEY=sk-...
 VIBELOG_LLM_MODEL=your-model-name
 ```
 
+**Режим LLM API (`api_mode`, VL-205).** Ключ `api_mode` в `.vibelog/settings.json` выбирает wire-протокол LLM-клиента: `"chat"` (дефолт) — `POST <base_url>/chat/completions` (текущее поведение, без изменений); `"responses"` — `POST <base_url>/responses` (OpenAI Responses API): вход `input[]` (items `message` / `function_call` / `function_call_output`), ответ `output[]` вместо `choices`, typed SSE-события (`response.output_text.delta`, `response.function_call_arguments.delta/done`, `response.completed`, `error`), tool calls через `call_id` (результат — item `function_call_output`, не `role:tool`), `session_id` в теле запроса (дубль заголовка `X-Session-Id` безвреден, ref-18), usage по `input_tokens`/`output_tokens` (+ `reasoning_tokens` в `output_tokens_details`, кэш в `input_tokens_details.cached_tokens`); `stream_options` в responses не передаётся (строгий провайдер ответит 400); stateful `previous_response_id` не используется — stateless, вся история каждый ход (ref-20: MiMo несовместим).
+
+Битое или отсутствующее значение → `chat` (конфиг не должен ронять агента). Приоритет над settings.json — флаг `--api-mode chat|responses` (для тестов и ручных прогонов). Чтение — `loadApiMode(cwd)` в `src/agent/llm-env.ts`; в branch-mode (агент в worktree) settings.json берётся по `VIBELOG_CWD ?? cwd`, иначе настройка молча игнорировалась бы. TUI-чат (`interactive.ts`) и веб-чат (`src/web/chat.ts`) читают тот же ключ.
+
 ## 3. Запуск
 
 ### Синтаксис
@@ -124,6 +128,7 @@ vb agent VL-123
 | `--no-compact` | компакшн включён | Отключить усечение истории LLM-запроса (VL-122) |
 | `--compact-tail <N>` | 50 | Сколько последних сообщений хвоста сохранять при компакшне (VL-122) |
 | `--compact-at-tokens <N>` | 850000 | Порог usage-токенов, при котором включается компакшн (VL-122) |
+| `--api-mode <chat\|responses>` | `chat` (иначе settings.json `api_mode`) | Режим LLM API: chat — `/chat/completions`, responses — `/responses` (VL-205) |
 | `--resume <sessionId>` | — | Продолжить сохранённую сессию (VL-95; префикс `vb:` игнорируется) |
 | `--continue` | — | Продолжить последнюю сессию текущего каталога (VL-95) |
 | `--help` | — | Справка |
@@ -158,7 +163,7 @@ vb agent VL-123
 
 **Системный промпт.** Каждый запрос к LLM начинается с system-сообщения: встроенная базовая часть (роль Vibelog-agent, русский язык, границы рабочего каталога, запрет необратимых действий) + содержимое `AGENTS.md` проекта из cwd, если файл есть. Лимит вставки — 8000 символов (обрезка с пометкой); ошибка чтения — предупреждение в stderr, фаза продолжается без AGENTS.md. При `--resume` сохранённый system заменяется свежесобранным (файл мог измениться). Лог: `[vibelog-agent] Системный промпт: N символов (AGENTS.md: да/нет)`. В TUI-чате `vibelog agent <task-id>` (VL-158) к system-промпту дополнительно добавляется карточка задачи (`taskToMarkdown`) — чат стартует с задачей в контексте.
 
-**Кэш-токены.** Поле `usage.cache_read_input_tokens` в JSON-результате суммирует кэш по итерациям. Провайдеры отдают кэш под разными именами — `mapUsage` читает все известные варианты: прямые `cache_read_input_tokens` / `cache_read_tokens` / `prompt_cache_hit_tokens` и вложенное `prompt_tokens_details.cached_tokens` (OpenAI-стиль Cloud.ru). Tools сортируются по имени перед отправкой — стабильный префикс запроса повышает шанс prefix-caching.
+**Кэш-токены.** Поле `usage.cache_read_input_tokens` в JSON-результате суммирует кэш по итерациям. Провайдеры отдают кэш под разными именами — `mapUsage` читает все известные варианты: прямые `cache_read_input_tokens` / `cache_read_tokens` / `prompt_cache_hit_tokens` и вложенное `prompt_tokens_details.cached_tokens` (OpenAI-стиль Cloud.ru), для Responses — `input_tokens_details.cached_tokens`. Tools сортируются по имени перед отправкой — стабильный префикс запроса повышает шанс prefix-caching.
 
 **Отладка usage.** `VIBELOG_LLM_DEBUG_USAGE=1` — в stderr печатается сырой `usage` каждого ответа (JSON) — по нему видно, под каким именем приходят кэш-токены:
 
