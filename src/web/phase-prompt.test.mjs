@@ -368,6 +368,35 @@ describe('VL-142 — phase-2: экономия ходов', () => {
   });
 });
 
+// Точечные инварианты VL-202 (паттерн VL-142, по AC задачи): правило
+// пакетного чтения файлов в шаблонах фаз — один read_file с чанками
+// offset/limit вместо промежуточных grep-выборок границ.
+describe('VL-202 — пакетное чтение файлов', () => {
+  const phaseFiles = ['phase-plan.md', 'phase-code.md', 'phase-do.md', 'phase-investigate.md'];
+
+  it('правило есть во всех шаблонах фаз, читающих целевой код', () => {
+    for (const file of phaseFiles) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      assert.ok(text.includes('одним read_file'), `${file}: правило «одним read_file»`);
+      assert.ok(text.includes('offset/limit'), `${file}: чанки offset/limit при >200 строк`);
+    }
+  });
+
+  it('phase-do: старая формулировка «фрагментами (sed/grep)» удалена', () => {
+    const text = readFileSync(join(templatesDir, 'phase-do.md'), 'utf-8');
+    assert.ok(!text.includes('фрагментами (sed/grep)'),
+      'phase-do.md: лимит >200 строк переформулирован на read_file');
+  });
+
+  it('phase-plan: шаг 2 ведёт к read_file после grep/glob-поиска', () => {
+    const text = readFileSync(join(templatesDir, 'phase-plan.md'), 'utf-8');
+    assert.ok(text.includes('grep/glob — найти нужный файл'),
+      'phase-plan.md: шаг 2 — сначала grep/glob, затем read_file');
+    assert.ok(text.includes('без промежуточного grep-поиска границ'),
+      'phase-plan.md: явный запрет промежуточного поиска границ');
+  });
+});
+
 // ── VL-141: фаза analyze — headless-разбор сессии агента без задачи ──
 
 describe('VL-141 — фаза analyze', () => {
