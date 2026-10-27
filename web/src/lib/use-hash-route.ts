@@ -22,6 +22,7 @@ import * as React from 'react';
 export type Route =
   | 'board'
   | 'tasks'
+  | 'chat'
   | 'settings'
   | 'config'
   | 'references'
@@ -37,6 +38,8 @@ function parseHash(hash: string): Route {
   if (path === 'settings') return 'settings';
   if (path === 'config') return 'config';
   if (path === 'tasks') return 'tasks';
+  // Чат с LLM (VL-204): точное совпадение до детальных префиксов
+  if (path === 'chat') return 'chat';
   if (path === 'references') return 'references';
   // ВАЖНО: списки — точным совпадением ДО детальных префиксов
   // ('documents' — список, 'document/<id>' — детальная страница VL-181)

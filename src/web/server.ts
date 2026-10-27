@@ -15,6 +15,7 @@ import type { Server } from 'node:http';
 import { exec } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { handleApi } from './api.js';
+import { runChat } from './chat.js';
 import { getAssetsHtml } from './assets.js';
 import { serveStatic } from './static.js';
 
@@ -62,6 +63,40 @@ export function startWebServer(cwd: string, port = 3030, openBrowser = true, sta
         }
 
         const queryString = rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?') + 1) : '';
+
+        // POST /api/chat — SSE-стриминг чата (VL-204): ответ не JSON,
+        // поэтому ветка ДО handleApi (он синхронный и всегда отдаёт JSON).
+        if (method === 'POST' && url === '/api/chat') {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+          });
+          (async () => {
+            try {
+              const events = runChat(parsed ?? {}, cwd);
+              for await (const ev of events) {
+                // Клиент отключился — прерываем генератор (finally в runChat
+                // дожидается продюсера, чтобы LLM-вызов не завис)
+                if (res.destroyed || res.writableEnded) break;
+                res.write(`data: ${JSON.stringify(ev)}\n\n`);
+              }
+            } catch (err) {
+              if (!res.destroyed && !res.writableEnded) {
+                res.write(
+                  `data: ${JSON.stringify({
+                    type: 'error',
+                    message: err instanceof Error ? err.message : String(err),
+                  })}\n\n`,
+                );
+              }
+            } finally {
+              if (!res.destroyed && !res.writableEnded) res.end();
+            }
+          })();
+          return;
+        }
+
         const result = handleApi(method, url, parsed, cwd, queryString);
         res.writeHead(result.status, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(result.body));
