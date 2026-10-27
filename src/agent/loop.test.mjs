@@ -35,6 +35,9 @@ function fakeLlm(script) {
         toolCalls: step.toolCalls ?? [],
         // Частичный usage из сценария дополняется нулями — NaN в sum не попадает.
         usage: step.usage ? { ...zeroUsage(), ...step.usage } : zeroUsage(),
+        // VL-203: wire-диагностика (optional) — пробрасывается из сценария
+        ...(step.payloadBytes !== undefined ? { payloadBytes: step.payloadBytes } : {}),
+        ...(step.shrinkLevel !== undefined ? { shrinkLevel: step.shrinkLevel } : {}),
       };
     },
   };
@@ -133,6 +136,60 @@ describe('runLoop happy path (VL-83)', () => {
       total_tokens: 17,
       reasoning_tokens: 0,
     });
+  });
+});
+
+// ── VL-203: wire-payload и уровень компакшна в JSONL/LoopResult ──
+
+describe('runLoop wire-диагностика (VL-203)', () => {
+  it('payload_bytes/shrink_level дописываются в assistant-сообщения и LoopResult', async () => {
+    const { spec } = countingTool();
+    const { llm } = fakeLlm([
+      {
+        text: '',
+        toolCalls: [{ id: 'c1', name: 'echo_tool', arguments: { x: 1 } }],
+        usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 },
+        payloadBytes: 140_000,
+        shrinkLevel: 0,
+      },
+      { text: 'готово', usage: { input_tokens: 7, output_tokens: 2, total_tokens: 9 }, payloadBytes: 155_000, shrinkLevel: 1 },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false);
+    // LoopResult: последний и пиковый payload
+    assert.equal(res.last_payload_bytes, 155_000);
+    assert.equal(res.max_payload_bytes, 155_000);
+    // JSONL-транскрипт: оба assistant-сообщения несут wire-диагностику
+    const assistants = res.messages.filter((m) => m.role === 'assistant');
+    assert.equal(assistants.length, 2);
+    assert.equal(assistants[0].payload_bytes, 140_000);
+    assert.equal(assistants[0].shrink_level, 0);
+    assert.equal(assistants[0].usage.total_tokens, 6, 'usage по ходам (VL-198) на месте');
+    assert.equal(assistants[1].payload_bytes, 155_000);
+    assert.equal(assistants[1].shrink_level, 1);
+    assert.equal(assistants[1].usage.total_tokens, 9);
+  });
+
+  it('ответы без payloadBytes (мок старого образца) → поля undefined, без NaN', async () => {
+    const { llm } = fakeLlm([{ text: 'просто текст' }]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [] });
+    assert.equal(res.is_error, false);
+    assert.equal(res.last_payload_bytes, undefined);
+    assert.equal(res.max_payload_bytes, undefined);
+    const assistant = res.messages.find((m) => m.role === 'assistant');
+    assert.equal('payload_bytes' in assistant, false, 'нет поля — не undefined-ключ');
+    assert.equal('shrink_level' in assistant, false);
+  });
+
+  it('fail-путь тоже несёт накопленную wire-диагностику', async () => {
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'nope', arguments: {} }], payloadBytes: 50_000, shrinkLevel: 0 },
+      new Error('Ошибка LLM: network down'),
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [] });
+    assert.equal(res.is_error, true);
+    assert.equal(res.last_payload_bytes, 50_000, 'последний успешный payload сохранён при ошибке');
+    assert.equal(res.max_payload_bytes, 50_000);
   });
 });
 

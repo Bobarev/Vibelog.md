@@ -154,6 +154,13 @@ export interface SessionMeta {
   model?: string;
   /** Агент-исполнитель: 'vb' | 'qwen', VL-198. */
   agent?: string;
+  /**
+   * Байты wire-body последнего LLM-запроса последнего рана (VL-203):
+   * диагностика для отличия content-based отказа от размерного.
+   */
+  last_payload_bytes?: number;
+  /** Пик wire-payload по всем ходам последнего рана (VL-203). */
+  max_payload_bytes?: number;
 }
 
 /**

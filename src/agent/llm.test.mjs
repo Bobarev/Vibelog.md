@@ -505,7 +505,65 @@ describe('отказ «high risk» → shrink-повтор (VL-178)', () => {
     assert.ok(lines.length > 0, `нет диагностического лога, captured: ${JSON.stringify(captured)}`);
     assert.match(lines[0], /payload=\d+ байт/, 'размер wire-payload');
     assert.match(lines[0], /shrink-уровень=0/, 'уровень до повтора');
-    assert.match(lines[0], /usage=н\/д/, 'usage в теле ошибки нет');
+    assert.match(lines[0], /usage=н\/д/, 'без предыдущих успешных запросов usage=н/д');
+  });
+
+  // ── VL-203: wire-payload и usage в диагностике ──
+
+  it('VL-203: успешный ответ несёт payloadBytes и shrinkLevel', async () => {
+    const { impl, state } = fakeFetch([okStream()]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const res = await client.streamChat(bigToolMessages(), []);
+    assert.equal(typeof res.payloadBytes, 'number');
+    assert.ok(res.payloadBytes > 0, 'payloadBytes > 0');
+    // Байты считаны от фактического wire-body (JSON, ушедший в fetch)
+    assert.equal(res.payloadBytes, Buffer.byteLength(state.bodies[0], 'utf8'));
+    assert.equal(res.shrinkLevel, 0, 'без повторов — уровень full');
+  });
+
+  it('VL-203: повтор после high-risk → shrinkLevel=1 у успешного ответа', async () => {
+    const { impl } = fakeFetch([
+      sseResponse([], { status: 400, statusText: 'Bad Request', bodyText: HIGH_RISK_BODY }),
+      jsonResponse({ error: HIGH_RISK_BODY }, { status: 400, statusText: 'Bad Request' }),
+      okStream(),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const res = await client.streamChat(bigToolMessages(), []);
+    assert.equal(res.text, 'ок');
+    assert.equal(res.shrinkLevel, 1, 'один shrink-повтор применён');
+    assert.ok(res.payloadBytes > 0);
+  });
+
+  it('VL-203 (AC2): отказ после успешного запроса → в логе usage предыдущего ответа', async () => {
+    const { impl } = fakeFetch([
+      // 1-й вызов streamChat: успех с usage
+      sseResponse([
+        JSON.stringify({
+          choices: [{ delta: { content: 'ок' } }],
+          usage: { prompt_tokens: 42, completion_tokens: 7, total_tokens: 49 },
+        }),
+      ]),
+      // 2-й вызов: high-risk отказ (стрим + фолбэк)
+      sseResponse([], { status: 400, statusText: 'Bad Request', bodyText: HIGH_RISK_BODY }),
+      jsonResponse({ error: HIGH_RISK_BODY }, { status: 400, statusText: 'Bad Request' }),
+    ]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const origError = console.error;
+    const captured = [];
+    console.error = (...args) => captured.push(args.join(' '));
+    try {
+      await client.streamChat([{ role: 'user', content: 'x' }], []);
+      await assert.rejects(() => client.streamChat(bigToolMessages(), []), /high risk/i);
+    } finally {
+      console.error = origError;
+    }
+    const line = captured.find((l) => l.includes('high-risk-отказ HTTP'));
+    assert.ok(line, `нет лога отказа, captured: ${JSON.stringify(captured)}`);
+    assert.match(line, /payload=\d+ байт/, 'байты payload отказа');
+    // AC2: usage предыдущего успешного запроса, а не «н/д»
+    assert.ok(!line.includes('usage=н/д'), 'usage должен быть известен');
+    assert.match(line, /input_tokens.:42/, 'usage предыдущего успешного запроса в логе');
+    assert.match(line, /предыдущего успешного запроса/, 'подпись источника usage');
   });
 
   it('обычный 400 без маркера → без shrink-повторов (регрессия VL-83)', async () => {
@@ -554,6 +612,29 @@ describe('отказ «high risk» → shrink-повтор (VL-178)', () => {
     const assistant = body.messages.find((m) => m.role === 'assistant');
     assert.equal(assistant.content, 'ответ');
     assert.equal('usage' in assistant, false, 'usage — наше поле, провайдеру не уходить');
+  });
+
+  it('VL-203: payload_bytes/shrink_level из assistant-сообщения НЕ уходят провайдеру в wire', async () => {
+    const { impl, state } = fakeFetch([okStream()]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    await client.streamChat(
+      [
+        { role: 'user', content: 'x' },
+        {
+          role: 'assistant',
+          content: 'ответ',
+          usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 12, reasoning_tokens: 0 },
+          payload_bytes: 140_000,
+          shrink_level: 1,
+        },
+      ],
+      [],
+    );
+    const body = JSON.parse(state.bodies[0]);
+    const assistant = body.messages.find((m) => m.role === 'assistant');
+    assert.equal(assistant.content, 'ответ');
+    assert.equal('payload_bytes' in assistant, false, 'payload_bytes — диагностика, провайдеру не уходить');
+    assert.equal('shrink_level' in assistant, false, 'shrink_level — диагностика, провайдеру не уходить');
   });
 
   it('VL-198: X-Session-Id уходит только при заданном sessionId', async () => {

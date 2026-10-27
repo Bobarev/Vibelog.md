@@ -641,6 +641,44 @@ describe('vibelog-agent CLI (VL-85)', () => {
     }
   });
 
+  it('VL-203 (AC1): stderr фазы содержит байты payload и usage; мета — last_payload_bytes', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-wirediag-'));
+    try {
+      mkdirSync(join(projDir, 'backlog', 'tasks'), { recursive: true });
+      writeFileSync(join(projDir, 'backlog', 'config.yml'), 'project_name: WireDiag Test\n', 'utf-8');
+      createTaskFile(projDir, { id: 'VL-90', title: 'Задача wire-диагностики' });
+      const { code, stdout, stderr } = await runCli(
+        ['comment', 'VL-90', '--no-mcp', '--comment', 'диагностика'],
+        llmEnv(),
+        projDir,
+      );
+      assert.equal(code, 0, stdout);
+      // AC1: итоговая строка диагностики в stderr → logTail оркестратора
+      assert.match(stderr, /payload последнего запроса=\d+ байт/, 'байты payload последнего запроса');
+      assert.match(stderr, /usage=\{.*input_tokens.*\}/, 'usage по фазе в строке диагностики');
+      assert.match(stderr, /фаза: запросов=\d+/, 'число запросов фазы');
+      // AC3: JSONL-мета фиксирует размер тела запроса
+      const parsed = JSON.parse(stdout.trim());
+      const meta = JSON.parse(
+        readFileSync(join(projDir, '.vibelog', 'agent-sessions', `${parsed.session_id}.meta.json`), 'utf-8'),
+      );
+      assert.equal(typeof meta.last_payload_bytes, 'number', 'last_payload_bytes в метe');
+      assert.ok(meta.last_payload_bytes > 0, 'payload > 0');
+      assert.equal(typeof meta.max_payload_bytes, 'number', 'max_payload_bytes в метe');
+      assert.ok(meta.max_payload_bytes >= meta.last_payload_bytes, 'max >= last');
+      // AC3: JSONL-транскрипт — usage по ходам + payload_bytes/shrink_level
+      const lines = readFileSync(
+        join(projDir, '.vibelog', 'agent-sessions', `${parsed.session_id}.jsonl`), 'utf-8',
+      ).trim().split('\n');
+      const assistant = lines.map((l) => JSON.parse(l)).find((m) => m.role === 'assistant' && m.usage);
+      assert.ok(assistant, 'assistant с usage в jsonl');
+      assert.equal(typeof assistant.payload_bytes, 'number', 'payload_bytes по ходу');
+      assert.equal(assistant.shrink_level, 0, 'уровень компакшна tool-выводов');
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
   it('готовый промпт (без фазы) мету не создаёт (VL-110)', async () => {
     const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-meta0-'));
     try {
