@@ -4,11 +4,15 @@
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-10-29
+
 ### Изменено
 
 - **VL-202: правило пакетного чтения файлов в промптах фаз** — в шаблоны phase-plan/phase-code/phase-do/phase-investigate и system-prompt (agent-prompt.md) добавлено: целевой файл — один read_file (чанки offset/limit подряд при >200 строк, без промежуточного grep-поиска границ), точечные правки после полного чтения, связанные проверочные команды через &&; переформулирован лимит >200 строк в phase-do (sed/grep → read_file). Тест phase-prompt.test.mjs (+VL-202).
 
 ### Добавлено
+
+- **VL-207: веб-чат — восстановление треда по hash-роуту, сайдбар тредов справа, UI-реворк** — hash-роут `#/chat/<threadId>` (hash-route только, без localStorage): при возврате на страницу чата последний тред подгружается с сервера и история не теряется, новый тред не создаётся; ссылка на тред делима. Сайдбар тредов подключён справа (слева занят app-sidebar). UI по примеру perplexity (ref-22): состояния пусто/загрузка/стриминг/ошибка, автоскролл, редактирование/ветвление/повтор сообщений через LocalRuntime. Новые API: `GET /api/chat/threads` (список тредов) и `GET /api/chat/threads/:id` (история треда). Тесты: 2 новых файла (hash-роут, threads API); документация: README (раздел «Веб-чат»), doc-6 (пункт «Чат»).
 
 - **VL-206: уведомление о новой версии при запуске `vb bot` и `vb browser`** — команды `bot`/`browser` убраны из skip-списка `shouldSkip()` в `src/cli/update-check.ts` (остались только `mcp` и `qwen-debug`), добавлен экспорт `shouldNotifyAtStartup(argv)`: для первой не-флаговой команды из `STARTUP_NOTIFY_COMMANDS = ['bot', 'browser']` в `bin/vibelog.mjs` вызов `maybeNotifyUpdate()` выполняется с `await` **до** `route()` — иначе уведомление для долгоживущих сервисов не наступало никогда (диагноз VL-101: вызов стоял после route, который для bot/browser не завершается). Уведомление печатается в stderr сразу после старта и раньше любого вывода сервиса; для остальных команд — после route, как раньше (catch-семантика ошибок сохранена). Логика проверки не менялась: общий кэш `<tmpdir>/vibelog-update-check.json` с TTL 24 ч, задержка ≤3 с (`Promise.race`), ошибки сети молча + `error: true` в кэш, env-гард `VIBELOG_SKIP_UPDATE_CHECK` и флаги `-v`/`--version`. Тесты: split-тест `shouldSkip` (mcp/qwen-debug → true, bot/browser → false), `describe('shouldNotifyAtStartup')`, тесты момента показа, интеграционный spawn-тест в `cli.test.mjs` с фейковым npm через PATH-обёртку и изолированным TMPDIR (уведомление в stderr не протекает в stdout, повторный запуск тихо, env-гард тихо). Документация: doc-7 §Автообновление, doc-6.
 
