@@ -5,12 +5,13 @@
  * VL-17: --project/--parent/--ordinal/--final-summary + MCP create (ordinal/finalSummary/project)
  * VL-18: --draft + edit --final-summary/--append-final-summary/--clear-final-summary/--ordinal
  *
- * CLI — /tmp + spawnSync; MCP — in-process (in-project .test-create-flags).
+ * CLI и MCP — mkdtemp в tmpdir (VL-241: уникальный каталог на прогон).
  */
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -25,7 +26,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // CLI
 // ============================================================
 
-const cliDir = '/tmp/vibelog-create-flags-test';
+const cliDir = mkdtempSync(join(tmpdir(), 'vibelog-create-flags-cli-'));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
 
 function cliFresh() {
@@ -98,7 +99,7 @@ describe('VL-17 — create --project/--parent/--ordinal/--final-summary', () => 
   });
 
   it('MCP create принимает ordinal/finalSummary/project', async () => {
-    const testDir = join(__dirname, '..', '..', '.test-create-flags');
+    const testDir = mkdtempSync(join(tmpdir(), 'vibelog-create-flags-mcp-'));
     rmSync(testDir, { recursive: true, force: true });
     mkdirSync(join(testDir, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(join(testDir, 'backlog', 'config.yml'), stringifyYaml({

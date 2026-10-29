@@ -14,7 +14,8 @@
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
@@ -26,7 +27,7 @@ import { handleToolCall } from '../../dist/mcp/tools.js';
 import { createTaskFile, getTask } from '../../dist/core/store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const testDir = join(__dirname, '..', '..', '.test-v11');
+const testDir = mkdtempSync(join(tmpdir(), 'vibelog-mcp-v11-'));
 const backlogDir = join(testDir, 'backlog');
 const tasksDir = join(backlogDir, 'tasks');
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');

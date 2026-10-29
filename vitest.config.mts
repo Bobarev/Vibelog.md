@@ -11,6 +11,8 @@ import { defineConfig } from 'vitest/config';
  * env-объекты (шов setSpawnEnvBaseForTests оркестратора, env-параметр
  * spawnReplacementBot). Мок-серверы слушают эфемерные порты (listen(0)),
  * tmp-каталоги уникальны per-file (mkdtempSync) — параллелизм безопасен.
+ * Если тест-файл создаёт каталог иначе (фиксированный путь), этот инвариант
+ * нарушается — см. VL-241 (все тестовые каталоги переведены на mkdtemp).
  *
  * `setupFiles` подключает src/test-setup.mjs — глобальный fetch-guard (VL-132),
  * запрещающий реальную сеть в тестах. В node --test guard подключался через

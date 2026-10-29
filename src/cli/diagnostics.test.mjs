@@ -13,14 +13,15 @@
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync, readFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
-const testDir = join(__dirname, '..', '..', '.test-diagnostics');
+const testDir = mkdtempSync(join(tmpdir(), 'vibelog-diagnostics-'));
 
 // Читаем версию динамически из package.json, чтобы тесты не ломались при бампе
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'));
@@ -152,9 +153,7 @@ describe('Диагностика — doctor', () => {
 
   it('doctor: ok=false без backlog (обязательная проверка)', () => {
     // Используем директорию ВНЕ проекта, чтобы findBacklogDir не поднялся вверх
-    const emptyDir = '/tmp/vibelog-doctor-empty';
-    rmSync(emptyDir, { recursive: true, force: true });
-    mkdirSync(emptyDir, { recursive: true });
+    const emptyDir = mkdtempSync(join(tmpdir(), 'vibelog-doctor-empty-'));
     const out = runCli(['doctor', '--json'], { cwd: emptyDir });
     rmSync(emptyDir, { recursive: true, force: true });
     const json = extractJson(out);

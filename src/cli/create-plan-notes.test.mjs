@@ -7,19 +7,20 @@
  * - create без флагов не создаёт пустых секций
  * - help: create показывает --plan, edit показывает --append-notes
  *
- * Паттерн search-cli.test.mjs: testDir в /tmp, spawnSync со слиянием
+ * Паттерн search-cli.test.mjs: testDir = mkdtemp вне проекта (VL-241), spawnSync со слиянием
  * stdout/stderr, проверка содержимого не exit code.
  */
 
 import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, rmSync, readFileSync, readdirSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const testDir = '/tmp/vibelog-plan-notes-test';
+const testDir = mkdtempSync(join(tmpdir(), 'vibelog-plan-notes-'));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
 const tasksDirPath = join(testDir, 'backlog', 'tasks');
 

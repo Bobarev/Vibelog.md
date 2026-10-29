@@ -1,9 +1,8 @@
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
 
 import { createTask, taskToMarkdown, markdownToTask, taskFilename } from '../../dist/core/task.js';
 import { stringifyYaml, parseYaml } from '../../dist/core/yaml.js';
@@ -12,10 +11,9 @@ import { renderMarkdown } from '../../dist/core/markdown.js';
 import { searchTasks } from '../../dist/core/search.js';
 import { blockedBy, blocks, isReady, validateDeps } from '../../dist/core/deps.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Тестовая директория — создаём и удаляем для каждого теста
-const testDir = join(__dirname, '..', '..', '.test-tmp');
+const testDir = mkdtempSync(join(tmpdir(), 'vibelog-core-'));
 const backlogDir = join(testDir, 'backlog');
 const tasksDir = join(backlogDir, 'tasks');
 const completedDir = join(backlogDir, 'completed');

@@ -9,20 +9,21 @@
  * - невалидный --limit — ошибка
  * - --json с фильтрами
  *
- * Паттерн init-mcp.test.mjs: testDir в /tmp (findBacklogDir не поднимается
+ * Паттерн init-mcp.test.mjs: testDir = mkdtemp вне проекта (VL-241) (findBacklogDir не поднимается
  * к backlog проекта), spawnSync со слиянием stdout/stderr (ошибки CLI пишутся
  * в stderr при exit 0), проверка содержимого не exit code (Catalina SIGABRT).
  */
 
 import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const testDir = '/tmp/vibelog-search-cli-test';
+const testDir = mkdtempSync(join(tmpdir(), 'vibelog-search-cli-'));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
 
 function fresh() {

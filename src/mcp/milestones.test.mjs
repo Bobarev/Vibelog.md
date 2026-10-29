@@ -11,7 +11,8 @@
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -22,7 +23,7 @@ import { createTaskFile, getTask } from '../../dist/core/store.js';
 import { listMilestones } from '../../dist/core/milestone.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const testDir = join(__dirname, '..', '..', '.test-milestones');
+const testDir = mkdtempSync(join(tmpdir(), 'vibelog-mcp-milestones-'));
 const backlogDir = join(testDir, 'backlog');
 const tasksDirPath = join(backlogDir, 'tasks');
 const milestonesDirPath = join(backlogDir, 'milestones');

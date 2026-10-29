@@ -8,19 +8,20 @@
  * - Ошибки: неизвестный ключ, невалидное число/boolean
  * - set не затирает остальные ключи конфига
  *
- * Паттерн search-cli.test.mjs: testDir в /tmp, spawnSync со слиянием
+ * Паттерн search-cli.test.mjs: testDir = mkdtemp вне проекта (VL-241), spawnSync со слиянием
  * stdout/stderr, проверка содержимого не exit code.
  */
 
 import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const testDir = '/tmp/vibelog-config-cli-test';
+const testDir = mkdtempSync(join(tmpdir(), 'vibelog-config-cli-'));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
 
 function fresh() {

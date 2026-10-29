@@ -1,7 +1,7 @@
 /**
  * Тесты VL-209 — CLI vibelog model / provider.
  *
- * Паттерн config-cli.test.mjs: testDir в /tmp, spawnSync со слиянием
+ * Паттерн config-cli.test.mjs: testDir = mkdtemp вне проекта (VL-241), spawnSync со слиянием
  * stdout/stderr; loopback-сервера в процессе НЕТ — spawnSync безопасен
  * (lesson-51 касается только тестов с сервером в своём процессе).
  *
@@ -12,13 +12,14 @@
 
 import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync, readFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const testDir = '/tmp/vibelog-model-cli-test';
+const testDir = mkdtempSync(join(tmpdir(), 'vibelog-model-cli-'));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
 
 function runCli(...args) {
