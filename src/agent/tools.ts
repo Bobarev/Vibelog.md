@@ -116,7 +116,7 @@ export function validateArgs(
  * пределы (защита от ../ и абсолютных путей наружу). Для file-операций
  * путь не может быть самим cwd (это директория).
  */
-function resolveInProject(
+export function resolveInProject(
   cwd: string,
   rawPath: string,
   opts: { allowRoot?: boolean } = {},

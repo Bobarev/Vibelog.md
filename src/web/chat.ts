@@ -26,13 +26,15 @@
 
 import { mkdirSync, appendFileSync, readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ChatMessage, LlmClient, ToolCall, ToolDef } from '../agent/llm.js';
+import type { ChatMessage, LlmClient, ToolCall } from '../agent/llm.js';
 import { createLlmClient } from '../agent/llm.js';
 import { loadApiMode } from '../agent/llm-env.js';
 import { loadModels, resolveModelById, validateModelsConfig } from '../core/models.js';
-import { listTools, handleToolCall } from '../mcp/tools.js';
 import { globalSearch } from '../core/search.js';
 import { truncateToolOutput } from '../agent/tools.js';
+import { handleToolCall } from '../mcp/tools.js';
+import { chatToolDefs, isWriteOperation, loadChatSystemTemplate } from './tool-policy.js';
+import type { ChatLocalTool } from './tool-policy.js';
 
 /** SSE-событие чата (data-строка — JSON с полем type). */
 export type ChatEvent =
@@ -58,9 +60,6 @@ export interface ChatRequestBody {
 export interface ChatDeps {
   llm?: Pick<LlmClient, 'streamChat'>;
 }
-
-/** Инструменты чата: ровно три из MCP-реестра (AC VL-204). */
-const CHAT_TOOL_NAMES = ['backlog_create_task', 'backlog_search', 'backlog_view_task'];
 
 /** Лимиты LLM-цикла на один запрос (консервативно: чат — не фаза агента). */
 const MAX_LLM_ITERATIONS = 8;
@@ -211,18 +210,14 @@ function lastUserText(history: ChatMessage[]): string {
   return '';
 }
 
-/** System-сообщение: роль, инструменты, контекст поиска по последнему сообщению. */
+/**
+ * System-сообщение: статическая часть из шаблона (VL-219: переопределение
+ * .vibelog/prompts/chat-system.md → templates/prompts/chat-system.md,
+ * fail-closed) + динамический контекст globalSearch по последнему сообщению
+ * (поверх шаблона — контекст рантаймовый, в шаблон не выносится).
+ */
 function buildSystemPrompt(cwd: string, lastUser: string): string {
-  const parts: string[] = [
-    'Ты — ассистент проекта Vibelog.md (markdown-нативный таск-менеджер, совместимый с Backlog.md).',
-    'Отвечай по-русски, кратко и по делу. Проект, задачи и документы живут в backlog/.',
-    'Инструменты:\n' +
-      '- backlog_search — глобальный поиск задач/lessons/references/documents;\n' +
-      '- backlog_view_task — детали задачи по ID;\n' +
-      '- backlog_create_task — создать задачу. Вызов этого инструмента приостанавливает диалог: ' +
-      'пользователь подтвердит или отклонит создание (Allow/Deny), после чего диалог продолжится. ' +
-      'Создавай задачи только когда пользователь прямо попросил; за один ход — не более одной задачи.',
-  ];
+  const parts: string[] = [loadChatSystemTemplate(cwd)];
   if (lastUser.trim()) {
     const hits = globalSearch(cwd, lastUser.trim());
     const context = {
@@ -241,16 +236,6 @@ function buildSystemPrompt(cwd: string, lastUser: string): string {
     }
   }
   return parts.join('\n\n');
-}
-
-/** Три tool-описания из MCP-реестра (схемы совпадают с ToolDef). */
-function chatToolDefs(): ToolDef[] {
-  const all = listTools();
-  return CHAT_TOOL_NAMES.map(name => {
-    const def = all.find(t => t.name === name);
-    if (!def) throw new Error(`Инструмент ${name} не найден в MCP-реестре`);
-    return { name: def.name, description: def.description, inputSchema: def.inputSchema };
-  });
 }
 
 /** Мини-очередь: produce() пушит события, генератор дренирует их вживую. */
@@ -421,7 +406,22 @@ async function produce(
     }
   }
 
-  const tools = chatToolDefs();
+  const tools = chatToolDefs(cwd);
+  // Локальные инструменты (read_file/write_file) имеют handler в chat-tool
+  // (их нет в MCP-реестре) — карта для маршрутизации ниже (VL-219)
+  const localHandlers = new Map<string, ChatLocalTool>(
+    tools.filter((t): t is ChatLocalTool => 'handler' in t).map(t => [t.name, t]),
+  );
+  /**
+   * Исполняет инструмент: локальный (read_file/write_file) — его handler,
+   * остальные — MCP-реестр handleToolCall. Единая точка капа вывода
+   * (lesson-30): truncateToolOutput после handler'а для обоих путей.
+   */
+  const executeTool = async (name: string, args: Record<string, unknown>): Promise<string> => {
+    const local = localHandlers.get(name);
+    const raw = local ? await local.handler(args) : await handleToolCall(name, args, cwd, { defaultStatus: 'Spec' });
+    return truncateToolOutput(raw);
+  };
   const started = Date.now();
 
   // --- подготовка истории ---------------------------------------------------
@@ -437,14 +437,14 @@ async function produce(
     let content: string;
     if (approved) {
       try {
-        content = await handleToolCall(target.name, target.arguments, cwd);
+        content = await executeTool(target.name, target.arguments);
       } catch (err) {
         content = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
       }
     } else {
       content = JSON.stringify({
         error: (typeof body.approval!.reason === 'string' && body.approval!.reason) ||
-          'Пользователь отклонил создание задачи',
+          'Пользователь отклонил операцию',
       });
     }
     history.push({ role: 'tool', tool_call_id: target.id, content });
@@ -516,9 +516,10 @@ async function produce(
     history.push(assistantMsg);
     appendChatMessages(cwd, threadId, [assistantMsg]);
 
-    // Исполняем по порядку; на первом create — пауза (approval-gate).
+    // Исполняем по порядку; первый write — пауза (approval-gate по природе
+    // операции, VL-219: не по списку имён — isWriteOperation).
     for (const tc of resp.toolCalls) {
-      if (tc.name === 'backlog_create_task') {
+      if (isWriteOperation(tc.name)) {
         queue.push({ type: 'approval', toolCallId: tc.id, name: tc.name, args: tc.arguments });
         return; // состояние уже в jsonl; ждём resume с решением
       }
@@ -526,7 +527,7 @@ async function produce(
       let result: string;
       let isError = false;
       try {
-        result = await handleToolCall(tc.name, tc.arguments, cwd);
+        result = await executeTool(tc.name, tc.arguments);
       } catch (err) {
         result = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
         isError = true;
@@ -565,7 +566,7 @@ async function closeRemainingPending(
 ): Promise<void> {
   for (const tc of pendingToolCalls(history)) {
     if (tc.id === skipId) continue;
-    if (tc.name === 'backlog_create_task') {
+    if (isWriteOperation(tc.name)) {
       const content = JSON.stringify({ error: 'Отменено: не было подтверждения пользователя' });
       history.push({ role: 'tool', tool_call_id: tc.id, content });
       appendChatMessages(cwd, threadId, [{ role: 'tool', tool_call_id: tc.id, content }]);
@@ -575,7 +576,7 @@ async function closeRemainingPending(
     let result: string;
     let isError = false;
     try {
-      result = await handleToolCall(tc.name, tc.arguments, cwd);
+      result = truncateToolOutput(await handleToolCall(tc.name, tc.arguments, cwd, { defaultStatus: 'Spec' }));
     } catch (err) {
       result = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
       isError = true;

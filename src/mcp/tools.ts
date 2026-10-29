@@ -91,9 +91,7 @@ export function listTools(): ToolDefinition[] {
           labels: { type: 'array', items: { type: 'string' }, description: 'Метки' },
           dependencies: { type: 'array', items: { type: 'string' }, description: 'ID зависимостей' },
           acceptanceCriteria: { type: 'array', items: { type: 'string' }, description: 'Критерии приёмки' },
-          status: { type: 'string', description: 'Статус (по умолчанию из конфига)' },
-          assignee: { type: 'array', items: { type: 'string' }, description: 'Исполнители' },
-          milestone: { type: 'string', description: 'Веха (milestone)' },
+          status: { type: 'string', description: 'Статус (по умолчанию Spec в веб-чате, иначе из конфига)' },
           type: { type: 'string', description: 'Тип задачи (bug, feature, ...)' },
           parentTaskId: { type: 'string', description: 'ID родительской задачи' },
           due_date: { type: 'string', description: 'Срок (YYYY-MM-DD)' },
@@ -176,6 +174,8 @@ export function listTools(): ToolDefinition[] {
           references: { type: 'array', items: { type: 'string' }, description: 'ID references задачи (полная замена references)' },
           // VL-153: поле lessons задачи (связь с lesson_*); двусторонняя связь — через lesson_link
           lessons: { type: 'array', items: { type: 'string' }, description: 'ID lessons задачи (полная замена lessons)' },
+          // VL-219: AC через update_task — полная замена чеклиста (симметрия с create)
+          acceptanceCriteria: { type: 'array', items: { type: 'string' }, description: 'Критерии приёмки (полная замена, unchecked); JSON-строка массива тоже принимается' },
         },
         required: ['id'],
       },
@@ -615,10 +615,20 @@ export function listTools(): ToolDefinition[] {
  * @returns результат (строка)
  * @throws если инструмент не найден или произошла ошибка
  */
-export async function handleToolCall(name: string, args: ToolArgs, cwd: string): Promise<string> {
+/** Опции вызова MCP-инструмента (VL-219): defaultStatus — дефолтный статус create из веб-чата (Spec). */
+export interface HandleToolCallOpts {
+  defaultStatus?: string;
+}
+
+export async function handleToolCall(
+  name: string,
+  args: ToolArgs,
+  cwd: string,
+  opts?: HandleToolCallOpts,
+): Promise<string> {
   switch (name) {
     case 'backlog_create_task':
-      return toolCreateTask(args, cwd);
+      return toolCreateTask(args, cwd, opts);
     case 'backlog_list_tasks':
       return toolListTasks(args, cwd);
     case 'backlog_view_task':
@@ -703,7 +713,7 @@ export async function handleToolCall(name: string, args: ToolArgs, cwd: string):
 /**
  * Создаёт задачу.
  */
-function toolCreateTask(args: ToolArgs, cwd: string): string {
+function toolCreateTask(args: ToolArgs, cwd: string, opts?: HandleToolCallOpts): string {
   // VL-69: parentTaskId валидируется до записи — задача-сирота с битой
   // ссылкой ломает оркестрацию эпиков (list по parentTaskId вернёт пусто)
   const parentTaskId = (args.parentTaskId as string) || '';
@@ -717,8 +727,13 @@ function toolCreateTask(args: ToolArgs, cwd: string): string {
     priority: (args.priority as string) || '',
     labels: (args.labels as string[]) || [],
     dependencies: (args.dependencies as string[]) || [],
-    acceptanceCriteria: ((args.acceptanceCriteria as string[]) || []).map(text => ({ text, checked: false })),
-    status: (args.status as string) || '',
+    // VL-219: acceptanceCriteria — parseAcList с фолбэком [] (undefined → пустой чеклист)
+    acceptanceCriteria: args.acceptanceCriteria !== undefined
+      ? parseAcList(args.acceptanceCriteria).map(text => ({ text, checked: false }))
+      : [],
+    // VL-219: веб-чат создаёт задачи на фазе Spec — дефолт из opts
+    // (defaultStatus: 'Spec'); без opts — как раньше, фолбэк конфига в createTask
+    status: (args.status as string) || opts?.defaultStatus || '',
     assignee: (args.assignee as string[]) || [],
     milestone: (args.milestone as string) || '',
     type: args.type ? normalizeTaskType(loadConfig(cwd), args.type as string) : '',
@@ -888,6 +903,12 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
   // VL-153: поле lessons (связь с lesson_*); двусторонняя связь — lesson_link
   if (args.lessons !== undefined) updates.lessons = args.lessons as string[];
 
+  // VL-219: acceptanceCriteria через update_task — полная замена чеклиста
+  // unchecked (симметрия с create); JSON-строка массива разбирается (lesson-35)
+  if (args.acceptanceCriteria !== undefined) {
+    updates.acceptanceCriteria = parseAcList(args.acceptanceCriteria).map(text => ({ text, checked: false }));
+  }
+
   // Секции тела
   if (args.plan !== undefined) updates.implementationPlan = args.plan as string;
   if (args.notes !== undefined) updates.implementationNotes = args.notes as string;
@@ -907,6 +928,24 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
 
   const task = updateTaskFile(cwd, args.id as string, updates);
   return `Задача ${task.id} обновлена: ${Object.keys(updates).join(', ')}`;
+}
+
+/**
+ * Нормализует значение массива строк на границе MCP: массив → как есть,
+ * JSON-строка массива (`'["A", "B"]'`) → разбирается, битый JSON/скаляр →
+ * ошибка с подсказкой (lesson-35: модель часто шлёт строку вместо массива).
+ */
+function parseAcList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(v => String(v));
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed.map(v => String(v));
+    } catch {
+      // не JSON — ошибка ниже
+    }
+  }
+  throw new Error('acceptanceCriteria: ожидается массив строк или JSON-строка массива');
 }
 
 /**

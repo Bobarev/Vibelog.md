@@ -34,7 +34,7 @@ beforeAll(() => {
     project_name: 'Chat Test',
     task_prefix: 'ch',
     default_status: 'To Do',
-    statuses: ['To Do', 'In Progress', 'Done'],
+    statuses: ['To Do', 'Spec', 'Planned', 'In Progress', 'Done'],
     definition_of_done: [],
   }), 'utf-8');
 });
@@ -129,9 +129,22 @@ describe('chat: tool loop', () => {
     assert.notEqual(end.isError, true);
     assert.equal(events.at(-1).type, 'done');
 
-    // инструменты модели — ровно три нужных имени (AC)
+    // инструменты модели: все MCP (без CHAT_DISALLOWED_TOOLS) + read_file/write_file (VL-219)
     const toolNames = state.tools.map(t => t.name).sort();
-    assert.deepEqual(toolNames, ['backlog_create_task', 'backlog_search', 'backlog_view_task']);
+    assert.ok(toolNames.includes('read_file'), 'read_file должен быть в инструментах');
+    assert.ok(toolNames.includes('write_file'), 'write_file должен быть в инструментах');
+    assert.ok(toolNames.includes('backlog_search'));
+    assert.ok(toolNames.includes('backlog_create_task'));
+    assert.ok(toolNames.includes('backlog_update_task'));
+    // запрещённые (backlog_finish_phase, reference_sync, milestone_remove) модель не видит
+    assert.ok(!toolNames.includes('backlog_finish_phase'));
+    assert.ok(!toolNames.includes('reference_sync'));
+    assert.ok(!toolNames.includes('milestone_remove'));
+    // схемы read_file/write_file содержат обязательные поля
+    const readDef = state.tools.find(t => t.name === 'read_file');
+    assert.deepEqual(readDef.inputSchema.required, ['path']);
+    const writeDef = state.tools.find(t => t.name === 'write_file');
+    assert.deepEqual(writeDef.inputSchema.required, ['path', 'content']);
 
     assert.equal(listTasks(cwd, {}).length, before);
     const history = loadChatHistory(cwd, 't-tool');
@@ -213,6 +226,179 @@ describe('chat: approval (human-in-the-loop)', () => {
 
     const toolMsg = loadChatHistory(cwd, 't-deny').find(m => m.role === 'tool');
     assert.ok(toolMsg.content.includes('Не нужно'));
+  });
+});
+
+describe('chat: VL-219 read_file/write_file и Spec-статус', () => {
+  it('read_file исполняется без approval: tool_start/tool_end, содержимое файла в result', async () => {
+    writeFileSync(join(cwd, 'read-target.txt'), 'СОДЕРЖИМОЕ VL-219', 'utf8');
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-read-1', name: 'read_file', arguments: { path: 'read-target.txt' } }] },
+      { text: 'Прочитал.' },
+    ]);
+    const events = await collect({ message: 'прочитай файл', threadId: 't-read' }, { llm });
+
+    // read — НЕ approval: нет события approval, есть tool_end с содержимым
+    assert.ok(!events.some(e => e.type === 'approval'), 'read_file не должен требовать подтверждения');
+    const end = events.find(e => e.type === 'tool_end');
+    assert.ok(end, 'tool_end должен прийти');
+    assert.ok(end.result.includes('СОДЕРЖИМОЕ VL-219'), `содержимое файла: ${end.result}`);
+    assert.equal(events.at(-1).type, 'done');
+  });
+
+  it('read_file: offset/limit — диапазон строк (AC2)', async () => {
+    writeFileSync(join(cwd, 'range.txt'), 'строка0\nстрока1\nстрока2\nстрока3', 'utf8');
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-read-2', name: 'read_file', arguments: { path: 'range.txt', offset: 1, limit: 2 } }] },
+      { text: 'Готово.' },
+    ]);
+    const events = await collect({ message: 'прочитай диапазон', threadId: 't-range' }, { llm });
+    const end = events.find(e => e.type === 'tool_end');
+    assert.ok(end.result.includes('строка1') && end.result.includes('строка2'));
+    assert.ok(!end.result.includes('строка0'), 'offset=1 исключает строку0');
+    assert.ok(!end.result.includes('строка3'), 'limit=2 исключает строку3');
+  });
+
+  it('read_file: выход за пределы проекта → ошибка «Путь выходит за пределы» (AC3)', async () => {
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-read-out', name: 'read_file', arguments: { path: '../outside.txt' } }] },
+      { text: 'Понял.' },
+    ]);
+    const events = await collect({ message: 'прочитай наружу', threadId: 't-read-out' }, { llm });
+    const end = events.find(e => e.type === 'tool_end');
+    assert.ok(end.result.includes('выходит за пределы'), `ошибка границы: ${end.result}`);
+  });
+
+  it('write_file → approval, файл НЕ создан; Allow → записан (AC4-5)', async () => {
+    const target = join(cwd, 'written-by-chat.txt');
+    assert.ok(!existsSync(target));
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-write-1', name: 'write_file', arguments: { path: 'written-by-chat.txt', content: 'ЗАПИСАНО VL-219' } }] },
+      { text: 'Записал.' },
+    ]);
+
+    // Ход 1: approval-пауза, файл не создан
+    const events1 = await collect({ message: 'запиши файл', threadId: 't-write' }, { llm });
+    const approval = events1.find(e => e.type === 'approval');
+    assert.ok(approval, 'write_file должен требовать подтверждения');
+    assert.equal(approval.name, 'write_file');
+    assert.equal(events1.at(-1).type, 'approval');
+    assert.ok(!existsSync(target), 'файл НЕ создан без подтверждения (AC6)');
+
+    // Resume: Allow → записан
+    const events2 = await collectWithThread(
+      { approval: { toolCallId: 'tc-write-1', approved: true } }, { llm }, 't-write',
+    );
+    assert.equal(events2.at(-1).type, 'done');
+    assert.ok(existsSync(target), 'файл записан после Allow');
+    assert.equal(readFileSync(target, 'utf8'), 'ЗАПИСАНО VL-219');
+  });
+
+  it('write_file: Deny → файл НЕ записан, диалог продолжается (AC5)', async () => {
+    const target = join(cwd, 'denied-by-chat.txt');
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-write-2', name: 'write_file', arguments: { path: 'denied-by-chat.txt', content: 'НЕ ДОЛЖНО БЫТЬ' } }] },
+      { text: 'Хорошо, отменяю.' },
+    ]);
+    await collect({ message: 'запиши другой файл', threadId: 't-deny-w' }, { llm });
+    const events2 = await collectWithThread(
+      { approval: { toolCallId: 'tc-write-2', approved: false } }, { llm }, 't-deny-w',
+    );
+    assert.equal(events2.at(-1).type, 'done');
+    assert.ok(!existsSync(target), 'файл НЕ создан после Deny');
+
+    const toolMsg = loadChatHistory(cwd, 't-deny-w').find(m => m.role === 'tool');
+    assert.ok(toolMsg.content.includes('отклонил'), `tool-result с отказом: ${toolMsg.content}`);
+  });
+
+  it('write_file: выход за пределы проекта → ошибка (AC7)', async () => {
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-write-out', name: 'write_file', arguments: { path: '../evil.txt', content: 'x' } }] },
+      { text: 'Ок.' },
+    ]);
+    const events = await collect({ message: 'запиши наружу', threadId: 't-write-out' }, { llm });
+    const approval = events.find(e => e.type === 'approval');
+    assert.ok(approval, 'write_file даже снаружи сначала approval');
+    // Resume Allow → handler вернёт ошибку границы (resolveInProject), файл не создан
+    const events2 = await collectWithThread(
+      { approval: { toolCallId: 'tc-write-out', approved: true } }, { llm }, 't-write-out',
+    );
+    const toolMsg = loadChatHistory(cwd, 't-write-out').find(m => m.role === 'tool');
+    assert.ok(toolMsg.content.includes('выходит за пределы'), `ошибка границы: ${toolMsg.content}`);
+    assert.ok(!existsSync(join(cwd, '..', 'evil.txt')), 'файл за пределами не создан');
+  });
+
+  it('backlog_update_task → approval; Allow → поля обновлены (дополнение §2)', async () => {
+    const t = createTaskFile(cwd, { title: 'Исходная VL-219', description: 'до' });
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-upd-1', name: 'backlog_update_task', arguments: { id: t.id, title: 'Обновлённая VL-219' } }] },
+      { text: 'Обновил.' },
+    ]);
+    const events1 = await collect({ message: 'измени заголовок', threadId: 't-upd' }, { llm });
+    assert.ok(events1.some(e => e.type === 'approval'), 'backlog_update_task требует подтверждения');
+    assert.equal(listTasks(cwd, {}).find(x => x.id === t.id).title, 'Исходная VL-219', 'не обновлено до Allow');
+
+    const events2 = await collectWithThread(
+      { approval: { toolCallId: 'tc-upd-1', approved: true } }, { llm }, 't-upd',
+    );
+    assert.equal(events2.at(-1).type, 'done');
+    assert.equal(listTasks(cwd, {}).find(x => x.id === t.id).title, 'Обновлённая VL-219', 'обновлено после Allow');
+    const toolMsg = loadChatHistory(cwd, 't-upd').find(m => m.role === 'tool');
+    assert.ok(toolMsg.content.includes('обновлена'), `возвращает обновлённое представление: ${toolMsg.content}`);
+  });
+
+  it('backlog_update_task: несуществующий id → понятная ошибка «не найдена» (дополнение §2)', async () => {
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-upd-404', name: 'backlog_update_task', arguments: { id: 'ch-999', title: 'x' } }] },
+      { text: 'Ошибка.' },
+    ]);
+    await collect({ message: 'измени несуществующую', threadId: 't-upd-404' }, { llm });
+    // update_task — write → approval
+    const events2 = await collectWithThread(
+      { approval: { toolCallId: 'tc-upd-404', approved: true } }, { llm }, 't-upd-404',
+    );
+    assert.equal(events2.at(-1).type, 'done');
+    const toolMsg = loadChatHistory(cwd, 't-upd-404').find(m => m.role === 'tool');
+    assert.ok(toolMsg.content.includes('не найдена'), `понятная ошибка: ${toolMsg.content}`);
+  });
+
+  it('backlog_create_task без status → задача со статусом Spec (дополнение §1)', async () => {
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-sp', name: 'backlog_create_task', arguments: { title: 'Spec-задача VL-219' } }] },
+      { text: 'Создана.' },
+    ]);
+    await collect({ message: 'создай spec-задачу', threadId: 't-spec' }, { llm });
+    const events2 = await collectWithThread(
+      { approval: { toolCallId: 'tc-sp', approved: true } }, { llm }, 't-spec',
+    );
+    assert.equal(events2.at(-1).type, 'done');
+    const task = listTasks(cwd, {}).find(t => t.title === 'Spec-задача VL-219');
+    assert.ok(task, 'задача создана');
+    assert.equal(task.status, 'Spec', `статус по умолчанию Spec, а не To Do из конфига (получен: ${task.status})`);
+  });
+
+  it('backlog_create_task с явным status → его статус (дополнение §1)', async () => {
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-st', name: 'backlog_create_task', arguments: { title: 'InProgress-задача VL-219', status: 'In Progress' } }] },
+      { text: 'Создана.' },
+    ]);
+    await collect({ message: 'создай задачу In Progress', threadId: 't-status' }, { llm });
+    await collectWithThread(
+      { approval: { toolCallId: 'tc-st', approved: true } }, { llm }, 't-status',
+    );
+    const task = listTasks(cwd, {}).find(t => t.title === 'InProgress-задача VL-219');
+    assert.equal(task.status, 'In Progress', 'явный статус пользователя приоритетен');
+  });
+
+  it('системное сообщение содержит описания read_file/write_file (AC8)', async () => {
+    const { llm, state } = fakeLlm([{ text: 'Ок.' }]);
+    await collect({ message: 'проверь системный промпт', threadId: 't-sys' }, { llm });
+    const system = state.messages[0][0];
+    assert.equal(system.role, 'system');
+    assert.ok(system.content.includes('read_file'), 'описание read_file в системном промпте');
+    assert.ok(system.content.includes('write_file'), 'описание write_file в системном промпте');
+    assert.ok(system.content.includes('backlog_update_task'), 'описание backlog_update_task');
+    assert.ok(system.content.includes('подтверждени'), 'правило read/write по природе операции');
   });
 });
 

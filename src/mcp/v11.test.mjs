@@ -129,6 +129,37 @@ describe('MCP v1.1 — инструменты', () => {
     );
   });
 
+  // --- VL-219: acceptanceCriteria в update_task + defaultStatus ---
+
+  it('VL-219: update_task с acceptanceCriteria: массив строк → чеклист unchecked (полная замена)', async () => {
+    const t = createTaskFile(testDir, { title: 'AC update', acceptanceCriteria: [{ text: 'Старый', checked: true }] });
+    await handleToolCall('backlog_update_task', { id: t.id, acceptanceCriteria: ['Новый А', 'Новый Б'] }, testDir);
+    const task = getTask(testDir, t.id);
+    assert.equal(task.acceptanceCriteria.length, 2);
+    assert.equal(task.acceptanceCriteria[0].text, 'Новый А');
+    assert.equal(task.acceptanceCriteria[0].checked, false, 'полная замена unchecked');
+    assert.equal(task.acceptanceCriteria[1].text, 'Новый Б');
+  });
+
+  it('VL-219: update_task с acceptanceCriteria: JSON-строка массива разбирается (lesson-35)', async () => {
+    const t = createTaskFile(testDir, { title: 'AC update json' });
+    await handleToolCall('backlog_update_task', { id: t.id, acceptanceCriteria: '["К1", "К2"]' }, testDir);
+    const task = getTask(testDir, t.id);
+    assert.equal(task.acceptanceCriteria.length, 2, JSON.stringify(task.acceptanceCriteria));
+    assert.equal(task.acceptanceCriteria[0].text, 'К1');
+    assert.ok(!task.acceptanceCriteria.some(c => c.text.startsWith('[')), 'не записано одной строкой JSON');
+  });
+
+  it('VL-219: create с opts.defaultStatus="Spec" → статус Spec; без opts → из конфига', async () => {
+    const tSpec = await handleToolCall('backlog_create_task', { title: 'Spec create VL-219' }, testDir, { defaultStatus: 'Spec' });
+    const idSpec = tSpec.match(/(v11-\d+)/)[1];
+    assert.equal(getTask(testDir, idSpec).status, 'Spec', 'defaultStatus из opts приоритетнее конфига');
+
+    const tCfg = await handleToolCall('backlog_create_task', { title: 'Config create VL-219' }, testDir);
+    const idCfg = tCfg.match(/(v11-\d+)/)[1];
+    assert.equal(getTask(testDir, idCfg).status, 'To Do', 'без opts — фолбэк конфига (регрессия не сломана)');
+  });
+
   // --- backlog_manage_ac ---
 
   it('manage_ac: add добавляет критерии', async () => {
