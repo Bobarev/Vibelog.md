@@ -59,12 +59,20 @@ export function App() {
         collapsible={values.sidebar_collapsible}
         onQuickCreate={handleQuickCreate}
       />
-      <SidebarInset>
+      <SidebarInset className="min-w-0 overflow-x-clip">
         <AppHeader />
         {/* main — scroll-контейнер (flex-1), header всегда виден (VL-166).
             Чат (VL-204) — overflow-hidden: скроллится viewport внутри
-            Thread, двойного скролла быть не должно (lesson-14) */}
-        <main className={`min-h-0 flex-1 ${route === "chat" ? "overflow-hidden" : "overflow-y-auto p-2"}`}>
+            Thread, двойного скролла быть не должно (lesson-14).
+            min-w-0 + overflow-x-hidden (VL-211, ref-2 layout.tsx):
+            min-content kanban-грида не пробрасывается до SidebarInset —
+            шапка всегда по ширине вьюпорта, горизонтального скролла
+            документа нет */}
+        <main
+          className={`min-h-0 min-w-0 flex-1 overflow-x-hidden ${
+            route === "chat" ? "overflow-hidden" : "overflow-y-auto p-2"
+          }`}
+        >
           {route === "tasks" ? (
             <TasksPage />
           ) : route === "chat" ? (
