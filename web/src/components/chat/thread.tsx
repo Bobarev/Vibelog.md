@@ -15,10 +15,11 @@
  *
  * Рендер частей (MessagePrimitive.Parts, children API):
  * - text → MarkdownView (списки/код в ответах LLM);
- * - tool-call backlog_create_task → карточка «Создать задачу» с
+ * - tool-call write-операции (create/update/write_file/…) → карточка с
  *   Allow/Deny (approval-gate: part.respondToApproval, local-runtime.mdx
- *   §Approval gates) до решения, статус «Создана/Отклонена» после;
- * - tool-call search/view → компактная строка с результатом.
+ *   §Approval gates) до решения, статус «подтверждено/отклонено» после;
+ * - tool-call read-операции (search/view/read_file/…) → компактная строка
+ *   с результатом.
  */
 
 import * as React from "react"
@@ -72,6 +73,9 @@ const TOOL_LABELS: Record<string, string> = {
   backlog_create_task: "Создание задачи",
   backlog_search: "Поиск",
   backlog_view_task: "Просмотр задачи",
+  read_file: "Чтение файла",
+  write_file: "Запись файла",
+  backlog_update_task: "Редактирование задачи",
 }
 
 const TOOL_ICONS: Record<string, typeof Search> = {
@@ -80,7 +84,7 @@ const TOOL_ICONS: Record<string, typeof Search> = {
   backlog_view_task: MessageSquare,
 }
 
-/** Карточка tool-call: approval-gate для create, статус для остальных. */
+/** Карточка tool-call: approval-gate для write-операций, статус для остальных. */
 function ToolCallCard({ part }: { part: ToolPart }) {
   const Icon = TOOL_ICONS[part.toolName] ?? ListChecks
   const label = TOOL_LABELS[part.toolName] ?? part.toolName
@@ -144,7 +148,7 @@ function ToolCallCard({ part }: { part: ToolPart }) {
           <span className="text-xs text-muted-foreground">
             {typeof args.description === "string" && args.description
               ? args.description.slice(0, 160)
-              : "Создать задачу?"}
+              : "Выполнить операцию?"}
           </span>
           <div className="flex shrink-0 gap-2">
             <Button
