@@ -12,6 +12,10 @@
 
 - **VL-211: вёрстка шапок и видов Board/List/Table по референсу (ref-2)** — общая шапка и тулбар страницы задач всегда по ширине вьюпорта: `SidebarInset` получил `min-w-0 overflow-x-clip`, контент-обёртка `min-w-0 overflow-x-hidden` (раньше min-content канбан-грида растягивал шапку, кнопки уходили за вьюпорт и документ скроллился по горизонтали). Вид List переписан по референсу: задачи сгруппированы по статусам в сворачиваемые группы (шапка с иконкой статуса, счётчиком и числом high-priority), строки с priority-бэйджем, title, labels-бэйджами tone-цветов, счётчиком комментариев, датой и аватаром assignee. Table: иконки в заголовках колонок, sticky-заголовок, статус-ячейка с иконкой, priority-бэйдж с иконкой/цветом, labels в secondary+tone, tabular-nums у дат. Общий модуль визуал-конфигурации `task-visuals.tsx` (statusIcons с фолбэком, priorityBadgeConfig, labelTone, headerIcons). Переключатель Board/List/Table и табы модалки задачи — в стиле ref-2 (h-8, svg size-4, variants default/line).
 
+### Исправлено
+
+- **VL-215: agent-loop — фантомные tool_calls с пустыми name/id больше не отравляют историю** — ответ модели с `tool_call {id:"", name:""}` (инцидент VL-214) больше не приводит к записи в диалог/jsonl пары `assistant(tool_calls id="") + tool(tool_call_id="")` и к отказу следующего хода LLM API: в `src/agent/loop.ts` вызовы фильтруются общей функцией `isValidToolCall` (`src/agent/llm.ts`, typeof-гард + trim) **до** записи assistant-сообщения. Только фантомы → отдельное user-сообщение с текстом-ошибкой и повтор хода (без tool-пары с пустым ключом), 3 фантома подряд → fail; фантом + валидный → выполняется только валидный + user-заметка «проигнорировано N tool_call(ов)». Тесты Т1–Т3 в `loop.test.mjs`. Зеркальная уязвимость `src/web/chat.ts` — VL-213 (импортирует `isValidToolCall`, lesson-37). Документация: doc-10 §6.4, lesson-74.
+
 ## [1.10.0] — 2026-10-29
 
 ### Изменено
