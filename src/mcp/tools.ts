@@ -130,7 +130,7 @@ export function listTools(): ToolDefinition[] {
           fields: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Имена полей Task для возврата (ключи интерфейса Task, напр. ["id","title","description"]); без параметра или при пустом массиве — полное представление',
+            description: 'Имена полей Task для возврата (ключи интерфейса Task, напр. ["id","title","modified_files"]); camelCase-алиасы принимаются и приводятся к ключу Task (modifiedFiles → modified_files); без параметра или при пустом массиве — полное представление',
           },
         },
         required: ['id'],
@@ -811,6 +811,43 @@ function toolListTasks(args: ToolArgs, cwd: string): string {
 }
 
 /**
+ * Приводит camelCase-имя к snake_case: `modifiedFiles` → `modified_files`.
+ *
+ * VL-236: интерфейс Task (`src/core/task.ts`) — это TypeScript-код, где поля тела
+ * названы в camelCase (`acceptanceCriteria`, `implementationPlan`), а его ключи
+ * (в т.ч. frontmatter) — в snake_case (`modified_files`, `parent_task_id`).
+ * Модели и большинство API мыслят в camelCase, поэтому имя поля вида
+ * `modifiedFiles` — предсказуемая конвенция, а не ошибка. Нормализация снимает
+ * класс отказов «поле названо в camelCase → ошибка валидации».
+ */
+function camelToSnake(name: string): string {
+  return name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+}
+
+/**
+ * Резолвит имя поля, переданное клиентом, в канонический ключ Task.
+ *
+ * Порядок проверок важен: точное совпадение приоритетно (поведение VL-162
+ * не меняется), иначе — приведение к snake_case. Возвращает undefined, если
+ * имя не соответствует ни одному ключу: вызывающая сторона решает, как
+ * сообщить об ошибке (текст перечня допустимых полей сохраняем).
+ *
+ * В Task нет пар полей, различающихся только регистром/подчёркиваниями
+ * (проверено по списку ключей интерфейса), поэтому «схлопывание» двух разных
+ * полей в одно исключено.
+ */
+function resolveFieldName(field: string, valid: string[]): string | undefined {
+  if (valid.includes(field)) return field;
+  const snake = camelToSnake(field);
+  if (valid.includes(snake)) return snake;
+  // Обратное направление: клиент прислал snake_case для ключа-«camelCase»
+  // (acceptance_criteria → acceptanceCriteria). В Task таких пар-двойников
+  // (отличающихся только регистром/подчёркиваниями) нет, поэтому поиск по
+  // нормализованной форме однозначен: find вернёт единственный ключ.
+  return valid.find((key) => camelToSnake(key) === snake);
+}
+
+/**
  * Просматривает задачу по ID.
  */
 function toolViewTask(args: ToolArgs, cwd: string): string {
@@ -830,15 +867,32 @@ function toolViewTask(args: ToolArgs, cwd: string): string {
   if (!Array.isArray(fields)) {
     throw new Error('Параметр fields должен быть массивом имён полей.');
   }
-  // Валидация имён: неизвестное поле — ошибка с перечнем допустимых, а не тихий пропуск
+  // VL-236: элементы fields обязаны быть строками — иначе camelToSnake упадёт
+  // с TypeError вместо понятной ошибки (lesson-34: валидация на границе слоя)
+  if (fields.some((f) => typeof f !== 'string')) {
+    throw new Error('Параметр fields должен быть массивом имён полей.');
+  }
+  // Нормализация имён перед валидацией: точное совпадение → snake_case-алиас.
+  // unknown собираем для сохранения прежнего текста ошибки с перечнем допустимых.
   const valid = Object.keys(task);
-  const unknown = fields.filter((f) => !valid.includes(f));
+  const resolved: string[] = [];
+  const unknown: string[] = [];
+  for (const f of fields as string[]) {
+    const name = resolveFieldName(f, valid);
+    if (name === undefined) {
+      unknown.push(f);
+      continue;
+    }
+    // Дедуп: один канонический ключ, пришедший дважды (alias + canonical),
+    // не должен попасть в ответ дважды; порядок — по первому вхождению
+    if (!resolved.includes(name)) resolved.push(name);
+  }
   if (unknown.length > 0) {
     throw new Error(`Неизвестные поля: ${unknown.join(', ')}. Допустимые: ${valid.join(', ')}.`);
   }
   // Порядок ключей в ответе = порядок в fields (удобно для компактного контекста)
   const picked: Record<string, unknown> = {};
-  for (const f of fields) picked[f] = task[f as keyof Task];
+  for (const f of resolved) picked[f] = task[f as keyof Task];
   return JSON.stringify(picked, null, 2);
 }
 

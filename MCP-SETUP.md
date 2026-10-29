@@ -11,7 +11,7 @@ Vibelog.md реализует MCP-сервер поверх stdio (JSON-RPC 2.0)
 |---|---|
 | `backlog_create_task` | Создать задачу (title, description, priority, labels, type, parentTaskId, milestone, ...) |
 | `backlog_list_tasks` | Список задач с фильтрацией (status, labels, type, parentTaskId, milestone, ready, sort) |
-| `backlog_view_task` | Просмотр задачи по ID |
+| `backlog_view_task` | Просмотр задачи по ID; `fields` — выбор полей (алиасы camelCase/snake_case, напр. `modifiedFiles`) |
 | `backlog_update_status` | Обновить статус задачи |
 | `backlog_update_task` | Универсальное обновление полей (type, plan, notes, ...) |
 | `backlog_manage_ac` | Управление критериями приёмки (add/check/uncheck/remove/list) |

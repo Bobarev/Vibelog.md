@@ -122,3 +122,107 @@ describe('backlog_view_task — параметр fields (VL-162)', () => {
     );
   });
 });
+
+/**
+ * VL-236: нормализация имён полей на входе (camelCase → snake_case).
+ *
+ * Контракт: точное совпадение приоритетно; иначе camelToSnake и повторная
+ * проверка; иначе — прежняя ошибка с перечнем допустимых; дубли канонического
+ * ключа в ответ не попадают; не-строковые элементы — явная ошибка.
+ */
+describe('backlog_view_task — camelCase-алиасы fields (VL-236)', () => {
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
+
+  it('camelCase frontmatter-поля: modifiedFiles → modified_files (инцидент VL-147/VL-137)', async () => {
+    const t = createTaskFile(testDir, {
+      id: 'vf-11',
+      title: 'С изменёнными файлами',
+      modified_files: ['src/a.ts', 'src/b.ts'],
+    });
+    const result = await handleToolCall(
+      'backlog_view_task',
+      { id: t.id, fields: ['id', 'modifiedFiles'] },
+      testDir,
+    );
+    const parsed = JSON.parse(result);
+    assert.deepStrictEqual(Object.keys(parsed), ['id', 'modified_files']);
+    assert.deepStrictEqual(parsed.modified_files, ['src/a.ts', 'src/b.ts']);
+  });
+
+  it('snake_case-алиас поля тела: implementation_plan → implementationPlan', async () => {
+    const t = createTaskFile(testDir, {
+      id: 'vf-12',
+      title: 'С планом',
+      implementationPlan: '- шаг 1',
+    });
+    const result = await handleToolCall(
+      'backlog_view_task',
+      { id: t.id, fields: ['id', 'implementation_plan'] },
+      testDir,
+    );
+    const parsed = JSON.parse(result);
+    // Канонический ключ Task для тела — camelCase: алиас нормализуется туда же
+    assert.deepStrictEqual(Object.keys(parsed), ['id', 'implementationPlan']);
+    assert.equal(parsed.implementationPlan, '- шаг 1');
+  });
+
+  it('snake_case-алиас чеклиста: acceptance_criteria → acceptanceCriteria', async () => {
+    const t = createTaskFile(testDir, {
+      id: 'vf-13',
+      title: 'С AC',
+      acceptanceCriteria: [{ text: 'Критерий', checked: false }],
+    });
+    const result = await handleToolCall(
+      'backlog_view_task',
+      { id: t.id, fields: ['acceptance_criteria'] },
+      testDir,
+    );
+    const parsed = JSON.parse(result);
+    assert.deepStrictEqual(Object.keys(parsed), ['acceptanceCriteria']);
+    assert.equal(parsed.acceptanceCriteria.length, 1);
+  });
+
+  it('смешанный список: порядок ключей ответа = порядок в fields', async () => {
+    const t = createTaskFile(testDir, { id: 'vf-14', title: 'Порядок', modified_files: [] });
+    const result = await handleToolCall(
+      'backlog_view_task',
+      { id: t.id, fields: ['title', 'modifiedFiles', 'id'] },
+      testDir,
+    );
+    const parsed = JSON.parse(result);
+    assert.deepStrictEqual(Object.keys(parsed), ['title', 'modified_files', 'id']);
+  });
+
+  it('alias + canonical одного поля — ключ в ответе один раз', async () => {
+    const t = createTaskFile(testDir, { id: 'vf-15', title: 'Дубль', modified_files: ['x.ts'] });
+    const result = await handleToolCall(
+      'backlog_view_task',
+      { id: t.id, fields: ['id', 'modified_files', 'modifiedFiles'] },
+      testDir,
+    );
+    const parsed = JSON.parse(result);
+    assert.deepStrictEqual(Object.keys(parsed), ['id', 'modified_files']);
+    assert.deepStrictEqual(parsed.modified_files, ['x.ts']);
+  });
+
+  it('мусорное имя в camelCase всё ещё ошибка с перечнем допустимых', async () => {
+    const t = createTaskFile(testDir, { id: 'vf-16', title: 'Мусор' });
+    await assert.rejects(
+      () => handleToolCall('backlog_view_task', { id: t.id, fields: ['id', 'nopeField'] }, testDir),
+      (err) => {
+        assert.ok(err.message.includes('Неизвестные поля: nopeField.'), `Текст ошибки: ${err.message}`);
+        assert.ok(err.message.includes('modified_files'), 'Ошибка перечисляет допустимые поля');
+        return true;
+      },
+    );
+  });
+
+  it('не-строковый элемент fields — явная ошибка, а не TypeError', async () => {
+    const t = createTaskFile(testDir, { id: 'vf-17', title: 'null в fields' });
+    await assert.rejects(
+      () => handleToolCall('backlog_view_task', { id: t.id, fields: [null] }, testDir),
+      /массивом имён полей/,
+    );
+  });
+});
