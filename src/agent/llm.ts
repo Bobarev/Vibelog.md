@@ -38,6 +38,29 @@ export interface ToolCall {
 }
 
 /**
+ * Валиден ли tool_call для выполнения и записи в историю (VL-215).
+ *
+ * Фантом — вызов с пустым (или whitespace-only) name и/или id: провайдер
+ * (mimo-v2.6-flash, инцидент VL-214) отдаёт такие ответы, а SSE-сборка
+ * tool_calls их не фильтрует. Пара assistant(tool_calls id="") +
+ * tool(tool_call_id="") в диалоге/jsonl отравляет следующий ход — LLM API
+ * отклоняет payload. Точки использования: src/agent/loop.ts (фильтрация до
+ * push) и src/web/chat.ts (зеркальный фикс, VL-213) — общая функция, не копии
+ * (lesson-37).
+ *
+ * typeof-гард нужен: поле объявлено string в типе, но на wire может прийти
+ * не строка — .trim() на undefined уронил бы фазу исключением.
+ */
+export function isValidToolCall(tc: ToolCall): boolean {
+  return (
+    typeof tc.id === 'string' &&
+    tc.id.trim() !== '' &&
+    typeof tc.name === 'string' &&
+    tc.name.trim() !== ''
+  );
+}
+
+/**
  * Сообщение диалога; tool_calls — только у assistant; usage — только у assistant (VL-198).
  * payload_bytes/shrink_level — диагностика wire-запроса в JSONL-транскрипте
  * (VL-203): провайдеру НЕ уходят (toWireMessages/messagesToInput собирают

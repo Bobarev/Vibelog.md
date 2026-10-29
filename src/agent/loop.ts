@@ -12,7 +12,7 @@
  * partial-результат накапливается и дописывается к тексту ошибки).
  */
 
-import { addUsage, zeroUsage, isHighRiskBody, type ChatMessage, type LlmClient, type LlmUsage, type ToolDef } from './llm.js';
+import { addUsage, zeroUsage, isHighRiskBody, isValidToolCall, type ChatMessage, type LlmClient, type LlmUsage, type ToolDef } from './llm.js';
 import type { ToolSpec } from './tools.js';
 import { truncateToolOutput } from './tools.js';
 
@@ -124,6 +124,11 @@ export interface RunLoopOptions {
 const MAX_TOOL_CALLS_DEFAULT = 100;
 const MAX_WALL_TIME_MS_DEFAULT = 900_000;
 const LOOP_DETECTION_REPEAT_DEFAULT = 3;
+// Фантомные tool_calls (пустые name/id, VL-215): сколько ходов ПОДРЯД модель
+// может отдавать фантомы до fail(). 3 — по образцу loop detection VL-83:
+// фантомный ход тратит LLM-запрос, но единичный случай модель исправляет
+// сама (получает текст-ошибку), 3 подряд — признак сломанного провайдера.
+const PHANTOM_CALL_LIMIT_DEFAULT = 3;
 // Дефолт guard'а зацикливания намерений (VL-119): 4 хода подряд с одним
 // промежуточным текстом. Порог 4, а не 3 — снизить ложные срабатывания:
 // одинаковый короткий текст («Ок.») на паре ходов ещё не зацикливание.
@@ -231,6 +236,9 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   let partialText = '';
   let prevSignature: string | null = null;
   let streak = 0;
+  // Стейт guard'а фантомных tool_calls (VL-215): счётчик ходов ПОДРЯД,
+  // содержащих tool_call с пустым name/id; 0 — чистый ход сбрасывает.
+  let phantomStreak = 0;
   // Стейт guard'а зацикливания намерений (VL-119): предыдущий нормализованный
   // промежуточный текст и длина серии одинаковых. Пустой текст streak не
   // сбрасывает — молчаливые tool-ходы легитимны (решение плана VL-119).
@@ -390,12 +398,44 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         );
       }
     }
+    // VL-215: фантомные tool_calls (пустые name/id) отфильтровываются ДО
+    // записи assistant-сообщения — иначе в диалог попадает отравленная пара
+    // assistant(tool_calls id="") + tool(tool_call_id="") и LLM API отклоняет
+    // следующий ход (инцидент VL-214: mimo-v2.6-flash вернул {id:"",name:""}).
+    const validCalls = response.toolCalls.filter(isValidToolCall);
+    const phantomCount = response.toolCalls.length - validCalls.length;
+    if (phantomCount > 0) {
+      phantomStreak++;
+      // Guard вечного повтора (по образцу loop detection VL-83): без него
+      // модель, отдающая фантомы, крутилась бы до maxRequests/wall-time.
+      if (phantomStreak >= PHANTOM_CALL_LIMIT_DEFAULT) {
+        return fail(
+          `Модель ${phantomStreak} раза подряд возвращала tool_call с пустым name/id — фаза прервана (VL-215).`,
+        );
+      }
+    } else {
+      phantomStreak = 0;
+    }
+    if (validCalls.length === 0) {
+      // Только фантомы: assistant(tool_calls) НЕ пишется — пара с пустым
+      // ключом не создаётся ни в диалоге, ни в jsonl (onMessage не зовётся).
+      // Текст-ошибку отдаём модели отдельным user-сообщением: это не
+      // tool(tool_call_id), провайдер его принимает. Ход повторяется —
+      // модель может перезапустить вызов корректно либо завершить текстом.
+      if (response.text) partialText += (partialText ? '\n' : '') + response.text;
+      await pushMessage({
+        role: 'user',
+        content:
+          'Ошибка ответа модели: tool_call с пустым name/id проигнорирован (VL-215). Повтори вызов с корректными name и id либо заверши финальным текстом.',
+      });
+      continue;
+    }
     if (response.text) partialText += (partialText ? '\n' : '') + response.text;
 
     await pushMessage({
       role: 'assistant',
       content: response.text || null,
-      tool_calls: response.toolCalls,
+      tool_calls: validCalls,
       // usage ответа в транскрипт (VL-198): jsonl становится источником для
       // sumUsageFromMessages/fallback finish_phase; копия — аккумулятор
       // `usage` мутируется addUsage, привязывать ссылку нельзя
@@ -406,7 +446,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       ...(response.shrinkLevel !== undefined ? { shrink_level: response.shrinkLevel } : {}),
     });
 
-    for (const call of response.toolCalls) {
+    for (const call of validCalls) {
       // Loop detection: сигнатура = имя + JSON аргументов; N подряд — выход.
       const signature = `${call.name}|${JSON.stringify(call.arguments ?? {})}`;
       if (signature === prevSignature) {
@@ -454,6 +494,15 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // карточку со статусом error, а не теряет вызов модели
       options.onToolEnd?.(call.name, output, toolError);
       await pushMessage({ role: 'tool', tool_call_id: call.id, content: output });
+    }
+    // VL-215: пометка в диалоге, что часть вызовов отброшена (модель увидит
+    // результаты только валидных, ей нужно знать про игнорированные; в jsonl
+    // тоже видно). console-лог не используем — сломал бы рендер TUI.
+    if (phantomCount > 0) {
+      await pushMessage({
+        role: 'user',
+        content: `Замечание: проигнорировано ${phantomCount} tool_call(ов) с пустым name/id (VL-215).`,
+      });
     }
   }
 }

@@ -949,3 +949,111 @@ describe('компакшн на гигантских MCP-выводах (VL-178 
     assert.ok(total < 50_000, `wire-payload ${total} б — не должен раздуваться`);
   });
 });
+
+describe('фантомные tool_calls с пустыми name/id (VL-215)', () => {
+  /** Общая проверка чистоты истории: нет пар с пустым ключом и «Неизвестный инструмент: » с пустым именем. */
+  function assertHistoryClean(messages) {
+    for (const m of messages) {
+      if (m.role === 'assistant' && m.tool_calls) {
+        for (const tc of m.tool_calls) {
+          assert.ok(tc.id.trim() !== '' && tc.name.trim() !== '',
+            `фантом попал в assistant.tool_calls: id=${JSON.stringify(tc.id)} name=${JSON.stringify(tc.name)}`);
+        }
+      }
+      if (m.role === 'tool') {
+        assert.ok(m.tool_call_id.trim() !== '',
+          `tool-сообщение с пустым tool_call_id: ${JSON.stringify(m.content)}`);
+      }
+      if (typeof m.content === 'string') {
+        assert.ok(!m.content.startsWith('Неизвестный инструмент: ') ||
+          m.content !== 'Неизвестный инструмент: ',
+          'сообщение «Неизвестный инструмент: » с пустым именем не должно существовать');
+      }
+    }
+  }
+
+  it('AC1/AC2: только фантомы → без отравленной пары, user-ошибка, следующий ход валиден', async () => {
+    const { llm, state } = fakeLlm([
+      { text: '', toolCalls: [{ id: '', name: '', arguments: {} }] },
+      { text: 'восстановился' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [] });
+    assert.equal(res.is_error, false);
+    assert.equal(res.result, 'восстановился');
+    assert.equal(res.num_turns, 2);
+    // (а) ни одного assistant(tool_calls) — фантом не записан, pair нет
+    assert.ok(!res.messages.some((m) => m.role === 'assistant' && m.tool_calls),
+      'assistant с tool_calls не должен появиться при одних фантомах');
+    // (б) нет tool-сообщений и «Неизвестный инструмент: » с пустым именем
+    assertHistoryClean(res.messages);
+    // Пометка модели — отдельным user-сообщением (не tool, без пустого ключа)
+    const err = res.messages.find((m) => m.role === 'user' && m.content.includes('пустым name/id'));
+    assert.ok(err, 'должно быть user-сообщение с текстом-ошибкой про фантом');
+    // (в) payload второго запроса валиден: tool-сообщения только с парой
+    const secondPayload = state.messages[1];
+    const answered = new Set();
+    for (const m of secondPayload) {
+      if (m.role === 'assistant' && m.tool_calls) {
+        for (const tc of m.tool_calls) {
+          assert.ok(tc.id.trim() !== '' && tc.name.trim() !== '', 'фантом в wire-payload');
+          answered.add(tc.id);
+        }
+      }
+      if (m.role === 'tool') {
+        assert.ok(m.tool_call_id.trim() !== '' && answered.has(m.tool_call_id),
+          'tool в wire-payload без парного assistant(tool_calls)');
+      }
+    }
+    assert.equal(secondPayload.at(-1).role, 'user');
+  });
+
+  it('AC1: фантом рядом с валидным → выполняется только валидный, user-заметка о проигнорированных', async () => {
+    const { spec, state: toolState } = countingTool('echo_tool');
+    const { llm } = fakeLlm([
+      {
+        text: '',
+        toolCalls: [
+          { id: '', name: '', arguments: {} },
+          { id: 'c1', name: 'echo_tool', arguments: { x: 2 } },
+        ],
+      },
+      { text: 'итог' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false);
+    assert.equal(res.result, 'итог');
+    // Выполнен только валидный вызов; фантом не создал tool-результат
+    assert.equal(toolState.calls, 1);
+    assert.deepEqual(toolState.lastArgs, { x: 2 });
+    const assistants = res.messages.filter((m) => m.role === 'assistant' && m.tool_calls);
+    assert.equal(assistants.length, 1);
+    assert.equal(assistants[0].tool_calls.length, 1);
+    assert.equal(assistants[0].tool_calls[0].id, 'c1');
+    const toolMsgs = res.messages.filter((m) => m.role === 'tool');
+    assert.equal(toolMsgs.length, 1);
+    assert.equal(toolMsgs[0].tool_call_id, 'c1');
+    assertHistoryClean(res.messages);
+    // Пометка в диалоге: сколько вызовов проигнорировано
+    const note = res.messages.find((m) => m.role === 'user' && m.content.includes('проигнорировано'));
+    assert.ok(note, 'должна быть user-заметка о проигнорированных фантомах');
+    assert.match(note.content, /проигнорировано 1 tool_call/);
+    // Валидные вызовы без регрессий: перед финальным ходом в истории
+    // user → assistant(valid) → tool → user(заметка)
+    assert.equal(res.messages.at(-1).role, 'assistant');
+  });
+
+  it('AC2: 3 фантома подряд → fail, транскрипт заканчивается assistant без tool_calls (VL-103)', async () => {
+    const phantom = { text: '', toolCalls: [{ id: '', name: '', arguments: {} }] };
+    const { llm, state } = fakeLlm([phantom, phantom, phantom]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [] });
+    assert.equal(res.is_error, true);
+    assert.match(res.result, /пустым name\/id/);
+    assert.equal(state.calls, 3, 'guard срабатывает на 3-м фантомном ходе');
+    // Контракт resume VL-103: последнее сообщение — assistant БЕЗ tool_calls
+    const last = res.messages.at(-1);
+    assert.equal(last.role, 'assistant');
+    assert.equal(last.tool_calls, undefined);
+    assertHistoryClean(res.messages);
+    assert.ok(!res.messages.some((m) => m.role === 'tool'), 'tool-сообщений быть не должно');
+  });
+});
