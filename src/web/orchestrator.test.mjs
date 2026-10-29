@@ -1611,6 +1611,57 @@ describe('orchestrator (VL-28)', () => {
     }
   });
 
+  it('startAnalyze: AC3 (VL-229) — промпт содержит топ повторов из jsonl, без {{repeatTop}}', async () => {
+    const rRoot = mkTestRoot('vibelog-orch-anr-');
+    mkdirSync(join(rRoot, 'backlog'), { recursive: true });
+    writeFileSync(join(rRoot, 'backlog', 'config.yml'), 'project_name: Repeat Test\n', 'utf-8');
+    const dir = join(rRoot, '.vibelog', 'agent-sessions');
+    mkdirSync(dir, { recursive: true });
+    const lines = [];
+    for (let i = 0; i < 9; i++) {
+      lines.push(
+        JSON.stringify({
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: `g${i}`, name: 'grep_search', arguments: { pattern: 'zagruzka-loop' } }],
+        })
+      );
+    }
+    lines.push(
+      JSON.stringify({
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'r1', name: 'read_file', arguments: { path: 'src/agent/loop.ts' } }],
+      })
+    );
+    writeFileSync(join(dir, 'agent-888.jsonl'), lines.join('\n') + '\n', 'utf-8');
+    writeFileSync(join(dir, 'agent-888.meta.json'), JSON.stringify({ phase: 'code', cwd: rRoot }), 'utf-8');
+    setStubEnv({
+      VL28_STUB_MARKER: join(rRoot, 'marker-anr.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RESULT: JSON.stringify({
+        type: 'result', subtype: 'success', is_error: false,
+        duration_ms: 100, duration_api_ms: 100, num_turns: 1,
+        result: 'ok',
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, total_tokens: 2 },
+        session_id: 'an-r',
+      }),
+    });
+    try {
+      const res = startAnalyze(rRoot, 'vb:agent-888');
+      assert.equal(res.started, true, JSON.stringify(res));
+      await waitDone('analyze-agent-888');
+      const prompt = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'))[0];
+      assert.ok(prompt.includes('grep_search|zagruzka-loop'), 'топ повторяющихся запросов в промпте');
+      assert.ok(prompt.includes('9 обращений'), 'число обращений в топе');
+      assert.ok(prompt.includes('повторных'), 'сводка с числом повторных вызовов');
+      assert.doesNotMatch(prompt, /\{\{repeat(Summary|Top)\}\}/, 'подстановки VL-229 не остались литералами');
+    } finally {
+      rmSync(rRoot, { recursive: true, force: true });
+    }
+  });
+
   it('startAnalyze: нет jsonl → «Сессия не найдена» (VL-141)', () => {
     const mRoot = mkTestRoot('vibelog-orch-anm-');
     try {

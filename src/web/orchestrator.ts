@@ -36,7 +36,7 @@ import { getWorkflowForTask, getStatusAfterPhase, isPhaseAllowed } from '../core
 // VL-196: транзиентный In Progress на время workflow-фазы — mark после спавна,
 // finalize в finish() до onExit (единая точка spawnQwenRun для всех запусков)
 import { markPhaseStarted, finalizePhaseStatus } from '../core/phase-transient.js';
-import { agentSessionsDir, findTaskPhaseSessionSync, listTaskSessionMetas, loadSessionMetaSync, saveSessionMeta, updateSessionMeta } from '../agent/session.js';
+import { agentSessionsDir, analyzeToolRepeatsFromJsonlSync, findTaskPhaseSessionSync, listTaskSessionMetas, loadSessionMetaSync, saveSessionMeta, updateSessionMeta } from '../agent/session.js';
 import { hasUsageDelta, usageDelta } from '../core/analytics.js';
 import type { TokenUsage } from '../core/analytics.js';
 import { appendBilling } from '../core/billing.js';
@@ -534,6 +534,26 @@ export function startAnalyze(
   // Мета опциональна: отсутствие (старые сессии, /prompt) — не ошибка,
   // подстановки получают заглушки
   const meta = loadSessionMetaSync(agentSessionsDir(cwd), bare);
+  // VL-229 (AC3): топ повторов считается ЗДЕСЬ (синхронно, из jsonl) — иначе
+  // агент тратил бы ход на пересчёт того, что детерминированно вычисляется.
+  // Ошибка/отсутствие данных не роняет запуск: подстановки → «нет данных».
+  let repeatSummary = 'нет данных';
+  let repeatTop = '(нет данных)';
+  try {
+    const stats = analyzeToolRepeatsFromJsonlSync(agentSessionsDir(cwd), bare);
+    if (stats && stats.tool_calls_total > 0) {
+      const pct = Math.round(stats.repeat_share * 100);
+      repeatSummary =
+        `tool-вызовов всего ${stats.tool_calls_total}, из них повторных ${stats.repeat_calls} ` +
+        `(${pct}% — доля от всех tool-вызовов сессии)`;
+      repeatTop =
+        stats.top.length === 0
+          ? '(повторов не найдено)'
+          : stats.top.map((e, i) => `${i + 1}. ${e.key} — ${e.count} обращений`).join('\n');
+    }
+  } catch {
+    // Битый jsonl/нечитаемый каталог — блок остаётся «нет данных»
+  }
   let prompt: string;
   try {
     prompt = renderPrompt(
@@ -544,6 +564,10 @@ export function startAnalyze(
         sessionPhase: meta?.phase ?? '(неизвестна)',
         sessionCwd: meta?.cwd ?? '(неизвестен)',
         sessionPath: `.vibelog/agent-sessions/${bare}.jsonl`,
+        // VL-229 (AC3): готовый топ перечитываемых файлов и повторяющихся
+        // запросов — отчёт показывает их без дополнительных ходов
+        repeatSummary,
+        repeatTop,
         // VL-169: подставляем всегда (пустая строка без комментария) —
         // иначе агент увидит literal {{comment}} в шаблоне
         comment: comment ?? '',

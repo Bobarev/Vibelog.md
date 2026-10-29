@@ -13,6 +13,7 @@ import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/p
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isValidToolCall, type ChatMessage } from './llm.js';
+import { analyzeToolRepeats, type RepeatStats } from './repeat-tracker.js';
 import type { TokenUsage } from '../core/analytics.js';
 
 /** Каталог хранения сессий агента: `<cwd>/.vibelog/agent-sessions`. */
@@ -161,6 +162,13 @@ export interface SessionMeta {
   last_payload_bytes?: number;
   /** Пик wire-payload по всем ходам последнего рана (VL-203). */
   max_payload_bytes?: number;
+  /**
+   * Метрика повторов обращений к файлам/паттернам (VL-229, AC1): топ
+   * повторяющихся ключей `<инструмент>|<path|pattern>` с числом обращений и
+   * доля повторных вызовов от ВСЕХ tool-вызовов сессии (включая прошлые раны
+   * resume). Считается CLI-пост-раном по полному транскрипту.
+   */
+  repeat_stats?: RepeatStats;
 }
 
 /**
@@ -404,4 +412,36 @@ export function sumUsageFromJsonlSync(dir: string, sessionId: string): (TokenUsa
     }
   }
   return sumUsageFromMessages(messages);
+}
+
+/**
+ * Синхронная метрика повторов по jsonl-файлу сессии (VL-229, AC1/AC3).
+ *
+ * Нужна `/analyze` (startAnalyze синхронен) и любому потребителю меты без
+ * загрузки async-истории. Контракты те же, что у sumUsageFromJsonlSync:
+ * битые строки пропускаются (старые/оборванные транскрипты не должны ронять
+ * разбор), нет файла/каталога → null (вызывающий подставляет «нет данных»).
+ *
+ * @returns метрика повторов либо null, если транскрипта нет/не читается
+ */
+export function analyzeToolRepeatsFromJsonlSync(dir: string, sessionId: string): RepeatStats | null {
+  assertSafeSessionId(sessionId);
+  const path = join(dir, `${sessionId}.jsonl`);
+  if (!existsSync(path)) return null;
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf-8');
+  } catch {
+    return null;
+  }
+  const messages: ChatMessage[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      messages.push(JSON.parse(line) as ChatMessage);
+    } catch {
+      // битая строка — пропуск: метрика по остальным сообщениям
+    }
+  }
+  return analyzeToolRepeats(messages);
 }

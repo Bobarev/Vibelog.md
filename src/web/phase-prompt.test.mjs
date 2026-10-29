@@ -470,6 +470,9 @@ describe('VL-141 — фаза analyze', () => {
       sessionPhase: 'code',
       sessionCwd: '/tmp/proj',
       sessionPath: '.vibelog/agent-sessions/agent-123.jsonl',
+      // VL-229 (AC3): startAnalyze подставляет топ повторов всегда
+      repeatSummary: 'tool-вызовов всего 10, из них повторных 3 (30%)',
+      repeatTop: '1. grep_search|foo — 4 обращений',
       // VL-169: startAnalyze подставляет comment всегда (пустая строка без комментария)
       comment: '',
     });
@@ -485,6 +488,8 @@ describe('VL-141 — фаза analyze', () => {
       sessionPhase: 'code',
       sessionCwd: '/tmp/proj',
       sessionPath: '.vibelog/agent-sessions/agent-123.jsonl',
+      repeatSummary: 'нет данных',
+      repeatTop: '(нет данных)',
       comment: 'сверь объём с AC',
     });
     assert.ok(prompt.includes('сверь объём с AC'), 'текст комментария подставился');
@@ -502,6 +507,17 @@ describe('VL-141 — фаза analyze', () => {
     assert.ok(text.includes('НОВЫХ задач НЕ создавать'), 'phase-analyze.md: без создания задач');
     // Терминальный вывод — одно слово
     assert.ok(text.includes('«Готово»'), 'phase-analyze.md: финал — «Готово»');
+    // VL-229 (AC3): блок автоматических повторов + требование назвать топ в вердикте
+    assert.ok(text.includes('{{repeatSummary}}'), 'phase-analyze.md: сводка повторов (VL-229)');
+    assert.ok(text.includes('{{repeatTop}}'), 'phase-analyze.md: топ повторов (VL-229)');
+    assert.ok(
+      text.includes('долей повторных вызовов от всех tool-вызовов сессии'),
+      'phase-analyze.md: доля повторов от всех tool-вызовов (AC1)'
+    );
+    assert.ok(
+      text.includes('топ перечитываемых файлов и топ повторяющихся'),
+      'phase-analyze.md: вердикт называет топ перечитываемых файлов и запросов (AC3)'
+    );
   });
 });
 

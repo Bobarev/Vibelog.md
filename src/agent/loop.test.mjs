@@ -1427,3 +1427,139 @@ describe('Санация отравленной начальной истори�
       'assistant(content=null без валидных вызовов) вырезан, а не отправлен как есть');
   });
 });
+
+describe('runLoop guard повторов обращений (VL-229)', () => {
+  /** Инструмент с эхом аргументов: имитирует grep_search/read_file без fs. */
+  function argTool(name, keyName) {
+    return {
+      name,
+      description: 'тестовый инструмент с аргументами',
+      inputSchema: { type: 'object', properties: { [keyName]: { type: 'string' } } },
+      handler: async (args) => `ok:${name}:${JSON.stringify(args)}`,
+    };
+  }
+  const hasWarn = (m) => m.role === 'user' && `${m.content}`.includes('используй ранее полученный результат');
+
+  it('AC2: 3-й grep с тем же pattern → user-сообщение с предупреждением после tool-результатов', async () => {
+    // Повторы в реальных сессиях НЕ подряд (подряд их ловит loop detection,
+    // порог 3 одинаковых подряд) — поэтому вызовы перемежаются другими
+    // инструментами: guard ловит именно «зацикливание с отвлечением».
+    const g = (id) => ({ id, name: 'grep_search', arguments: { pattern: 'baseUrl' } });
+    const r = (id) => ({ id, name: 'read_file', arguments: { path: `${id}.ts` } });
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [g('c1'), r('r1')] },
+      { text: '', toolCalls: [g('c2'), r('r2')] },
+      { text: '', toolCalls: [g('c3')] },
+      { text: 'Готово!' },
+    ]);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [argTool('grep_search', 'pattern'), argTool('read_file', 'path')],
+    });
+    assert.equal(res.is_error, false);
+    const warnings = res.messages.filter(hasWarn);
+    assert.equal(warnings.length, 1, 'ровно одно предупреждение — на 3-м обращении к pattern');
+    assert.match(warnings[0].content, /grep_search\|baseUrl 3 раз/);
+    // Риск 1 плана: паринг assistant↔tool не нарушен — между assistant(tool_calls)
+    // и его tool-результатом нет посторонних сообщений (предупреждение ПОСЛЕ хода).
+    for (let i = 0; i < res.messages.length; i++) {
+      const m = res.messages[i];
+      if (m.role !== 'assistant' || !m.tool_calls) continue;
+      for (const tc of m.tool_calls) {
+        const toolAt = res.messages.findIndex((x) => x.role === 'tool' && x.tool_call_id === tc.id);
+        assert.ok(toolAt > i, 'tool-результат после своего assistant');
+        const between = res.messages.slice(i + 1, toolAt).filter((x) => x.role !== 'tool');
+        assert.equal(between.length, 0, 'между assistant(tool_calls) и tool — только tool-сообщения');
+      }
+    }
+  });
+
+  it('разные pattern — предупреждения нет (нет ложных срабатываний)', async () => {
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'grep_search', arguments: { pattern: 'a' } }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'grep_search', arguments: { pattern: 'b' } }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'grep_search', arguments: { pattern: 'c' } }] },
+      { text: 'Готово!' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [argTool('grep_search', 'pattern')] });
+    assert.equal(res.messages.filter(hasWarn).length, 0);
+  });
+
+  it('repeatGuardDisabled → предупреждений нет, но repeat_stats считается', async () => {
+    // Перемежение разными pattern: 3 одинаковых ПОДРЯД сработали бы loop detection,
+    // а нам нужен именно guard — поэтому одинаковые чтения идут через другие вызовы.
+    const same = (id) => ({ id, name: 'read_file', arguments: { path: 'src/agent/loop.ts' } });
+    const other = (id) => ({ id, name: 'read_file', arguments: { path: `${id}.ts` } });
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [same('a'), other('o1')] },
+      { text: '', toolCalls: [same('b'), other('o2')] },
+      { text: '', toolCalls: [same('c'), other('o3')] },
+      { text: '', toolCalls: [same('d'), other('o4')] },
+      { text: '', toolCalls: [same('e')] },
+      { text: 'Готово!' },
+    ]);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [argTool('read_file', 'path')],
+      limits: { repeatGuardDisabled: true },
+    });
+    assert.equal(res.messages.filter(hasWarn).length, 0);
+    assert.equal(res.repeat_stats.repeat_calls, 4, '5 обращений к одному path → 4 повторных');
+  });
+
+  it('AC1: LoopResult.repeat_stats — повторы, доля и топ по ключу', async () => {
+    const call = (id, pattern) => ({ id, name: 'grep_search', arguments: { pattern } });
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [call('c1', 'foo'), call('c2', 'bar')] },
+      { text: '', toolCalls: [call('c3', 'foo'), call('c4', 'foo')] },
+      { text: 'Готово!' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [argTool('grep_search', 'pattern')] });
+    assert.equal(res.repeat_stats.tool_calls_total, 4);
+    assert.equal(res.repeat_stats.repeat_calls, 2);
+    assert.equal(res.repeat_stats.repeat_share, 0.5);
+    assert.deepEqual(res.repeat_stats.top[0], { key: 'grep_search|foo', count: 3 });
+  });
+
+  it('fail-путь тоже несёт repeat_stats (не падает на ошибке лимита)', async () => {
+    const call = (id) => ({ id, name: 'read_file', arguments: { path: 'a.ts' } });
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [call('c1')] },
+      { text: '', toolCalls: [call('c2')] },
+    ]);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [argTool('read_file', 'path')],
+      limits: { maxToolCalls: 1 },
+    });
+    assert.equal(res.is_error, true);
+    // Метрика транскриптная (как и /analyze): assistant-ход, который упёрся
+    // в лимит, уже записан в messages с tool_calls — его вызов тоже виден.
+    assert.equal(res.repeat_stats.tool_calls_total, 2);
+    assert.equal(res.repeat_stats.repeat_calls, 1);
+  });
+
+  it('порог read=5: предупреждение на 5-м чтении, 4-е — молчание', async () => {
+    const same = (id) => ({ id, name: 'read_file', arguments: { path: 'src/agent/cli.ts' } });
+    const other = (id) => ({ id, name: 'grep_search', arguments: { pattern: `p-${id}` } });
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [same('a'), other('o1')] },
+      { text: '', toolCalls: [same('b'), other('o2')] },
+      { text: '', toolCalls: [same('c'), other('o3')] },
+      { text: '', toolCalls: [same('d')] },
+      { text: '', toolCalls: [same('e')] },
+      { text: 'Готово!' },
+    ]);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [argTool('read_file', 'path'), argTool('grep_search', 'pattern')],
+    });
+    const warnings = res.messages.filter(hasWarn);
+    assert.equal(warnings.length, 1, 'только на 5-м чтении (4-е — молчание)');
+    assert.match(warnings[0].content, /5 раз/);
+  });
+});
