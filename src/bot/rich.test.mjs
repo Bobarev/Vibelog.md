@@ -417,7 +417,9 @@ describe('renderPhaseResultRich (VL-71)', () => {
     assert.match(md, /\*\*Входные минус кэш:\*\* 12/);
     // VL-98: время в человекочитаемом формате (42411 мс → 42с)
     assert.match(md, /\*\*Общее время:\*\* 42с \(api: 42с\)/);
-    assert.match(md, /\*\*Количество запросов:\*\* 1/);
+    assert.match(md, /\*\*Количество LLM-запросов:\*\* 1/);
+    // VL-221: qwen-ран без tool_calls_total — строка tool-calls не печатается
+    assert.doesNotMatch(md, /tool-calls рана/);
     // Единый формат вывода сессии '<agent>:<session_id>' (VL-93, жалоба Pavel 2026-10-05)
     assert.match(md, /`qwen:a470c7dd-2ca8-4510-9d81-b184f932af76`/);
     // Без taskId (VL-98): суффикса задачи в заголовке нет
@@ -466,7 +468,15 @@ describe('renderPhaseResultRich (VL-71)', () => {
       result: { ...okRun.result, session_id: '' },
     });
     assert.doesNotMatch(md, /a470c7dd/);
-    assert.match(md, /Количество запросов:\*\* 1/);
+    assert.match(md, /Количество LLM-запросов:\*\* 1/);
+  });
+
+  it('vb-ран с tool_calls_total: tool-calls печатаются рядом с LLM-запросами (VL-221)', () => {
+    const md = renderPhaseResultRich({
+      ...okRun,
+      result: { ...okRun.result, tool_calls_total: 17 },
+    });
+    assert.match(md, /\*\*Количество LLM-запросов:\*\* 1 · tool-calls рана: 17/);
   });
 
   it('result длиннее 1500 символов — без усечения (VL-148)', () => {

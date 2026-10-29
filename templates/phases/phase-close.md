@@ -74,6 +74,7 @@ Definition of Done (DoD): {{taskDoD}}
 
 ## Экономия ходов
 
+- Лимиты: `--max-tool-calls` считает tool-calls текущего рана (счётчик сбрасывается при resume); `requests` в usage — это LLM-запросы (ходы модели), а не tool-calls.
 - Файлы кода не читай — фаза Close работает с git-статусом, modified_files и файлами задач (backlog/tasks/).
 - Пакетируй последовательные git/shell-команды в ОДИН вызов через && (например: git status --porcelain -- <путь> && git log -1 --stat -- <путь>).
 - Упоминания подзадач — контекст: читай только их файлы задач, не код.

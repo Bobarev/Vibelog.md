@@ -54,6 +54,12 @@ export interface LoopResult {
   result: string;
   is_error: boolean;
   num_turns: number;
+  /**
+   * Tool-calls текущего рана (VL-221): счётчик выполненных вызовов
+   * инструментов ЗА РАН (сбрасывается при resume) — выводится рядом с
+   * num_turns/requests, чтобы лимит --max-tool-calls не путали с LLM-запросами.
+   */
+  tool_calls_total: number;
   duration_ms: number;
   usage: LlmUsage;
   /**
@@ -278,6 +284,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       result: resultText,
       is_error: true,
       num_turns: numTurns,
+      tool_calls_total: toolCallsTotal,
       duration_ms: duration(),
       usage,
       messages,
@@ -411,6 +418,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         result: response.text,
         is_error: false,
         num_turns: numTurns,
+        tool_calls_total: toolCallsTotal,
         duration_ms: duration(),
         usage,
         messages,
@@ -505,8 +513,12 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
 
       // Лимит tool-calls: проверяем ДО выполнения, чтобы не выполнять лишний вызов.
       if (toolCallsTotal + 1 > maxToolCalls) {
+        // VL-221: явное разграничение счётчиков — лимит считает tool-calls
+        // ТЕКУЩЕГО РАНА (сбрасывается при resume), requests в usage — это
+        // LLM-запросы (ходы модели); прежнее сообщение без текущего значения
+        // выглядело ложным при 51 запросе vs лимите 100 (VL-220).
         return fail(
-          `Превышен лимит --max-tool-calls (${maxToolCalls}) — фаза прервана.`,
+          `Превышен лимит --max-tool-calls (${maxToolCalls}) tool-calls текущего рана: ${toolCallsTotal}/${maxToolCalls} — фаза прервана. Лимит считает tool-calls за ран (счётчик сбрасывается при resume); requests в usage — это LLM-запросы (ходы модели), а не tool-calls.`,
         );
       }
       toolCallsTotal++;

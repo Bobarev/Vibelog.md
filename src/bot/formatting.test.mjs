@@ -181,7 +181,9 @@ describe('formatPhaseResult (VL-63/VL-65)', () => {
     assert.ok(text.includes('*Входные минус кэш:* 12'), 'входные минус кэш');
     // VL-98: время в человекочитаемом формате (42411 мс → 42с)
     assert.ok(text.includes('*Общее время:* 42с \\(api: 42с\\)'), 'время');
-    assert.ok(text.includes('*Количество запросов:* 1'), 'num_turns');
+    assert.ok(text.includes('*Количество LLM-запросов:* 1'), 'num_turns');
+    // VL-221: qwen-ран поля tool_calls_total не имеет — строка tool-calls не печатается
+    assert.ok(!text.includes('tool-calls рана'), 'без tool_calls_total нет строки tool-calls');
     assert.ok(text.includes('a470c7dd-2ca8-4510-9d81-b184f932af76'), 'session_id');
     // Без taskId (VL-98): суффикса задачи в заголовке нет
     assert.ok(!text.includes('VL-'), 'нет суффикса задачи без taskId');
@@ -194,6 +196,14 @@ describe('formatPhaseResult (VL-63/VL-65)', () => {
     // Ошибка — тоже получает суффикс (обе ветки статуса)
     const errText = formatPhaseResult({ ...okRun, exitCode: 1, result: { ...okRun.result, is_error: true } }, 'VL-98');
     assert.ok(errText.includes('ошибка qwen) — VL\\-98') || errText.includes('VL\\-98'), 'суффикс при ошибке');
+  });
+
+  it('vb-ран с tool_calls_total: tool-calls в скобках рядом с LLM-запросами (VL-221)', () => {
+    const text = formatPhaseResult({ ...okRun, result: { ...okRun.result, tool_calls_total: 17 } });
+    assert.ok(
+      text.includes('*Количество LLM-запросов:* 1 \\(tool-calls рана: 17\\)'),
+      'обе метрики в одной строке'
+    );
   });
 
   it('спецсимволы в result экранированы', () => {

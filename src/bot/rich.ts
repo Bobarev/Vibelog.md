@@ -290,7 +290,7 @@ function tokenUsageSection(task: Task): string {
   const u = task.token_usage;
   if (!u || (u.total === 0 && u.input === 0 && u.requests === 0)) return '';
   const lines: string[] = [
-    `**Итого:** input=${u.input} · output=${u.output} · cache=${u.cache} · total=${u.total} · запросов: ${u.requests}`,
+    `**Итого:** input=${u.input} · output=${u.output} · cache=${u.cache} · total=${u.total} · LLM-запросов: ${u.requests}`,
   ];
   if (u.duration_ms) {
     lines.push(`**Длительность:** ${formatDuration(u.duration_ms)}`);
@@ -665,7 +665,12 @@ export function renderPhaseResultRich(run: PhaseRun, taskId?: string): string {
     '',
     // VL-98: время в человекочитаемом формате (formatDuration) вместо сырых мс
     `**Общее время:** ${formatDuration(res.duration_ms)} (api: ${formatDuration(res.duration_api_ms)})`,
-    `**Количество запросов:** ${res.num_turns}`,
+    // VL-221: requests — LLM-ходы (num_turns), tool-calls — счётчик текущего
+    // рана (есть только у агента vb); печатаем при наличии поля.
+    `**Количество LLM-запросов:** ${res.num_turns}` +
+      (typeof res.tool_calls_total === 'number'
+        ? ` · tool-calls рана: ${res.tool_calls_total}`
+        : ''),
   ];
   // VL-93: единый формат вывода сессии '<agent>:<session_id>' для ВСЕХ агентов
   // (жалоба Pavel 2026-10-05: qwen тоже с префиксом — qwen:<uuid>); agent

@@ -26,6 +26,13 @@ export interface QwenResult {
   num_turns: number;
   duration_ms: number;
   duration_api_ms: number;
+  /**
+   * Tool-calls текущего рана (VL-221, только для агента vb): лимит
+   * `--max-tool-calls` считает вызовы инструментов ЗА РАН (сбрасывается при
+   * resume). Отсутствует у qwen-ранов и в старых логах — undefined, а не 0,
+   * чтобы отчёт мог не печатать строку (0 tool-calls — законное значение).
+   */
+  tool_calls_total?: number;
   session_id: string;
   usage: {
     input_tokens: number;
@@ -62,6 +69,11 @@ function toQwenResult(obj: Record<string, unknown>): QwenResult {
     num_turns: num(obj.num_turns),
     duration_ms: num(obj.duration_ms),
     duration_api_ms: num(obj.duration_api_ms),
+    // VL-221: поле приходит только от vibelog-agent (qwen его не пишет) —
+    // сохраняем как есть, чтобы отчёт мог показать tool-calls рядом с requests.
+    ...(typeof obj.tool_calls_total === 'number' && Number.isFinite(obj.tool_calls_total)
+      ? { tool_calls_total: obj.tool_calls_total }
+      : {}),
     session_id: typeof obj.session_id === 'string' ? obj.session_id : '',
     usage: {
       input_tokens: num(usage.input_tokens),

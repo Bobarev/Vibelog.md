@@ -47,6 +47,12 @@ interface AgentJsonResult {
   result: string;
   is_error: boolean;
   num_turns: number;
+  /**
+   * Tool-calls текущего рана (VL-221): счётчик вызовов инструментов за ран
+   * (сбрасывается при resume) — рядом с num_turns/requests в диагностике;
+   * поле новое, парсер parseQwenResult его не читает (не ломает контракт).
+   */
+  tool_calls_total: number;
   duration_ms: number;
   duration_api_ms: number;
   session_id: string;
@@ -725,7 +731,8 @@ export async function main(argv: string[]): Promise<void> {
   // по ним отличаем content-based отказ провайдера от размерного.
   // Печатается ПОСЛЕ tui.unmount() — альтернативный буфер закрыт, рендер цел.
   console.error(
-    `[vibelog-agent] фаза: запросов=${loopResult.num_turns}, ` +
+    `[vibelog-agent] фаза: запросов=${loopResult.num_turns} (LLM-запросы/ходы модели), ` +
+      `tool-calls=${loopResult.tool_calls_total} (лимит ${opts.maxToolCalls ?? 100}, счётчик рана — VL-221), ` +
       `payload последнего запроса=${loopResult.last_payload_bytes ?? 'н/д'} байт ` +
       `(макс ${loopResult.max_payload_bytes ?? 'н/д'}), usage=${JSON.stringify(loopResult.usage)}`,
   );
@@ -739,6 +746,11 @@ export async function main(argv: string[]): Promise<void> {
     num_turns: loopResult.num_turns,
     duration_ms: loopResult.duration_ms,
     duration_api_ms: loopResult.duration_ms,
+    // VL-221: tool-calls текущего рана рядом с num_turns/requests (разные
+    // счётчики: requests — LLM-ходы, tool-calls — вызовы инструментов).
+    // parseQwenResult строит QwenResult из известных полей — лишнее поле
+    // в JSON не ломает парсинг.
+    tool_calls_total: loopResult.tool_calls_total,
     session_id: sessionId,
     usage: { ...loopResult.usage },
   };

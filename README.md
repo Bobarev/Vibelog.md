@@ -102,6 +102,11 @@ fallback — мета сессии → её jsonl), CLI-пост-ран и finis
 оркестратора (основной путь для qwen-ранов). Requests/usage в JSONL
 сессии дописывает loop в каждое assistant-сообщение.
 
+**`requests` — это LLM-запросы (ходы модели), НЕ tool-calls (VL-221):**
+лимит `--max-tool-calls` считает tool-calls текущего рана (счётчик
+сбрасывается при resume) — разные независимые счётчики; в диагностике
+фазы они выводятся рядом (`запросов=N`, `tool-calls=M/лимит`).
+
 Стоимость — только в аналитике: `calculateCost(usage, pricing)`, тарифы —
 `pricing` активной модели в секции `models.available`
 `.vibelog/settings.json` (VL-209, см. `getActiveModelPricing`); для конфигов
