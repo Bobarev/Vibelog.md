@@ -12,7 +12,22 @@
  * partial-результат накапливается и дописывается к тексту ошибки).
  */
 
-import { addUsage, zeroUsage, isHighRiskBody, isValidToolCall, sanitizeWireMessages, type ChatMessage, type LlmClient, type LlmUsage, type ToolDef } from './llm.js';
+import {
+  addUsage,
+  zeroUsage,
+  isHighRiskBody,
+  isValidToolCall,
+  sanitizeWireMessages,
+  shrinkMessages,
+  MAX_PAYLOAD_BYTES,
+  PAYLOAD_WARN_RATIO,
+  PAYLOAD_COMPACT_TOOL_CHARS,
+  PAYLOAD_COMPACT_TOOL_CHARS_ESCALATED,
+  type ChatMessage,
+  type LlmClient,
+  type LlmUsage,
+  type ToolDef,
+} from './llm.js';
 import type { ToolSpec } from './tools.js';
 import { truncateToolOutput } from './tools.js';
 
@@ -45,8 +60,20 @@ export interface LoopLimits {
   /**
    * Выключить компакшн истории (VL-122): по умолчанию компакшн включён;
    * true → payload запроса всегда полный (--no-compact).
+   * Байтовый автокомпакт VL-230 НЕ выключается этим флагом — это защита
+   * от отказа провайдера на размерном лимите, а не оптимизация контекста.
    */
   compactDisabled?: boolean;
+  /**
+   * VL-230: override жёсткого байтового лимита провайдера (для тестов;
+   * дефолт MAX_PAYLOAD_BYTES = 900_000).
+   */
+  maxPayloadBytes?: number;
+  /**
+   * VL-230: override порога предупреждения/автокомпакта в байтах (для
+   * тестов; дефолт PAYLOAD_WARN_BYTES = 70% от maxPayloadBytes).
+   */
+  payloadWarnBytes?: number;
 }
 
 /** Результат фазы (совместим по полям с QwenResult CLI). */
@@ -319,7 +346,36 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       const payload = sanitizeWireMessages(
         compactFrom !== null ? compactWireMessages(messages, compactFrom) : messages,
       );
-      response = await options.llm.streamChat(payload, toolDefs, {
+      // VL-230: байтовая оценка wire-копии ДО запроса (lesson-64 — одна точка
+      // сериализации до fetch; здесь — оценка для триггера, точные байты
+      // считает llm-клиент). Если >= порога (70% от лимита провайдера) —
+      // предупреждение в stderr (→ logTail, lesson-77) и автокомпакт:
+      // tool-выводы схлопываются до 2048 символов (эскалация до 1024).
+      // НЕ мутирует messages/jsonl — трогаются только role='tool', AC/план
+      // текущей задачи (system/user/assistant-тексты) не затрагиваются.
+      // Работает и при --no-compact (compactDisabled): защита от отказа
+      // провайдера, а не оптимизация контекста (VL-230).
+      let wire = payload;
+      const wireBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+      const maxPayloadLimit = options.limits?.maxPayloadBytes ?? MAX_PAYLOAD_BYTES;
+      // Порог по умолчанию — 70% от действующего лимита (при override лимита
+      // в тестах порог пересчитывается, а не остаётся от дефолтных 900 КБ).
+      const payloadWarn =
+        options.limits?.payloadWarnBytes ?? Math.floor(maxPayloadLimit * PAYLOAD_WARN_RATIO);
+      if (wireBytes >= payloadWarn) {
+        console.error(
+          `[vibelog-agent] предупреждение payload: ${wireBytes} байт >= порог ${payloadWarn} ` +
+            `(70% от лимита ${maxPayloadLimit}) — история компактизируется перед запросом`,
+        );
+        wire = shrinkMessages(wire, PAYLOAD_COMPACT_TOOL_CHARS);
+        const shrunkBytes = Buffer.byteLength(JSON.stringify(wire), 'utf8');
+        // Эскалация: если после уровня 2048 байты всё ещё у жёсткого
+        // лимита — дополнительно схлопываем до 1024 (уровень L2 VL-178).
+        if (shrunkBytes >= maxPayloadLimit) {
+          wire = shrinkMessages(wire, PAYLOAD_COMPACT_TOOL_CHARS_ESCALATED);
+        }
+      }
+      response = await options.llm.streamChat(wire, toolDefs, {
         onToken: options.onToken,
         signal: options.signal,
       });
