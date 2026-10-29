@@ -12,7 +12,7 @@
  * partial-результат накапливается и дописывается к тексту ошибки).
  */
 
-import { addUsage, zeroUsage, isHighRiskBody, isValidToolCall, type ChatMessage, type LlmClient, type LlmUsage, type ToolDef } from './llm.js';
+import { addUsage, zeroUsage, isHighRiskBody, isValidToolCall, sanitizeWireMessages, type ChatMessage, type LlmClient, type LlmUsage, type ToolDef } from './llm.js';
 import type { ToolSpec } from './tools.js';
 import { truncateToolOutput } from './tools.js';
 
@@ -308,8 +308,12 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // первый user со заметкой + хвост с якоря); messages остаются полными
       // (jsonl/resume/onMessage — без изменений). Липкий якорь: между
       // запросами префикс append-only — prefix-caching стабилен.
-      const payload =
-        compactFrom !== null ? compactWireMessages(messages, compactFrom) : messages;
+      // VL-216: санация отравленных пар (пустой id/tool_call_id) на payload-точке —
+      // фантомная пара проходит орфан-гард compactWireMessages (хвост начинается
+      // с assistant, а не tool); messages/jsonl остаются полными, чистится wire
+      const payload = sanitizeWireMessages(
+        compactFrom !== null ? compactWireMessages(messages, compactFrom) : messages,
+      );
       response = await options.llm.streamChat(payload, toolDefs, {
         onToken: options.onToken,
         signal: options.signal,

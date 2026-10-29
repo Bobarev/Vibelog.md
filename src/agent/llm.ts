@@ -335,8 +335,72 @@ function retryDelayMsFor(attempt: number, res: Response | null, baseMs: number):
   return baseMs * 2 ** attempt;
 }
 
+/**
+ * Санация отравленных историй на wire-границе (VL-216).
+ *
+ * Старые jsonl-сессии (инцидент VL-214) содержат пары
+ * assistant(tool_calls с пустым id/name) + tool(tool_call_id=""),
+ * которые провайдер отклоняет — --resume таких сессий падал guard'ом
+ * VL-110. Функция вырезает/переписывает такие пары ТОЛЬКО в копии,
+ * уходящей провайдеру: jsonl-транскрипт не мутируется (контракт
+ * resume VL-103 — append-only источник правды).
+ *
+ * Правила (один forward-pass):
+ * - tool_calls: фильтр isValidToolCall (общий с VL-215/VL-213); если
+ *   валидных нет — сообщение переписывается в текст (непустой content)
+ *   либо вырезается целиком (content null/пустой);
+ * - tool: вырезается, если tool_call_id пуст/не объявлен валидным
+ *   assistant-вызовом выше (trim-сравнение — пробельные расхождения
+ *   не дают ложного дропа);
+ * - system/user — без изменений.
+ *
+ * Идемпотентна: повторный проход валидную историю не меняет — двойное
+ * применение loop → wire безопасно.
+ */
+export function sanitizeWireMessages(messages: ChatMessage[]): ChatMessage[] {
+  // Объявленные (валидные) id вызовов: в истории объявление assistant-вызова
+  // всегда идёт раньше tool-результата — один forward-pass достаточен
+  const announced = new Set<string>();
+  const out: ChatMessage[] = [];
+  for (const m of messages) {
+    if (m.role === 'assistant') {
+      if (!m.tool_calls || m.tool_calls.length === 0) {
+        out.push(m);
+        continue;
+      }
+      const valid = m.tool_calls.filter(isValidToolCall);
+      if (valid.length > 0) {
+        for (const tc of valid) announced.add(tc.id.trim());
+        // {...m} сохраняет usage/payload_bytes для jsonl-диагностики —
+        // wire-конверторы эти поля и так не отдают провайдеру (VL-198/203)
+        out.push({ ...m, tool_calls: valid });
+        continue;
+      }
+      // Все вызовы фантомы: переписка в текст (AC1) либо вырезка —
+      // assistant(content=null без tool_calls) провайдер отклоняет
+      if (typeof m.content === 'string' && m.content.trim() !== '') {
+        out.push({ role: 'assistant', content: m.content });
+      }
+      continue;
+    }
+    if (m.role === 'tool') {
+      const id = typeof m.tool_call_id === 'string' ? m.tool_call_id.trim() : '';
+      // Пустой ключ (отравленная пара VL-214) либо результат вызова,
+      // объявление которого отфильтровано выше (фантомное имя/id)
+      if (id === '' || !announced.has(id)) continue;
+      out.push(m);
+      continue;
+    }
+    out.push(m);
+  }
+  return out;
+}
+
 /** Приводит наши сообщения к wire-формату (tool_calls.arguments — JSON-строка). */
 function toWireMessages(messages: ChatMessage[]): unknown[] {
+  // VL-216: санация отравленных пар (пустой id/tool_call_id) до сборки wire —
+  // resume старых jsonl уходит провайдеру валидным
+  messages = sanitizeWireMessages(messages);
   return messages.map((m) => {
     if (m.role === 'assistant') {
       // usage (VL-198) — наше поле для учёта в JSONL; провайдеру оно НЕ уходит
@@ -401,6 +465,9 @@ export function messagesToInput(
   messages: ChatMessage[],
   truncateTool: (s: string) => string = (s) => s,
 ): unknown[] {
+  // VL-216: санация до сборки итеремов — Responses-режим чистит пары так же,
+  // как chat-режим (toWireMessages); обе wire-точки покрыты одной функцией
+  messages = sanitizeWireMessages(messages);
   const out: unknown[] = [];
   for (const m of messages) {
     if (m.role === 'assistant') {

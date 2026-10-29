@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createLlmClient, messagesToInput, parseNonStreamResponses } from '../../dist/agent/llm.js';
+import { createLlmClient, messagesToInput, parseNonStreamResponses, sanitizeWireMessages } from '../../dist/agent/llm.js';
 
 /** Фейковый Response со SSE-телом: строки data: {...} / data: [DONE]. */
 function sseResponse(events, { status = 200, statusText = 'OK', bodyText = '' } = {}) {
@@ -688,11 +688,16 @@ describe('messagesToInput (VL-205)', () => {
   });
 
   it('tool-вывод усекается через truncateTool (wire-cap VL-178)', () => {
+    // VL-216: вход приведён к валидной паре (assistant объявляет c1) —
+    // одиночный tool без объявления санация вырезает как осиротевший
     const input = messagesToInput(
-      [{ role: 'tool', tool_call_id: 'c1', content: 'x'.repeat(100) }],
+      [
+        { role: 'assistant', content: null, tool_calls: [{ id: 'c1', name: 'read_file', arguments: {} }] },
+        { role: 'tool', tool_call_id: 'c1', content: 'x'.repeat(100) },
+      ],
       (s) => s.slice(0, 10) + '…[усечён]',
     );
-    assert.equal(input[0].output, 'xxxxxxxxxx…[усечён]');
+    assert.equal(input[1].output, 'xxxxxxxxxx…[усечён]');
   });
 });
 
@@ -969,5 +974,126 @@ describe('createLlmClient: секции settings.json (VL-209)', () => {
       restore();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('Санация отравленных пар tool_calls/tool (VL-216)', () => {
+  /** Успешный SSE-ответ одной строкой content. */
+  const okStream = () =>
+    sseResponse([JSON.stringify({ choices: [{ delta: { content: 'ок' } }] })]);
+
+  /** Отравленная история: фантом рядом с валидным + оба tool-результата. */
+  const poisonedHistory = () => [
+    { role: 'user', content: 'сделай' },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        { id: '', name: '', arguments: {} },
+        { id: 'c1', name: 'echo_tool', arguments: { x: 1 } },
+      ],
+    },
+    { role: 'tool', tool_call_id: '', content: 'фантомный результат' },
+    { role: 'tool', tool_call_id: 'c1', content: 'валидный результат' },
+  ];
+
+  it('wire-chat: пустые id/tool_call_id вырезаны, валидная пара c1 цела', async () => {
+    const { impl, state } = fakeFetch([okStream()]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    await client.streamChat(poisonedHistory(), []);
+    const body = JSON.parse(state.bodies[0]);
+    // Пара c1 сохранена: assistant объявляет только c1, tool(c1) присутствует
+    const assistant = body.messages.find((m) => m.role === 'assistant');
+    assert.deepEqual(assistant.tool_calls, [
+      { id: 'c1', type: 'function', function: { name: 'echo_tool', arguments: '{"x":1}' } },
+    ]);
+    const tools = body.messages.filter((m) => m.role === 'tool');
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0].tool_call_id, 'c1');
+    // Пустых ключей в wire нет
+    assert.ok(!JSON.stringify(body.messages).includes('"tool_call_id":""'),
+      'tool с пустым tool_call_id не должен уходить провайдеру');
+  });
+
+  it('только фантомы + текстовый content → assistant переписан текстом', async () => {
+    const { impl, state } = fakeFetch([okStream()]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    await client.streamChat(
+      [
+        { role: 'user', content: 'x' },
+        {
+          role: 'assistant',
+          content: 'текст до фантома',
+          tool_calls: [{ id: '', name: '', arguments: {} }],
+        },
+        { role: 'tool', tool_call_id: '', content: 'мусор' },
+      ],
+      [],
+    );
+    const body = JSON.parse(state.bodies[0]);
+    const assistant = body.messages.find((m) => m.role === 'assistant');
+    assert.equal(assistant.content, 'текст до фантома');
+    assert.equal('tool_calls' in assistant, false, 'tool_calls с одним фантомом должны уйти в текст');
+    assert.equal(body.messages.filter((m) => m.role === 'tool').length, 0);
+  });
+
+  it('только фантомы + content=null → сообщение вырезано из wire целиком', async () => {
+    const { impl, state } = fakeFetch([okStream()]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    await client.streamChat(
+      [
+        { role: 'user', content: 'x' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: '', name: '', arguments: {} }],
+        },
+        { role: 'tool', tool_call_id: '', content: 'мусор' },
+      ],
+      [],
+    );
+    const body = JSON.parse(state.bodies[0]);
+    // user-сообщение осталось, отравленной пары нет
+    assert.equal(body.messages.length, 1);
+    assert.equal(body.messages[0].role, 'user');
+  });
+
+  it('messagesToInput (Responses): нет пустых call_id, валидная пара сохранена', () => {
+    const input = messagesToInput(poisonedHistory());
+    const calls = input.filter((i) => i.type === 'function_call');
+    const outputs = input.filter((i) => i.type === 'function_call_output');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].call_id, 'c1');
+    assert.equal(outputs.length, 1);
+    assert.equal(outputs[0].call_id, 'c1');
+    assert.ok(!JSON.stringify(input).includes('call_id":""'),
+      'function_call/function_call_output с пустым call_id не должны попадать в wire');
+    // system/user-итемы и текст assistant не пострадали
+    assert.equal(input[0].type, 'message');
+    assert.equal(input[0].content, 'сделай');
+  });
+
+  it('идемпотентность: повторный проход не меняет результат', () => {
+    const once = sanitizeWireMessages(poisonedHistory());
+    assert.deepEqual(sanitizeWireMessages(once), once);
+    // И на заведомо чистой истории — без изменений
+    const clean = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'x' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'c1', name: 't', arguments: {} }] },
+      { role: 'tool', tool_call_id: 'c1', content: 'ok' },
+    ];
+    assert.deepEqual(sanitizeWireMessages(clean), clean);
+  });
+
+  it('tool без объявленного assistant-вызова (осиротевший) вырезан, объявленный — цел', () => {
+    const out = sanitizeWireMessages([
+      { role: 'user', content: 'x' },
+      { role: 'tool', tool_call_id: 'ghost', content: 'нигде не объявлен' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'c1', name: 't', arguments: {} }] },
+      { role: 'tool', tool_call_id: 'c1', content: 'ok' },
+    ]);
+    assert.deepEqual(out.map((m) => m.role), ['user', 'assistant', 'tool']);
+    assert.equal(out[2].tool_call_id, 'c1');
   });
 });

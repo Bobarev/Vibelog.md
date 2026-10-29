@@ -799,4 +799,53 @@ describe('vibelog-agent CLI (VL-85)', () => {
       rmSync(projDir, { recursive: true, force: true });
     }
   });
+
+  it('--resume отравленного jsonl: wire уходит валидным, фаза выполняется (VL-216)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl216-'));
+    try {
+      // Отравленная сессия старых jsonl (VL-214): пара assistant(tool_calls
+      // id:"" name:"") + tool(tool_call_id:"") — до VL-216 тело уходило
+      // провайдеру отравленным
+      const sessDir = join(projDir, '.vibelog', 'agent-sessions');
+      mkdirSync(sessDir, { recursive: true });
+      const transcript = [
+        { role: 'system', content: 'sys-промпт' },
+        { role: 'user', content: 'постановка' },
+        { role: 'assistant', content: null, tool_calls: [{ id: '', name: '', arguments: {} }] },
+        { role: 'tool', tool_call_id: '', content: 'фантомный результат' },
+        { role: 'user', content: 'вопрос после отравления' },
+      ];
+      writeFileSync(
+        join(sessDir, 'agent-vl216-poison.jsonl'),
+        transcript.map((m) => JSON.stringify(m)).join('\n') + '\n',
+        'utf-8'
+      );
+      llmRequests.length = 0;
+      const { code, stdout } = await runCli(
+        ['Продолжи', '--resume', 'agent-vl216-poison', '--no-mcp'],
+        llmEnv(),
+        projDir
+      );
+      assert.equal(code, 0, stdout);
+      const parsed = JSON.parse(stdout.trim());
+      // Фаза выполняется дальше: успех, а НЕ guard VL-110/ошибка провайдера
+      assert.equal(parsed.is_error, false, `фаза должна пройти: ${stdout.slice(0, 300)}`);
+      assert.equal(parsed.result, 'Готово');
+      // Тело первого wire-запроса валидно: пустых ключей нет
+      assert.ok(llmRequests.length >= 1, 'запрос к мок-LM должен уйти');
+      const wire = JSON.stringify(llmRequests[0].messages);
+      assert.ok(!wire.includes('"tool_call_id":""'),
+        'tool с пустым tool_call_id ушёл провайдеру: ' + wire.slice(0, 400));
+      assert.ok(!wire.includes('"id":""'),
+        'tool_call с пустым id ушёл провайдеру: ' + wire.slice(0, 400));
+      // Отравленная пара не попала в wire вообще (content=null → вырезка)
+      assert.ok(!llmRequests[0].messages.some((m) => m.role === 'assistant' && m.tool_calls),
+        'assistant(tool_calls) из отравленной пары не должен попадать в wire');
+      // Новый промпт и валидная user-история сохранены (санация не вырезает user)
+      assert.ok(llmRequests[0].messages.some((m) => m.content === 'постановка'));
+      assert.ok(llmRequests[0].messages.some((m) => m.content === 'вопрос после отравления'));
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
 });
