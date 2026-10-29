@@ -20,7 +20,9 @@ parent_task_id: ''
 ordinal: 0
 documentation: []
 modified_files: []
-lessons: []
+lessons:
+  - lesson-78
+  - lesson-20
 token_usage:
   input: 1490801
   output: 56034
