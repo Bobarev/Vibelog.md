@@ -1,5 +1,6 @@
 /**
- * Тесты глобального guard'а от реальной сети и env-гардов CLI (VL-132).
+ * Тесты глобальных guard'ов от реальной сети (VL-132 fetch, VL-226 spawn)
+ * и env-гардов CLI.
  *
  * Файл сам импортирует '../test-setup.mjs', поэтому проверки работают
  * и при прямом запуске `node --test src/core/no-network.test.mjs`
@@ -11,7 +12,9 @@ import { test } from 'vitest';
 import assert from 'node:assert';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { rmSync } from 'node:fs';
+import { rmSync, mkdtempSync } from 'node:fs';
+import { spawn, spawnSync, execSync } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 import { shouldSkip, fetchLatestVersion, maybeNotifyUpdate } from '../../dist/cli/update-check.js';
 
 // ============================================================
@@ -54,6 +57,86 @@ test('guard идемпотентен: двойной import не ломает о
       assert.match(err.message, /VL-132/);
       return true;
     },
+  );
+});
+
+// ============================================================
+// Spawn-guard (VL-226): сетевые git-команды падают за секунды
+// ============================================================
+
+test("spawnGuard: git clone на внешний https-хост падает с [VL-226] за секунды", () => {
+  // Без guard'а spawnSync зависал на офлайн-DNS до testTimeout 120 с
+  // (инцидент VL-225). Засекаем время — fail-fast должен уложиться в секунды.
+  const t0 = performance.now();
+  assert.throws(
+    () => spawnSync('git', ['clone', 'https://vl226-external.example/repo.git'], { encoding: 'utf-8' }),
+    (err) => {
+      assert.match(err.message, /VL-226/, `ожидали ошибку spawn-guard'а, получили: ${err.message}`);
+      assert.match(err.message, /vl226-external\.example/);
+      return true;
+    },
+  );
+  const elapsed = performance.now() - t0;
+  assert.ok(elapsed < 5000, `fail-fast должен занять секунды, заняло ${elapsed.toFixed(0)} мс`);
+});
+
+test("spawnGuard: scp-синтаксис git@host:path тоже отклоняется", () => {
+  assert.throws(
+    () => spawnSync('git', ['clone', 'git@vl226-host.example:owner/repo.git'], { encoding: 'utf-8' }),
+    /VL-226/,
+  );
+});
+
+test('spawnGuard: loopback-URL проходит мимо guard\'а (ECONNREFUSED, не VL-226)', () => {
+  // Порт 1 на loopback закрыт — git упадёт сетевой ошибкой быстро,
+  // но НЕ с ошибкой guard'а: loopback разрешён для мок-серверов (AC-3)
+  const res = spawnSync('git', ['ls-remote', 'http://127.0.0.1:1/repo.git'], {
+    encoding: 'utf-8',
+    timeout: 10_000,
+  });
+  const out = `${res.stderr || ''}${res.error ? res.error.message : ''}`;
+  assert.ok(!out.includes('VL-226'), `loopback должен проходить мимо guard'а, получили: ${out}`);
+});
+
+test('spawnGuard: локальные git-команды (init, file://-URL) не затронуты (AC-3)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vl226-'));
+  try {
+    const init = spawnSync('git', ['init'], { cwd: dir, encoding: 'utf-8' });
+    assert.equal(init.status, 0, `git init не должен падать guard'ом: ${init.stderr}`);
+    // file:// не матчит http/https/git@ — клон (даже неудачный) идёт мимо guard'а
+    const res = spawnSync('git', ['clone', 'file:///nonexistent/vl226', join(dir, 'x')], {
+      encoding: 'utf-8',
+      timeout: 10_000,
+    });
+    const out = `${res.stderr || ''}${res.error ? res.error.message : ''}`;
+    assert.ok(!out.includes('VL-226'), `file://-клон не должен ловиться guard'ом, получили: ${out}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('spawnGuard: async-функции НЕ превращают результат в Promise (регресс VL-226)', () => {
+  // Инцидент: первая версия guard'а обернула spawn/exec в async-функцию и
+  // spawn стал возвращать Promise вместо ChildProcess — упало 130 тестов
+  // web/agent/bot ('child.kill is not a function', `.stdout` undefined).
+  // Контракт: для локальной команды guard возвращает ровно то, что вернул
+  // node:child_process — ChildProcess с .on/.kill/.stdout/.pid.
+  const child = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore' });
+  try {
+    assert.ok(typeof child.on === 'function', 'spawn должен вернуть ChildProcess, а не Promise');
+    assert.ok(typeof child.kill === 'function', 'у ChildProcess должен быть метод kill');
+    assert.equal(typeof child.pid, 'number');
+  } finally {
+    child.kill('SIGKILL');
+  }
+});
+
+test('spawnGuard: exec с командной строкой (git clone https://…) тоже отклоняется', () => {
+  // exec/execSync первым аргументом получают всю командную строку —
+  // сканируем её (иначе сетевой git проходил бы мимо guard'а)
+  assert.throws(
+    () => execSync('git clone https://vl226-exec.example/repo.git', { encoding: 'utf-8' }),
+    /VL-226/,
   );
 });
 
