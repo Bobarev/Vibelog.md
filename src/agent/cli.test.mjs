@@ -708,6 +708,47 @@ describe('vibelog-agent CLI (VL-85)', () => {
     }
   });
 
+  it('VL-217 (AC1): пустой финал дважды → stderr-строка «пустой финал» с payload/usage, is_error', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl217-'));
+    try {
+      mkdirSync(join(projDir, 'backlog', 'tasks'), { recursive: true });
+      writeFileSync(join(projDir, 'backlog', 'config.yml'), 'project_name: VL217 Test\n', 'utf-8');
+      createTaskFile(projDir, { id: 'VL-91', title: 'Задача пустого финала' });
+      // Мок-LM отвечает пустым content на КАЖДЫЙ запрос: первый пустой финал
+      // → один повтор (VL-217), второй пустой → fail с диагностикой
+      let requestCount = 0;
+      llmHandler = (_body, res) => {
+        requestCount++;
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: '' } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 } })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      };
+      const { code, stdout, stderr } = await runCli(
+        ['comment', 'VL-91', '--no-mcp', '--comment', 'диагностика пустоты'],
+        llmEnv(),
+        projDir,
+      );
+      // AC2: повторная пустота → fail (exit 1, is_error), ровно 2 запроса
+      assert.equal(code, 1, stdout);
+      const parsed = JSON.parse(stdout.trim());
+      assert.equal(parsed.is_error, true);
+      assert.equal(requestCount, 2, 'ровно один повтор запроса');
+      assert.match(parsed.result, /Пустой ответ модели/);
+      // AC1: обе попытки зафиксированы в stderr → logTail оркестратора
+      // (по образцу строки VL-203: payload + usage в stderr фазы)
+      assert.match(stderr, /пустой финал \(попытка 1\)/, stderr);
+      assert.match(stderr, /пустой финал \(попытка 2\)/, stderr);
+      assert.match(stderr, /payload=.*байт/, 'payload в диагностике');
+      assert.match(stderr, /usage=\{/, 'usage в диагностике');
+      assert.match(stderr, /сообщений=\d+/, 'число сообщений в диагностике');
+    } finally {
+      llmHandler = null;
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
   it('готовый промпт (без фазы) мету не создаёт (VL-110)', async () => {
     const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-meta0-'));
     try {

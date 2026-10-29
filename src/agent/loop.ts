@@ -239,6 +239,11 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // Стейт guard'а фантомных tool_calls (VL-215): счётчик ходов ПОДРЯД,
   // содержащих tool_call с пустым name/id; 0 — чистый ход сбрасывает.
   let phantomStreak = 0;
+  // Стейт guard'а пустого финала (VL-217): false — пустой финал ещё не
+  // повторялся, true — повтор исчерпан (следующая пустота → fail с
+  // диагностикой). Сброс не нужен: непустой текст финализирует цикл сходу,
+  // флаг живёт в пределах одной фазы.
+  let emptyFinalRetried = false;
   // Стейт guard'а зацикливания намерений (VL-119): предыдущий нормализованный
   // промежуточный текст и длина серии одинаковых. Пустой текст streak не
   // сбрасывает — молчаливые tool-ходы легитимны (решение плана VL-119).
@@ -343,8 +348,41 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // смены статуса. Ошибка идёт штатным fail-путём: is_error=true,
       // assistant-сообщение дописывается в диалог (контракт resume VL-103).
       if (!response.text || response.text.trim() === '') {
+        // VL-217: диагностика пустого финала в точке детекта — payload,
+        // число сообщений, признак отравленных пар в истории и usage
+        // уходят в stderr → logTail оркестратора (по образцу логов
+        // VL-199 в llm.ts). Гипотеза VL-197: content-based отказы
+        // наблюдались при payload >~140 КБ — фиксируем признак сразу.
+        const diagPayload = response.payloadBytes ?? lastPayload;
+        const hasEmptyToolCalls = messages.some(
+          (m) =>
+            (m.role === 'assistant' && !!m.tool_calls?.some((tc) => !isValidToolCall(tc))) ||
+            (m.role === 'tool' && !(typeof m.tool_call_id === 'string' && m.tool_call_id.trim())),
+        );
+        const diag =
+          `payload=${diagPayload ?? 'н/д'} байт ` +
+          `(>140КБ=${diagPayload === undefined ? 'н/д' : diagPayload > 140 * 1024 ? 'да' : 'нет'}), ` +
+          `сообщений=${messages.length}, ` +
+          `есть-пустые-tool_calls=${hasEmptyToolCalls ? 'да' : 'нет'}, ` +
+          `usage=${JSON.stringify(response.usage)}`;
+        const attempt = emptyFinalRetried ? 2 : 1;
+        console.error(`[vibelog-agent] пустой финал (попытка ${attempt}): ${diag}`);
+        if (!emptyFinalRetried) {
+          // Один повтор запроса (VL-217): payload пересобирается на верху
+          // итерации — компакшн + sanitizeWireMessages (VL-216) санирует
+          // отравленные пары, после чего уходит провайдеру повторно.
+          // В messages ничего не дописывается — транскрипт чист.
+          emptyFinalRetried = true;
+          continue;
+        }
+        // Повтор тоже пуст: вероятна отравленная история (пары с пустым
+        // id, вырезаемые на wire-границе) либо content-based отказ
+        // провайдера. Маркер «Пустой ответ модели» обязателен — его
+        // матчат guard'ы и тесты VL-110.
         return fail(
-          'Пустой ответ модели: финальный текст без tool_calls пуст — фаза прервана как ошибка (VL-110).',
+          `Пустой ответ модели: повтор после санации истории (VL-216/217) тоже пуст — ` +
+            `вероятна отравленная история (пары с пустым id) либо отказ провайдера; ` +
+            `${diag}. Фаза прервана как ошибка (VL-110).`,
         );
       }
       // VL-199: отказ провайдера может прийти валидным финальным текстом при
