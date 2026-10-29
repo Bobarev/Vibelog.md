@@ -27,6 +27,8 @@ import {
   formatDocumentDetail,
   formatPhaseResult,
   formatPhaseRun,
+  // VL-212: детект ошибки лимита → кнопка «Продолжить» (resume сессии)
+  limitErrorResumeRef,
   splitNumbered,
   TELEGRAM_TEXT_LIMIT,
   formatTaskDetail,
@@ -103,13 +105,26 @@ async function sendMd(ctx: Context, text: string): Promise<void> {
 /**
  * Отправка текста по chatId: MarkdownV2 с фолбэком на plain (VL-48).
  * Отличие от sendMd: адресат — chatId (уведомления приходят без ctx).
+ *
+ * @param replyMarkup — необязательная inline-клавиатура (VL-212): кнопка
+ *   «Продолжить» в уведомлении об ошибке лимита. Прокидывается в обе ветки
+ *   (MarkdownV2 и plain) — базовый Bot API, не rich-расширение.
  */
-async function sendText(bot: Bot, chatId: number, text: string): Promise<void> {
+async function sendText(
+  bot: Bot,
+  chatId: number,
+  text: string,
+  replyMarkup?: { inline_keyboard: { text: string; callback_data: string }[][] }
+): Promise<void> {
   try {
-    await bot.api.sendMessage(chatId, text, { parse_mode: 'MarkdownV2' });
+    await bot.api.sendMessage(
+      chatId,
+      text,
+      replyMarkup ? { parse_mode: 'MarkdownV2', reply_markup: replyMarkup } : { parse_mode: 'MarkdownV2' }
+    );
   } catch {
     try {
-      await bot.api.sendMessage(chatId, text);
+      await bot.api.sendMessage(chatId, text, replyMarkup ? { reply_markup: replyMarkup } : {});
     } catch {
       // Сеть недоступна — сообщение теряется, polling продолжится
     }
@@ -268,15 +283,27 @@ async function sendCommitsView(
  *   отчёта; undefined (/prompt, resume) — отчёт без суффикса задачи
  */
 async function sendPhaseResult(bot: Bot, chatId: number, run: PhaseRun, taskId?: string): Promise<void> {
+  // VL-212: при ошибке лимита (is_error + «Превышен лимит») сессию можно
+  // возобновить кнопкой — ref '<agent>:<session_id>' парсит callback resume:
+  const resumeRef = limitErrorResumeRef(run);
+  const inlineKeyboard = resumeRef
+    ? { inline_keyboard: [[{ text: '▶ Продолжить', callback_data: `resume:${resumeRef}` }]] }
+    : undefined;
   try {
     const rich = renderPhaseResultRich(run, taskId);
     const richParts = chunkRich(rich);
+    // VL-212: кнопка добавляется только к ПОСЛЕДНЕЙ части — текст после
+    // tg-button недопустим в rich-разметке Telegram
+    const tgButton = resumeRef
+      ? `\n\n<tg-button type="callback_data" style="primary" data="resume:${resumeRef}">▶ Продолжить</tg-button>`
+      : '';
     // VL-148: гигантские отчёты (>32768 rich-лимита) нумеруем «часть i/N»
     // (GFM italic) и шлём последовательно; одиночная часть — без суффикса
     for (let i = 0; i < richParts.length; i++) {
       const suffix =
         richParts.length > 1 ? `\n\n_(часть ${i + 1}/${richParts.length})_` : '';
-      await bot.api.sendRichMessage(chatId, { markdown: richParts[i] + suffix });
+      const last = i === richParts.length - 1;
+      await bot.api.sendRichMessage(chatId, { markdown: richParts[i] + suffix + (last ? tgButton : '') });
     }
   } catch (err) {
     console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
@@ -290,8 +317,11 @@ async function sendPhaseResult(bot: Bot, chatId: number, run: PhaseRun, taskId?:
       TELEGRAM_TEXT_LIMIT,
       (i, n) => `\n\n_часть ${i}\\/${n}_`
     );
-    for (const part of parts) {
-      await sendText(bot, chatId, part);
+    // VL-212: inline keyboard — базовый Bot API (не rich-расширение);
+    // при отказе сервера сработает существующий фолбэк sendText
+    for (let i = 0; i < parts.length; i++) {
+      const last = i === parts.length - 1;
+      await sendText(bot, chatId, parts[i], last ? inlineKeyboard : undefined);
     }
   }
 }
@@ -1419,6 +1449,42 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       }
       await ctx.answerCallbackQuery({ text: `📄 ${entry.document.id}` }).catch(() => {});
       await sendDocView(bot, chatId, entry);
+      return;
+    }
+    // ── Кнопка «Продолжить» после ошибки лимита (VL-212) ──
+    // data = resume:<agent>:<session_id> — resume без комментария (промпт
+    // «Продолжи», дефолт parseResumeCommand). Регистрируется до фильтра
+    // ниже (как comment:/task:/doc:) — старые ветки не трогаем (lesson-43).
+    if (data.startsWith('resume:')) {
+      if (!requireBind(ctx)) {
+        await ctx
+          .answerCallbackQuery({ text: 'Бот не привязан к чату — выполните /start' })
+          .catch(() => {});
+        return;
+      }
+      const parsed = parseResumeCommand(data.slice('resume:'.length));
+      if ('error' in parsed) {
+        await ctx.answerCallbackQuery({ text: parsed.error }).catch(() => {});
+        return;
+      }
+      // answerCallbackQuery обязателен в любом исходе — иначе «часики»
+      await ctx.answerCallbackQuery({ text: '🔄 Возобновляю сессию…' }).catch(() => {});
+      const chatId = ctx.chat?.id;
+      const onExit: PhaseExitCallback = (run) => {
+        if (chatId === undefined) return;
+        // Паттерн reply-resume: без карточки задачи, только отчёт фазы
+        void sendPhaseResult(bot, chatId, run);
+      };
+      const result = startResume(deps.cwd, parsed.sessionId, parsed.comment, onExit, parsed.agent);
+      if ('error' in result) {
+        // Guard «Запуск уже выполняется» — двойное нажатие/идущая фаза
+        await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
+        return;
+      }
+      await sendMd(
+        ctx,
+        `🔄 Сессия возобновлена (resume ${escapeMarkdownV2(parsed.sessionId)}), PID ${result.pid}`
+      );
       return;
     }
     if (!data.startsWith('next:') && !data.startsWith('reject:') && !data.startsWith('phase:') && !data.startsWith('start:') && !data.startsWith('auto:')) return; // чужие callback не трогаем (VL-188: +phase:/start:; VL-191: +auto:)
