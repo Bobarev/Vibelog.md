@@ -7,8 +7,9 @@
  *
  *   { "running": bool,
  *     "max_retries": 1,
- *     "tasks": [{ "id": "VL-N", "status": "pending|running|done|failed",
- *                 "added_at": "...", "started_at": "...", "attempts": 0 }] }
+ *     "tasks": [{ "id": "VL-N", "status": "pending|running|done|failed|failed_permanent",
+ *                 "added_at": "...", "started_at": "...", "attempts": 0,
+ *                 "fail_reason": "..." }] }
  *
  * Поля `max_retries`/`attempts` — расширение спецификации (retry N по
  * умолчанию 1): не противоречат AC1 и позволяют переживать рестарт счётчика
@@ -24,8 +25,15 @@ import { getTask } from './store.js';
 import { isReady } from './deps.js';
 import type { Task } from './task.js';
 
-/** Статус элемента очереди (спецификация VL-191). */
-export type AutoQueueStatus = 'pending' | 'running' | 'done' | 'failed';
+/**
+ * Статус элемента очереди (спецификация VL-191; `failed_permanent` — VL-228).
+ *
+ * `failed` = провал, который ещё может быть перезапущен (счётчик attempts не
+ * исчерпан / элемент создан вручную); `failed_permanent` = ретраи исчерпаны,
+ * элемент терминален: sweep и `addQueueTasks` его не реанимируют, pick не
+ * выбирает, а причина провала лежит в `fail_reason` (для /auto status и логов).
+ */
+export type AutoQueueStatus = 'pending' | 'running' | 'done' | 'failed' | 'failed_permanent';
 
 /** Элемент автоочерери. */
 export interface AutoQueueTask {
@@ -39,6 +47,11 @@ export interface AutoQueueTask {
   started_at?: string | null;
   /** Сколько раз фаза текущей задачи уже падала (retry-счётчик). */
   attempts?: number;
+  /**
+   * Причина провала для `failed`/`failed_permanent` (VL-228): текст фазы +
+   * счётчик попыток. Пишется раннером, читается /auto status и логами.
+   */
+  fail_reason?: string;
 }
 
 /** Документ автоочерери. */
@@ -56,6 +69,19 @@ const PRIORITY_ORDER: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
 
 /** Дефолт: файл отсутствует/битый — очередь остановлена, задач нет. */
 const EMPTY_QUEUE: AutoQueue = { running: false, tasks: [] };
+
+/**
+ * Допустимые статусы элемента при чтении файла (VL-228 добавил
+ * `failed_permanent`): список, а не ручной switch — новый статус добавляется
+ * в одном месте (load-фильтр и валидация тестов смотрят сюда).
+ */
+const VALID_QUEUE_STATUSES: readonly string[] = [
+  'pending',
+  'running',
+  'done',
+  'failed',
+  'failed_permanent',
+];
 
 /**
  * Монотонный ISO-время для added_at: в одном вызове add несколько задач
@@ -91,16 +117,22 @@ export function loadAutoQueue(cwd: string): AutoQueue {
     }
     const raw = parsed as Partial<AutoQueue>;
     // Нормализация: running — bool, элементы с валидным status, иначе отбрасываем
-    const tasks = Array.isArray(raw.tasks)
-      ? raw.tasks.filter(
-          (t): t is AutoQueueTask =>
-            t !== null &&
-            typeof t === 'object' &&
-            typeof (t as AutoQueueTask).id === 'string' &&
-            ['pending', 'running', 'done', 'failed'].includes((t as AutoQueueTask).status) &&
-            typeof (t as AutoQueueTask).added_at === 'string'
-        )
-      : [];
+    const tasks: AutoQueueTask[] = [];
+    if (Array.isArray(raw.tasks)) {
+      for (const t of raw.tasks) {
+        if (t === null || typeof t !== 'object') continue;
+        const item = t as AutoQueueTask;
+        if (typeof item.id !== 'string') continue;
+        if (!VALID_QUEUE_STATUSES.includes(item.status)) continue;
+        if (typeof item.added_at !== 'string') continue;
+        // fail_reason (VL-228): не-строку отбрасываем, но элемент не теряем —
+        // очередь важнее косметики поля причины
+        if (item.fail_reason !== undefined && typeof item.fail_reason !== 'string') {
+          delete item.fail_reason;
+        }
+        tasks.push(item);
+      }
+    }
     const max_retries =
       typeof raw.max_retries === 'number' && Number.isInteger(raw.max_retries) && raw.max_retries >= 0
         ? raw.max_retries
@@ -128,6 +160,10 @@ export function saveAutoQueue(cwd: string, queue: AutoQueue): void {
  * сброс в pending (повторный /auto add реанимирует элемент); дубли в одном
  * вызове схлопываются. Порядок добавления сохраняется (FIFO-база).
  *
+ * `failed_permanent` (VL-228) → skip: ретраи исчерпаны, автоматическая
+ * реанимация запрещена (AC2 — иначе /auto add перетёр бы терминальный
+ * провал молча, без сигнала). Ручной обход: /auto remove <id> + /auto add.
+ *
  * @returns added — реально добавленные/реанимированные ID; skipped — уже queued
  */
 export function addQueueTasks(cwd: string, ids: string[]): { added: string[]; skipped: string[] } {
@@ -137,13 +173,18 @@ export function addQueueTasks(cwd: string, ids: string[]): { added: string[]; sk
   for (const id of ids) {
     const existing = queue.tasks.find((t) => t.id === id);
     if (existing) {
-      if (existing.status === 'pending' || existing.status === 'running') {
+      if (
+        existing.status === 'pending' ||
+        existing.status === 'running' ||
+        existing.status === 'failed_permanent'
+      ) {
         skipped.push(id);
         continue;
       }
       // done/failed → пере-add возвращает в pending (attempts обнуляется)
       existing.status = 'pending';
       existing.attempts = 0;
+      delete existing.fail_reason;
       added.push(id);
       continue;
     }
@@ -202,13 +243,28 @@ function isTerminalStatus(status: string): boolean {
  * - элемент running → pending при остановленной очереди НЕ трогаем здесь
  *   (это делает resumeAutoRunner — рестарт);
  * - задача Done/Completed → done; Rejected → failed; задача удалена → failed.
+ * - `failed` с исчерпанными ретраями (`attempts > max_retries`) → `failed_permanent`
+ *   + `fail_reason` (VL-228): так застревают элементы, попавшие в файл до
+ *   появления нового статуса (инцидент VL-203/VL-207: `failed` при attempts:2
+ *   и max_retries:1 висел без ретраев и без сигналов);
+ * - `done`/`failed_permanent` терминальны — не перетираются (идемпотентность).
  *
  * @returns true, если что-то изменилось (нужна запись файла)
  */
 export function sweepQueue(cwd: string, queue: AutoQueue): boolean {
   let changed = false;
+  const maxRetries = queue.max_retries ?? 1;
   for (const item of queue.tasks) {
-    if (item.status === 'done' || item.status === 'failed') continue;
+    if (item.status === 'done' || item.status === 'failed_permanent') continue;
+    if (item.status === 'failed') {
+      const attempts = item.attempts ?? 0;
+      if (attempts > maxRetries) {
+        item.status = 'failed_permanent';
+        item.fail_reason ??= `ретраи исчерпаны (attempts=${attempts} > max_retries=${maxRetries})`;
+        changed = true;
+      }
+      continue;
+    }
     const task = getTask(cwd, item.id);
     if (!task) {
       item.status = 'failed';
@@ -256,7 +312,8 @@ export function pickNextQueueTask(cwd: string, queue: AutoQueue): AutoQueueTask 
 
 /**
  * Текст статуса очереди для /auto status: running-флаг + по строке на элемент
- * (id — статус — дата добавления).
+ * (id — статус — дата добавления). Для `failed`/`failed_permanent` выводится
+ * причина (`fail_reason`, VL-228) — иначе провал неотличим от текущей работы.
  *
  * @param queue — очередь; пустая → «Очередь пуста»
  */
@@ -265,7 +322,11 @@ export function formatAutoQueue(queue: AutoQueue): string {
   if (queue.tasks.length === 0) return `${header}\nОчередь пуста`;
   const lines = queue.tasks.map((t) => {
     const started = t.started_at ? `, запущена ${t.started_at}` : '';
-    return `${t.id} — ${t.status} (добавлена ${t.added_at}${started})`;
+    const reason =
+      (t.status === 'failed' || t.status === 'failed_permanent') && t.fail_reason
+        ? `, причина: ${t.fail_reason}`
+        : '';
+    return `${t.id} — ${t.status}${reason} (добавлена ${t.added_at}${started})`;
   });
   return [header, ...lines].join('\n');
 }

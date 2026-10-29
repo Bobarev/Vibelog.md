@@ -179,19 +179,41 @@ function notifyAutoFailure(
   taskId: string,
   phase: string,
   attempts: number,
-  reason: string
+  reason: string,
+  permanent = false
 ): void {
-  notifyAllChats(
-    bot,
-    cwd,
-    `❌ Автоочередь: задача *${taskId}* — фаза ${phase} не удалась после ${attempts} поп. ` +
-      `(статус failed, причина: ${reason.slice(0, 300)})`
+  // VL-228: failed_permanent — ретраев больше не будет (терминал), текст
+  // должен это говорить, иначе «очередь засоряется»: провал неотличим от работы
+  const tail = permanent
+    ? `(статус failed_permanent, ретраи исчерпаны, причина: ${reason.slice(0, 300)})`
+    : `(статус failed, причина: ${reason.slice(0, 300)})`;
+  notifyAllChats(bot, cwd, `❌ Автоочередь: задача *${taskId}* — фаза ${phase} не удалась после ${attempts} поп. ${tail}`);
+}
+
+/**
+ * Лог причины терминального провала в stderr (VL-228, AC1).
+ *
+ * Пишем в console.error, а не только в чат: бот может быть запущен без
+ * привязанных чатов, а stderr остаётся у владельца в терминале/логе.
+ * Ссылка на сессию агента обязательна — по ней видно, где копать контекст
+ * (findTaskPhaseSessionSync — тот же поиск, что у retryResumeArgs).
+ */
+function logPermanentFailure(cwd: string, taskId: string, phase: string, attempts: number, max: number, reason: string): void {
+  const sessionId = findTaskPhaseSessionSync(agentSessionsDir(cwd), taskId, phase);
+  console.error(
+    `[auto VL-228] ${taskId} → failed_permanent: фаза ${phase}, попыток ${attempts} из ${max}, ` +
+      `причина: ${reason.slice(0, 300)}; сессия: ${sessionId ?? 'не найдена'}`
   );
 }
 
 /**
  * Обработка ошибки фазы: наращивает attempts, при исчерпании — failed +
  * уведомление. Элемент остаётся running при retry (tick продолжит задачу).
+ *
+ * VL-228: исчерпание ретраев ставит `failed_permanent` (а не `failed`) —
+ * терминальный статус, который sweep не реанимирует, pick не выбирает и
+ * /auto add не перетирает; причина пишется в `fail_reason` и в stderr
+ * вместе со ссылкой на сессию агента.
  */
 function handlePhaseFailure(
   bot: Bot,
@@ -202,7 +224,7 @@ function handlePhaseFailure(
 ): void {
   const queue = loadAutoQueue(cwd);
   const fresh = queue.tasks.find((t) => t.id === item.id);
-  if (!fresh || fresh.status === 'done' || fresh.status === 'failed') return;
+  if (!fresh || fresh.status === 'done' || fresh.status === 'failed_permanent') return;
   const attempts = (fresh.attempts ?? 0) + 1;
   const max = queue.max_retries ?? 1;
   if (nextFailureAction(attempts, max) === 'retry') {
@@ -210,10 +232,13 @@ function handlePhaseFailure(
     saveAutoQueue(cwd, queue);
     return;
   }
-  fresh.status = 'failed';
+  const permanentReason = `${reason.slice(0, 300)}; attempts=${attempts}/max=${max}`;
+  fresh.status = 'failed_permanent';
   fresh.attempts = attempts;
+  fresh.fail_reason = permanentReason;
   saveAutoQueue(cwd, queue);
-  notifyAutoFailure(bot, cwd, item.id, phase, attempts, reason);
+  logPermanentFailure(cwd, item.id, phase, attempts, max, reason);
+  notifyAutoFailure(bot, cwd, item.id, phase, attempts, permanentReason, true);
 }
 
 /**
@@ -288,8 +313,11 @@ export function autoTick(bot: Bot, cwd: string): void {
 
   const task = getTask(cwd, item.id);
   if (!task) {
-    // sweep уже пометил бы failed; страховка — не должно доходить
-    updateQueueTask(cwd, item.id, { status: 'failed' });
+    // sweep уже пометил бы failed; страховка — не должно доходить.
+    // VL-228: задача исчезла — фазы не будет никогда → терминальный статус
+    const reason = 'задача не найдена в backlog';
+    updateQueueTask(cwd, item.id, { status: 'failed_permanent', fail_reason: reason });
+    logPermanentFailure(cwd, item.id, '—', item.attempts ?? 0, queue.max_retries ?? 1, reason);
     setImmediate(() => autoTick(bot, cwd));
     return;
   }
@@ -297,9 +325,13 @@ export function autoTick(bot: Bot, cwd: string): void {
   const phase = pickAutoPhase(workflow, task.status);
   if (!phase) {
     // Нет не-reject фазы и не терминальный статус (иначе sweep) — авто
-    // не может двигать задачу: failed + уведомление, очередь продолжается
-    updateQueueTask(cwd, item.id, { status: 'failed' });
-    notifyAutoFailure(bot, cwd, item.id, '—', item.attempts ?? 0, `нет фазы из статуса ${task.status}`);
+    // не может двигать задачу: терминальный failed_permanent + уведомление,
+    // очередь продолжается. Фаза из статуса не определится и позже → ретрай
+    // бессмыслен (VL-228).
+    const reason = `нет фазы из статуса ${task.status}`;
+    updateQueueTask(cwd, item.id, { status: 'failed_permanent', fail_reason: reason });
+    logPermanentFailure(cwd, item.id, '—', item.attempts ?? 0, queue.max_retries ?? 1, reason);
+    notifyAutoFailure(bot, cwd, item.id, '—', item.attempts ?? 0, reason, true);
     setImmediate(() => autoTick(bot, cwd));
     return;
   }

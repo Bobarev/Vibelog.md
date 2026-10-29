@@ -244,6 +244,101 @@ describe('auto-queue (VL-191)', () => {
     assert.equal(pickNextQueueTask(dir, loadAutoQueue(dir)).id, 'VL-1', 'потом Low');
   });
 
+  // ── VL-228: failed_permanent (исчерпанные ретраи) ──
+
+  it('VL-228 load: failed_permanent c fail_reason сохраняется, битый fail_reason отбрасывается', () => {
+    const dir = join(testRoot, 'vl228-load');
+    mkdirSync(join(dir, '.vibelog'), { recursive: true });
+    writeFileSync(
+      autoQueuePath(dir),
+      JSON.stringify({
+        running: true,
+        max_retries: 1,
+        tasks: [
+          { id: 'VL-1', status: 'failed_permanent', added_at: 'T', attempts: 2, fail_reason: 'упало' },
+          { id: 'VL-2', status: 'failed_permanent', added_at: 'T', fail_reason: 42 },
+        ],
+      }),
+      'utf-8'
+    );
+    const q = loadAutoQueue(dir);
+    assert.deepEqual(q.tasks.map((t) => t.id), ['VL-1', 'VL-2'], 'failed_permanent не отбрасывается при загрузке');
+    assert.equal(q.tasks[0].fail_reason, 'упало');
+    assert.equal(q.tasks[1].fail_reason, undefined, 'не-строковый fail_reason отброшен, элемент жив');
+  });
+
+  it('VL-228 add: failed_permanent не реанимируется (AC2 — /auto add не перетирает)', () => {
+    const dir = join(testRoot, 'vl228-add');
+    mkdirSync(join(dir, 'backlog', 'tasks'), { recursive: true });
+    saveAutoQueue(dir, {
+      running: false,
+      max_retries: 1,
+      tasks: [{ id: 'VL-1', status: 'failed_permanent', added_at: 'T', attempts: 2, fail_reason: 'упало' }],
+    });
+    const res = addQueueTasks(dir, ['VL-1']);
+    assert.deepEqual(res.added, []);
+    assert.deepEqual(res.skipped, ['VL-1'], 'failed_permanent → skip');
+    const item = loadAutoQueue(dir).tasks.find((t) => t.id === 'VL-1');
+    assert.equal(item.status, 'failed_permanent', 'статус не тронут');
+    assert.equal(item.fail_reason, 'упало', 'причина сохранена');
+    assert.equal(item.attempts, 2, 'счётчик попыток не сброшен');
+    // Ручной обход: remove → add создаёт элемент заново с attempts=0
+    removeQueueTask(dir, 'VL-1');
+    const again = addQueueTasks(dir, ['VL-1']);
+    assert.deepEqual(again.added, ['VL-1']);
+    assert.equal(loadAutoQueue(dir).tasks[0].attempts, 0);
+  });
+
+  it('VL-228 sweep: застрявший failed с attempts > max_retries → failed_permanent + причина; идемпотентно', () => {
+    const dir = newProj('vl228-sweep');
+    createTaskFile(dir, { title: 'Живая' }); // VL-1
+    saveAutoQueue(dir, {
+      running: false,
+      max_retries: 1,
+      tasks: [
+        { id: 'VL-1', status: 'failed', added_at: 'T', attempts: 2 },
+        { id: 'VL-2', status: 'failed', added_at: 'T', attempts: 1 },
+        { id: 'VL-3', status: 'failed_permanent', added_at: 'T', attempts: 2, fail_reason: 'прежняя' },
+        { id: 'VL-4', status: 'done', added_at: 'T', attempts: 5 },
+      ],
+    });
+    const q = loadAutoQueue(dir);
+    assert.equal(sweepQueue(dir, q), true);
+    const byId = Object.fromEntries(q.tasks.map((t) => [t.id, t]));
+    assert.equal(byId['VL-1'].status, 'failed_permanent', 'attempts 2 > max 1 → failed_permanent');
+    assert.match(byId['VL-1'].fail_reason, /ретраи исчерпаны \(attempts=2 > max_retries=1\)/);
+    assert.equal(byId['VL-2'].status, 'failed', 'attempts 1 ≤ max 1 → ещё не терминален');
+    assert.equal(byId['VL-3'].status, 'failed_permanent');
+    assert.equal(byId['VL-3'].fail_reason, 'прежняя', 'причина не перезаписана');
+    assert.equal(byId['VL-4'].status, 'done', 'done не тронут');
+    assert.equal(sweepQueue(dir, q), false, 'повторный sweep идемпотентен');
+  });
+
+  it('VL-228 pickNext: failed_permanent не выбирается, соседний pending — выбирается', () => {
+    const dir = newProj('vl228-pick');
+    createTaskFile(dir, { title: 'Терминальная', priority: 'High' }); // VL-1
+    createTaskFile(dir, { title: 'Живая', priority: 'Low' }); // VL-2
+    saveAutoQueue(dir, {
+      running: false,
+      max_retries: 1,
+      tasks: [
+        { id: 'VL-1', status: 'failed_permanent', added_at: 'T1', attempts: 2, fail_reason: 'упало' },
+        { id: 'VL-2', status: 'pending', added_at: 'T2', attempts: 0 },
+      ],
+    });
+    const picked = pickNextQueueTask(dir, loadAutoQueue(dir));
+    assert.equal(picked?.id, 'VL-2', 'failed_permanent не выбирается даже с High');
+  });
+
+  it('VL-228 formatAutoQueue: строка failed_permanent содержит причину', () => {
+    const text = formatAutoQueue({
+      running: false,
+      max_retries: 1,
+      tasks: [{ id: 'VL-9', status: 'failed_permanent', added_at: 'T', fail_reason: 'код выхода 1' }],
+    });
+    assert.match(text, /VL-9 — failed_permanent, причина: код выхода 1/);
+  });
+
   // ── формат /auto status ──
 
   it('formatAutoQueue: пустая и непустая', () => {
