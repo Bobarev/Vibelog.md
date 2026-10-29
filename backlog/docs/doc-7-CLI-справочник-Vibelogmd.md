@@ -268,6 +268,34 @@ vibelog config <subcommand> [опции]
 
 ---
 
+## model
+
+```
+vibelog model <subcommand>
+
+  list        Список моделей (маркер * — активная)
+  use <id>    Переключить активную модель (запись в models.default)
+  current     Показать активную модель
+```
+
+Управление реестром LLM-моделей (VL-209): модели живут в секции `models` файла `.vibelog/settings.json` (`default` + `available`), провайдент — в секции `providers`. Секции нет — fallback на env `VIBELOG_LLM_MODEL` (старое поведение).
+
+- `list` — таблица: маркер `*` у активной, id, label, provider, api_mode; при пустом реестре — подсказка про env-fallback.
+- `use <id>` — валидация id в `available` (неизвестный → ошибка со списком доступных), запись только `models.default` через read-modify-write (остальные ключи settings.json сохраняются).
+- `current` — `<id> — <label> (api_mode, provider)`; без секции models — «Модель из VIBELOG_LLM_MODEL: …»; ничего не задано → ошибка.
+
+---
+
+## provider
+
+```
+vibelog provider list
+```
+
+Список LLM-провайдеров (VL-209) из секции `providers` файла `.vibelog/settings.json`: id, `base_url`, источник ключа (`env <api_key_env>` / `api_key (прямой)` / `нет источника`) и статус ключа (задан / НЕ ЗАДАН). Значения ключей в вывод не попадают — секреты.
+
+---
+
 ## draft
 
 ```
@@ -336,7 +364,7 @@ vibelog-agent <фаза> <taskId> [флаги]
 vibelog-agent <промпт> [флаги]
 ```
 
-Отдельный бинарь агента (VL-85): headless-исполнитель фаз вместо qwen. В stdout печатает одну JSON-строку `type=result` (формат `parseQwenResult`), логи — stderr. Флаги: `--headless`, `--no-mcp`, `--no-tui`, `--comment <текст>`, `--max-tool-calls <N>`, `--max-wall-time <сек>`, `--api-mode <chat|responses>` (режим LLM API, VL-205: дефолт `chat`, иначе берётся из ключа `api_mode` в `.vibelog/settings.json`), `--help`. Qwen-совместимые `--approval-mode`, `--output-format json`, `--allowed-mcp-server-names` принимаются и игнорируются. Env: `VIBELOG_LLM_BASE_URL`, `VIBELOG_LLM_API_KEY`, `VIBELOG_LLM_MODEL`. Подключение к оркестратору: `VIBELOG_QWEN_BIN=bin/vibelog-agent.mjs`.
+Отдельный бинарь агента (VL-85): headless-исполнитель фаз вместо qwen. В stdout печатает одну JSON-строку `type=result` (формат `parseQwenResult`), логи — stderr. Флаги: `--headless`, `--no-mcp`, `--no-tui`, `--comment <текст>`, `--max-tool-calls <N>`, `--max-wall-time <сек>`, `--api-mode <chat|responses>` (режим LLM API, VL-205: дефолт `chat`, иначе берётся из ключа `api_mode` в `.vibelog/settings.json`), `--help`. Qwen-совместимые `--approval-mode`, `--output-format json`, `--allowed-mcp-server-names` принимаются и игнорируются. Env: `VIBELOG_LLM_BASE_URL`, `VIBELOG_LLM_API_KEY`, `VIBELOG_LLM_MODEL` (VL-209: при наличии секции `models` в `.vibelog/settings.json` приоритет у неё — модель/провайдер/`api_mode`/ключ резолвятся из `models.default` → `providers`, env остаётся fallback-путём). Подключение к оркестратору: `VIBELOG_QWEN_BIN=bin/vibelog-agent.mjs`.
 
 **TUI (VL-86).** В интерактивном режиме (stdout — TTY, без `--headless`/`--output-format json`, фаза ≠ `prompt`, без `--no-tui`) агент рендерит TUI на Ink: посимвольный стриминг токенов ответа модели, карточки tool calls (имя, ключевые аргументы, статус ⏳/✅/❌, длительность в мс), счётчики (ход, токены in/out/cache, время фазы) и блок ошибок (лимиты, LLM API) на русском. TUI живёт на stderr в альтернативном буфере терминала — stdout остаётся под единственную JSON-строку результата, контракт оркестратора не меняется. Флаг `--no-tui` отключает TUI (текстовый прогресс в stderr). Зависимости: ink 7.0.3 + react 19 (без нативных модулей).
 

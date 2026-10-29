@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Добавлено
+
+- **VL-209: управление LLM-моделями и провайдерами** — единый реестр в `.vibelog/settings.json`: секции `providers` (`base_url` + `api_key_env`, ключ из env → `.env` → `env`-секции) и `models` (`default` + `available` c `label`/`provider`/`model`/`api_mode`/`pricing`). `createLlmClient` резолвит активную модель из settings (options → settings → env `VIBELOG_LLM_MODEL`; без секции `models` — полный fallback на старое поведение), `ensureLlmEnv` валидирует провайдера и `api_key_env` с понятной ошибкой, `loadApiMode` приоритетит `model.api_mode` над legacy-ключом. Переключение: CLI `vibelog model list|use|current` и `vibelog provider list` (без значений ключей — только статус), бот `/model` (список) и `/set model <id>` (регистр id сохраняется), веб — селект модели на `#/settings` (`GET/PUT /api/models`, без секретов) и переключатель в шапке сайдбара тредов чата (`body.model` переопределяет default). На старте фазы в stderr логируется `Модель: <label> (<id>), api_mode: …` (для logTail). Billing: `getActiveModelPricing` читает `models.available[default].pricing`, legacy-секция `pricing` поддерживается. Документация: README (секция «Модели и провайдеры»), doc-7, doc-6.
+
 ## [1.10.0] — 2026-10-29
 
 ### Изменено
