@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ToolDef } from '../agent/llm.js';
-import { resolveInProject, truncateToolOutput } from '../agent/tools.js';
+import { resolveInProject, truncateToolOutput, formatDirListing } from '../agent/tools.js';
 import { listTools } from '../mcp/tools.js';
 
 /** Локальный инструмент чата: ToolDef + handler (ToolDef из llm.ts без handler — wire-описание). */
@@ -111,6 +111,7 @@ export function makeReadFileTool(cwd: string): ChatLocalTool {
     description:
       'Читает текстовый файл проекта БЕЗ подтверждения пользователя. ' +
       'offset — 0-based номер строки начала, limit — максимум строк. ' +
+      'Если path — каталог, возвращает отсортированный листинг (каталоги с "/", лимит 200 записей). ' +
       'Доступ только в пределах директории проекта.',
     inputSchema: {
       type: 'object',
@@ -122,12 +123,23 @@ export function makeReadFileTool(cwd: string): ChatLocalTool {
       required: ['path'],
     },
     handler: async (args: Record<string, unknown>): Promise<string> => {
-      const target = resolveInProject(cwd, args.path as string);
+      const rawPath = args.path;
+      // resolveInProject с allowRoot: '.' — листинг корня проекта, а не отказ
+      // «должен указывать на файл» (VL-233); пустой путь отклоняется явно.
+      if (typeof rawPath !== 'string' || rawPath === '') return 'Путь не задан';
+      const target = resolveInProject(cwd, rawPath, { allowRoot: true });
       if (!target.ok) return target.error;
+      try {
+        if (statSync(target.path).isDirectory()) {
+          const listing = formatDirListing(cwd, target.path);
+          return truncateToolOutput(listing.ok ? listing.text : listing.error);
+        }
+      } catch (err) {
+        return `Не удалось прочитать файл: ${err instanceof Error ? err.message : String(err)}`;
+      }
       let content: string;
       try {
         if (!existsSync(target.path)) return `Файл не найден: ${target.path}`;
-        if (statSync(target.path).isDirectory()) return `Это директория, не файл: ${target.path}`;
         content = readFileSync(target.path, 'utf8');
       } catch (err) {
         return `Не удалось прочитать файл: ${err instanceof Error ? err.message : String(err)}`;
