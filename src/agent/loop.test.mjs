@@ -70,6 +70,8 @@ describe('runLoop happy path (VL-83)', () => {
     assert.equal(res.is_error, false);
     assert.equal(res.result, 'Готово!');
     assert.equal(res.num_turns, 1);
+    // VL-221: без tool_calls счётчик рана = 0
+    assert.equal(res.tool_calls_total, 0);
     assert.ok(res.duration_ms >= 0);
     assert.deepEqual(res.usage, { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 12, reasoning_tokens: 0 });
     assert.equal(state.calls, 1);
@@ -99,6 +101,8 @@ describe('runLoop happy path (VL-83)', () => {
     assert.equal(res.is_error, false);
     assert.equal(res.result, 'итог');
     assert.equal(res.num_turns, 2);
+    // VL-221: tool-calls рана считается отдельно от LLM-запросов
+    assert.equal(res.tool_calls_total, 1);
     assert.equal(toolState.calls, 1);
     assert.deepEqual(toolState.lastArgs, { x: 1 });
     assert.deepEqual(starts, [['echo_tool', { x: 1 }]]);
@@ -234,8 +238,12 @@ describe('runLoop лимиты (VL-83)', () => {
     ]);
     const res = await runLoop({ llm, messages: USER_MSG, tools: [spec], limits: { maxToolCalls: 2 } });
     assert.equal(res.is_error, true);
+    // VL-221: маркер флага с лимитом + явное разграничение счётчиков
     assert.match(res.result, /--max-tool-calls \(2\)/);
+    assert.match(res.result, /tool-calls текущего рана: 2\/2/);
+    assert.match(res.result, /LLM-запросы/);
     assert.equal(toolState.calls, 2);
+    assert.equal(res.tool_calls_total, 2, 'tool_calls_total = число вызовов рана');
   });
 
   it('maxWallTimeMs=1: медленный llm → is_error «--max-wall-time»', async () => {

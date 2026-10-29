@@ -226,7 +226,13 @@ export function formatPhaseResult(run: PhaseRun, taskId?: string): string {
     '',
     // VL-98: время в человекочитаемом формате (formatDuration) вместо сырых мс
     `*Общее время:* ${formatDuration(res.duration_ms)} \\(api: ${formatDuration(res.duration_api_ms)}\\)`,
-    `*Количество запросов:* ${res.num_turns}`,
+    // VL-221: requests — LLM-ходы (num_turns), tool-calls — отдельный счётчик
+    // текущего рана (есть только у агента vb); выводим рядом, чтобы лимит
+    // --max-tool-calls не путали с числом LLM-запросов.
+    `*Количество LLM-запросов:* ${res.num_turns}` +
+      (typeof res.tool_calls_total === 'number'
+        ? ` \\(tool-calls рана: ${res.tool_calls_total}\\)`
+        : ''),
   ];
   // session_id — только hex/дефис (UUID) и префикс агента, внутри pre-блока
   // экранирование запрещено MarkdownV2 — вставляем как есть; пустой — строку
@@ -355,7 +361,7 @@ export function formatTaskDetail(task: Task, phaseRun?: PhaseRun): string {
   if (tu && (tu.total > 0 || tu.input > 0 || tu.requests > 0)) {
     const head =
       `*Токены:* input=${tu.input} output=${tu.output} cache=${tu.cache} ` +
-      `total=${tu.total} запросов: ${tu.requests}` +
+      `total=${tu.total} LLM-запросов: ${tu.requests}` +
       (tu.duration_ms ? ` duration=${Math.round(tu.duration_ms / 1000)}с` : '');
     lines.push(escapeMarkdownV2(head));
     const phases = Object.entries(tu.by_phase ?? {});

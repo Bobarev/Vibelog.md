@@ -748,9 +748,13 @@ describe('vibelog-agent CLI (VL-85)', () => {
       // AC1: итоговая строка диагностики в stderr → logTail оркестратора
       assert.match(stderr, /payload последнего запроса=\d+ байт/, 'байты payload последнего запроса');
       assert.match(stderr, /usage=\{.*input_tokens.*\}/, 'usage по фазе в строке диагностики');
-      assert.match(stderr, /фаза: запросов=\d+/, 'число запросов фазы');
+      // AC1 VL-221: обе метрики рядом — requests (LLM-ходы) и tool-calls рана
+      assert.match(stderr, /фаза: запросов=\d+/, 'число LLM-запросов фазы');
+      assert.match(stderr, /tool-calls=\d+ \(лимит \d+, счётчик рана/, 'tool-calls рана с лимитом');
       // AC3: JSONL-мета фиксирует размер тела запроса
       const parsed = JSON.parse(stdout.trim());
+      // AC1 VL-221: в JSON-результате поле tool_calls_total (рядом с num_turns)
+      assert.equal(typeof parsed.tool_calls_total, 'number', 'tool_calls_total в JSON-результате');
       const meta = JSON.parse(
         readFileSync(join(projDir, '.vibelog', 'agent-sessions', `${parsed.session_id}.meta.json`), 'utf-8'),
       );
