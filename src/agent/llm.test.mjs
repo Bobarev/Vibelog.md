@@ -64,7 +64,14 @@ function fakeFetch(script) {
   return { impl, state };
 }
 
-const CLIENT_OPTS = { baseUrl: 'https://llm.test/v1', apiKey: 'k', model: 'm', retryDelayMs: 1 };
+/**
+ * Базовые опции клиента для всех тестов файла. apiMode задан явно (VL-240):
+ * createLlmClient без него резолвит активную модель через
+ * resolveActiveModel(process.cwd()) и подхватывает models.default из локального
+ * (gitignored) .vibelog/settings.json — при api_mode: responses адрес уезжает
+ * на /responses и 24 теста падают на машине разработчика (lesson-78/84).
+ */
+const CLIENT_OPTS = { baseUrl: 'https://llm.test/v1', apiKey: 'k', model: 'm', retryDelayMs: 1, apiMode: 'chat' };
 
 describe('createLlmClient / streamChat (VL-83)', () => {
   it('собирает текст по onToken из SSE-потока', async () => {
@@ -314,9 +321,16 @@ describe('createLlmClient / streamChat (VL-83)', () => {
   it('без модели (нет env) — createLlmClient кидает понятную ошибку', () => {
     const prev = process.env.VIBELOG_LLM_MODEL;
     delete process.env.VIBELOG_LLM_MODEL;
+    // VL-240: cwd — пустой временный каталог, иначе resolveActiveModel
+    // подхватит models.default из локального .vibelog/settings.json и ошибки не будет
+    const emptyDir = mkdtempSync(join(tmpdir(), 'vb-llm-nomodel-'));
     try {
-      assert.throws(() => createLlmClient({ baseUrl: 'https://x/v1', fetchImpl: async () => jsonResponse({}) }), /VIBELOG_LLM_MODEL/);
+      assert.throws(
+        () => createLlmClient({ baseUrl: 'https://x/v1', cwd: emptyDir, fetchImpl: async () => jsonResponse({}) }),
+        /VIBELOG_LLM_MODEL/,
+      );
     } finally {
+      rmSync(emptyDir, { recursive: true, force: true });
       if (prev !== undefined) process.env.VIBELOG_LLM_MODEL = prev;
     }
   });
@@ -929,6 +943,46 @@ describe('createLlmClient: секции settings.json (VL-209)', () => {
       await client.streamChat([{ role: 'user', content: 'x' }], undefined);
       assert.equal(state.urls[0], 'https://routerai.test/api/v1/chat/completions');
       assert.equal(state.headers[0].Authorization, 'Bearer env-key');
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * VL-240: приоритет явной опции над settings.json. Тест держит фикстуру с
+   * models.default → api_mode: responses и проверяет, что явный apiMode: 'chat'
+   * всё равно даёт /chat/completions — инвариант, на котором стоит CLIENT_OPTS.
+   */
+  it('явный apiMode: chat перекрывает api_mode=responses из settings.json (VL-240, регресс)', async () => {
+    const dir = fixture({
+      providers: { routerai: { base_url: 'https://routerai.test/api/v1', api_key_env: 'VL209_TEST_KEY' } },
+      models: {
+        default: 'routerai/Resp',
+        available: { 'routerai/Resp': { label: 'Resp', provider: 'routerai', model: 'Resp', api_mode: 'responses' } },
+      },
+    });
+    process.env.VL209_TEST_KEY = 'env-key';
+    delete process.env.VIBELOG_LLM_MODEL;
+    delete process.env.VIBELOG_LLM_BASE_URL;
+    delete process.env.VIBELOG_LLM_API_KEY;
+    try {
+      // Контроль: без явного apiMode фикстура уводит на /responses — settings реально влияет
+      const implicit = fakeFetch([sseResponse([])]);
+      const fromSettings = createLlmClient({ cwd: dir, fetchImpl: implicit.impl, retryDelayMs: 1 });
+      await fromSettings.streamChat([{ role: 'user', content: 'x' }], []);
+      assert.equal(implicit.state.urls[0], 'https://routerai.test/api/v1/responses');
+
+      // Явный apiMode приоритетнее settings: URL и тело — chat-режима
+      const explicit = fakeFetch([sseResponse([])]);
+      const client = createLlmClient({ cwd: dir, fetchImpl: explicit.impl, retryDelayMs: 1, apiMode: 'chat' });
+      await client.streamChat([{ role: 'user', content: 'x' }], []);
+      assert.equal(
+        explicit.state.urls[0],
+        'https://routerai.test/api/v1/chat/completions',
+        'явный apiMode перекрывает api_mode из settings.json',
+      );
+      assert.ok(Array.isArray(JSON.parse(explicit.state.bodies[0]).messages), 'chat-тело: messages');
     } finally {
       restore();
       rmSync(dir, { recursive: true, force: true });
