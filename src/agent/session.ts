@@ -12,7 +12,7 @@
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { ChatMessage } from './llm.js';
+import { isValidToolCall, type ChatMessage } from './llm.js';
 import type { TokenUsage } from '../core/analytics.js';
 
 /** Каталог хранения сессий агента: `<cwd>/.vibelog/agent-sessions`. */
@@ -356,6 +356,25 @@ export function sumUsageFromMessages(messages: ChatMessage[]): TokenUsage & { re
   // reasoning не нужен нулём в агрегатах без reasoning-моделей — убираем
   if (sum.reasoning === 0) delete sum.reasoning;
   return sum;
+}
+
+/**
+ * Считает валидные tool-calls по сообщениям транскрипта (VL-223).
+ *
+ * Источник кумулятивного per-session лимита при resume: база считается по
+ * уже загруженной истории (resumedMessages), повторное чтение jsonl не нужно.
+ * Семантика совпадает с toolCallsTotal в loop: фантомы (пустые name/id,
+ * VL-215) не едят бюджет — фильтр isValidToolCall общий.
+ */
+export function countToolCallsInMessages(messages: ChatMessage[]): number {
+  let count = 0;
+  for (const m of messages) {
+    if (m.role !== 'assistant' || !m.tool_calls) continue;
+    for (const tc of m.tool_calls) {
+      if (isValidToolCall(tc)) count++;
+    }
+  }
+  return count;
 }
 
 /**

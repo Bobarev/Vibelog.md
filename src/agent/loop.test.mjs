@@ -275,6 +275,96 @@ describe('runLoop лимиты (VL-83)', () => {
   });
 });
 
+describe('кумулятивный per-session лимит tool-calls (VL-223)', () => {
+  it('base=3, лимит=3: первый вызов модели → fail «--tool-calls-per-session», инструмент не вызван', async () => {
+    const { spec, state: toolState } = countingTool('t');
+    const starts = [];
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 2 } }] },
+    ]);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [spec],
+      // база уже исчерпала лимит (3 из 3) — любой новый вызов выходит за него
+      limits: { maxToolCallsPerSession: 3, toolCallsUsedThisSession: 3 },
+      onToolStart: (name) => starts.push(name),
+    });
+    assert.equal(res.is_error, true);
+    assert.match(res.result, /--tool-calls-per-session \(3\)/);
+    // счётчик в сообщении — base (3), toolCallsTotal ещё не инкрементирован
+    assert.match(res.result, /использовано 3 из 3/);
+    assert.match(res.result, /прошлые раны/);
+    assert.equal(toolState.calls, 0, 'инструмент не должен был выполниться');
+    assert.equal(starts.length, 0, 'onToolStart не вызывается при превышении');
+  });
+
+  it('base=0, лимит=3: три вызова проходят, четвёртый → fail', async () => {
+    const { spec, state: toolState } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 2 } }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 't', arguments: { x: 3 } }] },
+      { text: '', toolCalls: [{ id: 'c4', name: 't', arguments: { x: 4 } }] },
+      { text: '', toolCalls: [{ id: 'c5', name: 't', arguments: { x: 5 } }] },
+    ]);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [spec],
+      limits: { maxToolCallsPerSession: 3, toolCallsUsedThisSession: 0 },
+    });
+    assert.equal(res.is_error, true);
+    // base 0 + 3 выполненных = 3; 4-й вызов упирается в лимит → fail ДО выполнения
+    assert.match(res.result, /--tool-calls-per-session \(3\)/);
+    assert.match(res.result, /использовано 3 из 3/);
+    assert.equal(toolState.calls, 3, 'ровно 3 вызова до fail');
+  });
+
+  it('per-run и per-session одновременно: per-session срабатывает при base>0, пока per-run не превышен', async () => {
+    const { spec, state: toolState } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 2 } }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 't', arguments: { x: 3 } }] },
+    ]);
+    // per-run лимит 100 (не превышен), per-session: base 98 + лимит 100 →
+    // первый вызов проходит (98+1=99 ≤ 100), второй упирается в лимит
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [spec],
+      limits: { maxToolCalls: 100, maxToolCallsPerSession: 100, toolCallsUsedThisSession: 98 },
+    });
+    assert.equal(res.is_error, true);
+    assert.match(res.result, /--tool-calls-per-session \(100\)/, 'должен сработать per-session, а не per-run');
+    // fail наступает, когда base (98) + toolCallsTotal (2, включая этот вызов)
+    // + 1 > 100 — счётчик в сообщении отражает уже выполненные: 98+2=100
+    assert.match(res.result, /использовано 100 из 100/);
+    assert.doesNotMatch(res.result, /--max-tool-calls/);
+    assert.equal(toolState.calls, 2, 'два вызова прошли (99 и 100), третий — fail');
+  });
+
+  it('без maxToolCallsPerSession поведение прежнее (регресс per-run, AC#2)', async () => {
+    const { spec, state: toolState } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: 'готово' },
+    ]);
+    // toolCallsUsedThisSession без maxToolCallsPerSession — лимит не активен
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [spec],
+      limits: { toolCallsUsedThisSession: 500 },
+    });
+    assert.equal(res.is_error, false);
+    assert.equal(res.result, 'готово');
+    assert.equal(toolState.calls, 1);
+  });
+});
+
 describe('runLoop ошибки (VL-83)', () => {
   it('ошибка handler → текст tool-результата, loop продолжает', async () => {
     const failing = {
