@@ -14,9 +14,10 @@ linked_tasks:
   - VL-218
   - VL-223
   - VL-221
+  - VL-228
 created_date: 2026-10-29
 updated_date: 2026-10-30
-supersedes: ''
+supersedes: lesson-86
 ---
 ### Проблема
 
