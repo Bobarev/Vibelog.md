@@ -9,7 +9,7 @@ import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { runLoop, compactWireMessages } from '../../dist/agent/loop.js';
-import { zeroUsage } from '../../dist/agent/llm.js';
+import { zeroUsage, MAX_PAYLOAD_BYTES, PAYLOAD_WARN_BYTES, PAYLOAD_COMPACT_TOOL_CHARS } from '../../dist/agent/llm.js';
 import { TOOL_OUTPUT_MAX_CHARS } from '../../dist/agent/tools.js';
 
 /**
@@ -194,6 +194,126 @@ describe('runLoop wire-диагностика (VL-203)', () => {
     assert.equal(res.is_error, true);
     assert.equal(res.last_payload_bytes, 50_000, 'последний успешный payload сохранён при ошибке');
     assert.equal(res.max_payload_bytes, 50_000);
+  });
+});
+
+// ── VL-230: байтовое предупреждение и автокомпакт истории ──
+
+describe('runLoop байтовый автокомпакт (VL-230)', () => {
+  /** Перехват stderr-предупреждений payload (console.error перехватывается). */
+  function captureStderr() {
+    const lines = [];
+    const orig = console.error;
+    console.error = (...args) => {
+      lines.push(args.join(' '));
+    };
+    return {
+      lines,
+      restore() {
+        console.error = orig;
+      },
+    };
+  }
+
+  it('AC4/AC3: фикстура ~900 КБ → предупреждение, компакт < лимита, фаза успешна', async () => {
+    const { spec } = countingTool();
+    // 45 tool-сообщений по ~20 КБ ≈ 900 КБ истории
+    const bigHistory = [{ role: 'user', content: 'сделай' }];
+    for (let i = 0; i < 45; i++) {
+      bigHistory.push(
+        { role: 'assistant', content: null, tool_calls: [{ id: `t${i}`, name: 'echo_tool', arguments: { x: i } }] },
+        { role: 'tool', tool_call_id: `t${i}`, content: `данные ${i}: ${'x'.repeat(20_000)}` },
+      );
+    }
+    const { llm, state } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'echo_tool', arguments: { x: 1 } }], payloadBytes: 950_000 },
+      { text: 'готово', payloadBytes: 300_000 },
+    ]);
+    const cap = captureStderr();
+    let res;
+    try {
+      res = await runLoop({ llm, messages: bigHistory, tools: [spec] });
+    } finally {
+      cap.restore();
+    }
+    // AC3: фаза не упала и не откатилась
+    assert.equal(res.is_error, false, 'фаза завершилась успешно после компакта');
+    // AC1: предупреждение с текущими байтами и порогом в stderr
+    const warn = cap.lines.find((l) => l.includes('предупреждение payload'));
+    assert.ok(warn, 'предупреждение payload в stderr');
+    assert.match(warn, /байт >= порог \d+/, 'текущие байты и порог в предупреждении');
+    // AC4: исходная фикстура > лимита, а wire после компакта < лимита
+    const origBytes = Buffer.byteLength(JSON.stringify(bigHistory), 'utf8');
+    assert.ok(origBytes > MAX_PAYLOAD_BYTES, `исходная история ${origBytes} > лимита ${MAX_PAYLOAD_BYTES}`);
+    const wireBytes = Buffer.byteLength(JSON.stringify(state.messages[0]), 'utf8');
+    assert.ok(wireBytes < MAX_PAYLOAD_BYTES, `payload после компакта ${wireBytes} < лимита ${MAX_PAYLOAD_BYTES}`);
+  });
+
+  it('AC1: payload < порога → предупреждения нет', async () => {
+    const { llm } = fakeLlm([{ text: 'ок', payloadBytes: 100_000 }]);
+    const cap = captureStderr();
+    let res;
+    try {
+      res = await runLoop({ llm, messages: USER_MSG, tools: [] });
+    } finally {
+      cap.restore();
+    }
+    assert.equal(res.is_error, false);
+    assert.equal(
+      cap.lines.filter((l) => l.includes('предупреждение payload')).length,
+      0,
+      'нет предупреждения при маленьком payload',
+    );
+  });
+
+  it('AC2: wire компактизируется (tool → 2048), не-tool сообщения не тронуты, messages исходны', async () => {
+    const { spec } = countingTool();
+    const bigHistory = [{ role: 'system', content: 'инструкция' }, { role: 'user', content: 'сделай' }];
+    for (let i = 0; i < 45; i++) {
+      bigHistory.push(
+        { role: 'assistant', content: `план ${i}`, tool_calls: [{ id: `t${i}`, name: 'echo_tool', arguments: { x: i } }] },
+        { role: 'tool', tool_call_id: `t${i}`, content: `данные ${i}: ${'y'.repeat(20_000)}` },
+      );
+    }
+    const { llm, state } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'echo_tool', arguments: { x: 1 } }], payloadBytes: 950_000 },
+      { text: 'готово', payloadBytes: 200_000 },
+    ]);
+    const cap = captureStderr();
+    let res;
+    try {
+      res = await runLoop({ llm, messages: bigHistory, tools: [spec] });
+    } finally {
+      cap.restore();
+    }
+    assert.equal(res.is_error, false);
+    // AC2 (первая часть): исходная история > порога, значит компакт сработал
+    // на первом же запросе — wire уже усечён, байты wire < порога.
+    const wire = state.messages[0];
+    const wireBytes = Buffer.byteLength(JSON.stringify(wire), 'utf8');
+    assert.ok(wireBytes < PAYLOAD_WARN_BYTES, `wire после компакта ${wireBytes} < порога ${PAYLOAD_WARN_BYTES}`);
+    // tool-выводы усечены до PAYLOAD_COMPACT_TOOL_CHARS (+ маркер усечения)
+    const wireTools = wire.filter((m) => m.role === 'tool');
+    assert.equal(wireTools.length, 45, 'tool-сообщения не выброшены (парность tool_calls ↔ tool)');
+    for (const t of wireTools) {
+      assert.ok(
+        t.content.length <= PAYLOAD_COMPACT_TOOL_CHARS + 200,
+        `tool-вывод усечён: ${t.content.length} символов`,
+      );
+      assert.match(t.content, /вывод усечён до/, 'маркер усечения в tool-выводе');
+    }
+    // Не-tool сообщения (system/user/assistant-тексты — AC/план) побайтово целы
+    const wireNonTool = wire.filter((m) => m.role !== 'tool');
+    const origNonTool = bigHistory.filter((m) => m.role !== 'tool');
+    assert.equal(JSON.stringify(wireNonTool), JSON.stringify(origNonTool), 'не-tool сообщения не тронуты');
+    // jsonl-источник (messages) не мутирован: исходные tool-выводы (t0..t44)
+    // по-прежнему полные 20 КБ (в messages новый tool-вывод фазы короче).
+    const origTools = res.messages.filter((m) => m.role === 'tool' && /^t\d+$/.test(m.tool_call_id));
+    assert.equal(origTools.length, 45, 'все 45 исходных tool-выводов в messages');
+    assert.ok(
+      origTools.every((m) => m.content.length > 10_000),
+      'исходные tool-выводы в messages целы (не мутированы)',
+    );
   });
 });
 

@@ -794,6 +794,20 @@ const SHRINK_LEVEL_2 = 1024;
 /** Максимум shrink-повторов запроса (VL-178): full → L1 → L2. */
 export const HIGH_RISK_MAX_SHRINKS = 2;
 
+// ── VL-230: байтовый лимит payload и автокомпакт истории ──
+// Инциденты VL-221 (894265=max) и VL-226 (644142=reject): провайдер отклоняет
+// wire-body свыше ~900 КБ. Жёсткий лимит — одна константа: при изменении
+// лимита провайдера правится одной строкой.
+export const MAX_PAYLOAD_BYTES = 900_000;
+/** Порог предупреждения/автокомпакта = 70% от лимита (запас на рост внутри хода). */
+export const PAYLOAD_WARN_RATIO = 0.7;
+/** Порог в байтах: 630_000 при MAX_PAYLOAD_BYTES=900_000. */
+export const PAYLOAD_WARN_BYTES = Math.floor(MAX_PAYLOAD_BYTES * PAYLOAD_WARN_RATIO);
+/** Уровень автокомпакта tool-выводов (VL-230): между L1=4096 (VL-178) и L2=1024. */
+export const PAYLOAD_COMPACT_TOOL_CHARS = 2048;
+/** Эскалационный уровень автокомпакта, если после 2048 байты всё ещё у лимита. */
+export const PAYLOAD_COMPACT_TOOL_CHARS_ESCALATED = 1024;
+
 /**
  * Усекает content tool-сообщений до maxToolChars с маркером для модели.
  *
