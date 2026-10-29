@@ -1057,3 +1057,69 @@ describe('фантомные tool_calls с пустыми name/id (VL-215)', () 
     assert.ok(!res.messages.some((m) => m.role === 'tool'), 'tool-сообщений быть не должно');
   });
 });
+
+describe('Санация отравленной начальной истории в wire-payload (VL-216)', () => {
+  it('resume-подобная история с отравленной парой → payload в streamChat чист, валидные пары целы', async () => {
+    // Отравленная история старых jsonl (VL-214): фантом рядом с валидным
+    // вызовом; оба tool-результата записаны (включая пустой ключ)
+    const poisoned = [
+      { role: 'user', content: 'постановка' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: '', name: '', arguments: {} },
+          { id: 'c1', name: 'echo_tool', arguments: { x: 1 } },
+        ],
+      },
+      { role: 'tool', tool_call_id: '', content: 'фантомный результат' },
+      { role: 'tool', tool_call_id: 'c1', content: 'валидный результат' },
+      { role: 'user', content: 'продолжай' },
+    ];
+    const snapshot = structuredClone(poisoned);
+    const { llm, state } = fakeLlm([{ text: 'итог' }]);
+    const res = await runLoop({ llm, messages: poisoned, tools: [] });
+    assert.equal(res.is_error, false);
+    assert.equal(res.result, 'итог');
+    // Payload первого запроса: пустых ключей нет, пара c1 цела
+    const payload = state.messages[0];
+    const assistants = payload.filter((m) => m.role === 'assistant' && m.tool_calls);
+    assert.equal(assistants.length, 1, 'ровно один assistant с tool_calls в wire');
+    assert.deepEqual(
+      assistants[0].tool_calls.map((tc) => tc.id),
+      ['c1'],
+      'фантом из середины вырезан, валидный вызов сохранён',
+    );
+    const tools = payload.filter((m) => m.role === 'tool');
+    assert.deepEqual(tools.map((t) => t.tool_call_id), ['c1'], 'tool с пустым ключом вырезан');
+    assert.ok(!JSON.stringify(payload).includes('"tool_call_id":""'),
+      'wire-payload не должен содержать пустых tool_call_id');
+    // Исходная история НЕ мутирована (jsonl-контракт VL-103 — источник правды)
+    assert.deepEqual(poisoned, snapshot, 'sanitize не мутирует входную историю');
+  });
+
+  it('только отравленная пара (content=null) → вырезана из payload, фаза завершается', async () => {
+    const poisoned = [
+      { role: 'user', content: 'x' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: '', name: '', arguments: {} }],
+      },
+      { role: 'tool', tool_call_id: '', content: 'мусор' },
+    ];
+    const { llm, state } = fakeLlm([{ text: 'итог' }]);
+    const res = await runLoop({ llm, messages: poisoned, tools: [] });
+    assert.equal(res.is_error, false);
+    assert.equal(res.result, 'итог');
+    // Payload: только user + финальный… нет, финальный assistant дописывается ПОСЛЕ
+    // первого запроса — в payload только очищенная начальная история
+    assert.deepEqual(
+      state.messages[0].map((m) => m.role),
+      ['user'],
+      'отравленная пара целиком вырезана из wire',
+    );
+    assert.ok(!state.messages[0].some((m) => m.role === 'assistant'),
+      'assistant(content=null без валидных вызовов) вырезан, а не отправлен как есть');
+  });
+});
