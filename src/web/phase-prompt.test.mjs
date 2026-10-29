@@ -8,7 +8,10 @@
  * шаблонов удалены (VL-130): правка любого текста templates/phases/*.md
  * не должна ломать тесты. Исключение — точечные инварианты VL-142 (правила
  * phase-2 «только целевой код» и «отчёт/статус после записи плана»):
- * добавлены осознанно по AC, не удалять при рефакторинге.
+ * добавлены осознанно по AC, не удалять при рефакторинге. Так же осознанно
+ * добавлены инварианты VL-202 (пакетное чтение), VL-222 (один поисковый проход)
+ * и VL-227 (отчёт об исключённых тест-файлах при --exclude/--skip: правило
+ * живёт в templates/phases/phase-code.md и AGENTS.md — менять их надо синхронно).
  */
 
 import { describe, it } from 'vitest';
@@ -425,6 +428,36 @@ describe('VL-222 — запрет повторных mass-glob/grep', () => {
       'phase-plan.md: явный запрет повторных mass-переборов');
     assert.ok(text.includes('не переоткрывай') || text.includes('не переоткрывать'),
       'phase-plan.md: правило resume — уже найденное не переоткрывать');
+  });
+});
+
+// Точечные инварианты VL-227 (паттерн VL-142/VL-202, по AC задачи): правило
+// обязательного отчёта об исключённых тест-файлах. Живёт в двух местах —
+// templates/phases/phase-code.md и AGENTS.md; при правке текста менять оба.
+describe('VL-227 — отчёт об исключённых тест-файлах при --exclude', () => {
+  const codeText = readFileSync(join(templatesDir, 'phase-code.md'), 'utf-8');
+
+  it('phase-code.md: прогон с --exclude требует перечисления исключённых файлов', () => {
+    assert.ok(codeText.includes('--exclude'), 'phase-code.md: упомянут флаг --exclude');
+    assert.ok(codeText.includes('исключённых'), 'phase-code.md: требование перечислить исключённые тест-файлы');
+  });
+
+  it('phase-code.md: DoD «Тесты проходят» без полного прогона не отмечается', () => {
+    assert.ok(codeText.includes('полного прогона'),
+      'phase-code.md: запрет отметки DoD без полного прогона');
+    assert.ok(codeText.includes('Тесты проходят'),
+      'phase-code.md: правило привязано к пункту DoD «Тесты проходят»');
+  });
+
+  it('AGENTS.md: буллет «Полный прогон перед DoD» с упоминанием --exclude', () => {
+    const agentsPath = fileURLToPath(new URL('../../AGENTS.md', import.meta.url));
+    const text = readFileSync(agentsPath, 'utf-8');
+    assert.ok(text.includes('Полный прогон перед DoD'),
+      'AGENTS.md: буллет про обязательный полный прогон перед DoD');
+    assert.ok(text.includes('--exclude'),
+      'AGENTS.md: явное упоминание частичного прогона с --exclude/--skip');
+    assert.ok(text.includes('Тесты проходят'),
+      'AGENTS.md: правило привязано к DoD «Тесты проходят»');
   });
 });
 
