@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-29 17:48'
-updated_date: '2026-10-30 00:22'
+updated_date: '2026-10-30 00:24'
 due_date: ''
 labels:
   - agent
@@ -349,5 +349,20 @@ author: @agent
 created: 2026-10-30 00:22
 ---
 Фаза Close выполнена. Ветка `vb/vl-219` слита в master (2 коммита ветки: `532c590` feat + `3524cdb` merge master→ветка), конфликт `CHANGELOG.md` разрешён подстановкой блоба из merge-коммита ветки → коммит `c589e7c`; сверка деревьев `<master-merge>` vs `<branch-merge>` — пусто. Документация: `30e7690` — README (секция «Веб-чат»: все MCP-инструменты, правило read/write по природе операции, read_file/write_file, Spec-дефолт, backlog_update_task/acceptanceCriteria, пределы проекта, CHAT_DISALLOWED_TOOLS, шаблон системной инструкции) и doc-8 (status в create_task: Spec в веб-чате; новое поле acceptanceCriteria в update_task). Lessons: `lesson-81` создан и связан (`29d435e`). Проверки: `pnpm build` — ok; полный `vitest run` на дереве ветки (идентично master-merge, код-дифф пуст) — 86 файлов / 1564 passed, 4 skipped; после merge менялась только документация, код не тронут. Worktree и ветка удаляются следом. DoD: 1) тесты проходят — да; 2) документация обновлена — да (README, doc-8, CHANGELOG); 3) регрессий нет — да (сверка деревьев + полный прогон).
+---
+author: @agent
+created: 2026-10-30 00:24
+---
+Фаза Close завершена полностью — все изменения VL-219 в **master**.
+
+История master:
+- `c589e7c` merge: VL-219 (конфликт CHANGELOG.md разрешён подстановкой блоба из merge-коммита ветки `3524cdb`; сверка деревьев `<master-merge>` vs `<branch-merge>` — пусто)
+- `30e7690` docs: VL-219 — README (секция «Веб-чат»: полный набор MCP-инструментов, правило read/write по природе операции, read_file/write_file, Spec-дефолт при создании задачи, backlog_update_task + acceptanceCriteria, пределы проекта, CHAT_DISALLOWED_TOOLS, шаблон системной инструкции) и doc-8 (status в create_task: Spec в веб-чате; новое поле acceptanceCriteria в update_task)
+- `29d435e` docs(task): VL-219 — refs и lessons (`lesson-81`)
+- `34148a1` docs(task): VL-219 — закрытие задачи (Done)
+
+Уборка: worktree `.vibelog/worktrees/vl-219` удалён (`worktree prune` подтвердил — в списке worktrees его нет), ветка `vb/vl-219` удалена.
+
+Состояние master: рабочее дерево чистое по отслеживаемым файлам; статус задачи — Done, отчёт о закрытии уже в файле задачи (коммит `34148a1`).
 ---
 <!-- COMMENTS:END -->
