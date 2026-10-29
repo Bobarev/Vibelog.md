@@ -506,6 +506,92 @@ describe('runLoop guard пустого финального ответа (VL-110
   });
 });
 
+describe('Пустой финал: диагностика и один повтор (VL-217)', () => {
+  /** Перехват console.error по образцу llm.test.mjs (VL-199): строки + restore. */
+  const captureErrors = () => {
+    const orig = console.error;
+    const captured = [];
+    console.error = (...args) => captured.push(args.join(' '));
+    return { captured, restore: () => { console.error = orig; } };
+  };
+
+  it('две пустоты подряд: один повтор, затем is_error с диагностикой (AC2/AC3)', async () => {
+    const { llm, state } = fakeLlm([{ text: '' }, { text: '' }]);
+    const { captured, restore } = captureErrors();
+    let res;
+    try {
+      res = await runLoop({ llm, messages: USER_MSG, tools: [] });
+    } finally {
+      restore();
+    }
+    assert.equal(res.is_error, true);
+    assert.equal(state.calls, 2, 'ровно один повтор');
+    assert.match(res.result, /Пустой ответ модели/);
+    assert.match(res.result, /отравленн|отказ провайдера/);
+    const line = captured.find((l) => l.includes('пустой финал'));
+    assert.ok(line, 'лог пустого финала в stderr: ' + captured.join('\n'));
+    assert.match(line, /payload=/);
+    assert.match(line, /usage=\{/);
+    const line2 = captured.find((l) => l.includes('попытка 2'));
+    assert.ok(line2, 'вторая попытка зафиксирована в логе');
+  });
+
+  it('повтор успешен: вторая попытка непустая → успех (AC2)', async () => {
+    const { llm, state } = fakeLlm([{ text: '' }, { text: 'Готово!' }]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [] });
+    assert.equal(res.is_error, false);
+    assert.equal(res.result, 'Готово!');
+    assert.equal(state.calls, 2, 'один повтор');
+    assert.equal(res.num_turns, 2);
+  });
+
+  it('payload и гипотеза VL-197 (>140КБ) в диагностике', async () => {
+    const { llm } = fakeLlm([{ text: '', payloadBytes: 150000 }, { text: '' }]);
+    const { captured, restore } = captureErrors();
+    try {
+      await runLoop({ llm, messages: USER_MSG, tools: [] });
+    } finally {
+      restore();
+    }
+    const line = captured.find((l) => l.includes('пустой финал'));
+    assert.ok(line, 'лог пустого финала есть');
+    assert.match(line, /payload=150000 байт/);
+    assert.match(line, />140КБ=да/);
+  });
+
+  it('без payloadBytes → н/д в диагностике', async () => {
+    const { llm } = fakeLlm([{ text: '' }, { text: '' }]);
+    const { captured, restore } = captureErrors();
+    try {
+      await runLoop({ llm, messages: USER_MSG, tools: [] });
+    } finally {
+      restore();
+    }
+    const line = captured.find((l) => l.includes('пустой финал'));
+    assert.ok(line, 'лог пустого финала есть');
+    assert.match(line, /payload=н\/д байт/);
+    assert.match(line, />140КБ=н\/д/);
+  });
+
+  it('отравленная пара в истории → есть-пустые-tool_calls=да', async () => {
+    const poisoned = [
+      ...USER_MSG,
+      { role: 'assistant', content: null, tool_calls: [{ id: '', name: '', arguments: {} }] },
+      { role: 'tool', tool_call_id: '', content: 'фантомный результат' },
+    ];
+    const { llm } = fakeLlm([{ text: '' }, { text: '' }]);
+    const { captured, restore } = captureErrors();
+    try {
+      await runLoop({ llm, messages: poisoned, tools: [] });
+    } finally {
+      restore();
+    }
+    const line = captured.find((l) => l.includes('пустой финал'));
+    assert.ok(line, 'лог пустого финала есть');
+    assert.match(line, /есть-пустые-tool_calls=да/);
+  });
+});
+
 describe('runLoop guard high-risk-финала при HTTP 200 (VL-199)', () => {
   const HR_TEXT = 'The request was rejected because it was considered high risk';
 
