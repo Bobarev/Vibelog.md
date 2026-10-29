@@ -22,6 +22,8 @@
 
 - **VL-215: agent-loop — фантомные tool_calls с пустыми name/id больше не отравляют историю** — ответ модели с `tool_call {id:"", name:""}` (инцидент VL-214) больше не приводит к записи в диалог/jsonl пары `assistant(tool_calls id="") + tool(tool_call_id="")` и к отказу следующего хода LLM API: в `src/agent/loop.ts` вызовы фильтруются общей функцией `isValidToolCall` (`src/agent/llm.ts`, typeof-гард + trim) **до** записи assistant-сообщения. Только фантомы → отдельное user-сообщение с текстом-ошибкой и повтор хода (без tool-пары с пустым ключом), 3 фантома подряд → fail; фантом + валидный → выполняется только валидный + user-заметка «проигнорировано N tool_call(ов)». Тесты Т1–Т3 в `loop.test.mjs`. Зеркальная уязвимость `src/web/chat.ts` — VL-213 (импортирует `isValidToolCall`, lesson-37). Документация: doc-10 §6.4, lesson-74.
 
+- **VL-225: тесты — запрет сетевых URL в type=repo fixtures, таймаут git clone** — `src/core/reference.test.mjs`: type=repo фикстуры переведены с внешних `https://` на `file:///nonexistent/*.invalid.git` (round-trip L69, CRUD L92, поиск L133), страховочный фильтр в `beforeAll` sync-describe удаляет type=repo с `http(s)://` к моменту `syncReferenceRepos` (AC-1); type=url fixtures не участвуют в clone — не тронуты. `src/core/reference.ts`: `cloneReferenceRepo` — `spawnSync` с `timeout: 15_000` — продуктовая защита от зависания `vibelog reference sync` при офлайн-DNS/битом хосте (без неё spawnSync блокируется до бесконечности, в тестах до testTimeout 120 с). Замер: одиночный прогон reference.test.mjs офлайн (HTTPS_PROXY) ~0,8 с / 22 passed (было ~120 с — таймаут), полный `pnpm test` офлайн ~1m16s без «Test timed out». Документация: lesson-52 (linked + обновлён).
+
 ## [1.10.0] — 2026-10-29
 
 ### Изменено
