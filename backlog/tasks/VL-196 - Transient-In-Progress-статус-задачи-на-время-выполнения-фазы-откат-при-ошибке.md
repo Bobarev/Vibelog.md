@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-26 21:06'
-updated_date: '2026-10-27 06:50'
+updated_date: '2026-10-29 07:41'
 due_date: ''
 labels:
   - core
   - web
   - agent
 dependencies: []
-milestone: ''
+milestone: v1.10
 references:
   - ref-1
 priority: medium

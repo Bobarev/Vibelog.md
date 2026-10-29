@@ -5,13 +5,13 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-26 23:59'
-updated_date: '2026-10-27 22:32'
+updated_date: '2026-10-29 07:41'
 due_date: ''
 labels:
   - docs
   - prompt
 dependencies: []
-milestone: ''
+milestone: v1.10
 references: []
 priority: medium
 type: docs

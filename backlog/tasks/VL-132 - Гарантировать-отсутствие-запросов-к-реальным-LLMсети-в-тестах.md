@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-12 23:12'
-updated_date: '2026-10-13 00:23'
+updated_date: '2026-10-29 07:41'
 due_date: ''
 labels:
   - tests
   - llm
   - network
 dependencies: []
-milestone: ''
+milestone: v1.10
 references: []
 priority: medium
 type: task
@@ -41,6 +41,7 @@ modified_files:
   - src/mcp/server.test.mjs
   - src/mcp/types.test.mjs
   - src/mcp/v11.test.mjs
+lessons: []
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->

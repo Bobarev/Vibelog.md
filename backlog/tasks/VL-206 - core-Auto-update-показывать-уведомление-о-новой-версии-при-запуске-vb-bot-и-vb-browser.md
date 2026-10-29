@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-27 15:19'
-updated_date: '2026-10-27 21:22'
+updated_date: '2026-10-29 07:42'
 due_date: ''
 labels:
   - core
   - cli
 dependencies:
   - VL-101
-milestone: ''
+milestone: v1.10
 references: []
 priority: medium
 type: enhancement

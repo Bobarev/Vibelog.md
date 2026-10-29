@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-25 23:57'
-updated_date: '2026-10-26 07:57'
+updated_date: '2026-10-29 07:41'
 due_date: ''
 labels:
   - core
   - web
   - bot
 dependencies: []
-milestone: ''
+milestone: v1.10
 references: []
 priority: medium
 type: feature
@@ -285,11 +285,8 @@ author: @agent
 created: 2026-10-26 07:57
 ---
 Фаза Close выполнена. Ветка vb/vl-188 слита в master (1 коммит 83ecc63, merge d4b51f1), worktree удалена, ветка удалена. После merge: pnpm build ✓, pnpm test ✓ (все тесты зелёные).
-
 Документация (docs-коммит 060649b): CHANGE.md — запись в Unreleased (полное описание VL-188); doc-6 — новый раздел «Workflow с переходами статус» в §8 (формат settings.json, примеры default/bugfix/simple, fallback, ветвление, ручные переходы, серверная валидация, переопределение промптов), обновлены §10 (кнопки модалки по availablePhases, drag-and-drop с canMoveTo) и §11 (кнопки карточки по getAvailablePhases, ветвление, «Взять в работу», команда /move), удалены строки --skills/`/vibelog:*` из §1; doc-9 — секция 1 переписана (workflow вместо `/vibelog:*`-команд); doc-11 — убрано упоминание `/vibelog:spec` (§2.2), плюс обновлены пути шаблонов templates/phases в плане v1.7.
-
 Lessons (коммит 51e2a6c): созданы lesson-41 (сверяй имена констант из плана с кодом через grep), lesson-42 (нормализуй даты в тестах к одному часовому поясу local vs UTC — фикс флака lessons-api), lesson-43 (сохраняй старый формат callback-кнопок бота при расширении), все связаны с VL-188.
-
 DoD: 1 (тесты проходят) ✓, 2 (документация обновлена) ✓, 3 (нет регрессий) ✓ — все пункты выполнены. AC12 «Документация: doc-6, README» закрыт (README обновлён в Фазе 3). Ручная браузерная верификация драгов/кнопок не проводилась (экономия ходов) — серверная валидация и откат покрыты тестами trigger-api.
 ---
 <!-- COMMENTS:END -->

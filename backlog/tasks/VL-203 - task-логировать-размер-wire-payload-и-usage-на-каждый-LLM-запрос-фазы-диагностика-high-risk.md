@@ -5,13 +5,13 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-26 23:59'
-updated_date: '2026-10-27 11:35'
+updated_date: '2026-10-29 07:41'
 due_date: ''
 labels:
   - core
   - agent
 dependencies: []
-milestone: ''
+milestone: v1.10
 references: []
 priority: low
 type: enhancement
