@@ -67,7 +67,7 @@ describe('VL-152 — типы и сериализация', () => {
   it('round-trip: referenceToMarkdown → markdownToReference', () => {
     const ref = createReference({
       id: 'ref-100', title: 'Test', type: 'repo',
-      url: 'https://example.com/x.git', tags: ['a', 'b'],
+      url: 'file:///nonexistent/x.invalid.git', tags: ['a', 'b'],
       created_date: '2026-10-14', linked_tasks: ['VL-1'],
     });
     const md = referenceToMarkdown(ref, 'Описание');
@@ -89,7 +89,7 @@ describe('VL-152 — типы и сериализация', () => {
 
 describe('VL-152 — CRUD references', () => {
   it('writeReference: id ref-N генерируется, created_date — сегодня', () => {
-    const ref = writeReference(testRoot, { title: 'First', type: 'repo', url: 'https://x.example/a.git' });
+    const ref = writeReference(testRoot, { title: 'First', type: 'repo', url: 'file:///nonexistent/a.invalid.git' });
     assert.equal(ref.id, 'ref-1');
     assert.match(ref.created_date, /^\d{4}-\d{2}-\d{2}$/);
     assert.ok(existsSync(join(refsDir, 'ref-1-First.md')), 'файл создан');
@@ -130,7 +130,7 @@ describe('VL-152 — searchReferences / findByPath / findByTask', () => {
   beforeAll(() => {
     writeReference(testRoot, {
       id: 'ref-10', title: 'vibe-kanban', type: 'repo',
-      url: 'https://github.com/BloopAI/vibe-kanban.git', path: 'data/vibe-kanban',
+      url: 'file:///nonexistent/vibe-kanban.invalid.git', path: 'data/vibe-kanban',
       tags: ['kanban', 'ui'], content: 'Референс канбан-доски',
     });
     writeReference(testRoot, {
@@ -218,6 +218,15 @@ describe('VL-152 — cloneReferenceRepo / syncReferenceRepos', () => {
   const remoteUrl = 'file://' + remoteDir;
 
   beforeAll(() => {
+    // VL-225: к моменту sync в refsDir не должно остаться type=repo записей
+    // с внешними https:// URL (AC-1): git clone зависал до 120 с на офлайн-DNS.
+    // Фикстуры выше уже не https, но фильтр гарантирует AC независимо от
+    // будущих тестов, добавляющих repo-фикстуры до sync-блока.
+    for (const entry of listReferences(testRoot)) {
+      if (entry.reference.type === 'repo' && /^https?:\/\//.test(entry.reference.url || '')) {
+        removeReference(testRoot, entry.reference.id);
+      }
+    }
     mkdirSync(remoteDir, { recursive: true });
     writeFileSync(join(remoteDir, 'README.md'), '# Remote\n');
     const git = (args) => {

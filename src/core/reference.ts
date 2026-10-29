@@ -425,7 +425,10 @@ export function cloneReferenceRepo(
     return { cloned: false, message: `Reference ${ref.id}: уже клонирован (${target}), пропуск` };
   }
   mkdirSync(dirname(target), { recursive: true });
-  const res = spawnSync('git', ['clone', '--depth', '1', ref.url, target], { encoding: 'utf-8', env });
+  // timeout 15 с (VL-225): защита от зависания git clone на офлайн-DNS/битом
+  // хосте — без него spawnSync блокируется до бесконечности (в тестах до
+  // testTimeout 120 с). Локальный file:// clone укладывается в доли секунды.
+  const res = spawnSync('git', ['clone', '--depth', '1', ref.url, target], { encoding: 'utf-8', env, timeout: 15_000 });
   if (res.error || res.status !== 0) {
     const detail = ((res.stderr ?? '') + (res.error?.message ?? '')).trim();
     return { cloned: false, message: `Reference ${ref.id}: ошибка клонирования ${ref.url}: ${detail}` };
