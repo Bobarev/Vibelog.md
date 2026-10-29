@@ -397,6 +397,37 @@ describe('VL-202 — пакетное чтение файлов', () => {
   });
 });
 
+// Точечные инварианты VL-222 (паттерн VL-202/VL-142): запрет повторных
+// mass-glob/grep с теми же паттернами в промптах фаз.
+describe('VL-222 — запрет повторных mass-glob/grep', () => {
+  const phaseFiles = ['phase-plan.md', 'phase-code.md', 'phase-do.md', 'phase-investigate.md'];
+
+  it('правило есть во всех шаблонах фаз, выполняющих поиск', () => {
+    for (const file of phaseFiles) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      assert.ok(/повторн\w*\s+(массов\w*|перебор\w*|mass-?(glob|grep))|тех же (glob|grep|паттерн)|теми же паттерн|один целевой|одним? целевым/i.test(text),
+        `${file}: запрет повторных glob/grep-переборов`);
+    }
+  });
+
+  it('agent-prompt.md содержит правило одного поискового прохода', () => {
+    const agentPromptPath = fileURLToPath(new URL('../../templates/agent-prompt.md', import.meta.url));
+    const text = readFileSync(agentPromptPath, 'utf-8');
+    assert.ok(text.includes('один целевой проход') || text.includes('одним целевым'),
+      'agent-prompt.md: правило одного целевого прохода поиска');
+    assert.ok(text.includes('не переоткрывай') || text.includes('не переоткрывать'),
+      'agent-prompt.md: запрет переоткрытия найденного при resume');
+  });
+
+  it('phase-plan: правило против повторных переборов в «Экономии ходов»', () => {
+    const text = readFileSync(join(templatesDir, 'phase-plan.md'), 'utf-8');
+    assert.ok(text.includes('повторные массовые переборы') || text.includes('теми же паттерн'),
+      'phase-plan.md: явный запрет повторных mass-переборов');
+    assert.ok(text.includes('не переоткрывай') || text.includes('не переоткрывать'),
+      'phase-plan.md: правило resume — уже найденное не переоткрывать');
+  });
+});
+
 // ── VL-141: фаза analyze — headless-разбор сессии агента без задачи ──
 
 describe('VL-141 — фаза analyze', () => {
