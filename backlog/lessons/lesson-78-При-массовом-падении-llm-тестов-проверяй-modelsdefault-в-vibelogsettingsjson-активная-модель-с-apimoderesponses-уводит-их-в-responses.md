@@ -15,6 +15,7 @@ linked_tasks:
   - VL-223
   - VL-221
   - VL-228
+  - VL-227
 created_date: 2026-10-29
 updated_date: 2026-10-30
 supersedes: lesson-86
