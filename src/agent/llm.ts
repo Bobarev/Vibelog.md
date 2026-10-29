@@ -848,7 +848,9 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
   const baseRetryDelay = options.retryDelayMs ?? RETRY_DELAY_DEFAULT;
   const sessionId = options.sessionId ?? '';
   // VL-205: режим API; VL-209: api_mode активной модели ниже флага --api-mode
-  // (флаг — разовое переопределение, приоритет VL-205 сохранён)
+  // (флаг — разовое переопределение, приоритет VL-205 сохранён).
+  // VL-240: порядок важен — явная опция выше settings; тесты передают apiMode
+  // явно, иначе режим уезжает в зависимость от локального .vibelog/settings.json.
   const apiMode: ApiMode = options.apiMode ?? active?.apiMode ?? 'chat';
   if (!model) {
     throw new Error('Не задана модель LLM: установи env VIBELOG_LLM_MODEL');
