@@ -14,6 +14,7 @@ import {
   formatTaskDetail,
   formatPhaseRun,
   formatPhaseResult,
+  limitErrorResumeRef,
   splitNumbered,
   formatBoard,
   formatDiffList,
@@ -260,6 +261,58 @@ describe('formatPhaseResult (VL-63/VL-65)', () => {
     // Жалоба Pavel 2026-10-05: qwen тоже по общему правилу '<agent>:<session_id>'
     const text = formatPhaseResult(okRun);
     assert.ok(text.includes('`qwen:a470c7dd-2ca8-4510-9d81-b184f932af76`'), 'префикс qwen:');
+  });
+});
+
+describe('limitErrorResumeRef (VL-212)', () => {
+  /** Базовый run с ошибкой лимита --max-requests. */
+  const limitRun = {
+    running: false,
+    phase: 'code',
+    exitCode: 1,
+    agent: 'vb',
+    result: {
+      result: 'Превышен лимит --max-requests (5) — фаза прервана',
+      is_error: true,
+      num_turns: 5,
+      duration_ms: 1000,
+      duration_api_ms: 900,
+      session_id: 'agent-1',
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_read_input_tokens: 0,
+        total_tokens: 15,
+      },
+    },
+  };
+
+  it('ошибка лимита → ref vb:<session_id>', () => {
+    assert.equal(limitErrorResumeRef(limitRun), 'vb:agent-1');
+  });
+
+  it('успешная фаза с тем же текстом → null', () => {
+    const run = { ...limitRun, result: { ...limitRun.result, is_error: false } };
+    assert.equal(limitErrorResumeRef(run), null);
+  });
+
+  it('не-limit ошибка → null', () => {
+    const run = { ...limitRun, result: { ...limitRun.result, result: 'Ошибка LLM API' } };
+    assert.equal(limitErrorResumeRef(run), null);
+  });
+
+  it('limit-ошибка без session_id → null', () => {
+    const run = { ...limitRun, result: { ...limitRun.result, session_id: undefined } };
+    assert.equal(limitErrorResumeRef(run), null);
+  });
+
+  it('result отсутствует (logTail-фолбэк) → null', () => {
+    assert.equal(limitErrorResumeRef({ running: false, phase: 'code', exitCode: 1 }), null);
+  });
+
+  it('agent не задан → дефолт qwen (VL-93)', () => {
+    const run = { ...limitRun, agent: undefined };
+    assert.equal(limitErrorResumeRef(run), 'qwen:agent-1');
   });
 });
 

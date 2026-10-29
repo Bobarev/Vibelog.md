@@ -236,6 +236,27 @@ export function formatPhaseResult(run: PhaseRun, taskId?: string): string {
   return lines.join('\n');
 }
 
+/**
+ * session-ref для кнопки «Продолжить» при ошибке лимита (VL-212).
+ *
+ * Возвращает '<agent>:<session_id>' ТОЛЬКО если is_error=true, текст
+ * результата содержит «Превышен лимит» и session_id известен; иначе null.
+ * Префикс текста без привязки к конкретному флагу покрывает все лимиты
+ * агента vb (`--max-wall-time`, `--max-requests`, `--max-tool-calls`).
+ *
+ * @param run — завершённый запуск фазы из оркестратора (getRun)
+ * @returns '<agent>:<session_id>' для callback resume:<ref> либо null
+ */
+export function limitErrorResumeRef(run: PhaseRun): string | null {
+  const res = run.result;
+  if (!res) return null;
+  if (res.is_error !== true) return null;
+  if (!/Превышен лимит/.test(res.result ?? '')) return null;
+  if (!res.session_id) return null;
+  // Дефолт агента — qwen (VL-93): run.agent заполняется только для vb-запусков
+  return `${run.agent ?? 'qwen'}:${res.session_id}`;
+}
+
 /** Лимит длины текстового сообщения Telegram (символов UTF-8). */
 export const TELEGRAM_TEXT_LIMIT = 4096;
 
