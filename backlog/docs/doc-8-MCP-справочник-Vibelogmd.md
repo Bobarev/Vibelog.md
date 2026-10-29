@@ -44,7 +44,7 @@ tags:
 | `labels` | string[] | | Метки |
 | `dependencies` | string[] | | ID зависимостей |
 | `acceptanceCriteria` | string[] | | Тексты критериев |
-| `status` | string | | Статус (по умолчанию из конфига) |
+| `status` | string | | Статус (в веб-чате по умолчанию **Spec** — ассистент выполняет фазу spec; вне чата — из конфига) |
 | `assignee` | string[] | | Исполнители |
 | `milestone` | string | | Веха |
 | `type` | string | | Тип (bug, feature, ...) — валидация по конфигу |
@@ -97,6 +97,7 @@ tags:
 | `append_notes` | string | | Дописать в конец заметок |
 | `final_summary` | string | | Итоговое резюме |
 | `modifiedFiles` | string[] | | Изменённые файлы (полная замена `modified_files`; Фаза 3 пишет, Фаза Close читает) |
+| `acceptanceCriteria` | string[] | | Критерии приёмки: полная замена чеклиста, все пункты создаются неотмеченными (симметрия с `backlog_create_task`; JSON-строка массива тоже принимается; VL-219) |
 | `references` | string[] | | ID референсов задачи (полная замена поля `references`; VL-152, использует фаза Code) |
 | `lessons` | string[] | | ID lessons задачи (полная замена поля `lessons`; VL-153, связывают фазы Close/Code) |
 
