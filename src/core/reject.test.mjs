@@ -10,10 +10,9 @@
 
 import { describe, it, beforeAll, afterAll, beforeEach } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
 
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import {
@@ -25,8 +24,7 @@ import {
   wasInCode,
 } from '../../dist/core/store.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const testDir = join(__dirname, '..', '..', '.test-reject');
+const testDir = mkdtempSync(join(tmpdir(), 'vibelog-reject-'));
 const backlogDir = join(testDir, 'backlog');
 const tasksDir = join(backlogDir, 'tasks');
 const completedDir = join(backlogDir, 'completed');

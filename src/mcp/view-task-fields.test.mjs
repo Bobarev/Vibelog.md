@@ -9,17 +9,16 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, beforeAll, afterAll } from 'vitest';
 
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { handleToolCall } from '../../dist/mcp/tools.js';
 import { createTaskFile } from '../../dist/core/store.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const testDir = join(__dirname, '..', '..', '.test-view-fields');
+const testDir = mkdtempSync(join(tmpdir(), 'vibelog-mcp-view-fields-'));
 const backlogDir = join(testDir, 'backlog');
 const tasksDir = join(backlogDir, 'tasks');
 

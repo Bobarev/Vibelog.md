@@ -1,7 +1,7 @@
 /**
  * Тесты VL-15 — batch AC/DoD и task list --limit/--skip.
  *
- * CLI (/tmp, spawnSync):
+ * CLI (mkdtemp в tmpdir, spawnSync):
  * - --check-ac 1,3 / --uncheck-dod 1,2 — несколько индексов через запятую
  * - невалидный индекс в списке → ошибка, валидные обрабатываются
  * - task list --skip/--limit (после фильтров/сортировки), валидация
@@ -13,7 +13,8 @@
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -28,7 +29,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // CLI
 // ============================================================
 
-const cliDir = '/tmp/vibelog-batch-cli-test';
+const cliDir = mkdtempSync(join(tmpdir(), 'vibelog-batch-cli-'));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
 
 function cliFresh() {
@@ -117,7 +118,7 @@ function extractJson(text) {
 // MCP (in-process)
 // ============================================================
 
-const testDir = join(__dirname, '..', '..', '.test-batch');
+const testDir = mkdtempSync(join(tmpdir(), 'vibelog-batch-mcp-'));
 const backlogDir = join(testDir, 'backlog');
 
 function setup() {

@@ -7,19 +7,20 @@
  * - archive: перенос в completed/
  * - Ошибки: без заголовка, несуществующий id
  *
- * Паттерн config-cli.test.mjs: testDir в /tmp, spawnSync со слиянием
+ * Паттерн config-cli.test.mjs: testDir = mkdtemp вне проекта (VL-241), spawnSync со слиянием
  * stdout/stderr, проверка содержимого не exit code.
  */
 
 import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync, readFileSync, readdirSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const testDir = '/tmp/vibelog-draft-cli-test';
+const testDir = mkdtempSync(join(tmpdir(), 'vibelog-draft-cli-'));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
 const draftsDirPath = join(testDir, 'backlog', 'drafts');
 const tasksDirPath = join(testDir, 'backlog', 'tasks');

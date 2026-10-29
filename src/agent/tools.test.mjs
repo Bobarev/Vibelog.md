@@ -1,24 +1,24 @@
 /**
  * Тесты VL-83 — локальные инструменты агента (src/agent/tools.ts).
  *
- * Всё во временной /tmp-директории (изоляция от проекта, см. память о CLI
- * тестах): read/write/edit, отказ ../-путей, run_shell_command (echo, таймаут
+ * Всё в mkdtemp-каталоге вне проекта (VL-241: изоляция от параллельных прогонов
+ * и от CLI-тестов): read/write/edit, отказ ../-путей, run_shell_command (echo, таймаут
  * с kill, abort-сигнал), grep_search и glob по фейковому дереву.
  */
 
-import { describe, it, beforeAll } from 'vitest';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { listLocalTools, validateArgs, miniGlobToRegex, checkShellCommandInProject, truncateToolOutput, maskSecrets, TOOL_OUTPUT_MAX_CHARS } from '../../dist/agent/tools.js';
 
-const TMP = '/tmp/vibelog-agent-tools-test';
+const TMP = mkdtempSync(join(tmpdir(), 'vibelog-agent-tools-'));
 let tools;
 let byName;
 
 beforeAll(() => {
-  rmSync(TMP, { recursive: true, force: true });
   mkdirSync(join(TMP, 'sub'), { recursive: true });
   mkdirSync(join(TMP, 'grep', 'sub'), { recursive: true });
   writeFileSync(join(TMP, 'a.txt'), 'alpha\nbeta\nalpha\n');
@@ -32,6 +32,9 @@ beforeAll(() => {
   tools = listLocalTools(TMP);
   byName = new Map(tools.map((t) => [t.name, t]));
 });
+
+// VL-241: каталог уникален на прогон — убираем за собой, чтобы не копить мусор в tmpdir.
+afterAll(() => { rmSync(TMP, { recursive: true, force: true }); });
 
 describe('validateArgs (VL-83)', () => {
   const schema = {

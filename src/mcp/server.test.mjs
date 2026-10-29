@@ -1,14 +1,15 @@
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const testDir = join(__dirname, '..', '..', '.test-mcp');
+const testDir = mkdtempSync(join(tmpdir(), 'vibelog-mcp-server-'));
 const backlogDir = join(testDir, 'backlog');
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
 

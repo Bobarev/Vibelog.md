@@ -14,13 +14,14 @@
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const testDir = '/tmp/vibelog-init-mcp-test';
+const testDir = mkdtempSync(join(tmpdir(), 'vibelog-init-mcp-'));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
 const settingsPath = join(testDir, '.qwen', 'settings.json');
 
