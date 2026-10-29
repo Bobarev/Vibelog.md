@@ -30,6 +30,14 @@ import {
 } from './llm.js';
 import type { ToolSpec } from './tools.js';
 import { truncateToolOutput } from './tools.js';
+import {
+  REPEAT_READ_LIMIT_DEFAULT,
+  REPEAT_SEARCH_LIMIT_DEFAULT,
+  analyzeToolRepeats,
+  createRepeatGuard,
+  type RepeatGuard,
+  type RepeatStats,
+} from './repeat-tracker.js';
 
 /** Лимиты цикла; дефолты — 100 tool-calls и 900 секунд wall-time. */
 export interface LoopLimits {
@@ -59,6 +67,21 @@ export interface LoopLimits {
   loopDetectionRepeat?: number;
   /** Сколько ходов подряд с одним и тем же промежуточным текстом считать зацикливанием намерений (VL-119, дефолт 4). */
   intentLoopRepeat?: number;
+  /**
+   * VL-229: порог повторов поиска — N-й `grep_search`/`glob` с тем же pattern
+   * даёт модели предупреждение (дефолт 3, REPEAT_SEARCH_LIMIT_DEFAULT).
+   */
+  repeatSearchLimit?: number;
+  /**
+   * VL-229: порог повторов чтения — N-е чтение того же файла даёт модели
+   * предупреждение (дефолт 5, REPEAT_READ_LIMIT_DEFAULT).
+   */
+  repeatReadLimit?: number;
+  /**
+   * VL-229: выключить guard повторов (метрика repeat_stats при этом
+   * считается: отчёты не страдают).
+   */
+  repeatGuardDisabled?: boolean;
   /**
    * Компакшн истории (VL-122): сколько последних сообщений оставить в
    * LLM-запросе помимо system и первого user (дефолт 50).
@@ -116,6 +139,12 @@ export interface LoopResult {
   last_payload_bytes?: number;
   /** Максимум payload по всем ходам фазы (VL-203) — пик запроса. */
   max_payload_bytes?: number;
+  /**
+   * Метрика повторов обращений (VL-229, AC1): считается по ВСЕМУ транскрипту
+   * диалога (`messages`, включая прошлые раны resume) — доля повторов
+   * корректна для сессии, а не только для текущего рана.
+   */
+  repeat_stats: RepeatStats;
 }
 
 /** Опции запуска loop. */
@@ -179,6 +208,10 @@ const PHANTOM_CALL_LIMIT_DEFAULT = 3;
 // промежуточным текстом. Порог 4, а не 3 — снизить ложные срабатывания:
 // одинаковый короткий текст («Ок.») на паре ходов ещё не зацикливание.
 const INTENT_LOOP_REPEAT_DEFAULT = 4;
+// VL-229: кап предупреждений о повторах за ран. Одно предупреждение — строка
+// ≤250 символов; без капа зацикленный grep на длинном ране добавлял бы
+// десятки сообщений и сам раздувал контекст (риск 4 плана).
+const REPEAT_WARN_MAX_PER_RUN = 15;
 // Компакшн истории (VL-122, wire-усечение по doc-13 §4.1): хвост 50 сообщений —
 // tool-вывод ≤8KB (лимит VL-110, tools.ts) → ≤400KB ≈ ≤130K токенов ≈ 13% окна
 // MiMo-V2.5 (1M) — попадает в рекомендованный doc-13 диапазон хвоста 10–15%.
@@ -242,6 +275,18 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // Лимит guard'а зацикливания намерений (VL-119): N ходов подряд с одним
   // промежуточным текстом → fail штатным путём (контракт resume VL-103).
   const intentRepeatLimit = options.limits?.intentLoopRepeat ?? INTENT_LOOP_REPEAT_DEFAULT;
+  // VL-229: guard повторов обращений (AC2). Стейт — на ран (resume сбрасывает,
+  // риск 3 плана): прошлый ран уже отдал модели свои результаты. Отключается
+  // repeatGuardDisabled — метрика repeat_stats считается всегда.
+  const repeatGuard: RepeatGuard | null =
+    options.limits?.repeatGuardDisabled === true
+      ? null
+      : createRepeatGuard({
+          searchLimit: options.limits?.repeatSearchLimit ?? REPEAT_SEARCH_LIMIT_DEFAULT,
+          readLimit: options.limits?.repeatReadLimit ?? REPEAT_READ_LIMIT_DEFAULT,
+        });
+  // Предупреждения, выданные в текущем ране (кап — REPEAT_WARN_MAX_PER_RUN)
+  let repeatWarnCount = 0;
   // Компакшн истории (VL-122): хвост и порог; выключить можно --no-compact
   // (по умолчанию включён — комментарий Pavel к задаче).
   const compactEnabled = options.limits?.compactDisabled !== true;
@@ -334,6 +379,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       messages,
       last_payload_bytes: lastPayload,
       max_payload_bytes: maxPayload,
+      repeat_stats: analyzeToolRepeats(messages),
     };
   };
 
@@ -497,6 +543,8 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         messages,
         last_payload_bytes: lastPayload,
         max_payload_bytes: maxPayload,
+        // VL-229 (AC1): метрика по всему транскрипту — включая прошлые раны
+        repeat_stats: analyzeToolRepeats(messages),
       };
     }
     // Guard зацикливания намерений (VL-119, инцидент VL-98): N ходов подряд
@@ -569,6 +617,10 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       ...(response.shrinkLevel !== undefined ? { shrink_level: response.shrinkLevel } : {}),
     });
 
+    // VL-229: предупреждения о повторах собираются за ход и уходят модели
+    // ОДНИМ user-сообщением ПОСЛЕ всех tool-результатов. Инъекция между
+    // tool-результатами сломала бы паринг assistant↔tool (риск 1 плана).
+    const repeatWarnings: string[] = [];
     for (const call of validCalls) {
       // Loop detection: сигнатура = имя + JSON аргументов; N подряд — выход.
       const signature = `${call.name}|${JSON.stringify(call.arguments ?? {})}`;
@@ -608,6 +660,22 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       }
       toolCallsTotal++;
 
+      // VL-229: учёт повтора — ДО выполнения (счётчик фиксирует намерение;
+      // провал handler'а тоже был обращением к тому же объекту). Кап
+      // REPEAT_WARN_MAX_PER_RUN: без него зацикленный ране раздувал бы
+      // контекст самими предупреждениями (риск 4 плана).
+      if (repeatGuard) {
+        const warning = repeatGuard.note(call.name, (call.arguments ?? {}) as Record<string, unknown>);
+        if (warning) {
+          if (repeatWarnCount < REPEAT_WARN_MAX_PER_RUN) {
+            repeatWarnCount++;
+            repeatWarnings.push(warning);
+          }
+          // Диагностика в точке срабатывания → logTail оркестратора (lesson-77)
+          console.error(`[vibelog-agent] повтор обращения: ${warning}`);
+        }
+      }
+
       const spec = byName.get(call.name);
       let output: string;
       let toolError = false;
@@ -633,6 +701,12 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // карточку со статусом error, а не теряет вызов модели
       options.onToolEnd?.(call.name, output, toolError);
       await pushMessage({ role: 'tool', tool_call_id: call.id, content: output });
+    }
+    // VL-229 (AC2): предупреждения о повторах — после всех tool-результатов
+    // хода, одним user-сообщением. Стейт guard'а обновлён выше, в момент
+    // выполнения вызова (там же — диагностика в stderr, lesson-77).
+    if (repeatWarnings.length > 0) {
+      await pushMessage({ role: 'user', content: repeatWarnings.join('\n') });
     }
     // VL-215: пометка в диалоге, что часть вызовов отброшена (модель увидит
     // результаты только валидных, ей нужно знать про игнорированные; в jsonl

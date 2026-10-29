@@ -26,6 +26,7 @@ import { ensureLlmEnv, loadApiMode, activeModelLogLine } from './llm-env.js';
 import { loadProjectEnv } from '../bot/env.js';
 import { runLoop } from './loop.js';
 import { agentSessionsDir, appendSessionMessage, countToolCallsInMessages, createSessionId, latestSession, loadSession, loadSessionMetaSync, saveSession, saveSessionMeta, sumUsageFromMessages, updateSessionMeta } from './session.js';
+import { analyzeToolRepeats } from './repeat-tracker.js';
 import { taskWorktreeDir } from '../core/worktree.js';
 import { taskIdPattern } from '../core/config.js';
 import { buildSystemPrompt } from './system-prompt.js';
@@ -656,6 +657,10 @@ export async function main(argv: string[]): Promise<void> {
   // уже выполненной фазы. Prompt-режим/анализ без taskId — пропуск.
   try {
     const sum = sumUsageFromMessages(loopResult.messages);
+    // VL-229 (AC1): метрика повторов по всему транскрипту сессии — в мету и
+    // в итоговую диагностику. Считается до записи меты, чтобы обе точки
+    // показывали одни и те же цифры.
+    const repeatStats = analyzeToolRepeats(loopResult.messages);
     const sessionUsage: TokenUsage = {
       input: sum.input,
       output: sum.output,
@@ -741,6 +746,9 @@ export async function main(argv: string[]): Promise<void> {
           ...(loopResult.max_payload_bytes !== undefined
             ? { max_payload_bytes: loopResult.max_payload_bytes }
             : {}),
+          // VL-229 (AC1): топ повторяющихся path|pattern + доля от всех
+          // tool-вызовов сессии — мета становится источником для /analyze
+          repeat_stats: repeatStats,
         });
       } catch (err) {
         console.error(`Предупреждение: мета сессии ${sessionId} не дополнена — ${(err as Error).message}`);
@@ -757,6 +765,11 @@ export async function main(argv: string[]): Promise<void> {
   console.error(
     `[vibelog-agent] фаза: запросов=${loopResult.num_turns} (LLM-запросы/ходы модели), ` +
       `tool-calls=${loopResult.tool_calls_total} (лимит ${opts.maxToolCalls ?? 100}, счётчик рана — VL-221), ` +
+      // VL-229 (AC1): доля повторов и топ-3 переиспользуемых ключей прямо в
+      // диагностике — при разборе лога видно зацикливание без парсинга jsonl
+      `повторов=${loopResult.repeat_stats.repeat_calls}/${loopResult.repeat_stats.tool_calls_total} ` +
+      `(${Math.round(loopResult.repeat_stats.repeat_share * 100)}%), ` +
+      `топ-повторов=${loopResult.repeat_stats.top.slice(0, 3).map((e) => `${e.key}×${e.count}`).join(', ') || 'нет'}, ` +
       `payload последнего запроса=${loopResult.last_payload_bytes ?? 'н/д'} байт ` +
       `(макс ${loopResult.max_payload_bytes ?? 'н/д'}), usage=${JSON.stringify(loopResult.usage)}`,
   );
