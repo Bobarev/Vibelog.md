@@ -1,7 +1,7 @@
 ---
 id: lesson-89
 title: Не запускай pnpm test параллельно с прогоном тестов в другом worktree — фиксированные /tmp-пути CLI-тестов дают плавающие падения
-status: active
+status: superseded
 tags:
   - tests
   - vitest
@@ -13,6 +13,7 @@ source_tasks:
   - VL-227
 linked_tasks:
   - VL-227
+  - VL-241
 created_date: 2026-10-30
 updated_date: 2026-10-30
 supersedes: ''
