@@ -24,6 +24,7 @@ import {
   saveSessionMeta,
   sumUsageFromJsonlSync,
   sumUsageFromMessages,
+  countToolCallsInMessages,
   updateSessionMeta,
 } from '../../dist/agent/session.js';
 
@@ -340,5 +341,44 @@ describe('учёт токенов сессии (VL-198)', () => {
     assert.equal(sum.total, 12);
     assert.equal(sum.requests, 2);
     assert.equal(sumUsageFromJsonlSync(dir, 'agent-missing-jsonl'), null);
+  });
+});
+
+describe('countToolCallsInMessages (VL-223)', () => {
+  it('пустой массив → 0', () => {
+    assert.equal(countToolCallsInMessages([]), 0);
+  });
+
+  it('assistant с 2 валидными + 1 фантомом (name="") → 2', () => {
+    const messages = [
+      { role: 'assistant', content: null, tool_calls: [
+        { id: 'c1', name: 'glob', arguments: {} },
+        { id: 'c2', name: 'read_file', arguments: {} },
+        { id: 'c3', name: '', arguments: {} }, // фантом VL-215 — не ест бюджет
+      ] },
+    ];
+    assert.equal(countToolCallsInMessages(messages), 2);
+  });
+
+  it('mix system/user/tool/assistant без tool_calls → 0', () => {
+    const messages = [
+      { role: 'system', content: 's' },
+      { role: 'user', content: 'u' },
+      { role: 'assistant', content: 'просто текст' },
+      { role: 'assistant', content: null, tool_calls: [] },
+      { role: 'tool', tool_call_id: 'c1', content: 'ok' },
+    ];
+    assert.equal(countToolCallsInMessages(messages), 0);
+  });
+
+  it('несколько assistant-сообщений суммируются (история resume)', () => {
+    const messages = [
+      { role: 'assistant', content: null, tool_calls: [{ id: 'c1', name: 't', arguments: {} }] },
+      { role: 'assistant', content: null, tool_calls: [
+        { id: 'c2', name: 't', arguments: {} },
+        { id: '  ', name: 't', arguments: {} }, // фантом: пустой id
+      ] },
+    ];
+    assert.equal(countToolCallsInMessages(messages), 2);
   });
 });

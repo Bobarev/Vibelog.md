@@ -249,6 +249,69 @@ describe('vibelog-agent CLI (VL-85)', () => {
     assert.throws(() => parseArgs(['x', '--max-requests']), /требует значение/);
   });
 
+  it('--tool-calls-per-session (VL-223): парсинг и валидация', () => {
+    assert.equal(
+      parseArgs(['фаза', 'VL-1', '--tool-calls-per-session', '500']).toolCallsPerSession,
+      500,
+    );
+    assert.equal(parseArgs(['x']).toolCallsPerSession, undefined, 'без флага — undefined');
+    assert.throws(() => parseArgs(['x', '--tool-calls-per-session', 'abc']), /положительное целое/);
+    assert.throws(() => parseArgs(['x', '--tool-calls-per-session', '0']), /положительное целое/);
+    assert.throws(() => parseArgs(['x', '--tool-calls-per-session']), /требует значение/);
+  });
+
+  it('resume с --tool-calls-per-session: счётчик восстановлен из jsonl, лимит срабатывает (VL-223)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl223-'));
+    try {
+      // jsonl прошлых ранов: 2 валидных tool-calls + 1 фантом (не ест бюджет)
+      const sessDir = join(projDir, '.vibelog', 'agent-sessions');
+      mkdirSync(sessDir, { recursive: true });
+      const transcript = [
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: 'постановка' },
+        { role: 'assistant', content: null, tool_calls: [
+          { id: 'c1', name: 'glob', arguments: {} },
+          { id: 'c2', name: 'read_file', arguments: {} },
+          { id: '', name: '', arguments: {} }, // фантом VL-215 — не считается
+        ] },
+        { role: 'tool', tool_call_id: 'c1', content: 'ok' },
+        { role: 'tool', tool_call_id: 'c2', content: 'ok' },
+        { role: 'assistant', content: 'готово прошлый ран' },
+      ];
+      writeFileSync(
+        join(sessDir, 'agent-vl223-resume.jsonl'),
+        transcript.map((m) => JSON.stringify(m)).join('\n') + '\n',
+        'utf-8'
+      );
+      // Мок-LM отвечает tool_calls → первый вызов должен упереться в лимит 2/2
+      llmHandler = (body, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'x1', function: { name: 'run_shell_command', arguments: '{"command":"echo hi"}' } }] } }] })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      };
+      llmRequests.length = 0;
+      const { code, stdout, stderr } = await runCli(
+        ['Продолжи', '--resume', 'agent-vl223-resume', '--no-mcp', '--tool-calls-per-session', '2'],
+        llmEnv(),
+        projDir
+      );
+      llmHandler = null;
+      // fail loop → exit 1 (контракт cli.ts: is_error → process.exitCode = 1)
+      assert.equal(code, 1, stdout);
+      const parsed = JSON.parse(stdout.trim());
+      assert.equal(parsed.is_error, true, 'лимит должен прервать фазу: ' + stdout.slice(0, 300));
+      assert.match(parsed.result, /--tool-calls-per-session \(2\)/);
+      assert.match(parsed.result, /использовано 2 из 2/);
+      // stderr: база восстановлена из jsonl прошлых ранов
+      assert.match(stderr, /Кумулятивный лимит tool-calls: 2 из 2 \(прошлые раны\)/);
+      // Инструмент НЕ выполнялся: stderr без лога вызова инструмента
+      assert.doesNotMatch(stderr, /\[vibelog-agent\] инструмент: run_shell_command/);
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
   // ── VL-122: parseArgs --compact-tail / --compact-at-tokens / --no-compact ──
 
   it('parseArgs: --compact-tail 5 / --compact-at-tokens 1000 → opts (VL-122)', () => {

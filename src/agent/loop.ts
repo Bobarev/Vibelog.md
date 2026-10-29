@@ -20,6 +20,19 @@ import { truncateToolOutput } from './tools.js';
 export interface LoopLimits {
   /** Максимум tool-calls фазы (дефолт 100, --max-tool-calls). */
   maxToolCalls?: number;
+  /**
+   * Кумулятивный лимит tool-calls СЕССИИ через resume-раны (VL-223,
+   * --tool-calls-per-session). Без значения — лимит не проверяется
+   * (поведение прежнее, AC#2). Превышение → fail до выполнения вызова.
+   */
+  maxToolCallsPerSession?: number;
+  /**
+   * Предзаполненный счётчик tool-calls прошлых ранов сессии (VL-223):
+   * countToolCallsInMessages(resumedMessages) при resume, 0 для нового
+   * запуска. База фиксируется один раз до запуска loop — двойного счёта
+   * с toolCallsTotal нет.
+   */
+  toolCallsUsedThisSession?: number;
   /** Максимальное время фазы в миллисекундах (дефолт 900000, --max-wall-time). */
   maxWallTimeMs?: number;
   /**
@@ -185,6 +198,10 @@ export function compactWireMessages(messages: ChatMessage[], from: number): Chat
 export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   const startedAt = Date.now();
   const maxToolCalls = options.limits?.maxToolCalls ?? MAX_TOOL_CALLS_DEFAULT;
+  // Кумулятивный per-session лимит (VL-223): без maxToolCallsPerSession
+  // проверка пропускается — поведение без --tool-calls-per-session прежнее
+  const maxToolCallsPerSession = options.limits?.maxToolCallsPerSession;
+  const toolCallsSessionBase = options.limits?.toolCallsUsedThisSession ?? 0;
   const maxWallTimeMs = options.limits?.maxWallTimeMs ?? MAX_WALL_TIME_MS_DEFAULT;
   // Лимит LLM-запросов (VL-104): без значения — без лимита (поведение прежнее)
   const maxRequests = options.limits?.maxRequests;
@@ -507,6 +524,18 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       if (toolCallsTotal + 1 > maxToolCalls) {
         return fail(
           `Превышен лимит --max-tool-calls (${maxToolCalls}) — фаза прервана.`,
+        );
+      }
+      // Кумулятивный per-session лимит (VL-223): база прошлых ранов +
+      // вызовы этого. Проверяется ВТОРОЙ — при превышении обоих модель
+      // видит более специфичный per-session текст. Выражение `+1` — это
+      // «следующий вызов»: если он выходит за лимит, fail ДО выполнения.
+      if (
+        maxToolCallsPerSession !== undefined &&
+        toolCallsSessionBase + toolCallsTotal + 1 > maxToolCallsPerSession
+      ) {
+        return fail(
+          `Превышен кумулятивный лимит tool-calls сессии --tool-calls-per-session (${maxToolCallsPerSession}) — использовано ${toolCallsSessionBase + toolCallsTotal} из ${maxToolCallsPerSession} (включая прошлые раны), фаза прервана. Следующий (${toolCallsSessionBase + toolCallsTotal + 1}-й) вызов не выполнен.`,
         );
       }
       toolCallsTotal++;

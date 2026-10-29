@@ -49,6 +49,17 @@ vibelog browser
 
 Остальные команды, флаги и диагностика — в [CLI-справочнике](backlog/docs/doc-7-CLI-справочник-Vibelogmd.md).
 
+### Лимиты агента (vibelog-agent)
+
+Лимиты tool-calling loop фаз (подробнее — [Агент Vibelog](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md)):
+
+- `--max-tool-calls <N>` — лимит tool-calls одного рана (дефолт 100);
+  сбрасывается при каждом resume.
+- `--tool-calls-per-session <N>` — **опциональный** кумулятивный лимит
+  tool-calls сессии (VL-223): при resume счётчик восстанавливается из
+  jsonl-истории прошлых ранов, превышение прерывает фазу до выполнения
+  вызова. Без флага действует только per-run лимит (поведение прежнее).
+
 ## Веб-чат (#/chat)
 
 Чат с LLM прямо в веб-интерфейсе (`vibelog browser` → пункт «Чат» в

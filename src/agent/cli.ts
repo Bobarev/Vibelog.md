@@ -25,7 +25,7 @@ import type { ApiMode, ChatMessage } from './llm.js';
 import { ensureLlmEnv, loadApiMode, activeModelLogLine } from './llm-env.js';
 import { loadProjectEnv } from '../bot/env.js';
 import { runLoop } from './loop.js';
-import { agentSessionsDir, appendSessionMessage, createSessionId, latestSession, loadSession, loadSessionMetaSync, saveSession, saveSessionMeta, sumUsageFromMessages, updateSessionMeta } from './session.js';
+import { agentSessionsDir, appendSessionMessage, countToolCallsInMessages, createSessionId, latestSession, loadSession, loadSessionMetaSync, saveSession, saveSessionMeta, sumUsageFromMessages, updateSessionMeta } from './session.js';
 import { taskWorktreeDir } from '../core/worktree.js';
 import { taskIdPattern } from '../core/config.js';
 import { buildSystemPrompt } from './system-prompt.js';
@@ -74,6 +74,8 @@ export interface CliOptions {
   comment?: string;
   /** --max-tool-calls N: лимит tool-calls loop (дефолт 100, VL-83). */
   maxToolCalls?: number;
+  /** --tool-calls-per-session N: кумулятивный лимит tool-calls сессии через resume-раны (VL-223; без флага — только per-run). */
+  toolCallsPerSession?: number;
   /** --max-wall-time сек: лимит времени фазы (дефолт 900, VL-83). */
   maxWallTimeSec?: number;
   /** --max-requests N: лимит LLM-запросов фазы (ходов; без лимита, VL-104). */
@@ -108,6 +110,7 @@ const USAGE = `Использование:
   --no-tui                 — отключить TUI в интерактивном режиме (VL-86)
   --comment <текст>        — подстановка {{comment}}/{{prompt}} в шаблон фазы
   --max-tool-calls <N>     — лимит tool-calls loop (дефолт 100)
+  --tool-calls-per-session <N> — кумулятивный лимит tool-calls сессии через resume-раны (VL-223; без флага — только per-run)
   --max-wall-time <сек>    — лимит времени фазы (дефолт 900)
   --max-requests <N>       — лимит LLM-запросов фазы (ходов; без лимита)
   --compact-tail <N>       — компакшн истории: хвост LLM-запроса (дефолт 50, VL-122)
@@ -157,6 +160,13 @@ export function parseArgs(argv: string[]): CliOptions {
         throw new Error(`--max-tool-calls: ожидается положительное целое, получено: ${raw}`);
       }
       opts.maxToolCalls = n;
+    } else if (arg === '--tool-calls-per-session') {
+      const raw = takeValue(arg, argv[++i]);
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new Error(`--tool-calls-per-session: ожидается положительное целое, получено: ${raw}`);
+      }
+      opts.toolCallsPerSession = n;
     } else if (arg === '--max-wall-time') {
       const raw = takeValue(arg, argv[++i]);
       const sec = Number(raw);
@@ -544,6 +554,18 @@ export async function main(argv: string[]): Promise<void> {
     return appendChain;
   };
   const wasResumed = opts.resume !== undefined || opts.continue;
+  // Кумулятивный per-session лимит (VL-223): база считается по уже
+  // загруженной resume-истории (повторное чтение jsonl не нужно); фиксируется
+  // один раз до запуска loop — двойного счёта с toolCallsTotal нет
+  const toolCallsSessionBase =
+    opts.toolCallsPerSession !== undefined && wasResumed
+      ? countToolCallsInMessages(resumedMessages)
+      : 0;
+  if (opts.toolCallsPerSession !== undefined) {
+    log(
+      `Кумулятивный лимит tool-calls: ${toolCallsSessionBase} из ${opts.toolCallsPerSession}${wasResumed ? ' (прошлые раны)' : ''}`,
+    );
+  }
   try {
     const startup: ChatMessage[] = wasResumed
       ? [{ role: 'user', content: prompt }]
@@ -561,6 +583,8 @@ export async function main(argv: string[]): Promise<void> {
     externalTools,
     limits: {
       ...(opts.maxToolCalls !== undefined ? { maxToolCalls: opts.maxToolCalls } : {}),
+      ...(opts.toolCallsPerSession !== undefined ? { maxToolCallsPerSession: opts.toolCallsPerSession } : {}),
+      ...(toolCallsSessionBase > 0 ? { toolCallsUsedThisSession: toolCallsSessionBase } : {}),
       ...(opts.maxWallTimeSec !== undefined ? { maxWallTimeMs: opts.maxWallTimeSec * 1000 } : {}),
       ...(opts.maxRequests !== undefined ? { maxRequests: opts.maxRequests } : {}),
       ...(opts.compactTail !== undefined ? { compactTailMessages: opts.compactTail } : {}),
