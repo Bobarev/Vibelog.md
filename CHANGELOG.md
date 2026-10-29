@@ -14,6 +14,8 @@
 
 ### Исправлено
 
+- **VL-216: санация отравленных пар tool_calls/tool с пустым id при сборке wire** — resume старых jsonl-сессий больше не падает guard'ом VL-110: `sanitizeWireMessages` (`src/agent/llm.ts`) применяется в обеих wire-точках (`toWireMessages` chat-режима и `messagesToInput` Responses-режима) и в payload-точке `runLoop` (`src/agent/loop.ts`, после компакшна). Фантомные `tool_calls` (пустые id/name) вырезаются, assistant только из фантомов переписывается в текстовую форму (или вырезается при пустом content), `tool` с пустым/необъявленным `tool_call_id` вырезается, парность валидных пар сохраняется. jsonl-транскрипт не мутируется (append-only, контракт resume VL-103); функция идемпотентна — двойное применение loop→wire безопасно. Тесты: llm/loop/cli (AC2-resume отравленного jsonл `agent-vl216-poison`). Документация: doc-10 §6.4, lesson-75.
+
 - **VL-215: agent-loop — фантомные tool_calls с пустыми name/id больше не отравляют историю** — ответ модели с `tool_call {id:"", name:""}` (инцидент VL-214) больше не приводит к записи в диалог/jsonl пары `assistant(tool_calls id="") + tool(tool_call_id="")` и к отказу следующего хода LLM API: в `src/agent/loop.ts` вызовы фильтруются общей функцией `isValidToolCall` (`src/agent/llm.ts`, typeof-гард + trim) **до** записи assistant-сообщения. Только фантомы → отдельное user-сообщение с текстом-ошибкой и повтор хода (без tool-пары с пустым ключом), 3 фантома подряд → fail; фантом + валидный → выполняется только валидный + user-заметка «проигнорировано N tool_call(ов)». Тесты Т1–Т3 в `loop.test.mjs`. Зеркальная уязвимость `src/web/chat.ts` — VL-213 (импортирует `isValidToolCall`, lesson-37). Документация: doc-10 §6.4, lesson-74.
 
 ## [1.10.0] — 2026-10-29
