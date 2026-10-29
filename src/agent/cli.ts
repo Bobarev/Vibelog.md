@@ -22,7 +22,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createLlmClient } from './llm.js';
 import type { ApiMode, ChatMessage } from './llm.js';
-import { ensureLlmEnv, loadApiMode } from './llm-env.js';
+import { ensureLlmEnv, loadApiMode, activeModelLogLine } from './llm-env.js';
+import { loadProjectEnv } from '../bot/env.js';
 import { runLoop } from './loop.js';
 import { agentSessionsDir, appendSessionMessage, createSessionId, latestSession, loadSession, loadSessionMetaSync, saveSession, saveSessionMeta, sumUsageFromMessages, updateSessionMeta } from './session.js';
 import { taskWorktreeDir } from '../core/worktree.js';
@@ -273,17 +274,27 @@ export async function main(argv: string[]): Promise<void> {
   const headless = opts.headless || !process.stdout.isTTY;
   log(`фаза=${phase ?? '(готовый промпт)'} задача=${isPhaseMode ? positionals[1] : '-'} headless=${headless}`);
 
-  // LLM из env (общая проверка ensureLlmEnv, VL-189): VIBELOG_LLM_BASE_URL /
-  // VIBELOG_LLM_API_KEY / VIBELOG_LLM_MODEL; при отсутствии — понятная
-  // ошибка в stderr и exit 1 (контракт оркестратора: лог фазы → logTail)
-  if (!ensureLlmEnv('агенту')) {
+  const cwd = process.cwd();
+  // VL-209: settings.json (секции models/providers) в ГЛАВНОМ репо — в
+  // branch-mode агент работает в worktree (паттерн строки loadApiMode)
+  const settingsCwd = process.env.VIBELOG_CWD ?? cwd;
+  // .env + env-секция settings.json ДО валидации LLM (lesson-44 / VL-143):
+  // ключ api_key_env провайдера должен лежать в process.env к ensureLlmEnv;
+  // вызов идемпотентен (dotenv-семантика, ставит только пустые ключи)
+  loadProjectEnv(settingsCwd);
+  // LLM из env или секций settings.json (ensureLlmEnv, VL-189 + VL-209):
+  // при отсутствии — понятная ошибка в stderr и exit 1 (контракт
+  // оркестратора: лог фазы → logTail)
+  if (!ensureLlmEnv('агенту', settingsCwd)) {
     process.exitCode = 1;
     return;
   }
-  // Оба ключа env проверены — createLlmClient не бросит (падает только без модели).
+  // VL-209: лог активной модели в stderr → logTail оркестратора:
+  // «Модель: <label> (<id>), api_mode: <chat|responses>»
+  log(activeModelLogLine(settingsCwd));
+  // LLM настроен — createLlmClient не бросит (падает только без модели).
   // Создание НИЖЕ резолва sessionId (VL-198): клиенту нужен sessionId для
   // заголовка X-Session-Id (ref-18); до runLoop llm нигде не используется.
-  const cwd = process.cwd();
 
   // Промпт фазы собирается до инициализации сессий: ошибка шаблона завершает
   // CLI до создания jsonl. Блок объявлен после cwd (VL-112): выбор
@@ -376,7 +387,8 @@ export async function main(argv: string[]): Promise<void> {
   // а settings.json в главном репо (паттерн external-mcp.ts)
   const llm = createLlmClient({
     sessionId,
-    apiMode: opts.apiMode ?? loadApiMode(process.env.VIBELOG_CWD ?? cwd),
+    cwd: settingsCwd,
+    apiMode: opts.apiMode ?? loadApiMode(settingsCwd),
   });
 
   // Метаданные сессии (VL-110/114): два источника taskId/phase — позиционные

@@ -39,7 +39,9 @@ export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'create', description: 'Создать задачу' },
   { command: 'status', description: 'Сменить статус задачи', examples: ['/status VL-1 In Progress'] },
   { command: 'move', description: 'Ручной переход статуса по workflow (Backlog → To Do и др.)', usage: '/move <id> <статус>', examples: ['/move VL-1 To Do'] },
-  { command: 'set', description: 'Настройки бота: агент, лимиты фаз, режим веток, компакшн', usage: '/set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off>', examples: ['/set agent vb', '/set max-wall-time 1800', '/set branch-mode on', '/set compact off'] },
+  { command: 'set', description: 'Настройки бота: агент, модель LLM, лимиты фаз, режим веток, компакшн', usage: '/set agent <qwen|vb> | model <id> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off>', examples: ['/set agent vb', '/set model routerai/xiaomi/mimo-v2.6-pro', '/set max-wall-time 1800', '/set branch-mode on', '/set compact off'] },
+  // VL-209: /model — список моделей (после /set, как в handlers.ts)
+  { command: 'model', description: 'Список LLM-моделей (активная ✅)', usage: '/model', examples: ['/model'] },
   // Порядок = порядок bot.command в handlers.ts (VL-191: auto после /set, перед /comment —
   // тест registry.test «реестр покрывает все bot.command» сверяет имена и порядок)
   { command: 'auto', description: 'Автоочередь фаз: /auto add|start|stop|status', usage: '/auto add VL-N … | start | stop | status', examples: ['/auto add VL-1 VL-2', '/auto start', '/auto status'] },

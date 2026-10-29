@@ -9,11 +9,13 @@
  *
  * Деньги НЕ хранятся в задаче (тариф меняется — см. описание VL-198):
  * стоимость считается на лету calculateCost(usage, pricing), тарифы —
- * секция `pricing` .vibelog/settings.json:
+ * pricing активной модели из секции `models.available` .vibelog/settings.json
+ * (VL-209, см. getActiveModelPricing); fallback — legacy-секция `pricing`:
  * `{ "model-name": { input_per_1m, output_per_1m, cache_per_1m } }`.
  */
 
 import { loadSettings } from './settings.js';
+import { resolveActiveModel } from './models.js';
 
 /**
  * Агрегат использования токенов (формат frontmatter/billing/meta, VL-198).
@@ -139,6 +141,27 @@ export function getPricing(cwd: string): PricingMap {
     };
   }
   return out;
+}
+
+/**
+ * Тарифы активной LLM-модели (VL-209: pricing теперь внутри модели).
+ *
+ * Источники по приоритету:
+ * 1. models.available[models.default].pricing (.vibelog/settings.json);
+ * 2. legacy-секция `pricing` (модель → тариф) по имени активной модели —
+ *    конфиги, созданные до VL-209, продолжают работать;
+ * 3. undefined — тариф не найден (calculateCost вернёт нули, не ошибка).
+ *
+ * @param cwd — директория проекта settings.json
+ */
+export function getActiveModelPricing(cwd: string): ModelPricing | undefined {
+  const active = resolveActiveModel(cwd);
+  if (active !== null && active.pricing) return active.pricing;
+  // Активная модель неизвестна (env-fallback) либо у неё нет pricing —
+  // ищем в legacy-секции по wire-имени модели
+  const modelName = active?.model ?? process.env.VIBELOG_LLM_MODEL;
+  if (!modelName) return undefined;
+  return getPricing(cwd)[modelName];
 }
 
 /**

@@ -31,6 +31,7 @@ import { runDoctor } from './commands/doctor.js';
 import { runMilestone } from './commands/milestone.js';
 import { runDoc } from './commands/doc.js';
 import { runConfig } from './commands/config.js';
+import { runModel, runProvider } from './commands/model.js';
 import { runDraft } from './commands/draft.js';
 import { runDecision } from './commands/decision.js';
 import { runBot } from './commands/bot.js';
@@ -103,6 +104,10 @@ export async function route(args: string[]): Promise<void> {
       return runLesson(subcommand, positional, flags, cwd);
     case 'config':
       return runConfig(subcommand, positional, flags, cwd);
+    case 'model':
+      return runModel(subcommand, positional, flags, cwd);
+    case 'provider':
+      return runProvider(subcommand, positional, flags, cwd);
     case 'draft':
       return runDraft(subcommand, positional, flags, cwd);
     case 'decision':
@@ -137,6 +142,8 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('reference', colors.cyan)} list|add|...          Референсы (repo/url/file/doc/spec)
   ${colorize('lesson', colors.cyan)} list|create|...         Уроки из задач (lessons learned)
   ${colorize('config', colors.cyan)} get|set|list             Конфиг проекта
+  ${colorize('model', colors.cyan)} list|use|current          LLM-модели: список, переключение
+  ${colorize('provider', colors.cyan)} list                   LLM-провайдеры (base_url, ключ)
   ${colorize('draft', colors.cyan)} create|promote|...       Черновики задач
   ${colorize('decision', colors.cyan)} create|list|...         Решения (ADR)
   ${colorize('doctor', colors.cyan)} [--json]                    Диагностика окружения
@@ -280,6 +287,22 @@ vibelog config <subcommand> [опции]
   get <key>           Показать значение ключа
   set <key> <value>   Изменить значение (массивы: JSON или через запятую)
   list                Все ключи конфига`,
+
+    model: `
+vibelog model <subcommand>
+
+Управление LLM-моделями (.vibelog/settings.json, секция models, VL-209):
+  list      Список моделей (* — активная, models.default)
+  use <id>  Переключить активную модель (записывает models.default)
+  current   Активная модель (или env VIBELOG_LLM_MODEL при fallback)
+
+Без секции models используется env VIBELOG_LLM_MODEL (как раньше).`,
+
+    provider: `
+vibelog provider <subcommand>
+
+Провайдеры LLM (.vibelog/settings.json, секция providers, VL-209):
+  list      id, base_url, api_key_env + статус ключа (значения не выводятся)`,
 
     bot: `
 vibelog bot

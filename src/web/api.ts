@@ -14,6 +14,8 @@
  * - PUT  /api/config         — патч конфига проекта с валидацией (VL-165)
  * - GET  /api/settings       — настройки бота/settings.json без секретов (VL-156)
  * - PUT  /api/settings       — патч настроек с валидацией (VL-156)
+ * - GET  /api/models         — реестр LLM-моделей/провайдеров без ключей (VL-209)
+ * - PUT  /api/models         — смена models.default с валидацией (VL-209)
  * - POST /api/tasks/:id/trigger — запуск фазы оркестратора (VL-28); поле
  *   comment (VL-172) — сначала addComment в задачу, затем {{comment}} промпта;
  *   общий с ботом хелпер startTaskPhase + агент default_agent (VL-180)
@@ -65,6 +67,8 @@ import { loadPhaseStyles } from '../core/phase-styles.js';
 import { globalSearch } from '../core/search.js';
 import { listChatThreads, getChatThread } from './chat.js';
 import { resolveGitUserName } from '../core/project-settings.js';
+import { loadSettings, saveSettingsPatch } from '../core/settings.js';
+import { loadModels, loadProviders } from '../core/models.js';
 import { loadBotSettings, saveBotSettings } from '../bot/settings.js';
 import type { BotSettings } from '../bot/settings.js';
 import { startTaskPhase, getRun, rejectTask } from './orchestrator.js';
@@ -184,6 +188,54 @@ export function handleApi(
       Object.assign(settings, validated.patch);
       saveBotSettings(cwd, settings);
       return { status: 200, body: { settings: loadBotSettings(cwd) } };
+    }
+
+    // GET /api/models — реестр LLM-моделей/провайдеров (VL-209): селект на
+    // #/settings и переключатель в чате. ЗНАЧЕНИЯ ключей сюда не попадают —
+    // только keySet: true|false (секреты не утекают в браузер, паттерн
+    // GET /api/settings).
+    if (method === 'GET' && url === '/api/models') {
+      const models = loadModels(cwd);
+      const providers = loadProviders(cwd);
+      return {
+        status: 200,
+        body: {
+          default: models.default ?? null,
+          available: Object.entries(models.available).map(([id, m]) => ({
+            id,
+            label: m.label ?? id,
+            provider: m.provider,
+            api_mode: m.api_mode ?? 'chat',
+          })),
+          providers: Object.entries(providers).map(([id, p]) => ({
+            id,
+            base_url: p.base_url,
+            keySet: Boolean((p.api_key_env && process.env[p.api_key_env]) || p.api_key),
+          })),
+        },
+      };
+    }
+
+    // PUT /api/models — смена models.default (VL-209): зеркало `vibelog model
+    // use`. Валидация до записи: строка и id ∈ available, иначе 400.
+    if (method === 'PUT' && url === '/api/models') {
+      const id = (body as Record<string, unknown> | null)?.default;
+      if (typeof id !== 'string' || id === '') {
+        return { status: 400, body: { error: 'default: ожидается строка id модели' } };
+      }
+      const models = loadModels(cwd);
+      if (!models.available[id]) {
+        return {
+          status: 400,
+          body: { error: `Неизвестная модель: ${id} — отсутствует в models.available` },
+        };
+      }
+      // Read-modify-write: сохраняем providers/env/прочие ключи settings.json
+      const settings = loadSettings(cwd);
+      saveSettingsPatch(cwd, {
+        models: { ...((settings.models ?? {}) as Record<string, unknown>), default: id },
+      });
+      return { status: 200, body: { default: id } };
     }
 
     // GET /api/references — список references (VL-174).

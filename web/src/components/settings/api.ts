@@ -48,3 +48,47 @@ export async function putSettings(patch: SettingsPatch): Promise<SettingsData> {
   const data = (await res.json()) as { settings: SettingsData };
   return data.settings ?? {};
 }
+
+// ── VL-209: реестр LLM-моделей/провайдеров ──
+
+/** Одна модель из models.available. */
+export interface ModelInfo {
+  id: string;
+  label: string;
+  provider: string;
+  api_mode: "chat" | "responses";
+}
+
+/** Провайдер: БЕЗ значений ключей — только факт их наличия. */
+export interface ProviderInfo {
+  id: string;
+  base_url: string;
+  keySet: boolean;
+}
+
+/** Ответ GET /api/models. */
+export interface ModelsData {
+  default: string | null;
+  available: ModelInfo[];
+  providers: ProviderInfo[];
+}
+
+/** Список моделей/провайдеров. Бросает при ошибке — вызывающий показывает сообщение. */
+export async function fetchModels(): Promise<ModelsData> {
+  const res = await fetch("/api/models");
+  if (!res.ok) throw new Error(`GET /api/models: ${res.status}`);
+  return (await res.json()) as ModelsData;
+}
+
+/** Смена models.default. Бросает с текстом ошибки сервера (400 от валидации). */
+export async function putModelDefault(id: string): Promise<void> {
+  const res = await fetch("/api/models", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ default: id }),
+  });
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(errBody.error || `PUT /api/models: ${res.status}`);
+  }
+}

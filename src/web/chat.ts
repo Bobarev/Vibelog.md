@@ -29,6 +29,7 @@ import { join } from 'node:path';
 import type { ChatMessage, LlmClient, ToolCall, ToolDef } from '../agent/llm.js';
 import { createLlmClient } from '../agent/llm.js';
 import { loadApiMode } from '../agent/llm-env.js';
+import { loadModels, resolveModelById, validateModelsConfig } from '../core/models.js';
 import { listTools, handleToolCall } from '../mcp/tools.js';
 import { globalSearch } from '../core/search.js';
 import { truncateToolOutput } from '../agent/tools.js';
@@ -48,6 +49,8 @@ export interface ChatRequestBody {
   message?: unknown;
   sessionId?: unknown;
   threadId?: unknown;
+  /** Переопределение модели чата (id из models.available, VL-209). */
+  model?: unknown;
   approval?: { toolCallId?: unknown; approved?: unknown; reason?: unknown };
 }
 
@@ -357,7 +360,25 @@ async function produce(
   // --- LLM-клиент -----------------------------------------------------------
   let llm: Pick<LlmClient, 'streamChat'> | undefined = deps.llm;
   if (!llm) {
-    if (!process.env.VIBELOG_LLM_API_KEY) {
+    // VL-209: переопределение модели из body (id из models.available) —
+    // валидация до создания клиента; строка обязательна
+    let bodyModel: string | undefined;
+    if (body.model !== undefined) {
+      if (typeof body.model !== 'string' || body.model === '') {
+        queue.push({ type: 'error', message: 'Некорректная модель: ожидается строка id из models.available' });
+        return;
+      }
+      bodyModel = body.model;
+      if (resolveModelById(cwd, bodyModel) === null) {
+        queue.push({ type: 'error', message: `Неизвестная модель: ${bodyModel} — отсутствует в models.available settings.json` });
+        return;
+      }
+    }
+    // Models-путь (VL-209): секции настроены — валидируем их; fallback
+    // (нет секции models) — СТАРОЕ поведение и старые тексты дословно
+    // (их матчат chat.test.mjs)
+    const hasModelsSection = Object.keys(loadModels(cwd).available).length > 0;
+    if (!hasModelsSection && !process.env.VIBELOG_LLM_API_KEY) {
       queue.push({
         type: 'error',
         message:
@@ -365,16 +386,35 @@ async function produce(
       });
       return;
     }
-    if (!process.env.VIBELOG_LLM_MODEL) {
+    if (!hasModelsSection && !process.env.VIBELOG_LLM_MODEL) {
       queue.push({
         type: 'error',
         message: 'Ошибка: не задана VIBELOG_LLM_MODEL — модель LLM неизвестна',
       });
       return;
     }
+    if (hasModelsSection) {
+      const errors = validateModelsConfig(cwd);
+      if (errors.length > 0) {
+        for (const err of errors) queue.push({ type: 'error', message: `Ошибка: ${err}` });
+        return;
+      }
+    }
     try {
-      // apiMode (VL-205): режим LLM API из settings.json api_mode (дефолт chat)
-      llm = createLlmClient({ sessionId: threadId, apiMode: loadApiMode(cwd) });
+      // apiMode (VL-205): из модели/фолбэка settings; model (VL-209):
+      // переопределение из body приоритетнее default (createLlmClient
+      // резолвит id → wire-имя через resolveActiveModel/resolveModelById
+      // не может — id передаём как options.model ТОЛЬКО для default-пути,
+      // поэтому переопределение резолвим здесь заранее)
+      const override = bodyModel !== undefined ? resolveModelById(cwd, bodyModel) : null;
+      llm = createLlmClient({
+        cwd,
+        sessionId: threadId,
+        apiMode: loadApiMode(cwd),
+        ...(override
+          ? { model: override.model, baseUrl: override.baseUrl, apiKey: override.apiKey, apiMode: override.apiMode }
+          : {}),
+      });
     } catch (err) {
       queue.push({ type: 'error', message: err instanceof Error ? err.message : String(err) });
       return;

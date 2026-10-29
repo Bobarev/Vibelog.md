@@ -102,12 +102,12 @@ export async function runInteractiveAgent(
 
   // Env-проверки ДО рендера TUI: ошибка не должна появиться в альтернативном буфере
   // (общая ensureLlmEnv, VL-189 — тексты ошибок дословно прежние)
-  if (!ensureLlmEnv('чату с агентом')) {
+  if (!ensureLlmEnv('чату с агентом', cwd)) {
     process.exitCode = 1;
     return;
   }
-  // apiMode (VL-205): режим LLM API из settings.json api_mode (дефолт chat)
-  const llm = createLlmClient({ apiMode: loadApiMode(cwd) });
+  // apiMode (VL-205): режим LLM API; cwd (VL-209): секции models/providers
+  const llm = createLlmClient({ cwd, apiMode: loadApiMode(cwd) });
   const tools: ToolSpec[] = listLocalTools(cwd);
   // VL-107 fix: как в cli.ts — при запуске из worktree сессии хранятся
   // в главном репо (VIBELOG_CWD от оркестратора), чтобы resume из бота

@@ -453,6 +453,35 @@ describe('vibelog-agent CLI (VL-85)', () => {
     assert.match(stderr, /Системный промпт: \d+ символов \(AGENTS.md: (да|нет)\)/);
   });
 
+  it('VL-209: лог старта фазы «Модель: <label> (<id>), api_mode: …» из settings.json', async () => {
+    // Секции models/providers в testDir; env VIBELOG_LLM_MODEL убран —
+    // источник модели ТОЛЬКО settings.json (models-путь)
+    const env = llmEnv();
+    delete env.VIBELOG_LLM_MODEL;
+    mkdirSync(join(testDir, '.vibelog'), { recursive: true });
+    writeFileSync(
+      join(testDir, '.vibelog', 'settings.json'),
+      JSON.stringify({
+        providers: { mockp: { base_url: `http://127.0.0.1:${mock.port}/v1`, api_key: 'test-key' } },
+        models: {
+          default: 'mockp/Test/Model',
+          available: {
+            'mockp/Test/Model': { label: 'Test Model', provider: 'mockp', model: 'test-model', api_mode: 'chat' },
+          },
+        },
+      }),
+      'utf-8'
+    );
+    try {
+      const { code, stderr } = await runCli(['comment', 'VL-1', '--no-mcp', '--comment', 'лог модели'], env);
+      assert.equal(code, 0);
+      assert.match(stderr, /Модель: Test Model \(mockp\/Test\/Model\), api_mode: chat/);
+    } finally {
+      // иначе последующие тесты файла подхватят models-путь
+      rmSync(join(testDir, '.vibelog', 'settings.json'), { force: true });
+    }
+  });
+
   // ── VL-103: инкрементальная запись jsonl и обрыв LLM-запроса ──
 
   it('jsonl дописывается инкрементально: на 2-м LLM-запросе файл уже содержит сообщения (VL-103)', async () => {
