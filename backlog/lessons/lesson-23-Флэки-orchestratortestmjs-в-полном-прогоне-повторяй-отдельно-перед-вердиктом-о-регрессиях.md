@@ -11,8 +11,9 @@ source_tasks:
   - VL-174
 linked_tasks:
   - VL-174
+  - VL-209
 created_date: 2026-10-25
-updated_date: 2026-10-25
+updated_date: 2026-10-29
 supersedes: ''
 ---
 ## Проблема
