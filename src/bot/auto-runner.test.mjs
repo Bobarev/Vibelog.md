@@ -243,6 +243,95 @@ describe('auto-runner (VL-191)', () => {
     throw new Error(`waitFor: таймаут (${what})`);
   }
 
+  // ── VL-228: исчерпание ретраев → failed_permanent + stderr со ссылкой на сессию ──
+
+  it('VL-228: провал при исчерпанных ретраях → failed_permanent + fail_reason + stderr со сессией (AC1)', async () => {
+    const dir = freshDir('vl228-permanent');
+    makeBacklog(dir);
+    createTaskFile(dir, { id: 'VL-7', title: 'Задача с исчерпанными ретраями' }); // To Do → фаза spec
+    makeSession(dir, 'agent-vl228'); // сессия фазы: должна попасть в stderr
+    // attempts=1 при max_retries=1: следующая ошибка → attempts=2 > max
+    saveAutoQueue(dir, {
+      running: true,
+      max_retries: 1,
+      tasks: [{ id: 'VL-7', status: 'pending', added_at: 'T', attempts: 1 }],
+    });
+
+    setStartPhaseForTests((cwd, taskId, phase, opts) => {
+      opts.onExit({ running: false, phase, exitCode: 1, logTail: 'упало на тесте' });
+      return { started: true, pid: 1 };
+    });
+
+    // Перехват stderr: console.error глобален и параллельные файлы тестов
+    // (fileParallelism) могут шуметь — собираем синхронно и восстанавливаем
+    // немедленно в finally.
+    const errors = [];
+    const origError = console.error;
+    console.error = (...args) => {
+      errors.push(args.join(' '));
+    };
+    try {
+      autoTick(fakeBot, dir);
+      await waitFor(
+        () => loadAutoQueue(dir).tasks.find((t) => t.id === 'VL-7')?.status === 'failed_permanent',
+        4000,
+        'статус failed_permanent'
+      );
+    } finally {
+      console.error = origError;
+      setStartPhaseForTests(null); // isolate:false — шов обязан сброситься
+      stopAutoPoll();
+    }
+
+    const item = loadAutoQueue(dir).tasks.find((t) => t.id === 'VL-7');
+    assert.equal(item.status, 'failed_permanent', 'исчерпание ретраев → отдельный статус');
+    assert.equal(item.attempts, 2, 'attempts = 2 (одна попытка была + текущая)');
+    assert.ok(item.fail_reason && item.fail_reason.length > 0, 'причина записана в fail_reason');
+    assert.match(item.fail_reason, /attempts=2\/max=1/, 'в причине виден счётчик попыток');
+
+    const stderrText = errors.join('\n');
+    assert.match(stderrText, /failed_permanent/, 'stderr сообщает про failed_permanent');
+    assert.match(stderrText, /attempts=2|попыток 2 из 1/, 'stderr содержит счётчик попыток');
+    assert.match(stderrText, /agent-vl228/, 'stderr ссылается на сессию агента');
+  });
+
+  it('VL-228: первый провал при attempts=0 → retry (failed, не failed_permanent)', async () => {
+    const dir = freshDir('vl228-not-permanent');
+    makeBacklog(dir);
+    createTaskFile(dir, { id: 'VL-7', title: 'Задача с запасом ретраев' }); // To Do → фаза spec
+    saveAutoQueue(dir, {
+      running: true,
+      max_retries: 1,
+      tasks: [{ id: 'VL-7', status: 'pending', added_at: 'T', attempts: 0 }],
+    });
+
+    let calls = 0;
+    setStartPhaseForTests((cwd, taskId, phase, opts) => {
+      calls += 1;
+      opts.onExit({ running: false, phase, exitCode: 1, logTail: 'упало' });
+      return { started: true, pid: 1 };
+    });
+    try {
+      autoTick(fakeBot, dir);
+      await waitFor(() => calls >= 1, 4000, 'первый запуск');
+      // Синхронно после первого тика: retry ещё впереди (setImmediate-цепочка)
+      const item = loadAutoQueue(dir).tasks.find((t) => t.id === 'VL-7');
+      assert.equal(item.attempts, 1, 'attempts наращён до 1');
+      assert.equal(item.status, 'running', 'элемент остаётся running — retry ещё возможен');
+      assert.equal(item.fail_reason, undefined, 'причина не пишется до исчерпания');
+      // Довести цепочку до терминала: иначе незавершённый setImmediate-тик
+      // утечёт в следующий тест (isolate:false) и испортит его счётчики
+      await waitFor(
+        () => loadAutoQueue(dir).tasks.find((t) => t.id === 'VL-7')?.status === 'failed_permanent',
+        4000,
+        'досыл до failed_permanent'
+      );
+    } finally {
+      setStartPhaseForTests(null);
+      stopAutoPoll();
+    }
+  });
+
   it('retry после exitCode!=0 вызывает startTaskPhase с --resume, счётчики целы (VL-200, AC2)', async () => {
     const dir = freshDir('vl200-retry');
     makeBacklog(dir);
@@ -267,9 +356,9 @@ describe('auto-runner (VL-191)', () => {
       autoTick(fakeBot, dir);
       await waitFor(() => calls.length >= 2, 4000, 'второй вызов startTaskPhase');
       await waitFor(
-        () => loadAutoQueue(dir).tasks.find((t) => t.id === 'VL-7')?.status === 'failed',
+        () => loadAutoQueue(dir).tasks.find((t) => t.id === 'VL-7')?.status === 'failed_permanent',
         4000,
-        'статус failed'
+        'статус failed_permanent'
       );
 
       assert.equal(calls.length, 2, 'ровно два запуска (первая попытка + retry)');
@@ -288,7 +377,7 @@ describe('auto-runner (VL-191)', () => {
       const final = loadAutoQueue(dir);
       const item = final.tasks.find((t) => t.id === 'VL-7');
       assert.equal(item.attempts, 2, 'attempts = попыток (0→1→2), без сбросов/переполнений');
-      assert.equal(item.status, 'failed', 'вторая ошибка при max_retries=1 → failed');
+      assert.equal(item.status, 'failed_permanent', 'вторая ошибка при max_retries=1 → failed_permanent (VL-228)');
       assert.equal(final.max_retries ?? 1, 1, 'max_retries не изменён');
     } finally {
       setStartPhaseForTests(null); // isolate:false — шов обязан сброситься
@@ -399,12 +488,12 @@ process.exit(1);
 
       // Терминал: 2 ошибки при max_retries=1 → failed; третьего спавна нет
       await waitFor(
-        () => loadAutoQueue(dir).tasks.find((t) => t.id === 'VL-8')?.status === 'failed',
+        () => loadAutoQueue(dir).tasks.find((t) => t.id === 'VL-8')?.status === 'failed_permanent',
         4000,
-        'статус failed'
+        'статус failed_permanent'
       );
       await new Promise((r) => setTimeout(r, 150));
-      assert.equal(lines().length, 2, 'третьего спавна после failed не было');
+      assert.equal(lines().length, 2, 'третьего спавна после failed_permanent не было');
       const item = loadAutoQueue(dir).tasks.find((t) => t.id === 'VL-8');
       assert.equal(item.attempts, 2, 'attempts=2 при max_retries=1');
     } finally {
