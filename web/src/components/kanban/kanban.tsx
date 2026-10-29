@@ -385,8 +385,9 @@ export function Kanban() {
           <p className="text-muted-foreground text-sm">Загрузка задач…</p>
         </div>
       ) : view === 'list' ? (
-        // List-вид: те же фильтры/поиск/сортировка, что и у доски (VL-177)
-        <TasksList tasks={visibleTasks} onTaskClick={openView} />
+        // List-вид: группы по статусам (VL-211, ref-2 kanban-list.tsx),
+        // те же фильтры/поиск/сортировка, что и у доски (VL-177)
+        <TasksList board={visibleBoard} columnOrder={orderedColumns} onTaskClick={openView} />
       ) : (
         <DragDropProvider onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
           <div className="scrollbar-thin min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden bg-muted/25 px-4 pt-4 pb-0 [scrollbar-color:var(--border)_transparent] lg:px-5 lg:pt-5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:h-1">

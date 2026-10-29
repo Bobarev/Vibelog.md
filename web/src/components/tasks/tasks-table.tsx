@@ -31,7 +31,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { KanbanTask } from "@/types/kanban";
+import { cn } from "cn";
 import type { SortKey, SortState } from "./sort-tasks";
+import { headerIcons, labelTone, priorityBadge, statusIcon } from "./task-visuals";
 
 /** Описание одной колонки: ключ сортировки + заголовок. */
 interface ColumnDef {
@@ -133,10 +135,13 @@ export function TasksTable({
       {/* Таблица скроллится внутри страницы — main остаётся scroll-контейнером (lesson-14) */}
       <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         <Table>
-          <TableHeader>
+          {/* Sticky-заголовок с иконками колонок — ref-2 kanban-table.tsx:97
+              (bg-background sticky top-0 z-10 + headerIcons, VL-211/п.5) */}
+          <TableHeader className="bg-background sticky top-0 z-10">
             <TableRow className="hover:bg-transparent">
               {COLUMNS.map((column) => {
                 const active = sort?.key === column.key;
+                const Icon = headerIcons[column.key];
                 return (
                   <TableHead
                     key={column.key}
@@ -144,7 +149,8 @@ export function TasksTable({
                     onClick={() => onSortChange(nextSort(sort, column.key))}
                     title={`Сортировать по ${column.label}`}
                   >
-                    <span className="inline-flex items-center gap-1">
+                    <span className="inline-flex items-center gap-2">
+                      {Icon && <Icon className="text-muted-foreground size-3.5 shrink-0" aria-hidden="true" />}
                       {column.label}
                       {/* Индикатор направления: ArrowUp/ArrowDown есть в lucide-react (lesson-15) */}
                       {active && sort?.dir === "asc" ? (
@@ -176,22 +182,49 @@ export function TasksTable({
                   <TableCell className="max-w-md truncate font-medium" title={task.title}>
                     {task.title}
                   </TableCell>
-                  <TableCell>{task.status}</TableCell>
-                  <TableCell>{task.priority}</TableCell>
+                  <TableCell>
+                    {/* Статус: иконка из statusIcons + текст (ref-2
+                        kanban-table-columns statusCell, VL-211/п.5);
+                        без Select-смены — переходы валидирует workflow */}
+                    <span className="inline-flex items-center gap-1.5">
+                      {(() => {
+                        const StatusIcon = statusIcon(task.status);
+                        return <StatusIcon className="text-muted-foreground size-3.5 shrink-0" aria-hidden="true" />;
+                      })()}
+                      {task.status}
+                    </span>
+                  </TableCell>
+                  <TableCell>
+                    {/* Priority-Badge с иконкой и tone-цветом — ref-2 task-priority.ts */}
+                    {(() => {
+                      const priority = priorityBadge(task.priority);
+                      const PriorityIcon = priority.icon;
+                      return PriorityIcon ? (
+                        <Badge variant={priority.variant} className={cn("rounded-md px-2", priority.className)}>
+                          <PriorityIcon data-icon="inline-start" aria-hidden="true" />
+                          {task.priority}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="rounded-md px-2">
+                          {task.priority}
+                        </Badge>
+                      );
+                    })()}
+                  </TableCell>
                   <TableCell>{task.type}</TableCell>
                   <TableCell>
                     <span className="flex flex-wrap items-center gap-1">
                       {task.labels.length === 0
                         ? "—"
                         : task.labels.map((label) => (
-                            <Badge key={label} variant="outline" className="rounded-md px-1.5 text-[11px]">
+                            <Badge key={label} variant="secondary" className={labelTone(label)}>
                               {label}
                             </Badge>
                           ))}
                     </span>
                   </TableCell>
                   <TableCell>{task.milestone || "—"}</TableCell>
-                  <TableCell title={task.updated_date}>
+                  <TableCell className="tabular-nums" title={task.updated_date}>
                     {task.updated_date ? task.updated_date.slice(0, 10) : "—"}
                   </TableCell>
                 </TableRow>
