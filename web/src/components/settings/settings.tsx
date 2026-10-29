@@ -21,10 +21,24 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { fetchSettings, putSettings, type SettingsData } from "./api";
+import {
+  fetchSettings,
+  putSettings,
+  fetchModels,
+  putModelDefault,
+  type SettingsData,
+  type ModelsData,
+} from "./api";
 
 /** Локальное состояние формы: текст числовых полей — как есть (пусто = сброс). */
 interface FormState {
@@ -62,6 +76,10 @@ export function SettingsPage() {
   const [saving, setSaving] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // VL-209: реестр моделей/провайдеров для селекта активной модели
+  const [models, setModels] = React.useState<ModelsData | null>(null);
+  const [modelError, setModelError] = React.useState<string | null>(null);
+  const [modelSaving, setModelSaving] = React.useState(false);
 
   // Загрузка текущих настроек; пустой initial state → Skeleton
   React.useEffect(() => {
@@ -73,10 +91,33 @@ export function SettingsPage() {
       .catch((err: Error) => {
         if (!cancelled) setError(err.message);
       });
+    // Секции models могут отсутствовать — тогда fetchModels вернёт пустые
+    // списки, ошибка только при недоступности сервера
+    fetchModels()
+      .then((d) => {
+        if (!cancelled) setModels(d);
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setModelError(err.message);
+      });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  /** Переключение models.default: PUT /api/models → обновление состояния. */
+  const handleModelChange = async (id: string) => {
+    setModelSaving(true);
+    setModelError(null);
+    try {
+      await putModelDefault(id);
+      setModels((prev) => (prev ? { ...prev, default: id } : prev));
+    } catch (err) {
+      setModelError((err as Error).message);
+    } finally {
+      setModelSaving(false);
+    }
+  };
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
@@ -195,6 +236,59 @@ export function SettingsPage() {
           <p className="text-muted-foreground text-xs">
             Лимиты встроенного агента (vb). 0 или пусто — сброс на дефолт агента.
           </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Модель LLM</CardTitle>
+          <CardDescription>
+            Активная модель для фаз и чата (секции models/providers
+            settings.json). Ключи хранятся в env — здесь не отображаются.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {models && models.available.length > 0 ? (
+            <>
+              <div className="space-y-2">
+                <Label>Активная модель</Label>
+                <Select
+                  value={models.default ?? ""}
+                  onValueChange={handleModelChange}
+                  disabled={modelSaving}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Выберите модель" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {models.available.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.label} ({m.provider}, {m.api_mode})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {(() => {
+                const active = models.available.find((m) => m.id === models.default);
+                const provider = active && models.providers.find((p) => p.id === active.provider);
+                if (!provider) return null;
+                return (
+                  <p className="text-muted-foreground text-xs">
+                    Провайдер {provider.id}: {provider.base_url} — ключ{" "}
+                    {provider.keySet ? "задан" : "НЕ ЗАДАН (env / .env / settings.json)"}
+                  </p>
+                );
+              })()}
+              {modelError && <p className="text-destructive text-sm">{modelError}</p>}
+            </>
+          ) : (
+            <p className="text-muted-foreground text-sm">
+              {modelError
+                ? `Ошибка загрузки моделей: ${modelError}`
+                : "Модели не настроены — используется env VIBELOG_LLM_MODEL (fallback)."}
+            </p>
+          )}
         </CardContent>
       </Card>
 

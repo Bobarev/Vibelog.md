@@ -23,6 +23,9 @@
  */
 
 import { truncateToolOutput } from './tools.js';
+// VL-209: реестр models/providers; models.ts импортирует тип ApiMode из
+// этого файла только как type — рантайм-цикла нет
+import { resolveActiveModel } from '../core/models.js';
 
 /** Роль сообщения в диалоге (wire-формат OpenAI chat/completions). */
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
@@ -128,6 +131,13 @@ export interface LlmClientOptions {
    * поведение) либо 'responses' (Responses API, ref-18/20/21).
    */
   apiMode?: ApiMode;
+  /**
+   * Директория проекта для чтения секций models/providers settings.json
+   * (VL-209). Дефолт — process.cwd(); в branch-mode вызывающий передаёт
+   * VIBELOG_CWD ?? cwd (settings.json в главном репо, не в worktree).
+   * Без секции models — никакого эффекта (env-fallback).
+   */
+  cwd?: string;
 }
 
 /** Публичный интерфейс клиента (loop зависит только от него). */
@@ -718,19 +728,24 @@ export function shrinkMessages(messages: ChatMessage[], maxToolChars: number): C
  * пустой model давал бы HTTP 400 без внятного сообщения.
  */
 export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
+  // VL-209: реестр models/providers settings.json; null — секция не
+  // настроена, все значения ниже падают на env как раньше (fallback 1:1)
+  const active = resolveActiveModel(options.cwd ?? process.cwd());
   const baseUrl = (
     options.baseUrl ??
+    active?.baseUrl ??
     process.env.VIBELOG_LLM_BASE_URL ??
     DEFAULT_BASE_URL
   ).replace(/\/+$/, '');
-  const apiKey = options.apiKey ?? process.env.VIBELOG_LLM_API_KEY ?? '';
-  const model = options.model ?? process.env.VIBELOG_LLM_MODEL ?? '';
+  const apiKey = options.apiKey ?? active?.apiKey ?? process.env.VIBELOG_LLM_API_KEY ?? '';
+  const model = options.model ?? active?.model ?? process.env.VIBELOG_LLM_MODEL ?? '';
   const fetchImpl: typeof fetch = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const maxRetries = options.maxRetries ?? MAX_RETRIES_DEFAULT;
   const baseRetryDelay = options.retryDelayMs ?? RETRY_DELAY_DEFAULT;
   const sessionId = options.sessionId ?? '';
-  // VL-205: режим API; дефолт chat — текущее поведение без изменений
-  const apiMode: ApiMode = options.apiMode ?? 'chat';
+  // VL-205: режим API; VL-209: api_mode активной модели ниже флага --api-mode
+  // (флаг — разовое переопределение, приоритет VL-205 сохранён)
+  const apiMode: ApiMode = options.apiMode ?? active?.apiMode ?? 'chat';
   if (!model) {
     throw new Error('Не задана модель LLM: установи env VIBELOG_LLM_MODEL');
   }

@@ -12,6 +12,7 @@ import {
   calculateCost,
   emptyUsage,
   formatTokenUsageLines,
+  getActiveModelPricing,
   getPricing,
   hasUsageDelta,
   usageDelta,
@@ -75,6 +76,60 @@ describe('getPricing (VL-198)', () => {
       'utf-8',
     );
     expect(getPricing(dir)).toEqual({ bad: { input_per_1m: 0, output_per_1m: 0, cache_per_1m: 0 } });
+  });
+});
+
+describe('getActiveModelPricing (VL-209)', () => {
+  let dir;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'vib-activpricing-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Пишет settings.json в temp-каталог. */
+  function writeSettings(data) {
+    mkdirSync(join(dir, '.vibelog'), { recursive: true });
+    writeFileSync(join(dir, '.vibelog', 'settings.json'), JSON.stringify(data), 'utf-8');
+  }
+
+  it('pricing активной модели из models.available[default]', () => {
+    writeSettings({
+      providers: { p: { base_url: 'https://p/v1', api_key: 'k' } },
+      models: {
+        default: 'p/M',
+        available: {
+          'p/M': { provider: 'p', model: 'M', pricing: { input_per_1m: 2, output_per_1m: 10, cache_per_1m: 0.5 } },
+        },
+      },
+    });
+    expect(getActiveModelPricing(dir)).toEqual({ input_per_1m: 2, output_per_1m: 10, cache_per_1m: 0.5 });
+  });
+
+  it('нет pricing у модели → fallback на legacy-секцию pricing по wire-имени', () => {
+    writeSettings({
+      providers: { p: { base_url: 'https://p/v1', api_key: 'k' } },
+      models: { default: 'p/M', available: { 'p/M': { provider: 'p', model: 'wire-name' } } },
+      pricing: { 'wire-name': { input_per_1m: 1, output_per_1m: 2, cache_per_1m: 3 } },
+    });
+    expect(getActiveModelPricing(dir)).toEqual({ input_per_1m: 1, output_per_1m: 2, cache_per_1m: 3 });
+  });
+
+  it('models не настроен, legacy pricing по VIBELOG_LLM_MODEL', () => {
+    const saved = process.env.VIBELOG_LLM_MODEL;
+    process.env.VIBELOG_LLM_MODEL = 'legacy-model';
+    try {
+      writeSettings({ pricing: { 'legacy-model': { input_per_1m: 7, output_per_1m: 8, cache_per_1m: 9 } } });
+      expect(getActiveModelPricing(dir)).toEqual({ input_per_1m: 7, output_per_1m: 8, cache_per_1m: 9 });
+    } finally {
+      if (saved === undefined) delete process.env.VIBELOG_LLM_MODEL;
+      else process.env.VIBELOG_LLM_MODEL = saved;
+    }
+  });
+
+  it('тарифов нет нигде → undefined (calculateCost даст нули)', () => {
+    expect(getActiveModelPricing(dir)).toBeUndefined();
   });
 });
 

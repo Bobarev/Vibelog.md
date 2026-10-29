@@ -280,6 +280,29 @@ describe('chat: guard сирот и ошибки', () => {
   });
 });
 
+describe('chat: переопределение модели body.model (VL-209)', () => {
+  it('неизвестная модель → error «Неизвестная модель», до LLM-вызова', async () => {
+    const events = await collect({ message: 'привет', threadId: 't-badmodel', model: 'ghost/nope' });
+    const error = events.find(e => e.type === 'error');
+    assert.ok(error, 'должно прийти событие error');
+    assert.match(error.message, /Неизвестная модель: ghost\/nope/);
+  });
+
+  it('body.model не строка → error «Некорректная модель»', async () => {
+    const events = await collect({ message: 'привет', threadId: 't-nummodel', model: 42 });
+    const error = events.find(e => e.type === 'error');
+    assert.ok(error);
+    assert.match(error.message, /Некорректная модель/);
+  });
+
+  it('секции models нет → любая body.model отклоняется (нет available)', async () => {
+    const events = await collect({ message: 'привет', threadId: 't-nomodels', model: 'a/b' });
+    const error = events.find(e => e.type === 'error');
+    assert.ok(error);
+    assert.match(error.message, /Неизвестная модель/);
+  });
+});
+
 describe('chat: HTTP-интеграция', () => {
   it('POST /api/chat → 200 text/event-stream, поток data-строк читается', async () => {
     // Без LLM-env: сервер отвечает потоком thread+error — сеть не нужна

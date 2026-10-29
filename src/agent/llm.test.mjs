@@ -7,6 +7,9 @@
 
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { createLlmClient, messagesToInput, parseNonStreamResponses } from '../../dist/agent/llm.js';
 
@@ -875,5 +878,96 @@ describe('Responses API streaming + переключатель api_mode (VL-205)
     assert.equal(res.text, 'из фолбэка');
     assert.equal(res.usage.input_tokens, 3);
     assert.equal(state.calls, 2);
+  });
+});
+
+describe('createLlmClient: секции settings.json (VL-209)', () => {
+  /** Temp-каталог с .vibelog/settings.json; ключ — env-переменная. */
+  function fixture(settings) {
+    const dir = mkdtempSync(join(tmpdir(), 'vb-llm-'));
+    mkdirSync(join(dir, '.vibelog'), { recursive: true });
+    writeFileSync(join(dir, '.vibelog', 'settings.json'), JSON.stringify(settings));
+    return dir;
+  }
+
+  const settingsFull = (extra = {}) => ({
+    providers: { routerai: { base_url: 'https://routerai.test/api/v1', api_key_env: 'VL209_TEST_KEY' } },
+    models: {
+      default: 'routerai/Wire/Model',
+      available: {
+        'routerai/Wire/Model': { label: 'Wire', provider: 'routerai', model: 'Wire/Model', api_mode: 'chat', ...(extra.pricing ? { pricing: extra.pricing } : {}) },
+      },
+      ...extra.modelsExtra,
+    },
+    ...extra.top,
+  });
+
+  const saved = { key: process.env.VL209_TEST_KEY, model: process.env.VIBELOG_LLM_MODEL, base: process.env.VIBELOG_LLM_BASE_URL, api: process.env.VIBELOG_LLM_API_KEY };
+  const restore = () => {
+    for (const [k, v] of Object.entries({ VL209_TEST_KEY: saved.key, VIBELOG_LLM_MODEL: saved.model, VIBELOG_LLM_BASE_URL: saved.base, VIBELOG_LLM_API_KEY: saved.api })) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+
+  it('берёт model/base_url/api_key из секций settings.json', async () => {
+    const dir = fixture(settingsFull());
+    process.env.VL209_TEST_KEY = 'env-key';
+    // защита от протечки env других тестов
+    delete process.env.VIBELOG_LLM_MODEL;
+    delete process.env.VIBELOG_LLM_BASE_URL;
+    delete process.env.VIBELOG_LLM_API_KEY;
+    try {
+      const { impl, state } = fakeFetch([sseResponse([JSON.stringify({ choices: [{ delta: { content: 'ок' } }] })])]);
+      const client = createLlmClient({ cwd: dir, fetchImpl: impl, retryDelayMs: 1 });
+      assert.equal(client.model, 'Wire/Model'); // wire-имя, не id
+      await client.streamChat([{ role: 'user', content: 'x' }], undefined);
+      assert.equal(state.urls[0], 'https://routerai.test/api/v1/chat/completions');
+      assert.equal(state.headers[0].Authorization, 'Bearer env-key');
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('без секции models — fallback на env (старое поведение)', () => {
+    const dir = fixture({ providers: { x: { base_url: 'https://x/v1' } } });
+    process.env.VIBELOG_LLM_MODEL = 'env-model';
+    process.env.VIBELOG_LLM_BASE_URL = 'https://env.test/v1';
+    process.env.VIBELOG_LLM_API_KEY = 'env-k';
+    try {
+      const client = createLlmClient({ cwd: dir, fetchImpl: async () => jsonResponse({}), retryDelayMs: 1 });
+      assert.equal(client.model, 'env-model');
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('options.model приоритетнее settings (разовое переопределение)', () => {
+    const dir = fixture(settingsFull());
+    process.env.VL209_TEST_KEY = 'env-key';
+    try {
+      const client = createLlmClient({ cwd: dir, model: 'explicit', fetchImpl: async () => jsonResponse({}), retryDelayMs: 1 });
+      assert.equal(client.model, 'explicit');
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('нет модели нигде → прежняя ошибка про VIBELOG_LLM_MODEL', () => {
+    const dir = fixture(settingsFull());
+    delete process.env.VIBELOG_LLM_MODEL;
+    delete process.env.VIBELOG_LLM_BASE_URL;
+    delete process.env.VIBELOG_LLM_API_KEY;
+    try {
+      // default есть, но провайдер удалён → resolveActiveModel null → env-fallback пуст
+      writeFileSync(join(dir, '.vibelog', 'settings.json'), JSON.stringify({ models: { default: 'ghost/m', available: {} } }));
+      assert.throws(() => createLlmClient({ cwd: dir, fetchImpl: async () => jsonResponse({}) }), /VIBELOG_LLM_MODEL/);
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

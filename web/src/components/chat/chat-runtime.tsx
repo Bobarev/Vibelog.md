@@ -55,6 +55,19 @@ type ChatEvent =
  */
 let activeThreadId: string | undefined
 
+/**
+ * Текущая модель чата (VL-209): id из models.available, выбранный
+ * ModelSwitcher в сайдбаре тредов. undefined — default из settings.json
+ * (сервер сам резолвит). Хранение — module-state как activeThreadId:
+ * селект меняет значение → следующий POST /api/chat уходит с model.
+ */
+let activeModelId: string | undefined
+
+/** Установка активной модели чата (вызывает ModelSwitcher). */
+export function setActiveModelId(id: string | undefined): void {
+  activeModelId = id
+}
+
 /** Решения, уже отправленные на сервер (идемпотентность resume). */
 const sentApprovals = new Set<string>()
 
@@ -214,6 +227,8 @@ const chatAdapter: ChatModelAdapter = {
       body = {
         message: lastUserText(options.messages),
         ...(activeThreadId ? { threadId: activeThreadId } : {}),
+        // VL-209: переопределение модели (undefined — default из settings.json)
+        ...(activeModelId ? { model: activeModelId } : {}),
       }
     }
 

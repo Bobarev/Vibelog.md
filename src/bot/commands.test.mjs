@@ -618,6 +618,33 @@ describe('parseSetCommand (VL-94)', () => {
     assert.ok('error' in empty);
     assert.match(empty.error, /code-same-session <on\|off>/);
   });
+
+  // ── VL-209: /set model <id> ──
+
+  it('VL-209: model <id> → { key: model, value }; регистр id сохраняется', () => {
+    assert.deepEqual(parseSetCommand('model RouterAI/Xiaomi/MiMo-Pro'), {
+      key: 'model',
+      value: 'RouterAI/Xiaomi/MiMo-Pro',
+    });
+    assert.deepEqual(parseSetCommand('model routerai/xiaomi/mimo-v2.6-pro'), {
+      key: 'model',
+      value: 'routerai/xiaomi/mimo-v2.6-pro',
+    });
+    // регистр ключа не важен, значение — как ввёл пользователь
+    assert.deepEqual(parseSetCommand('MODEL Provider/Model'), { key: 'model', value: 'Provider/Model' });
+  });
+
+  it('VL-209: model без значения → error с подсказкой', () => {
+    const r = parseSetCommand('model');
+    assert.ok('error' in r);
+    assert.match(r.error, /укажите id модели/);
+  });
+
+  it('VL-209: подсказка включает model <id>', () => {
+    const unknown = parseSetCommand('foo bar');
+    assert.ok('error' in unknown);
+    assert.match(unknown.error, /model <id>/);
+  });
 });
 
 describe('parseAutoCommand (VL-191)', () => {

@@ -85,7 +85,9 @@ export type SetCommand =
   /** Компакшн истории LLM-запроса (VL-122); по умолчанию включён. */
   | { key: 'compact'; value: boolean }
   /** Code в сессии Plan (VL-147); по умолчанию выключен. */
-  | { key: 'code-same-session'; value: boolean };
+  | { key: 'code-same-session'; value: boolean }
+  /** Активная LLM-модель (id из models.available, VL-209); регистр id сохраняется. */
+  | { key: 'model'; value: string };
 
 /** Разбор /auto (VL-191): добавление задач в автоочередь или управление ею. */
 export type AutoCommand =
@@ -343,14 +345,18 @@ export function parseCloseCommand(
  */
 export function parseSetCommand(text: string): SetCommand | { error: string } {
   const hint =
-    'Синтаксис: /set agent <qwen|vb> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off> | code-same-session <on|off> (0/пусто — сброс у числовых)';
+    'Синтаксис: /set agent <qwen|vb> | model <id> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off> | code-same-session <on|off> (0/пусто — сброс у числовых)';
   const trimmed = text.trim();
   if (!trimmed) return { error: hint };
   const spaceIdx = trimmed.indexOf(' ');
   const key = (spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx)).trim().toLowerCase();
-  const value = (spaceIdx === -1 ? '' : trimmed.slice(spaceIdx + 1).trim()).toLowerCase();
+  // rawValue — БЕЗ toLowerCase: model-id чувствительны к регистру
+  // ("Provider/Model", VL-209); для булевых/числовых ниже — lowercased value
+  const rawValue = spaceIdx === -1 ? '' : trimmed.slice(spaceIdx + 1).trim();
+  const value = rawValue.toLowerCase();
   if (
     key !== 'agent' &&
+    key !== 'model' &&
     key !== 'max-wall-time' &&
     key !== 'max-requests' &&
     key !== 'branch-mode' &&
@@ -358,8 +364,15 @@ export function parseSetCommand(text: string): SetCommand | { error: string } {
     key !== 'code-same-session'
   ) {
     return {
-      error: `Неизвестный параметр: ${key}. Доступные: agent, max-wall-time, max-requests, branch-mode, compact, code-same-session. ${hint}`,
+      error: `Неизвестный параметр: ${key}. Доступные: agent, model, max-wall-time, max-requests, branch-mode, compact, code-same-session. ${hint}`,
     };
+  }
+  // VL-209: id модели — как ввёл пользователь (регистр не трогаем)
+  if (key === 'model') {
+    if (rawValue === '') {
+      return { error: `model: укажите id модели (vibelog model list). ${hint}` };
+    }
+    return { key: 'model', value: rawValue };
   }
   if (key === 'agent') {
     if (value !== 'qwen' && value !== 'vb') {

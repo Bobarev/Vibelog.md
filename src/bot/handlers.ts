@@ -43,6 +43,8 @@ import {
   renderTasksRich,
 } from './rich.js';
 import { loadBotSettings, resolveDefaultAgent, saveBotSettings } from './settings.js';
+import { saveSettingsPatch, loadSettings } from '../core/settings.js';
+import { loadModels } from '../core/models.js';
 import { commandsHelp, helpText } from './registry.js';
 import { rootCliPath, spawnReplacementBot, vibelogCliPath } from './restart.js';
 import { clearWebServer, currentWebServer, parseWebCommand, spawnWebServer, stopWebServer } from './web.js';
@@ -682,6 +684,30 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         );
         return;
       }
+      case 'model': {
+        // VL-209: активная модель — секция models.default settings.json
+        // (НЕ BotSettings — models живёт отдельно; saveSettingsPatch
+        // read-modify-write сохраняет providers/env и прочие ключи)
+        const models = loadModels(deps.cwd);
+        if (!models.available[parsed.value]) {
+          await sendMd(
+            ctx,
+            `Неизвестная модель: ${escapeMarkdownV2(parsed.value)}. Доступные: ${
+              Object.keys(models.available).map(escapeMarkdownV2).join(', ') || '(нет)'
+            } — /model`
+          );
+          return;
+        }
+        const settingsRaw = loadSettings(deps.cwd);
+        saveSettingsPatch(deps.cwd, {
+          models: { ...((settingsRaw.models ?? {}) as Record<string, unknown>), default: parsed.value },
+        });
+        await sendMd(
+          ctx,
+          `⚙️ Активная модель: *${escapeMarkdownV2(models.available[parsed.value].label ?? parsed.value)}* (\`${escapeMarkdownV2(parsed.value)}\`). Фазы и чат используют её со следующего запуска.`
+        );
+        return;
+      }
       case 'branch-mode': {
         // VL-107: читается оркестратором перед каждым запуском фазы —
         // перезапуск бота не требуется
@@ -740,6 +766,32 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         return;
       }
     }
+  });
+
+  // ── /model — список LLM-моделей (VL-209) ──
+  // Текстовый список секции models.available: активная — ✅, api_mode
+  // в скобках. Переключение — /set model <id>.
+  bot.command('model', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const models = loadModels(deps.cwd);
+    const ids = Object.keys(models.available);
+    if (ids.length === 0) {
+      await sendMd(
+        ctx,
+        'Модели не настроены: секция `models` отсутствует в `.vibelog/settings.json` (используется env `VIBELOG_LLM_MODEL`).'
+      );
+      return;
+    }
+    const lines = ids.map(id => {
+      const m = models.available[id];
+      const marker = id === models.default ? '✅ ' : '▫️ ';
+      const label = m.label ? ` — ${escapeMarkdownV2(m.label)}` : '';
+      return `${marker}\`${escapeMarkdownV2(id)}\`${label} (${m.api_mode ?? 'chat'})`;
+    });
+    await sendMd(
+      ctx,
+      `*LLM-модели* (✅ — активная):\n${lines.join('\n')}\n\nПереключение: \`/set model <id>\``
+    );
   });
 
   // ── /auto — автоочередь фаз (VL-191) ──
