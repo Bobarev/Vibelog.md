@@ -21,9 +21,10 @@ import { join } from 'node:path';
 
 import { runChat, loadChatHistory, loadApprovalLog, loadChatToolStats, listChatThreads } from '../../dist/web/chat.js';
 import { startWebServer } from '../../dist/web/server.js';
-import { createTaskFile, listTasks } from '../../dist/core/store.js';
+import { createTaskFile, listTasks, getTask } from '../../dist/core/store.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { zeroUsage } from '../../dist/agent/llm.js';
+import { writeGrant, revokeGrant } from '../../dist/web/supervisor-grant.js';
 
 let cwd;
 
@@ -1043,6 +1044,77 @@ describe('VL-255 — дедупликация и лимит tool-вызовов'
       assert.deepEqual(listChatThreads(dir).map(t => t.threadId), ['d-stats']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('chat: VL-268 — grant прогона развязывает инструменты супервизора', () => {
+  it('активный grant покрывает backlog_supervisor plan: паузы нет, tool_start auto', async () => {
+    const task = createTaskFile(cwd, { title: 'Grant план', status: 'Spec' });
+    writeGrant(cwd, {
+      runId: 'run-chat-grant-1',
+      taskIds: [task.id],
+      allowedTools: ['backlog_supervisor', 'backlog_trigger_phase'],
+      grantedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    });
+    try {
+      const { llm } = fakeLlm([
+        { toolCalls: [{ id: 'tc-sup-plan', name: 'backlog_supervisor', arguments: { action: 'plan', ids: [task.id] } }] },
+        { text: 'Вот план.' },
+      ]);
+      const events = await collect({ message: 'покажи план', threadId: 't-grant-ok' }, { llm });
+      assert.ok(!events.some(e => e.type === 'approval'), 'grant снимает паузу Allow/Deny');
+      const start = events.find(e => e.type === 'tool_start');
+      assert.equal(start.auto, true);
+      const end = events.find(e => e.type === 'tool_end');
+      assert.ok(String(end.result).includes('Волна 1'), 'план посчитан');
+      assert.equal(events.at(-1).type, 'done');
+    } finally {
+      revokeGrant(cwd, 'run-chat-grant-1', 'конец теста');
+    }
+  });
+
+  it('без grant инструмент супервизора идёт обычным путём Allow/Deny', async () => {
+    const task = createTaskFile(cwd, { title: 'Без grant', status: 'Spec' });
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-sup-plan-2', name: 'backlog_supervisor', arguments: { action: 'start', ids: [task.id] } }] },
+    ]);
+    const events = await collect({ message: 'покажи план', threadId: 't-grant-none' }, { llm });
+    const approval = events.find(e => e.type === 'approval');
+    assert.ok(approval, 'без grant вызов ждёт подтверждения');
+    assert.equal(approval.name, 'backlog_supervisor');
+    // данные карточки grant (состав прогона) приходят в событии approval
+    assert.ok(approval.grant, 'предпросмотр grant в событии approval');
+    assert.deepEqual(approval.grant.taskIds, [task.id]);
+    assert.ok(Array.isArray(approval.grant.tools));
+    assert.ok(!approval.grant.tools.some(t => t.name === 'write_file'), 'write_file не grantable');
+    assert.equal(events.at(-1).type, 'approval');
+  });
+
+  it('задача вне taskIds прогона → отказ без исполнения и без паузы', async () => {
+    const inside = createTaskFile(cwd, { title: 'В прогоне 2', status: 'Spec' });
+    const outside = createTaskFile(cwd, { title: 'Вне прогона 2', status: 'Spec' });
+    writeGrant(cwd, {
+      runId: 'run-chat-grant-2',
+      taskIds: [inside.id],
+      allowedTools: ['backlog_trigger_phase'],
+      grantedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    });
+    try {
+      const { llm } = fakeLlm([
+        { toolCalls: [{ id: 'tc-outside', name: 'backlog_trigger_phase', arguments: { id: outside.id } }] },
+        { text: 'Не могу.' },
+      ]);
+      const events = await collect({ message: 'запусти', threadId: 't-grant-out' }, { llm });
+      assert.ok(!events.some(e => e.type === 'approval'), 'отказ не превращается в Allow/Deny');
+      const end = events.find(e => e.type === 'tool_end');
+      assert.equal(end.isError, true);
+      assert.ok(String(end.result).includes('вне прогона'));
+      assert.equal(getTask(cwd, outside.id).status, 'Spec', 'фаза не запускалась');
+    } finally {
+      revokeGrant(cwd, 'run-chat-grant-2', 'конец теста');
     }
   });
 });

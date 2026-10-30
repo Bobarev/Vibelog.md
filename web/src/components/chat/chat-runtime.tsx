@@ -270,9 +270,14 @@ function applyEvent(parts: Part[], ev: ChatEvent): boolean {
     case "approval": {
       // VL-268: данные карточки grant (состав прогона, инструменты, срок) едут
       // в providerMetadata — свободный слот протокола, как `auto` в VL-264.
-      const grantMeta =
+      // Каст нужен, потому что grant — произвольный JSON от сервера, а
+      // PartProviderMetadata типизирован как ReadonlyJSONObject.
+      type ToolCallPart = Extract<Part, { type: "tool-call" }>
+      const grantMeta: Partial<ToolCallPart> =
         ev.name === "backlog_supervisor" && ev.grant !== undefined && ev.grant !== null
-          ? { providerMetadata: { vibelog: { grant: ev.grant } } }
+          ? {
+              providerMetadata: { vibelog: { grant: ev.grant } } as unknown as ToolCallPart["providerMetadata"],
+            }
           : {}
       // VL-256: гейты последовательные — повторное событие для того же
       // toolCallId не должно создавать второй part (два part'а с одним id
