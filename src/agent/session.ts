@@ -287,20 +287,53 @@ export function loadSessionMetaSync(dir: string, sessionId: string): SessionMeta
  * code в той же сессии, что plan (VL-147), sessionId уходит в --resume.
  */
 export function findTaskPhaseSessionSync(dir: string, taskId: string, phase: string): string | null {
+  const wanted = taskId.toUpperCase();
+  return pickLatestSessionSync(
+    dir,
+    (meta) => !!meta?.taskId && meta.taskId.toUpperCase() === wanted && meta.phase === phase,
+  );
+}
+
+/**
+ * Сессия задачи БЕЗ фильтра фазы (VL-261): последняя по mtime jsonl.
+ *
+ * Нужна команде `vibelog session summary --task VL-N`, когда фаза не задана:
+ * разбор идёт по самой свежей сессии задачи. Существующую
+ * findTaskPhaseSessionSync не переиспользуем — у неё phase обязателен
+ * (контракт resume оркестратора, VL-147), а менять её поведение нельзя.
+ *
+ * @returns sessionId либо null, если сессий задачи нет
+ */
+export function findLatestTaskSessionSync(dir: string, taskId: string): string | null {
+  const wanted = taskId.toUpperCase();
+  return pickLatestSessionSync(dir, (meta) => !!meta?.taskId && meta.taskId.toUpperCase() === wanted);
+}
+
+/**
+ * Общий селектор «последняя сессия каталога, чья мета проходит предикат».
+ *
+ * Вынесен из findTaskPhaseSessionSync (VL-261), чтобы mtime-логика (jsonl,
+ * фолбэк на мету) не дублировалась в двух функциях: расхождение фолбэков
+ * давало бы разные ответы для «последней сессии фазы» и «последней сессии
+ * задачи».
+ */
+function pickLatestSessionSync(
+  dir: string,
+  predicate: (meta: SessionMeta | null) => boolean,
+): string | null {
   let entries: string[];
   try {
     entries = readdirSync(dir);
   } catch {
     return null; // каталога ещё нет — сессий не было
   }
-  const wanted = taskId.toUpperCase();
   let best: { id: string; mtime: number } | null = null;
   for (const entry of entries) {
     if (!entry.endsWith('.meta.json')) continue;
     const sessionId = entry.slice(0, -'.meta.json'.length);
     // loadSessionMetaSync глотает битые меты и path-traversal — мусор пропускаем
     const meta = loadSessionMetaSync(dir, sessionId);
-    if (!meta?.taskId || meta.taskId.toUpperCase() !== wanted || meta.phase !== phase) continue;
+    if (!predicate(meta)) continue;
     // mtime берём у jsonl (транскрипт растёт при каждом append'е сообщений);
     // нет jsonl — mtime меты (сессия может быть только что создана)
     let mtime: number;
