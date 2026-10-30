@@ -10,6 +10,7 @@ source_tasks:
   - VL-266
 linked_tasks:
   - VL-266
+  - VL-265
 created_date: 2026-10-30
 updated_date: 2026-10-30
 supersedes: ''
