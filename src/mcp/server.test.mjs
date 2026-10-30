@@ -367,7 +367,7 @@ describe('MCP-сервер', () => {
       ]);
       const responses = await callMcp([
         { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
-        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, acChecks: [1, '2'] } } },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, comment: 'Фаза (acChecks)', acChecks: [1, '2'] } } },
         { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id, action: 'list' } } },
       ]);
       const fin = responses.find(r => r.id === 2);
@@ -383,7 +383,7 @@ describe('MCP-сервер', () => {
       const id = await createTask('Finish: modifiedFiles');
       const responses = await callMcp([
         { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
-        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, modifiedFiles: ['src/a.ts'] } } },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, comment: 'Фаза (modifiedFiles)', modifiedFiles: ['src/a.ts'] } } },
         { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
       ]);
       const fin = responses.find(r => r.id === 2);
@@ -414,16 +414,64 @@ describe('MCP-сервер', () => {
       assert.ok(data.comments[0].text.includes('Отчёт несмотря на ошибку'));
     });
 
-    it('вызов только с {id} → успешен, сводка «ничего не менялось»', async () => {
+    it('VL-251: вызов без report → isError с перечнем недостающих полей', async () => {
       const id = await createTask('Finish: только id');
       const responses = await callMcp([
         { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
         { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
       ]);
       const fin = responses.find(r => r.id === 2);
-      assert.ok(!fin.result.isError, `вызов только с id должен быть успешным: ${fin.result.content[0].text}`);
-      assert.ok(fin.result.content[0].text.includes('ничего не менялось'),
-        `нет пометки о пропуске: ${fin.result.content[0].text}`);
+      assert.ok(fin.result.isError, `вызов без отчёта должен падать: ${fin.result.content[0].text}`);
+      const text = fin.result.content[0].text;
+      assert.ok(text.includes('Неполный вызов'), `нет пометки о неполном вызове: ${text}`);
+      assert.ok(text.includes('comment'), `нет перечня недостающих полей: ${text}`);
+      assert.ok(!text.includes('отчёт: нет'), `строка «отчёт: нет» не должна появляться: ${text}`);
+
+      // Файл задачи не тронут: ни комментария, ни статуса
+      const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
+      assert.equal(data.comments.length, 0, 'отклонённый вызов не должен писать комментарий');
+    });
+
+    it('VL-251: no-op статус (равен текущему) → isError already_finished с датой отчёта', async () => {
+      const id = await createTask('Finish: already finished');
+      // Первый вызов — легитимное завершение фазы (статус To Do → In Progress)
+      await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, status: 'In Progress', comment: 'Фаза (первый отчёт)' } } },
+      ]);
+      // Повтор с тем же статусом — ровно инцидент VL-234
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, status: 'In Progress', comment: 'Фаза (повтор)' } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      assert.ok(fin.result.isError, `no-op статус должен падать: ${fin.result.content[0].text}`);
+      const text = fin.result.content[0].text;
+      assert.ok(text.includes('уже завершена'), `нет признака already_finished: ${text}`);
+      assert.ok(text.includes('Существующий отчёт'), `нет ссылки на существующий отчёт: ${text}`);
+      assert.ok(text.includes('@agent'), `нет автора существующего отчёта: ${text}`);
+
+      const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
+      assert.equal(data.comments.length, 1, 'дубль комментария не должен записаться');
+      assert.ok(data.comments[0].text.includes('первый отчёт'), 'первый отчёт сохранён');
+    });
+
+    it('VL-251: токен-нули = отсутствующий параметр → пометка в сводке, вызов успешен', async () => {
+      const id = await createTask('Finish: zero tokens');
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: {
+          id, status: 'Done', comment: 'Фаза (нулевой usage)',
+          tokenUsage: { input: 0, output: 0, cache: 0, total: 0, requests: 0 },
+        } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      assert.ok(!fin.result.isError, `нулевой usage не должен ронять вызов: ${fin.result.content[0].text}`);
+      const text = fin.result.content[0].text;
+      assert.ok(text.includes('нули игнорированы'), `нет пометки об откате нулей: ${text}`);
+      assert.ok(!text.includes('tokenUsage: input=+0'), `нули не должны записываться: ${text}`);
     });
 
     it('невалидный индекс acChecks → ошибка в сводке, остальные поля применены', async () => {
@@ -434,7 +482,7 @@ describe('MCP-сервер', () => {
       ]);
       const responses = await callMcp([
         { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
-        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, acChecks: ['NaN'], status: 'Done' } } },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, comment: 'Частичное применение', acChecks: ['NaN'], status: 'Done' } } },
         { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id, action: 'list' } } },
       ]);
       const fin = responses.find(r => r.id === 2);
@@ -479,6 +527,7 @@ describe('MCP-сервер', () => {
         { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: {
           id,
           phase: 'plan',
+          comment: 'Фаза (явный usage)',
           tokenUsage: { input: 100, output: 50, cache: 20, total: 170, requests: 3 },
         } } },
         { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
@@ -504,7 +553,7 @@ describe('MCP-сервер', () => {
       const finish = (sum) => callMcp([
         { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
         { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: {
-          id, phase: 'code', tokenUsage: { input: sum, output: 0, cache: 0, total: sum, requests: 1 },
+          id, phase: 'code', comment: 'Фаза (additive)', tokenUsage: { input: sum, output: 0, cache: 0, total: sum, requests: 1 },
         } } },
       ]).then((rs) => rs.find(r => r.id === 2).result.content[0].text);
       await finish(10);
@@ -515,7 +564,7 @@ describe('MCP-сервер', () => {
       const responses = await callMcp([
         { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
         { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: {
-          id, phase: 'code', tokenUsage: { input: 25, output: 0, cache: 0, total: 25, requests: 1 },
+          id, phase: 'code', comment: 'Фаза (additive 25)', tokenUsage: { input: 25, output: 0, cache: 0, total: 25, requests: 1 },
         } } },
         { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
       ]);
@@ -548,7 +597,7 @@ describe('MCP-сервер', () => {
       const id = await createTask('Tokens: no source');
       const responses = await callMcp([
         { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
-        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, status: 'Done' } } },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, status: 'Done', comment: 'Фаза (без usage)' } } },
       ]);
       const text = responses.find(r => r.id === 2).result.content[0].text;
       assert.ok(!responses.find(r => r.id === 2).result.isError, `не должен падать: ${text}`);

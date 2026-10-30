@@ -396,6 +396,16 @@ export async function main(argv: string[]): Promise<void> {
   } else {
     sessionId = createSessionId();
   }
+  // VL-251: сигнатуры, отклонённые loop detection в прошлых ранах сессии —
+  // читаются из меты (MCP-процесс умирает вместе с фазой, мета переживает
+  // resume). Повтор такого вызова блокируется без исполнения.
+  const resumedBlockedSignatures = (() => {
+    try {
+      return loadSessionMetaSync(sessionsDir, sessionId)?.blocked_signatures ?? [];
+    } catch {
+      return []; // битая мета — не повод ронять фазу
+    }
+  })();
 
   // LLM-клиент после резолва sessionId (VL-198): sessionId уходит в
   // заголовок X-Session-Id запросов (ref-18, группировка на дашборде RouterAI).
@@ -597,6 +607,7 @@ export async function main(argv: string[]): Promise<void> {
       ...(opts.compactTail !== undefined ? { compactTailMessages: opts.compactTail } : {}),
       ...(opts.compactAtTokens !== undefined ? { compactAtTokens: opts.compactAtTokens } : {}),
       ...(opts.noCompact ? { compactDisabled: true } : {}),
+      ...(resumedBlockedSignatures.length > 0 ? { blockedSignatures: resumedBlockedSignatures } : {}),
     },
     onToken: tuiHandle
       ? (t: string) => { tuiHandle.onToken(t); }
@@ -749,6 +760,11 @@ export async function main(argv: string[]): Promise<void> {
           // VL-229 (AC1): топ повторяющихся path|pattern + доля от всех
           // tool-вызовов сессии — мета становится источником для /analyze
           repeat_stats: repeatStats,
+          // VL-251: накопленные сигнатуры блока — объединяем с прошлыми,
+          // дедуплицируем и капуем (20), чтобы мета не пухла за тысячи ранов
+          blocked_signatures: [
+            ...new Set([...(existing?.blocked_signatures ?? []), ...(loopResult.blocked_signatures ?? [])]),
+          ].slice(-20),
         });
       } catch (err) {
         console.error(`Предупреждение: мета сессии ${sessionId} не дополнена — ${(err as Error).message}`);

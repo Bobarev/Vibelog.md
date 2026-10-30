@@ -333,6 +333,62 @@ describe('runLoop loop detection (VL-83)', () => {
     assert.equal(toolState.calls, 2, '3-й вызов не должен выполняться');
   });
 
+  it('VL-251: директива уходит tool-результатом (не assistant) и содержит следующий шаг', async () => {
+    const { spec, state: toolState } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 't', arguments: { x: 1 } }] },
+      { text: 'остановился' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(toolState.calls, 2, 'третий вызов не выполняется');
+    const directive = res.messages.find(
+      (m) => m.role === 'tool' && m.tool_call_id === 'c3',
+    );
+    assert.ok(directive, 'директива должна прийти tool-результатом заблокированного вызова');
+    assert.match(String(directive.content), /Loop detection/);
+    assert.match(String(directive.content), /Следующий шаг/);
+    assert.equal(res.is_error, false, 'модель сменила поведение — фаза продолжается');
+    assert.deepEqual(res.blocked_signatures, ['t|{"x":1}'], 'сигнатура блока записывается в результат');
+  });
+
+  it('VL-251: 2-й заблокированный вызов подряд → fail (директива проигнорирована)', async () => {
+    const { spec, state: toolState } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c4', name: 't', arguments: { x: 1 } }] },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, true);
+    assert.match(res.result, /Loop detection/);
+    assert.match(res.result, /Следующий шаг/);
+    assert.equal(toolState.calls, 2, 'заблокированные вызовы не выполняются');
+  });
+
+  it('VL-251 (AC5): сигнатура из blockedSignatures блокируется без исполнения', async () => {
+    const { spec, state: toolState } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: 'сменил подход' },
+    ]);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [spec],
+      limits: { blockedSignatures: ['t|{"x":1}'] },
+    });
+    assert.equal(toolState.calls, 0, 'заблокированный после resume вызов не должен исполняться');
+    const directive = res.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'c1');
+    assert.ok(directive, 'модель получает tool-результат о блокировке');
+    assert.match(String(directive.content), /Loop detection/);
+    assert.equal(res.is_error, false);
+    // Сигнатура уже была в мете — повторно её не возвращаем (идемпотентность записи)
+    assert.equal(res.blocked_signatures, undefined);
+  });
+
   it('разные аргументы — не loop detection', async () => {
     const { spec, state: toolState } = countingTool('t');
     const { llm } = fakeLlm([

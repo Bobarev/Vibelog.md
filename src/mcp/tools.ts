@@ -385,19 +385,19 @@ export function listTools(): ToolDefinition[] {
     // === Завершение фазы (VL-138) ===
     {
       name: 'backlog_finish_phase',
-      description: 'Завершение фазы одним вызовом: статус + отчётный комментарий + modifiedFiles + батч-отметки AC/DoD. Все поля опциональны кроме id. Невалидные поля пропускаются с понятным сообщением в сводке (частичное применение), вызов не падает. Пример сводки: «Статус: Review; отчёт добавлен; отмечено AC: 2, DoD: 1; файлов: 3».',
+      description: 'Завершение фазы одним вызовом: статус + отчётный комментарий + modifiedFiles + батч-отметки AC/DoD. Обязательные поля: id и comment (отчёт о фазе) — вызов без отчёта возвращает ошибку. Повторный вызов со статусом, равным текущему (already_finished), тоже возвращает ошибку с датой и источником существующего отчёта: не повторяй такой вызов, а заверши фазу финальным текстом. Невалидные значения полей (статус вне конфига, битый индекс AC/DoD) пропускаются с сообщением в сводке — частичное применение. Пример сводки: «Статус: Review; отчёт добавлен; отмечено AC: 2, DoD: 1; файлов: 3».',
       inputSchema: {
         type: 'object',
         properties: {
           id: { type: 'string', description: 'ID задачи' },
           status: { type: 'string', description: 'Новый статус (валидируется по конфигу; невалидный — пропускается с ошибкой в сводке)' },
-          comment: { type: 'string', description: 'Отчётный комментарий (author фиксирован @agent)' },
+          comment: { type: 'string', description: 'Отчётный комментарий (author фиксирован @agent). ОБЯЗАТЕЛЕН: вызов без непустого comment возвращает ошибку «не передан report».' },
           modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Изменённые файлы (полная замена modified_files)' },
           acChecks: { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] }, description: 'Индексы AC для отметки (с 1; батч-отметка, как в manage_ac)' },
           dodChecks: { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] }, description: 'Индексы DoD для отметки (с 1; батч-отметка, как в manage_dod)' },
           tokenUsage: {
             type: 'object',
-            description: 'Явный usage токенов сессии для frontmatter (VL-198). Без него MCP резолвит сам: мета текущей сессии (VIBELOG_SESSION_ID) → её jsonl. Резолв не удался — блок пропускается с ошибкой в сводку.',
+            description: 'Явный usage токенов сессии для frontmatter (VL-198). Без него MCP резолвит сам: мета текущей сессии (VIBELOG_SESSION_ID) → её jsonl. Объект со всеми нулями трактуется как отсутствующий параметр (тот же резолв). Резолв не удался — блок пропускается с ошибкой в сводку.',
             properties: {
               input: { type: 'number', description: 'Входные токены' },
               output: { type: 'number', description: 'Выходные токены' },
@@ -1213,6 +1213,38 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
   const task = getTask(cwd, id);
   if (!task) throw new Error(`Задача ${id} не найдена.`);
 
+  // ── Жёсткая валидация (VL-251) ────────────────────────────────────────
+  // Отличие от мягкого частичного применения: no-op статус и отсутствие
+  // отчёта — НЕ «мелкие ошибки поля», а признак неполного/бесполезного
+  // вызова. Раньше такой вызов отвечал нейтрально-успешно («отчёт: нет»),
+  // и модель в цикле повторяла его байт-в-байт (инцидент VL-234).
+  // Ошибка бросается ДО любых записей: файл задачи и usage не трогаются,
+  // повтор безопасен и не плодит дубли комментариев/токенов.
+  const hardErrors: string[] = [];
+  const norm = (s: string): string => s.trim().toLowerCase();
+  if (typeof args.status === 'string' && norm(args.status) === norm(task.status)) {
+    // Ссылка на существующий отчёт: модель должна видеть, что фаза уже закрыта
+    const comments = (task.comments || []) as TaskComment[];
+    const lastAgent = [...comments].reverse().find((c) => c.author === '@agent');
+    const lastAny = comments.length > 0 ? comments[comments.length - 1] : undefined;
+    const refComment = lastAgent ?? lastAny;
+    const reportRef = refComment
+      ? `Существующий отчёт: ${refComment.created} (@${refComment.author}), начало: "${String(refComment.text).slice(0, 80).replace(/\s+/g, ' ')}"`
+      : 'Существующего отчёта в задаче нет.';
+    hardErrors.push(
+      `Фаза уже завершена: статус «${task.status}» совпадает с текущим. ${reportRef} ` +
+        'Не повторяй этот вызов: статус уже целевой. Если нужен отчёт или отметки — backlog_add_comment / backlog_manage_ac / backlog_manage_dod; если фаза завершена — верни финальный текст.',
+    );
+  }
+  if (typeof args.comment !== 'string' || args.comment.trim() === '') {
+    const missing = args.comment === undefined ? 'comment (report) не передан' : 'comment (report) пуст';
+    hardErrors.push(
+      `Неполный вызов: ${missing}. Обязательные поля: comment — отчёт о фазе («Фаза N (<Фаза>) выполнена. …»). ` +
+        'Вызов без отчёта не засчитывается — добавь comment и повтори.',
+    );
+  }
+  if (hardErrors.length > 0) throw new Error(hardErrors.join('\n'));
+
   const errors: string[] = [];
   const updates: Partial<Task> = {};
   // Фактически применённые действия — каждый элемент сводки отражает запись,
@@ -1222,11 +1254,9 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
   let acCount = 0;
   let dodCount = 0;
   let filesPart = 'файлов: не менялись';
-  let anyField = false;
 
   // Статус валидируется по конфигу: невалидный → ошибка в сводку, поле пропускается
   if (args.status !== undefined) {
-    anyField = true;
     // loadConfig типизирует statuses как unknown (YAML-конфиг) — приводим к string[]
     const statuses = (loadConfig(cwd).statuses as string[]) || [];
     if (typeof args.status !== 'string' || !statuses.includes(args.status)) {
@@ -1239,7 +1269,6 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
 
   // modifiedFiles — полная замена modified_files (как в toolUpdateTask)
   if (args.modifiedFiles !== undefined) {
-    anyField = true;
     if (!Array.isArray(args.modifiedFiles)) {
       errors.push('modifiedFiles — массив строк (например: ["src/a.ts"]).');
     } else {
@@ -1252,7 +1281,6 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
   // Батч-отметка AC: индексы через parseChecklistIndexes (VL-120/VL-135-подсказки),
   // ошибка одного батча не мешает применить остальные поля
   if (args.acChecks !== undefined) {
-    anyField = true;
     const list = (task.acceptanceCriteria || []) as ChecklistItem[];
     try {
       for (const i of parseChecklistIndexes(args.acChecks, list.length)) {
@@ -1267,7 +1295,6 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
 
   // Батч-отметка DoD — та же семантика, что и у AC
   if (args.dodChecks !== undefined) {
-    anyField = true;
     const list = (task.definitionOfDone || []) as ChecklistItem[];
     try {
       for (const i of parseChecklistIndexes(args.dodChecks, list.length)) {
@@ -1280,20 +1307,15 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
     }
   }
 
-  // Отчётный комментарий: author фиксирован @agent (поле author в схему не входит)
-  if (args.comment !== undefined) {
-    anyField = true;
-    if (typeof args.comment !== 'string' || args.comment.trim() === '') {
-      errors.push('comment — пустая строка.');
-    } else {
-      updates.comments = [...(task.comments || []), {
-        author: '@agent',
-        created: formatNow(),
-        text: args.comment as string,
-      }];
-      commentPart = 'отчёт добавлен';
-    }
-  }
+  // Отчётный комментарий: author фиксирован @agent (поле author в схему не входит).
+  // VL-251: comment обязателен — его наличие проверено hard-валидацией выше,
+  // поэтому здесь ветки «отчёт: нет» больше нет.
+  updates.comments = [...(task.comments || []), {
+    author: '@agent',
+    created: formatNow(),
+    text: args.comment as string,
+  }];
+  commentPart = 'отчёт добавлен';
 
   // Единственная запись: все валидные обновления применяются одним вызовом
   if (Object.keys(updates).length > 0) {
@@ -1308,19 +1330,36 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
   // (qwen-ран без env, /prompt) — блок пропускается с ошибкой в сводку,
   // фаза НЕ падает (паттерн частичного применения инструмента).
   let tokenPart = '';
+  // VL-251: пометка об откате нулевого tokenUsage на резолв сессии
+  let tokenFallbackNote = '';
   try {
     const phaseName = (typeof args.phase === 'string' && args.phase)
       ? args.phase
       : process.env.VIBELOG_PHASE_NAME;
     let usage: TokenUsage | null = null;
     let usageSource = 'args';
-    if (args.tokenUsage !== undefined && args.tokenUsage !== null) {
+    // VL-251: tokenUsage с нулями = отсутствующий параметр. Нулевой usage
+    // приходит от модели, которая «не знает» своих токенов; раньше он
+    // принимался как валидный и давал в сводке «уже записан» — неотличимо
+    // от успеха. Теперь нули откатываются на штатный резолв (мета → jsonl),
+    // при этом сам факт отката виден в сводке.
+    const rawExplicit = args.tokenUsage !== undefined && args.tokenUsage !== null
+      ? (typeof args.tokenUsage === 'object' && !Array.isArray(args.tokenUsage)
+          ? (args.tokenUsage as Record<string, unknown>)
+          : null)
+      : undefined;
+    const explicitKeys = ['input', 'output', 'cache', 'total', 'requests'];
+    const explicitAllZero = rawExplicit
+      ? explicitKeys.every((k) => rawExplicit[k] === undefined || rawExplicit[k] === 0)
+      : false;
+    if (explicitAllZero) {
+      tokenFallbackNote = 'tokenUsage: нули игнорированы (как отсутствующий параметр)';
+    }
+    if (rawExplicit !== undefined && !explicitAllZero) {
       // Явный аргумент: валидация на границе (lesson-34) — объект с
       // finite-числами ≥0, без лишних ключей (additionalProperties: false)
-      const raw = typeof args.tokenUsage === 'object' && !Array.isArray(args.tokenUsage)
-        ? (args.tokenUsage as Record<string, unknown>)
-        : null;
-      const keys = ['input', 'output', 'cache', 'total', 'requests'];
+      const raw = rawExplicit;
+      const keys = explicitKeys;
       const badFields = raw
         ? keys.filter((k) => {
             const v = raw[k];
@@ -1396,7 +1435,7 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
 
   const summary = `${statusPart}; ${commentPart}; отмечено AC: ${acCount}, DoD: ${dodCount}; ${filesPart}` +
     (tokenPart ? `; ${tokenPart}` : '') +
-    (anyField ? '' : '; ничего не менялось') +
+    (tokenFallbackNote ? `; ${tokenFallbackNote}` : '') +
     (errors.length > 0 ? `; Ошибки: ${errors.join(' | ')}` : '');
   return summary;
 }

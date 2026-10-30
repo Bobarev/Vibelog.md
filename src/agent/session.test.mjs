@@ -316,6 +316,24 @@ describe('учёт токенов сессии (VL-198)', () => {
     assert.equal(loadSessionMetaSync(dir, 'agent-42').phase, 'plan');
   });
 
+  it('VL-251: updateSessionMeta сохраняет blocked_signatures, не теряя taskId/phase', async () => {
+    await saveSessionMeta(dir, 'agent-block', { taskId: 'VL-251', phase: 'code', cwd: '/wt' });
+    const merged = updateSessionMeta(dir, 'agent-block', {
+      blocked_signatures: ['backlog_finish_phase|{"id":"VL-251"}'],
+    });
+    assert.deepEqual(merged.blocked_signatures, ['backlog_finish_phase|{"id":"VL-251"}']);
+    assert.equal(merged.taskId, 'VL-251');
+    assert.equal(merged.phase, 'code');
+    const reloaded = loadSessionMetaSync(dir, 'agent-block');
+    assert.deepEqual(reloaded.blocked_signatures, ['backlog_finish_phase|{"id":"VL-251"}']);
+    // Дозапись второй сигнатуры (merge, не перезапись всей меты)
+    const again = updateSessionMeta(dir, 'agent-block', {
+      blocked_signatures: [...(reloaded.blocked_signatures ?? []), 'grep_search|{"pattern":"x"}'],
+    });
+    assert.equal(again.blocked_signatures.length, 2);
+    assert.equal(again.taskId, 'VL-251');
+  });
+
   it('updateSessionMeta: нет файла и нет cwd → throw; с cwd — создаёт', () => {
     assert.throws(() => updateSessionMeta(dir, 'agent-newmeta', { usage: { input: 1, output: 0, cache: 0, total: 1, requests: 1 } }));
     const created = updateSessionMeta(dir, 'agent-newmeta', { cwd: '/p', taskId: 'VL-1' });

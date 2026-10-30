@@ -169,6 +169,12 @@ export interface SessionMeta {
    * resume). Считается CLI-пост-раном по полному транскрипту.
    */
   repeat_stats?: RepeatStats;
+  /**
+   * VL-251: сигнатуры tool-вызовов `<имя>|JSON(args)`, отклонённых loop
+   * detection. При resume такой вызов блокируется БЕЗ исполнения — иначе
+   * после «Продолжить» луп повторялся с нуля (инцидент VL-234).
+   */
+  blocked_signatures?: string[];
 }
 
 /**
