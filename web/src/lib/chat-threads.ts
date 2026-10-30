@@ -17,6 +17,10 @@
 
 import type { ThreadMessageLike } from "@assistant-ui/react";
 
+// Чистый модуль классификации тулзов (без React) — fallback-зеркало серверного
+// isWriteOperation для старых jsonl без флага (VL-264, риск R3 плана).
+import { isWriteTool } from "../components/chat/tool-meta";
+
 /** Одна строка jsonl-истории треда ( subset ChatMessage для конвертации). */
 export interface HistoryMessage {
   role: string;
@@ -38,8 +42,23 @@ export function parseChatThreadId(hash: string): string | null {
  * Конвертация jsonl-истории в initialMessages рантайма.
  * Порядок сообщений и ветки сохраняются; system-сообщения пропускаются
  * (на сервере они и так не сохраняются).
+ *
+ * VL-264: options.allowList — инструменты треда, разрешённые «Always allow».
+ * Part такого инструмента помечается `providerMetadata.vibelog.auto` —
+ * карточка после восстановления показывает пометку «разрешено заранее»
+ * (иначе «Always allow» выглядел бы потерянным после перезагрузки). Кроме
+ * того висящий approval восстанавливается для ЛЮБОГО write-инструмента, а не
+ * только для backlog_create_task (раньше клик по кнопке после перезагрузки
+ * молча не срабатывал для write_file/backlog_update_task).
+ *
+ * @param history — строки jsonl треда (ChatMessage)
+ * @param options.allowList — allow-list треда с сервера (GET /api/chat/threads/:id)
  */
-export function historyToMessages(history: readonly HistoryMessage[]): ThreadMessageLike[] {
+export function historyToMessages(
+  history: readonly HistoryMessage[],
+  options: { allowList?: readonly string[] } = {},
+): ThreadMessageLike[] {
+  const allowList = new Set(options.allowList ?? []);
   // Результаты tool-вызовов — отдельным проходом: tool-сообщения в jsonl
   // идут ПОСЛЕ assistant-сообщения с tool_calls
   const results = new Map<string, string>();
@@ -95,9 +114,15 @@ export function historyToMessages(history: readonly HistoryMessage[]): ThreadMes
         ) {
           part.isError = true;
         }
-      } else if (tc.name === "backlog_create_task") {
+        // VL-264: вызов прошёл по allow-list треда — пометка «разрешено заранее»
+        if (allowList.has(tc.name)) {
+          part.providerMetadata = { vibelog: { auto: true } };
+        }
+      } else if (isWriteTool(tc.name)) {
         // Висящий approval: Allow/Deny снова активны после восстановления
+        // (VL-264: любой write-инструмент, а не только backlog_create_task)
         part.approval = { id: tc.id };
+        if (allowList.has(tc.name)) part.providerMetadata = { vibelog: { auto: true } };
         pendingApproval = true;
       } else {
         // Обрыв до получения результата — не оставляем «выполняется» навсегда

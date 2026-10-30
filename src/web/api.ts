@@ -65,7 +65,7 @@ import { loadConfig, saveConfig, defaultConfig } from '../core/config.js';
 import { getAvailablePhases, getWorkflowForTask, canMoveTo, loadWorkflows } from '../core/workflow.js';
 import { loadPhaseStyles } from '../core/phase-styles.js';
 import { globalSearch } from '../core/search.js';
-import { listChatThreads, getChatThread } from './chat.js';
+import { listChatThreads, getChatThread, loadThreadAllowList, addThreadAllow, removeThreadAllow } from './chat.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadSettings, saveSettingsPatch } from '../core/settings.js';
 import { loadModels, loadProviders } from '../core/models.js';
@@ -124,15 +124,51 @@ export function handleApi(
       return { status: 200, body: listChatThreads(cwd) };
     }
 
+    // /api/chat/threads/:id/allow — allow-list треда (VL-264, «Always allow»
+    // в approval-карточке). GET — прочитать, POST {tool} — разрешить,
+    // DELETE ?tool=<name> — отозвать. Ветка стоит ДО общего regex истории:
+    // он бы не матчил «/allow», но явный порядок исключает сюрпризы.
+    const chatAllowMatch = url.match(/^\/api\/chat\/threads\/([^/]+)\/allow$/);
+    if (chatAllowMatch) {
+      const allowThreadId = chatAllowMatch[1]!;
+      if (method === 'GET') {
+        return { status: 200, body: { tools: loadThreadAllowList(cwd, allowThreadId) } };
+      }
+      if (method === 'POST') {
+        const tool = body?.tool;
+        if (typeof tool !== 'string' || tool.trim() === '') {
+          return { status: 400, body: { error: 'Ожидается поле tool (имя инструмента)' } };
+        }
+        return { status: 200, body: { tools: addThreadAllow(cwd, allowThreadId, tool.trim()) } };
+      }
+      if (method === 'DELETE') {
+        const tool = new URLSearchParams(queryString).get('tool') ?? '';
+        if (tool.trim() === '') {
+          return { status: 400, body: { error: 'Ожидается параметр tool в query string' } };
+        }
+        return { status: 200, body: { tools: removeThreadAllow(cwd, allowThreadId, tool.trim()) } };
+      }
+      return { status: 405, body: { error: 'Метод не поддерживается' } };
+    }
+
     // GET /api/chat/threads/:id — история треда (VL-207): клиент подгружает
     // её при навигации в существующий тред (AC1). Валидация threadId —
     // внутри getChatThread (тот же THREAD_ID_RE, что и в runChat): мусор или
     // отсутствующий файл → 404, без чтения за пределы chat-sessions.
+    // VL-264: ответ несёт allowList — карточки после восстановления помечают
+    // заранее разрешённые инструменты (AC6/AC11).
     const chatThreadMatch = url.match(/^\/api\/chat\/threads\/([^/]+)$/);
     if (chatThreadMatch && method === 'GET') {
       const messages = getChatThread(cwd, chatThreadMatch[1]);
       if (!messages) return { status: 404, body: { error: 'Тред не найден' } };
-      return { status: 200, body: { threadId: chatThreadMatch[1], messages } };
+      return {
+        status: 200,
+        body: {
+          threadId: chatThreadMatch[1],
+          messages,
+          allowList: loadThreadAllowList(cwd, chatThreadMatch[1]),
+        },
+      };
     }
 
     // GET /api/config
