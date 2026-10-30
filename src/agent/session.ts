@@ -182,6 +182,13 @@ export interface SessionMeta {
    * frontmatter как «успешный» usage.
    */
   last_run?: { is_error?: boolean; finishedAt?: string };
+  /**
+   * VL-243: отметка «этот ран уже записан в billing» — {sessionId, finishedAt}
+   * записи. CLI ставит её сразу после appendBilling; finish() оркестратора
+   * (agent='vb') по ней понимает, что собственная fallback-запись не нужна —
+   * иначе ран учитывался бы дважды (паттерн usage_recorded, lesson-58).
+   */
+  billing_recorded?: { sessionId: string; finishedAt: string };
 }
 
 /**

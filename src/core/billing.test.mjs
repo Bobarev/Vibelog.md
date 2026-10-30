@@ -48,6 +48,24 @@ describe('billing (VL-198)', () => {
     expect(record.sessions[1].durationMs).toBe(5000);
   });
 
+  it('sessionPhase/fallback сохраняются, старые записи без них читаются (VL-243)', () => {
+    // Новые аддитивные поля: фаза рана (phase) + фаза сессии (sessionPhase)
+    // и признак fallback-записи оркестратора. Формат Backlog.md не затрагивается.
+    appendBilling(dir, 'VL-243', session({ phase: 'code', sessionPhase: 'plan', fallback: true }));
+    // запись старого формата (без новых полей) читается как раньше
+    appendBilling(dir, 'VL-243', session({ sessionId: 'agent-2', phase: 'spec' }));
+    const record = readBilling(dir, 'VL-243');
+    expect(record.sessions).toHaveLength(2);
+    expect(record.sessions[0]).toMatchObject({
+      phase: 'code',
+      sessionPhase: 'plan',
+      fallback: true,
+    });
+    expect(record.sessions[1].phase).toBe('spec');
+    expect(record.sessions[1].sessionPhase).toBeUndefined();
+    expect(record.sessions[1].fallback).toBeUndefined();
+  });
+
   it('битый JSON → throw (не перезаписываем источник правды молча)', () => {
     const path = billingPath(dir, 'VL-1');
     mkdirSync(join(dir, '.vibelog', 'billing'), { recursive: true });

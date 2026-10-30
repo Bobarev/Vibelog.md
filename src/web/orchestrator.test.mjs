@@ -1135,7 +1135,7 @@ describe('orchestrator (VL-28)', () => {
     }
   });
 
-  it('startPhase: close не получает задачный env (VL-112-гард, VL-114)', async () => {
+  it('startPhase: close получает задачный env, но не уходит в worktree (VL-243, VL-112)', async () => {
     const envRoot = mkTestRoot('vibelog-orch-envc-');
     mkdirSync(join(envRoot, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(join(envRoot, 'backlog', 'config.yml'), 'project_name: Env Close\n', 'utf-8');
@@ -1150,11 +1150,104 @@ describe('orchestrator (VL-28)', () => {
       const run = await waitDone('VL-88');
       assert.equal(run.exitCode, 0);
       const m = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
-      assert.equal(m.envPhaseTaskId, null, 'close всегда в главном репо — env нет (VL-112)');
+      // VL-243: close учитывается как любая фаза — env задачный (мета/billing)
+      assert.equal(m.envPhaseTaskId, 'VL-88', 'close получает задачный env (VL-243)');
+      assert.equal(m.envPhaseName, 'close', 'фаза close уходит в env');
+      // ...но worktree не создаётся и VIBELOG_CWD не ставится (VL-112)
+      assert.equal(m.envCwd, null, 'close всегда в главном репо (VL-112)');
+      assert.ok(!existsSync(join(envRoot, '.vibelog', 'worktrees')), 'worktree close не создаётся');
     } finally {
       setStubEnv({ VL28_STUB_MARKER: undefined });
       setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
       rmSync(envRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('startPhase: close-ран qwen пишет запись billing с phase=close (VL-243)', async () => {
+    // Инвариант задачи: каждый выполненный ран фазы оставляет запись billing.
+    // Раньше close был исключён из задачного env → phaseTaskId '' → учёт пропускался.
+    const billingRoot = mkTestRoot('vibelog-orch-bill-');
+    mkdirSync(join(billingRoot, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(billingRoot, 'backlog', 'config.yml'), 'project_name: Bill Close\n', 'utf-8');
+    createTaskFile(billingRoot, { id: 'VL-91', title: 'Задача billing close' });
+    setStubEnv({
+      VIBELOG_QWEN_BIN: stubBin,
+      VL28_STUB_MARKER: join(billingRoot, 'marker-bill.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RESULT: JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        duration_ms: 1234,
+        num_turns: 2,
+        result: 'закрыто',
+        usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, total_tokens: 15 },
+        session_id: 'agent-close-243',
+      }),
+    });
+    try {
+      const res = startPhase(billingRoot, 'VL-91', 'close');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-91', 6000);
+      assert.equal(run.exitCode, 0);
+      // учёт в finish() — fire-and-forget (metaWrite.then) — ждём записи файла
+      const billPath = join(billingRoot, '.vibelog', 'billing', 'VL-91.json');
+      const deadline = Date.now() + 3000;
+      while (!existsSync(billPath) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      assert.ok(existsSync(billPath), `нет billing-файла close-рана: ${billPath}`);
+      const record = JSON.parse(readFileSync(billPath, 'utf-8'));
+      assert.equal(record.sessions.length, 1, 'ровно одна запись за ран');
+      assert.equal(record.sessions[0].phase, 'close', 'фаза рана = close');
+      assert.equal(record.sessions[0].sessionId, 'agent-close-243');
+      assert.equal(record.sessions[0].usage.total, 15);
+      assert.equal(record.sessions[0].agent, 'qwen');
+      // мета сессии тоже создана (это и было второе следствие бага)
+      const metaPath = join(billingRoot, '.vibelog', 'agent-sessions', 'agent-close-243.meta.json');
+      assert.ok(existsSync(metaPath), 'close-ран пишет мету сессии');
+      const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
+      assert.equal(meta.taskId, 'VL-91');
+      assert.equal(meta.phase, 'close');
+    } finally {
+      resetStubEnv();
+      rmSync(billingRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('startResume: сессия фазы close возобновляется в главном репо, не в worktree (VL-243/VL-112)', async () => {
+    const closeResumeRoot = mkTestRoot('vibelog-orch-closeres-');
+    const git = (args) => spawnSync('git', ['-C', closeResumeRoot, ...args], { encoding: 'utf-8' });
+    git(['init', '-q']);
+    git(['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+    mkdirSync(join(closeResumeRoot, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(closeResumeRoot, 'backlog', 'config.yml'), 'project_name: CloseRes\n', 'utf-8');
+    mkdirSync(join(closeResumeRoot, '.vibelog'), { recursive: true });
+    writeFileSync(join(closeResumeRoot, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], branch_mode: true }), 'utf-8');
+    createTaskFile(closeResumeRoot, { id: 'VL-77', title: 'Задача close-resume' });
+    // worktree задачи существует — без гарда resume ушёл бы в него
+    const wtPath = ensureTaskWorktree(closeResumeRoot, 'VL-77');
+    mkdirSync(join(closeResumeRoot, '.vibelog', 'agent-sessions'), { recursive: true });
+    writeFileSync(
+      join(closeResumeRoot, '.vibelog', 'agent-sessions', 'agent-close-777.meta.json'),
+      JSON.stringify({ taskId: 'VL-77', phase: 'close', cwd: closeResumeRoot }),
+      'utf-8'
+    );
+    setStubEnv({ VIBELOG_QWEN_BIN: writeEnvStub(closeResumeRoot, 'closeres-stub.cjs'), VL28_STUB_MARKER: join(closeResumeRoot, 'marker-closeres.txt'), VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0' });
+    try {
+      const res = startResume(closeResumeRoot, 'agent-close-777', 'продолжи');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-77');
+      assert.equal(run.exitCode, 0);
+      const m = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
+      assert.equal(m.envCwd, null, 'close-resume — всегда главный репо (VL-112)');
+      assert.equal(m.envPhaseTaskId, 'VL-77', 'taskId для учёта всё равно передаётся');
+      assert.equal(m.cwd, realpathSync(closeResumeRoot), 'процесс запущен в главном репо, не в worktree');
+      assert.ok(wtPath.endsWith('vl-77'), 'worktree существует, но не используется');
+    } finally {
+      resetStubEnv();
+      rmSync(closeResumeRoot, { recursive: true, force: true });
     }
   });
 

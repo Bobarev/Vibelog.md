@@ -496,8 +496,14 @@ export async function main(argv: string[]): Promise<void> {
   // TUI (VL-86): создаётся ниже перед loop; здесь — для SIGINT-хэндлера
   let tui: TuiHandle | null = null;
 
-  // SIGINT: закрыть MCP и выйти — сервер-сирота не должен остаться висеть
+  // Аборт цикла (VL-243: нужен и для SIGINT ниже)
   const ac = new AbortController();
+  // SIGINT: закрыть MCP и выйти — сервер-сирота не должен остаться висеть.
+  // VL-243: НЕ завершаем процесс через process.exit немедленно — иначе
+  // пост-ран (billing/мета/JSON) не выполнится и ран пропадает из учёта
+  // (именно так терялись прерванные раны). Вместо этого: abort → закрыть
+  // MCP → выставить exitCode; основной поток доходит до пост-рана.
+  // Аварийный выход — таймер на 5 с (не держит event loop: unref).
   process.on('SIGINT', () => {
     log('SIGINT — прерывание фазы');
     ac.abort();
@@ -512,8 +518,12 @@ export async function main(argv: string[]): Promise<void> {
           // сервер уже завершился — закрывать нечего
         }
       }
-      process.exit(130);
+      // Цикл после abort завершится своим ходом, пост-ран запишет учёт;
+      // exitCode 130 сохраняет привычный контракт прерывания.
+      process.exitCode = 130;
     })();
+    // Страховка от зависания: если цикл/сеть не отпускают процесс
+    setTimeout(() => process.exit(130), 5000).unref();
   });
 
   // TUI (VL-86): только интерактивно (stdout TTY, без --headless/--output-format
@@ -684,7 +694,13 @@ export async function main(argv: string[]): Promise<void> {
     // taskCwd — где живут файлы задач: в branch-mode VIBELOG_CWD указывает
     // на главный репо (сессии/настройки там же, lesson-13)
     const taskCwd = process.env.VIBELOG_CWD ?? cwd;
+    // VL-243: phaseName — фаза СЕССИИ (её знает мета, lesson-40), runPhase —
+    // фаза ЭТОГО рана. В billing пишется фаза рана: у resume-рана
+    // (code_same_session) запись раньше помечалась 'plan' и code-запись
+    // «исчезала» из журнала VL-227. Frontmatter (by_phase) оставляем на
+    // фазе сессии — там кумулятив и lesson-40 сохраняются.
     const phaseName = existing?.phase ?? (isPhaseMode ? phase : process.env.VIBELOG_PHASE_NAME);
+    const runPhase = phase ?? (isPhaseMode ? positionals[0] : process.env.VIBELOG_PHASE_NAME) ?? phaseName;
     // env-taskId фильтруем по префиксу конфига (VL-118, как при создании меты):
     // чужой id не должен получить ни frontmatter, ни меты пост-фактум
     const envTaskId = process.env.VIBELOG_PHASE_TASK_ID;
@@ -692,6 +708,17 @@ export async function main(argv: string[]): Promise<void> {
       ?? (isPhaseMode
         ? positionals[1]
         : envTaskId && taskIdPattern(cwd).test(envTaskId) ? envTaskId : undefined);
+    if (!taskId) {
+      // VL-243: ран задачи (env/позиционные дали задачу, а меты нет) не должен
+      // молча теряться — явный след в stderr → logTail оркестратора.
+      const hintedTask = isPhaseMode ? positionals[1] : envTaskId;
+      if (hintedTask || process.env.VIBELOG_PHASE_NAME) {
+        console.error(
+          `Предупреждение: billing не записан — taskId не определён (фаза=${runPhase ?? '?'}, ` +
+            `флаг/позиционный=${hintedTask ?? '-'}, env=${envTaskId ?? '-'})`
+        );
+      }
+    }
     if (taskId) {
       // 1) Дельта в frontmatter (идемпотентно через usage_recorded: в ране
       // finish_phase уже мог дописать часть токенов)
@@ -723,15 +750,24 @@ export async function main(argv: string[]): Promise<void> {
             ? { reasoning: loopResult.usage.reasoning_tokens }
             : {}),
         };
+        const finishedAt = new Date().toISOString();
         appendBilling(taskCwd, taskId, {
           sessionId,
-          phase: phaseName,
+          phase: runPhase,
+          // VL-243: фаза сессии — только если отличается от фазы рана
+          ...(phaseName && phaseName !== runPhase ? { sessionPhase: phaseName } : {}),
           startedAt: existing?.startedAt,
-          finishedAt: new Date().toISOString(),
+          finishedAt,
           durationMs: loopResult.duration_ms,
           usage: runUsage,
           model: llm.model || undefined,
           agent: 'vb',
+        });
+        // VL-243: маркер «этот ран в billing записан» — finish() оркестратора
+        // по нему не дописывает fallback-запись (защита от двойного учёта)
+        updateSessionMeta(sessionsDir, sessionId, {
+          cwd,
+          billing_recorded: { sessionId, finishedAt },
         });
       } catch (err) {
         console.error(`Предупреждение: billing задачи ${taskId} не дополнен — ${(err as Error).message}`);

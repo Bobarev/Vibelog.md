@@ -912,6 +912,70 @@ describe('vibelog-agent CLI (VL-85)', () => {
     }
   });
 
+  // ── VL-243: billing пишет фазу РАНА; close учитывается как любая фаза ──
+
+  it('env-путь close: мета phase=close и запись billing с phase=close (VL-243)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-billclose-'));
+    try {
+      mkdirSync(join(projDir, 'backlog', 'tasks'), { recursive: true });
+      writeFileSync(join(projDir, 'backlog', 'config.yml'), 'project_name: Bill Close\n', 'utf-8');
+      createTaskFile(projDir, { id: 'VL-88', title: 'Задача billing close' });
+      const env = { ...llmEnv(), VIBELOG_PHASE_TASK_ID: 'VL-88', VIBELOG_PHASE_NAME: 'close' };
+      const { code, stdout } = await runCli(['Просто запрос', '--no-mcp'], env, projDir);
+      assert.equal(code, 0, stdout);
+      const sid = JSON.parse(stdout.trim()).session_id;
+      const meta = JSON.parse(
+        readFileSync(join(projDir, '.vibelog', 'agent-sessions', `${sid}.meta.json`), 'utf-8')
+      );
+      assert.equal(meta.taskId, 'VL-88');
+      assert.equal(meta.phase, 'close', 'close-сессия получает мету (раньше её не было вовсе)');
+      // инвариант задачи: ран close оставляет запись billing
+      const bill = JSON.parse(
+        readFileSync(join(projDir, '.vibelog', 'billing', 'VL-88.json'), 'utf-8')
+      );
+      assert.equal(bill.sessions.length, 1);
+      assert.equal(bill.sessions[0].phase, 'close', 'фаза рана = close');
+      assert.equal(bill.sessions[0].sessionId, sid);
+      assert.equal(bill.sessions[0].fallback, undefined, 'CLI-запись не fallback');
+      assert.equal(meta.billing_recorded?.sessionId, sid, 'маркер записи в billing');
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
+  it('resume-ран: billing пишет фазу рана + sessionPhase, мета не перезаписана (VL-243/lesson-40)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-billres-'));
+    try {
+      mkdirSync(join(projDir, 'backlog', 'tasks'), { recursive: true });
+      writeFileSync(join(projDir, 'backlog', 'config.yml'), 'project_name: Bill Resume\n', 'utf-8');
+      createTaskFile(projDir, { id: 'VL-88', title: 'Задача billing resume' });
+      // Первый ран — фаза plan в env-пути
+      const planEnv = { ...llmEnv(), VIBELOG_PHASE_TASK_ID: 'VL-88', VIBELOG_PHASE_NAME: 'plan' };
+      const first = await runCli(['Просто запрос', '--no-mcp'], planEnv, projDir);
+      assert.equal(first.code, 0, first.stdout);
+      const sid = JSON.parse(first.stdout.trim()).session_id;
+      // Resume тем же env, но фазой code (аналог code_same_session)
+      const codeEnv = { ...llmEnv(), VIBELOG_PHASE_TASK_ID: 'VL-88', VIBELOG_PHASE_NAME: 'code' };
+      const second = await runCli(['Продолжи', '--resume', sid, '--no-mcp'], codeEnv, projDir);
+      assert.equal(second.code, 0, second.stdout);
+      const meta = JSON.parse(
+        readFileSync(join(projDir, '.vibelog', 'agent-sessions', `${sid}.meta.json`), 'utf-8')
+      );
+      assert.equal(meta.phase, 'plan', 'фаза сессии не перезаписана resume-раном (lesson-40)');
+      const bill = JSON.parse(
+        readFileSync(join(projDir, '.vibelog', 'billing', 'VL-88.json'), 'utf-8')
+      );
+      assert.equal(bill.sessions.length, 2, 'два рана — две записи');
+      assert.equal(bill.sessions[0].phase, 'plan');
+      assert.equal(bill.sessions[0].sessionPhase, undefined, 'у первого рана фаза = фаза сессии');
+      // Ключевое: code-ран больше не «маскируется» под plan
+      assert.equal(bill.sessions[1].phase, 'code', 'фаза рана = code');
+      assert.equal(bill.sessions[1].sessionPhase, 'plan', 'фаза сессии — в sessionPhase');
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
   it('--resume отравленного jsonl: wire уходит валидным, фаза выполняется (VL-216)', async () => {
     const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl216-'));
     try {

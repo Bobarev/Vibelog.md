@@ -626,7 +626,16 @@ export function startResume(
   // Бот передаёт sessionId с префиксом vb: — для поиска меты снимаем его
   const meta = loadSessionMetaSync(agentSessionsDir(cwd), sessionId.replace(/^vb:/, ''));
   // VL-118: taskId проверяется по префиксу конфига проекта, не хардкодом VL
-  if (meta?.taskId && taskIdPattern(cwd).test(meta.taskId) && resolveBranchMode(cwd)) {
+  // VL-243: сессия фазы close теперь пишется в мету (учёт), но её resume
+  // ОСТАЁТСЯ в главном репо — закрытие (merge ветки + docs-коммит backlog)
+  // допустимо только здесь (VL-112). Гард явный, а не через env: иначе
+  // «Продолжи» на close-сообщении увёл бы закрытие в worktree.
+  if (
+    meta?.taskId &&
+    taskIdPattern(cwd).test(meta.taskId) &&
+    meta.phase !== 'close' &&
+    resolveBranchMode(cwd)
+  ) {
     worktreeTaskId = meta.taskId.toUpperCase();
   } else if (meta?.cwd && meta.cwd !== cwd) {
     // Сессия создавалась в другом каталоге (worktree), а resume идёт вне
@@ -648,6 +657,7 @@ export function startResume(
     meta?.taskId && taskIdPattern(cwd).test(meta.taskId) ? meta.taskId.toUpperCase() : '';
   const runKey = taskKey !== '' ? taskKey : `resume:${sessionId}`;
   // Фаза 'prompt' — шаблон не подставляется; промпт — сырой текст + примечание
+  // VL-243: close-resume идёт в главном репо (noWorktree) — учёт при этом есть
   return spawnQwenRun(
     cwd,
     runKey,
@@ -656,7 +666,8 @@ export function startResume(
     onExit,
     agent,
     ['--resume', sessionId],
-    worktreeTaskId
+    worktreeTaskId,
+    meta?.phase === 'close'
   );
 }
 
@@ -693,9 +704,16 @@ function spawnLimitFlags(cwd: string): string[] {
  * @param extraArgs — VL-93: доп. флаги сразу после промпта (--resume <id>)
  * @param worktreeTaskId — VL-110: ID задачи для worktree при resume (мета
  *   сессии); runKey задач ('VL-N') определяет worktree сам по себе.
- *   VL-114: задачным фазам (кроме close) в spawnEnv кладутся
+ *   VL-114: задачным фазам в spawnEnv кладутся
  *   VIBELOG_PHASE_TASK_ID/VIBELOG_PHASE_NAME — по ним CLI пишет мету
- *   сессии при спавне готовым промптом (isPhaseMode=false)
+ *   сессии при спавне готовым промптом (isPhaseMode=false).
+ *   VL-243: close тоже получает env (учёт меты/billing); из worktree он
+ *   по-прежнему исключён (VL-112, через branchTask и гард startResume)
+ * @param noWorktree — VL-243: запрет worktree независимо от ключа задачи.
+ *   Нужен close-resume: ключ рана задачный (guard по задаче, VL-145), но
+ *   закрытие обязано идти в главном репо (VL-112) — иначе «Продолжи» на
+ *   close-сообщении уводит merge ветки в worktree. Учёт (env) при этом
+ *   остаётся: taskId рану известен.
  */
 function spawnQwenRun(
   cwd: string,
@@ -705,7 +723,8 @@ function spawnQwenRun(
   onExit?: PhaseExitCallback,
   agent: 'qwen' | 'vb' = 'qwen',
   extraArgs: string[] = [],
-  worktreeTaskId?: string
+  worktreeTaskId?: string,
+  noWorktree = false
 ): StartResult {
   // VL-145: канонический ключ — задачные ключи в верхнем регистре,
   // чтобы resume (ключ из верхнего регистра меты) и фаза (raw task.id,
@@ -733,17 +752,22 @@ function spawnQwenRun(
   const baseEnv = (): NodeJS.ProcessEnv => spawnEnvBaseOverride ?? process.env;
   // VL-110: источник taskId для worktree — задачный ключ (канонический, VL-145)
   // либо мета resume-сессии.
-  // VL-112: close исключён — закрытие идёт в главном репо: merge ветки и
-  // docs(task)-коммит backlog возможны только здесь (см. phase-close-worktree.md)
+  // VL-112: close исключён из WORKTREE — закрытие идёт в главном репо: merge
+  // ветки и docs(task)-коммит backlog возможны только здесь
+  // (см. phase-close-worktree.md). Исключение — только про worktree.
   // VL-118: «задачная» проверка — по task_prefix конфига проекта
-  const branchTask = taskIdPattern(cwd).test(key) && phase !== 'close' ? key : (worktreeTaskId ?? '');
-  // VL-114: задачный env нужен фазам задач независимо от worktree: CLI пишет
-  // по нему мету сессии даже когда промпт пришёл готовым (isPhaseMode=false).
-  // Close исключён (VL-112: закрытие в главном репо, его resume не должен
-  // уходить в worktree); у resume taskId берётся из worktreeTaskId (мета
-  // VL-110) — без меты resume остаётся на прежнем пути без env.
+  const branchTask =
+    !noWorktree && taskIdPattern(cwd).test(key) && phase !== 'close' ? key : (noWorktree ? '' : (worktreeTaskId ?? ''));
+  // VL-114/243: задачный env нужен фазам задач независимо от worktree: CLI
+  // пишет по нему мету сессии даже когда промпт пришёл готовым (isPhaseMode=false).
+  // VL-243: close больше НЕ исключён из env — раньше исключение close жило в
+  // этом же выражении, и учёт close (мета + billing) терялся целиком на обоих
+  // путях (vb: CLI-пост-ран, qwen: finish оркестратора). Worktree-исключение
+  // close обеспечивает branchTask выше и гард в startResume.
+  // У resume taskId берётся из worktreeTaskId (мета VL-110) — без меты resume
+  // остаётся на прежнем пути без env.
   const phaseTaskId =
-    taskIdPattern(cwd).test(key) && phase !== 'close' ? key.toUpperCase() : (worktreeTaskId ?? '');
+    taskIdPattern(cwd).test(key) ? key.toUpperCase() : (worktreeTaskId ?? '');
   if (phaseTaskId !== '') {
     spawnEnv = {
       ...baseEnv(),
@@ -836,6 +860,9 @@ function spawnQwenRun(
   });
 
   activeRuns.set(key, { phase, child, onExit, agent });
+  // VL-243: момент старта рана — по нему finish() решает, оставил ли CLI
+  // пост-ран свою billing-запись (маркер billing_recorded.finishedAt >= старта)
+  const runStartedAt = new Date().toISOString();
   lastRuns.delete(key);
   // VL-196: транзиентный In Progress — задачные workflow-фазы после успешного
   // спавна (гарды до этого места уже прошли — при ошибке запуска статус не
@@ -1045,11 +1072,16 @@ function spawnQwenRun(
             if (hasUsageDelta(delta)) {
               addTaskTokenUsage(cwd, phaseTaskId, usagePhase, delta, result.duration_ms);
             }
+            const finishedAt = new Date().toISOString();
+            // VL-243: в billing — фаза ЭТОГО рана (resume-ран code в plan-сессии
+            // раньше маркировался 'plan' и code-запись «терялась»), фаза сессии —
+            // в sessionPhase
             appendBilling(cwd, phaseTaskId, {
               sessionId: result.session_id,
-              phase: usagePhase,
+              phase,
+              ...(usagePhase && usagePhase !== phase ? { sessionPhase: usagePhase } : {}),
               startedAt: metaNow?.startedAt,
-              finishedAt: new Date().toISOString(),
+              finishedAt,
               durationMs: result.duration_ms,
               usage: runUsage,
               agent: 'qwen',
@@ -1061,6 +1093,8 @@ function spawnQwenRun(
               usage,
               usage_recorded: usage,
               agent: 'qwen',
+              // VL-243: маркер записи в billing (паритет с CLI-путём)
+              billing_recorded: { sessionId: result.session_id, finishedAt },
               // VL-253: исход рана — finish_phase не доверяет явному tokenUsage
               // после упавшей фазы (паритет с CLI-путём)
               last_run: { is_error: result.is_error === true, finishedAt: new Date().toISOString() },
@@ -1068,6 +1102,54 @@ function spawnQwenRun(
           })
           .catch((err) => {
             console.log(`[phase ${key}] ${ts()} учёт токенов не записан: ${(err as Error).message}`);
+          });
+      }
+      // VL-243: vb-раны — fallback-учёт. Штатно всё пишет CLI-пост-ран, но
+      // при жёстком kill/падении до учёта запись терялась целиком (инвариант
+      // «каждый ран → запись billing»). Проверяем маркер billing_recorded в
+      // мете: если за этот ран его нет — дописываем сами с fallback: true
+      // (двойного учёта нет: маркер ставят оба писателя, lesson-58-паттерн).
+      if (result && agent === 'vb') {
+        metaWrite
+          .then(() => {
+            const sessionsDir = agentSessionsDir(cwd);
+            const metaNow = loadSessionMetaSync(sessionsDir, result.session_id);
+            const recorded = metaNow?.billing_recorded;
+            const alreadyRecorded =
+              recorded?.sessionId === result.session_id &&
+              typeof recorded.finishedAt === 'string' &&
+              recorded.finishedAt >= runStartedAt;
+            if (alreadyRecorded) return;
+            const runUsage: TokenUsage = {
+              input: result.usage.input_tokens,
+              output: result.usage.output_tokens,
+              cache: result.usage.cache_read_input_tokens,
+              total: result.usage.total_tokens,
+              requests: result.num_turns,
+              ...(result.usage.reasoning_tokens ? { reasoning: result.usage.reasoning_tokens } : {}),
+            };
+            const finishedAt = new Date().toISOString();
+            appendBilling(cwd, phaseTaskId, {
+              sessionId: result.session_id,
+              phase,
+              ...(metaNow?.phase && metaNow.phase !== phase ? { sessionPhase: metaNow.phase } : {}),
+              startedAt: metaNow?.startedAt,
+              finishedAt,
+              durationMs: result.duration_ms,
+              usage: runUsage,
+              agent: 'vb',
+              fallback: true,
+            });
+            updateSessionMeta(sessionsDir, result.session_id, {
+              cwd: metaCwd,
+              billing_recorded: { sessionId: result.session_id, finishedAt },
+            });
+            console.log(
+              `[phase ${key}] ${ts()} billing дописан оркестратором (fallback: CLI-пост-ран не записал)`
+            );
+          })
+          .catch((err) => {
+            console.log(`[phase ${key}] ${ts()} fallback-учёт не записан: ${(err as Error).message}`);
           });
       }
     }
