@@ -103,6 +103,69 @@ function appendChatMessages(cwd: string, threadId: string, messages: ChatMessage
   appendFileSync(sessionFile(cwd, threadId), lines, 'utf8');
 }
 
+/**
+ * Запись события подтверждения (VL-256): диагностика потерь allowance-гейтов.
+ *
+ * Формат — JSONL рядом с историей треда (`<threadId>.approvals.jsonl`,
+ * `.vibelog/` gitignored). Имя файла содержит точку, поэтому `listChatThreads`
+ * (фильтр `.jsonl` + THREAD_ID_RE) его не видит — треды не задваиваются.
+ *
+ * События: `requested` — диалог Allow/Deny показан модели-пользователю,
+ * `decided` — решение получено, `not_confirmed` — вызов закрыт без решения
+ * (предохранитель лимитов/отмена хода). Пара requested/decided на вызов
+ * позволяет считать потери: requested без decided = подтверждение потерялось.
+ *
+ * @param turn — номер хода (число user-сообщений в истории) для группировки
+ */
+export function recordApprovalLog(
+  cwd: string,
+  threadId: string,
+  entry: {
+    event: 'requested' | 'decided' | 'not_confirmed';
+    toolCallId: string;
+    tool: string;
+    turn: number;
+    approved?: boolean;
+  },
+): void {
+  if (!THREAD_ID_RE.test(threadId)) return;
+  try {
+    const dir = chatSessionsDir(cwd);
+    mkdirSync(dir, { recursive: true });
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
+    appendFileSync(join(dir, `${threadId}.approvals.jsonl`), line, 'utf8');
+  } catch {
+    // Сбой диагностического лога не должен рвать диалог (данные треда важнее).
+  }
+}
+
+/** Событие лога подтверждений (для тестов/диагностики). */
+export interface ApprovalLogEntry {
+  ts: string;
+  event: 'requested' | 'decided' | 'not_confirmed';
+  toolCallId: string;
+  tool: string;
+  turn: number;
+  approved?: boolean;
+}
+
+/** Чтение лога подтверждений треда; битые строки пропускаем (паттерн истории). */
+export function loadApprovalLog(cwd: string, threadId: string): ApprovalLogEntry[] {
+  if (!THREAD_ID_RE.test(threadId)) return [];
+  const file = join(chatSessionsDir(cwd), `${threadId}.approvals.jsonl`);
+  if (!existsSync(file)) return [];
+  const out: ApprovalLogEntry[] = [];
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line) as ApprovalLogEntry);
+    } catch {
+      // мусорная строка не должна ронять диагностику
+    }
+  }
+  return out;
+}
+
 /** Элемент списка тредов для сайдбара (VL-207): метаданные без тел сообщений. */
 export interface ChatThreadSummary {
   threadId: string;
@@ -344,6 +407,10 @@ async function produce(
   queue: EventQueue,
 ): Promise<void> {
   const history = loadChatHistory(cwd, threadId);
+  // VL-256: номер хода для лога подтверждений. Считается по истории В МОМЕНТ
+  // записи события: resume не добавляет user-сообщение, поэтому все гейты
+  // одного хода получают одинаковый номер.
+  const currentTurn = (): number => history.filter(m => m.role === 'user').length;
 
   // --- LLM-клиент -----------------------------------------------------------
   let llm: Pick<LlmClient, 'streamChat'> | undefined = deps.llm;
@@ -441,6 +508,14 @@ async function produce(
       return;
     }
     const approved = body.approval!.approved as boolean;
+    // VL-256: решение получено — фиксируем в логе (requested без decided = потеря)
+    recordApprovalLog(cwd, threadId, {
+      event: 'decided',
+      toolCallId: target.id,
+      tool: target.name,
+      turn: currentTurn(),
+      approved,
+    });
     let content: string;
     if (approved) {
       try {
@@ -464,9 +539,20 @@ async function produce(
     appendChatMessages(cwd, threadId, [
       { role: 'tool', tool_call_id: target.id, content },
     ]);
-    // Остальные неотвеченные вызовы этого хода (поиск после create и т.п.):
-    // read-only исполняем, повторный create — синтетический отказ (не подтверждён).
-    await closeRemainingPending(history, cwd, threadId, queue, target.id);
+    // VL-256: остальные неотвеченные вызовы хода. Read-only исполняем сразу,
+    // а следующий write НЕ отменяем молча — показываем для него свой
+    // Allow/Deny (последовательные гейты вместо синтетического not_confirmed).
+    const next = await advanceToNextApproval(history, cwd, threadId, queue, target.id);
+    if (next !== null) {
+      recordApprovalLog(cwd, threadId, {
+        event: 'requested',
+        toolCallId: next.id,
+        tool: next.name,
+      turn: currentTurn(),
+      });
+      queue.push({ type: 'approval', toolCallId: next.id, name: next.name, args: next.arguments });
+      return; // ход снова на паузе: ждём решение по следующему вызову
+    }
   } else {
     // Новое сообщение: закрываем висящие approval-хвосты ДО user-сообщения.
     const closedCount = closePendingToolCalls(history);
@@ -482,6 +568,9 @@ async function produce(
   let iterations = 0;
   for (;;) {
     if (++iterations > MAX_LLM_ITERATIONS) {
+      // VL-256: хвост write-вызовов без результата сделал бы payload невалидным
+      // для провайдера — закрываем явным not_confirmed (машиночитаемо, с логом)
+      closeUnconfirmedTail(history, cwd, threadId, queue, currentTurn());
       queue.push({
         type: 'error',
         message: `Превышен лимит итераций инструментов (${MAX_LLM_ITERATIONS}) — диалог остановлен`,
@@ -489,6 +578,7 @@ async function produce(
       return;
     }
     if (Date.now() - started > MAX_WALL_TIME_MS) {
+      closeUnconfirmedTail(history, cwd, threadId, queue, currentTurn());
       queue.push({
         type: 'error',
         message: `Превышено время ответа (${Math.round(MAX_WALL_TIME_MS / 1000)} с) — диалог остановлен`,
@@ -533,6 +623,12 @@ async function produce(
     // операции, VL-219: не по списку имён — isWriteOperation).
     for (const tc of resp.toolCalls) {
       if (isWriteOperation(tc.name)) {
+        recordApprovalLog(cwd, threadId, {
+          event: 'requested',
+          toolCallId: tc.id,
+          tool: tc.name,
+      turn: currentTurn(),
+        });
         queue.push({ type: 'approval', toolCallId: tc.id, name: tc.name, args: tc.arguments });
         return; // состояние уже в jsonl; ждём resume с решением
       }
@@ -566,31 +662,27 @@ function hasApprovalOf(body: ChatRequestBody): boolean {
 }
 
 /**
- * Закрытие остальных неотвеченных tool_calls после решения по approval:
- * read-only (search/view) исполняем с событиями; create без подтверждения —
- * синтетический отказ, чтобы LLM получил валидный payload.
+ * VL-256: продвижение к следующему гейту после решения по одному вызову.
+ *
+ * Read-only вызовы хвоста хода (search/view/read_file) исполняются сразу —
+ * они не требуют подтверждения. Первый встреченный write НЕ закрывается и
+ * НЕ исполняется, а возвращается вызывающему: сервер покажет для него
+ * отдельный Allow/Deny (последовательные гейты, ref-22 local-runtime.mdx
+ * §Approval gates: adapter вызывается заново на каждое решение).
+ *
+ * @param skipId — id только что обработанного вызова (его результат уже в истории)
+ * @returns следующий write-вызов, ожидающий подтверждения, либо null
  */
-async function closeRemainingPending(
+async function advanceToNextApproval(
   history: ChatMessage[],
   cwd: string,
   threadId: string,
   queue: EventQueue,
   skipId: string,
-): Promise<void> {
+): Promise<ToolCall | null> {
   for (const tc of pendingToolCalls(history)) {
     if (tc.id === skipId) continue;
-    if (isWriteOperation(tc.name)) {
-      // VL-262: write без подтверждения — reason 'not_confirmed' (не отказ
-      // пользователя): повтор с тем же idempotencyKey безопасен. Раньше текст
-      // «Отменено: не было подтверждения» был неотличим от явного Deny.
-      const content = ackDenied('not_confirmed', {
-        tool: tc.name,
-        fields: Object.keys(tc.arguments ?? {}),
-      });
-      history.push({ role: 'tool', tool_call_id: tc.id, content });
-      appendChatMessages(cwd, threadId, [{ role: 'tool', tool_call_id: tc.id, content }]);
-      continue;
-    }
+    if (isWriteOperation(tc.name)) return tc;
     queue.push({ type: 'tool_start', id: tc.id, name: tc.name, args: tc.arguments });
     let result: string;
     let isError = false;
@@ -603,5 +695,36 @@ async function closeRemainingPending(
     history.push({ role: 'tool', tool_call_id: tc.id, content: result });
     appendChatMessages(cwd, threadId, [{ role: 'tool', tool_call_id: tc.id, content: result }]);
     queue.push({ type: 'tool_end', id: tc.id, result, ...(isError ? { isError: true } : {}) });
+  }
+  return null;
+}
+
+/**
+ * VL-256: предохранитель лимитов — висящие write-вызовы закрываются
+ * машиночитаемым `not_confirmed` (а не остаются без результата: провайдер
+ * отклонил бы payload «assistant с tool_calls без результатов»). Событие
+ * пишется в лог подтверждений — потеря решения видна в диагностике.
+ */
+function closeUnconfirmedTail(
+  history: ChatMessage[],
+  cwd: string,
+  threadId: string,
+  queue: EventQueue,
+  turn: number,
+): void {
+  for (const tc of pendingToolCalls(history)) {
+    const content = ackDenied('not_confirmed', {
+      tool: tc.name,
+      fields: Object.keys(tc.arguments ?? {}),
+    });
+    history.push({ role: 'tool', tool_call_id: tc.id, content });
+    appendChatMessages(cwd, threadId, [{ role: 'tool', tool_call_id: tc.id, content }]);
+    recordApprovalLog(cwd, threadId, {
+      event: 'not_confirmed',
+      toolCallId: tc.id,
+      tool: tc.name,
+      turn,
+    });
+    queue.push({ type: 'tool_end', id: tc.id, result: content, isError: true });
   }
 }

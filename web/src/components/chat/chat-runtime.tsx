@@ -8,6 +8,10 @@
  *   рантайм ставит run на паузу; Allow/Deny в thread.tsx вызывает
  *   `part.respondToApproval({ approved, reason? })`, рантайм записывает
  *   решение в part и вызывает adapter повторно;
+ * - гейты ПОСЛЕДОВАТЕЛЬНЫЕ (VL-256): при нескольких write-вызовах в одном
+ *   ходе сервер показывает подтверждение по одному — после решения по
+ *   вызову N приходит `approval` для N+1 (отказ по одному не отменяет
+ *   остальные), поэтому один run = одно решение;
  * - resume-run: решения читаем из unstable_getMessage().content
  *   (tool-call с approval.approved) и шлём POST { threadId, approval } —
  *   сервер продолжает LLM-цикл, новый текст докидывается в ту же нить
@@ -178,8 +182,17 @@ function applyEvent(parts: Part[], ev: ChatEvent): boolean {
       }
       return false
     }
-    case "approval":
-      // backlog_create_task: part с approval-gate, run ставится на паузу
+    case "approval": {
+      // VL-256: гейты последовательные — повторное событие для того же
+      // toolCallId не должно создавать второй part (два part'а с одним id
+      // дали бы два диалога, а tool_end попал бы в первый)
+      const exists = parts.findIndex(p => p.type === "tool-call" && p.toolCallId === ev.toolCallId)
+      if (exists >= 0) {
+        const prev = parts[exists] as Extract<Part, { type: "tool-call" }>
+        parts[exists] = { ...prev, approval: { id: ev.toolCallId } }
+        return true
+      }
+      // write-операция: part с approval-gate, run ставится на паузу
       parts.push({
         type: "tool-call",
         toolCallId: ev.toolCallId,
@@ -189,6 +202,7 @@ function applyEvent(parts: Part[], ev: ChatEvent): boolean {
         approval: { id: ev.toolCallId },
       })
       return true
+    }
     case "error":
       parts.push({ type: "text", text: `Ошибка чата: ${ev.message}` })
       return false
