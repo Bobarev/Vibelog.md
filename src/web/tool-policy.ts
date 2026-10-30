@@ -29,6 +29,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ToolDef } from '../agent/llm.js';
 import { resolveInProject, truncateToolOutput, formatDirListing } from '../agent/tools.js';
+import { searchProjectFiles } from '../agent/search-files.js';
 import { listTools } from '../mcp/tools.js';
 
 /** Локальный инструмент чата: ToolDef + handler (ToolDef из llm.ts без handler — wire-описание). */
@@ -193,15 +194,51 @@ export function makeWriteFileTool(cwd: string): ChatLocalTool {
 }
 
 /**
+ * Инструмент search_files чата (VL-234): поиск по исходникам БЕЗ подтверждения
+ * (isWriteOperation('search_files') === false). Общий handler с агентом —
+ * searchProjectFiles; границы проекта, пропуск node_modules/.git/dist,
+ * бинарников и файлов >1 МБ, кап вывода внутри.
+ */
+export function makeSearchFilesTool(cwd: string): ChatLocalTool {
+  return {
+    name: 'search_files',
+    description:
+      'Поиск по содержимому файлов проекта БЕЗ подтверждения пользователя. ' +
+      'Основной инструмент для вопросов «где используется X» и «где определён Y» — ' +
+      'один вызов вместо серии read_file с offset/limit (ниже расход контекста). ' +
+      'pattern — подстрока (literal) или регулярка при regex: true; glob — фильтр путей ' +
+      '("src/**/*.ts"); context — строк до/после (0-5); limit — максимум совпадений (дефолт 100); ' +
+      'caseSensitive (дефолт true). Выдача сгруппирована по файлу: "N: текст" — совпадение, ' +
+      '"N- текст" — контекст. node_modules/.git/dist, бинарники и файлы >1 МБ пропускаются. ' +
+      'Доступ только в пределах директории проекта.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Подстрока (literal) или регулярка при regex: true' },
+        glob: { type: 'string', description: 'Фильтр путей, например "src/**/*.ts"' },
+        path: { type: 'string', description: 'Директория или файл для поиска (дефолт — весь проект)' },
+        context: { type: 'number', description: 'Строк контекста до/после совпадения (0-5)' },
+        limit: { type: 'number', description: 'Максимум совпадений (дефолт 100)' },
+        regex: { type: 'boolean', description: 'pattern как регулярка (дефолт false — literal)' },
+        caseSensitive: { type: 'boolean', description: 'Учитывать регистр (дефолт true)' },
+      },
+      required: ['pattern'],
+    },
+    handler: async (args: Record<string, unknown>): Promise<string> =>
+      truncateToolOutput(await searchProjectFiles(cwd, args)),
+  };
+}
+
+/**
  * Инструменты модели чата: все MCP-инструменты (кроме
- * CHAT_DISALLOWED_TOOLS) + локальные read_file/write_file. Схемы
+ * CHAT_DISALLOWED_TOOLS) + локальные read_file/write_file/search_files. Схемы
  * совпадают с реестром listTools() — дублирования нет (Р2 плана VL-219).
  */
 export function chatToolDefs(cwd: string): (ToolDef | ChatLocalTool)[] {
   const defs: (ToolDef | ChatLocalTool)[] = listTools()
     .filter(t => !CHAT_DISALLOWED_TOOLS.includes(t.name))
     .map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
-  defs.push(makeReadFileTool(cwd), makeWriteFileTool(cwd));
+  defs.push(makeReadFileTool(cwd), makeWriteFileTool(cwd), makeSearchFilesTool(cwd));
   return defs;
 }
 

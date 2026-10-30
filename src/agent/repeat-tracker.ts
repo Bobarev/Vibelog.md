@@ -51,6 +51,7 @@ export function toolRepeatTarget(name: string, args: Record<string, unknown>): s
   };
   switch (name) {
     case 'grep_search':
+    case 'search_files':
       return str('pattern');
     case 'glob':
       return str('pattern');
@@ -67,6 +68,7 @@ export function toolRepeatTarget(name: string, args: Record<string, unknown>): s
 export function toolRepeatKind(name: string): RepeatKind | null {
   switch (name) {
     case 'grep_search':
+    case 'search_files':
     case 'glob':
       return 'search';
     case 'read_file':

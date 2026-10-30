@@ -26,8 +26,9 @@ function call(name, args, id = `c${Math.random().toString(36).slice(2, 8)}`) {
 }
 
 describe('repeat-tracker: ключ повтора (VL-229)', () => {
-  it('grep_search/glob → pattern, read_file/edit/write_file → path', () => {
+  it('grep_search/glob/search_files → pattern, read_file/edit/write_file → path', () => {
     assert.equal(toolRepeatTarget('grep_search', { pattern: 'foo', path: 'src' }), 'foo');
+    assert.equal(toolRepeatTarget('search_files', { pattern: 'createLlmClient', glob: 'src/**/*.ts' }), 'createLlmClient');
     assert.equal(toolRepeatTarget('glob', { pattern: 'src/**/*.ts' }), 'src/**/*.ts');
     assert.equal(toolRepeatTarget('read_file', { path: 'src/agent/loop.ts', offset: 10 }), 'src/agent/loop.ts');
     assert.equal(toolRepeatTarget('edit', { path: 'a.ts', old_string: 'x' }), 'a.ts');
@@ -53,6 +54,7 @@ describe('repeat-tracker: ключ повтора (VL-229)', () => {
 
   it('категории: search/read/write и null для прочих', () => {
     assert.equal(toolRepeatKind('grep_search'), 'search');
+    assert.equal(toolRepeatKind('search_files'), 'search');
     assert.equal(toolRepeatKind('glob'), 'search');
     assert.equal(toolRepeatKind('read_file'), 'read');
     assert.equal(toolRepeatKind('edit'), 'write');

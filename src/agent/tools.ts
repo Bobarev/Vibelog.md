@@ -22,6 +22,8 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
+import { searchProjectFiles, walkFiles } from './search-files.js';
+
 /** Опции выполнения handler'а инструмента (прокидка отмены из loop). */
 export interface ToolHandlerContext {
   signal?: AbortSignal;
@@ -696,38 +698,7 @@ export function miniGlobToRegex(glob: string): RegExp {
   return new RegExp(`^${source}$`);
 }
 
-/** Каталоги, которые обход не рассматривает (шум и размер репозитория). */
-const SKIP_DIRS = new Set(['node_modules', '.git']);
-
-/**
- * Рекурсивный обход дерева проекта (readdirSync, синхронно — инструменты
- * anyway выполняются в loop без параллелизма). Возвращает относительные
- * posix-пути файлов; лимит — защита от раздувания вывода.
- */
-function walkFiles(root: string, limit: number): string[] {
-  const out: string[] = [];
-  const stack = [''];
-  while (stack.length > 0 && out.length < limit) {
-    const relDir = stack.pop() as string;
-    const absDir = relDir === '' ? root : join(root, relDir);
-    let entries;
-    try {
-      entries = readdirSync(absDir, { withFileTypes: true });
-    } catch {
-      continue; // недоступная директория не должна ронять обход
-    }
-    for (const entry of entries) {
-      if (out.length >= limit) break;
-      const relPath = relDir === '' ? entry.name : `${relDir}/${entry.name}`;
-      if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name)) stack.push(relPath);
-      } else if (entry.isFile()) {
-        out.push(relPath);
-      }
-    }
-  }
-  return out.sort();
-}
+/** Каталоги, которые обход не рассматривает: см. SKIP_DIRS в search-files.ts (VL-234). */
 
 /** Инструмент grep_search: рекурсивный поиск по regex, формат file:line: text. */
 function makeGrepSearch(cwd: string): ToolSpec {
@@ -817,6 +788,39 @@ function makeGlob(cwd: string): ToolSpec {
   };
 }
 
+/**
+ * Инструмент search_files (VL-234): основной инструмент поиска символов.
+ * В отличие от grep_search (regex по всему проекту) — literal по умолчанию,
+ * окно контекста, caseSensitive и группировка по файлу.
+ */
+function makeSearchFiles(cwd: string): ToolSpec {
+  return {
+    name: 'search_files',
+    description:
+      'Поиск по содержимому файлов проекта (read-only). Основной инструмент для вопросов ' +
+      '«где используется X» и «где определён Y»: ОДИН вызов вместо серии read_file с offset/limit. ' +
+      'pattern — подстрока (literal) либо регулярка при regex: true; glob — фильтр путей ' +
+      '("src/**/*.ts"); context — строк до/после совпадения (0-5); limit — максимум совпадений ' +
+      '(дефолт 100, пометка об усечении); caseSensitive (дефолт true). ' +
+      'Выдача сгруппирована по файлу: строка "N: текст" — совпадение, "N- текст" — контекст. ' +
+      'node_modules/.git/dist пропускаются; бинарники и файлы >1 МБ — тоже; доступ только внутри проекта.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Подстрока (literal) или регулярка при regex: true' },
+        glob: { type: 'string', description: 'Фильтр путей, например "src/**/*.ts" или "**/*.test.mjs"' },
+        path: { type: 'string', description: 'Директория или файл для поиска (дефолт — весь проект)' },
+        context: { type: 'number', description: 'Строк контекста до/после совпадения (0-5, дефолт 0)' },
+        limit: { type: 'number', description: 'Максимум совпадений (дефолт 100)' },
+        regex: { type: 'boolean', description: 'Трак­товать pattern как регулярку (дефолт false — literal)' },
+        caseSensitive: { type: 'boolean', description: 'Учитывать регистр (дефолт true)' },
+      },
+      required: ['pattern'],
+    },
+    handler: async (args) => searchProjectFiles(cwd, args),
+  };
+}
+
 /** Список локальных инструментов для loop агента (привязка к cwd проекта). */
 export function listLocalTools(cwd: string): ToolSpec[] {
   const root = resolve(cwd);
@@ -827,5 +831,6 @@ export function listLocalTools(cwd: string): ToolSpec[] {
     makeRunShellCommand(root),
     makeGrepSearch(root),
     makeGlob(root),
+    makeSearchFiles(root),
   ];
 }
