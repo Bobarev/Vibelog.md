@@ -32,6 +32,8 @@ import {
   resolveDefaultAgent,
 } from '../bot/settings.js';
 import { taskIdPattern } from '../core/config.js';
+// VL-246: предпроверка незавершённого merge в главном репозитории перед close
+import { getMergeState } from '../core/git.js';
 import { getWorkflowForTask, getStatusAfterPhase, isPhaseAllowed } from '../core/workflow.js';
 // VL-196: транзиентный In Progress на время workflow-фазы — mark после спавна,
 // finalize в finish() до onExit (единая точка spawnQwenRun для всех запусков)
@@ -72,6 +74,12 @@ export type StartResult =
       pid: number;
       /** VL-146: close поставлен в очередь branch-mode — процесс ещё не создан (pid 0). */
       queued?: boolean;
+      /**
+       * VL-246: какая задача держит текущий close (канонический ключ, напр.
+       * 'VL-212') — для сообщения «встанет после завершения close VL-N».
+       * Поле additive: вне очереди отсутствует.
+       */
+      queuedBehind?: string;
       /**
        * VL-187: статус продолжения plan-сессии фазой code (только phase==='code'):
        * applied — настройка/флаг включены и план-сессия найдена (--resume передан);
@@ -129,6 +137,13 @@ interface QueuedClose {
 const closeQueue: QueuedClose[] = [];
 /** true ⇔ close-фаза активна или стартует из очереди (guard очереди, VL-146). */
 let closeActive = false;
+/**
+ * VL-246: канонический ключ задачи активного close (null — нет активного).
+ * Нужен только для сообщения «удерживает очередь VL-N»: сама сериализация
+ * по-прежнему на closeActive. Сбрасывается в единственных точках выхода
+ * очереди (drainCloseQueue), чтобы подсказка не устаревала.
+ */
+let closeOwner: string | null = null;
 
 /**
  * Тестовый шов VL-140: заменяет process.env как базу env спавна фаз.
@@ -304,15 +319,37 @@ export function startPhase(
         error: 'Запуск уже выполняется' + (taskIdPattern(cwd).test(canon) ? ` (${canon})` : ''),
       };
     }
+    // VL-246: предпроверка git-состояния ПЕРЕД очередью и спавном. Если в
+    // главном репо висит незавершённый merge (чужой close упал/прерван),
+    // `git merge` нашей ветки упадёт с «unmerged files» — агент потратит ран
+    // впустую (инцидент VL-212/VL-219, lesson-82). Guard стоит до
+    // closeActive/spawnQwenRun → статус задачи не меняется (транзиент
+    // In Progress ставится только при успешном спавне, VL-196).
+    const merge = getMergeState(cwd);
+    if (merge.inProgress) {
+      const conflicts = merge.unmerged.length
+        ? `, конфликты: ${merge.unmerged.slice(0, 5).join(', ')}` +
+          (merge.unmerged.length > 5 ? ` и ещё ${merge.unmerged.length - 5}` : '')
+        : '';
+      return {
+        error:
+          'Close не может начать слияние: в главном репозитории идёт незавершённый merge' +
+          (merge.head ? ` (MERGE_HEAD ${merge.head.slice(0, 7)})` : '') +
+          conflicts +
+          '. Заверши или отмени чужое слияние и повтори close (lesson-82)',
+      };
+    }
     // Двойной /close одной задачи: она уже ждёт в очереди — дубликат не добавляем
     if (closeQueue.some((e) => e.taskId.toUpperCase() === canon)) {
       return { error: `Close уже в очереди: ${canon}` };
     }
     if (closeActive) {
       closeQueue.push({ cwd, taskId, onExit, extraVars, agent, extraArgs: opts?.extraArgs });
-      return { started: true, pid: 0, queued: true };
+      // VL-246: сообщаем, чей close удерживает очередь (подсказка в боте/вебе)
+      return { started: true, pid: 0, queued: true, queuedBehind: closeOwner ?? undefined };
     }
     closeActive = true;
+    closeOwner = canon;
     // Drain обязателен при ЛЮБОМ исходе фазы (finally — на случай ошибки
     // в onExit вызывающего): иначе очередь зависнет навсегда
     const wrappedExit: PhaseExitCallback = (run) => {
@@ -326,6 +363,7 @@ export function startPhase(
     if ('error' in res) {
       // Спавн не состоялся (guard и т.п.) — флаг снимается, очередь разгребается
       closeActive = false;
+      closeOwner = null;
       drainCloseQueue();
     }
     return res;
@@ -404,9 +442,12 @@ function drainCloseQueue(): void {
   const next = closeQueue.shift();
   if (!next) {
     closeActive = false;
+    // VL-246: активного close больше нет — подсказка «удерживает VL-N» устареет
+    closeOwner = null;
     return;
   }
   closeActive = false;
+  closeOwner = null;
   const res = startPhase(next.cwd, next.taskId, 'close', next.onExit, next.extraVars, next.agent, {
     extraArgs: next.extraArgs,
   });

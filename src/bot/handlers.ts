@@ -1097,9 +1097,11 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     if (result.queued) {
       // VL-146: второй close в branch-mode ждёт в очереди — процесса ещё нет;
       // onExit уже зарегистрирован в очередь, карточка завершения придёт при старте
+      // VL-246: показываем, чей close удерживает очередь (понятная причина ожидания)
+      const behind = result.queuedBehind ? ` (удерживает close ${result.queuedBehind})` : '';
       await sendMd(
         ctx,
-        `⏳ Фаза Close (${agent}) для *${task.id}* поставлена в очередь — стартует после завершения текущего close (VL-146)`
+        `⏳ Фаза Close (${agent}) для *${task.id}* поставлена в очередь — стартует после завершения текущего close${escapeMarkdownV2(behind)} (VL-146)`
       );
       return;
     }

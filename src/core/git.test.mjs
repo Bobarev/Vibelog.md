@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { getGitStatus, parsePorcelain, parseNumstat, getGitLog, parseGitLog } from '../../dist/core/git.js';
+import { getGitStatus, parsePorcelain, parseNumstat, getGitLog, parseGitLog, getMergeState } from '../../dist/core/git.js';
 
 // GIT_CONFIG_GLOBAL=/dev/null изолирует тест от глобального git-конфига
 const ISO_ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
@@ -235,6 +235,65 @@ describe('getGitLog — интеграция с реальным git (VL-90)', (
     const notGit = mkdtempSync(join(tmpdir(), 'vibelog-gitlog-nogit-'));
     try {
       assert.throws(() => getGitLog(notGit, 10, ISO_ENV), /Git недоступен/);
+    } finally {
+      rmSync(notGit, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('getMergeState (VL-246)', () => {
+  /** Минимальный git-репозиторий с одним коммитом; возвращает функцию git. */
+  const initRepo = (root) => {
+    const git = (...args) =>
+      spawnSync('git', args, { cwd: root, encoding: 'utf-8', env: ISO_ENV });
+    git('init');
+    git('config', 'user.email', 't@t');
+    git('config', 'user.name', 't');
+    writeFileSync(join(root, 'a.txt'), 'base\n', 'utf-8');
+    git('add', '-A');
+    git('commit', '-m', 'init');
+    return git;
+  };
+
+  it('merge не идёт → inProgress=false, head="", unmerged=[]', () => {
+    const root = mkdtempSync(join(tmpdir(), 'vibelog-mergestate-clean-'));
+    try {
+      initRepo(root);
+      assert.deepEqual(getMergeState(root, ISO_ENV), {
+        inProgress: false,
+        head: '',
+        unmerged: [],
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('MERGE_HEAD есть → inProgress=true и head = sha вливаемого коммита', () => {
+    const root = mkdtempSync(join(tmpdir(), 'vibelog-mergestate-head-'));
+    try {
+      const git = initRepo(root);
+      const sha = git('rev-parse', 'HEAD').stdout.trim();
+      // Имитируем начатый merge: git пишет MERGE_HEAD в .git/ (файл, не каталог)
+      writeFileSync(join(root, '.git', 'MERGE_HEAD'), sha + '\n', 'utf-8');
+      // Конфликтующих файлов нет — unmerged пуст, это тоже корректный кейс
+      const state = getMergeState(root, ISO_ENV);
+      assert.equal(state.inProgress, true, 'MERGE_HEAD обнаружен');
+      assert.equal(state.head, sha, 'head — sha из MERGE_HEAD');
+      assert.deepEqual(state.unmerged, [], 'конфликтов нет');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('не-git-директория → fail-open (не throw)', () => {
+    const notGit = mkdtempSync(join(tmpdir(), 'vibelog-mergestate-nogit-'));
+    try {
+      assert.deepEqual(getMergeState(notGit, ISO_ENV), {
+        inProgress: false,
+        head: '',
+        unmerged: [],
+      });
     } finally {
       rmSync(notGit, { recursive: true, force: true });
     }
