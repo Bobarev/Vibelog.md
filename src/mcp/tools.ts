@@ -118,6 +118,12 @@ export function listTools(): ToolDefinition[] {
           ready: { type: 'boolean', description: 'Только задачи без открытых блокеров' },
           sort: { type: 'string', enum: ['priority', 'created', 'updated'], description: 'Сортировка' },
           limit: { type: 'number', description: 'Максимальное количество задач' },
+          // VL-260: отбор полей карточки — общий хелпер с backlog_view_task
+          fields: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Опционально: какие ключи карточки вернуть (id, title, status, priority, labels, assignee, milestone, type, parent_task_id). Принимаются camelCase/snake_case-алиасы (parentTaskId → parent_task_id). Неизвестные ключи не прерывают вызов: они игнорируются, а в корень ответа добавляется `_warning` с ближайшими именами. Без параметра — прежний массив карточек.',
+          },
         },
       },
     },
@@ -132,7 +138,7 @@ export function listTools(): ToolDefinition[] {
           fields: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Имена полей Task для возврата (ключи интерфейса Task, напр. ["id","title","modified_files"]); camelCase-алиасы принимаются и приводятся к ключу Task (modifiedFiles → modified_files); без параметра или при пустом массиве — полное представление',
+            description: 'Имена полей Task для возврата. Допустимые ключи (ключи интерфейса Task): id, title, status, priority, assignee, reporter, created_date, updated_date, due_date, labels, dependencies, milestone, type, project, parent_task_id, ordinal, references, documentation, modified_files, lessons, token_usage, description, acceptanceCriteria, definitionOfDone, implementationPlan, implementationNotes, finalSummary, comments. Принимаются camelCase/snake_case-алиасы (modifiedFiles → modified_files, implementation_plan → implementationPlan) и смысловые алиасы: notes → implementationNotes, plan → implementationPlan, ac → acceptanceCriteria, dod → definitionOfDone, summary → finalSummary. Неизвестные ключи НЕ прерывают вызов: они игнорируются, остальные запрошенные поля возвращаются, а в конец ответа добавляется `_warning` со списком проигнорированных и ближайшими допустимыми именами. Без параметра или при пустом массиве — полное представление',
           },
         },
         required: ['id'],
@@ -250,6 +256,12 @@ export function listTools(): ToolDefinition[] {
           modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Фильтр по подстроке в modified_files задачи' },
           hasLessons: { type: 'boolean', description: 'Фильтр по наличию lessons у задачи (true — есть, false — нет)' },
           limit: { type: 'number', minimum: 1, maximum: 100, description: 'Максимум результатов; полное число совпадений — в found' },
+          // VL-260: отбор полей карточки — общий хелпер с backlog_view_task
+          fields: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Опционально: какие ключи карточки вернуть (id, title, status, priority, type, project, labels, milestone). Принимаются camelCase/snake_case-алиасы. Неизвестные ключи не прерывают вызов: они игнорируются, а в корень ответа добавляется `_warning` с ближайшими именами. Без параметра — полные карточки.',
+          },
         },
       },
     },
@@ -834,6 +846,20 @@ function toolListTasks(args: ToolArgs, cwd: string): string {
     parent_task_id: t.parent_task_id,
   }));
 
+  // VL-260: опциональный отбор полей — те же правила и тот же текст предупреждения,
+  // что у backlog_view_task (общий хелпер). Без fields формат ответа прежний (массив).
+  if (args.fields !== undefined) {
+    const { picked, warning } = pickFieldsList(
+      simplified as unknown as Array<Record<string, unknown>>,
+      args.fields,
+      Object.keys(simplified[0] ?? {
+        id: '', title: '', status: '', priority: '', labels: [], assignee: '',
+        milestone: '', type: '', parent_task_id: '',
+      }),
+    );
+    return JSON.stringify(warning ? { tasks: picked, _warning: warning } : picked, null, 2);
+  }
+
   return JSON.stringify(simplified, null, 2);
 }
 
@@ -871,7 +897,150 @@ function resolveFieldName(field: string, valid: string[]): string | undefined {
   // (acceptance_criteria → acceptanceCriteria). В Task таких пар-двойников
   // (отличающихся только регистром/подчёркиваниями) нет, поэтому поиск по
   // нормализованной форме однозначен: find вернёт единственный ключ.
-  return valid.find((key) => camelToSnake(key) === snake);
+  const reverse = valid.find((key) => camelToSnake(key) === snake);
+  if (reverse !== undefined) return reverse;
+  // VL-260: смысловые алиасы. Модель естественно пишет `notes`/`plan`/`ac`/`dod`,
+  // тогда как ключи Task называются implementationNotes/implementationPlan/
+  // acceptanceCriteria/definitionOfDone. Проверка стоит ПОСЛЕ точного совпадения
+  // и нормализации, поэтому реальный ключ Task всегда приоритетнее алиаса
+  // (в интерфейсе Task таких коротких имён нет — конфликт исключён).
+  const alias = FIELD_ALIASES[field] ?? FIELD_ALIASES[snake];
+  return alias !== undefined && valid.includes(alias) ? alias : undefined;
+}
+
+/**
+ * Явные смысловые алиасы: слово, которое модель пишет естественно → канонический
+ * ключ Task (VL-260). Работают только если в задаче реально есть целевой ключ.
+ */
+const FIELD_ALIASES: Record<string, string> = {
+  notes: 'implementationNotes',
+  note: 'implementationNotes',
+  plan: 'implementationPlan',
+  plans: 'implementationPlan',
+  ac: 'acceptanceCriteria',
+  dod: 'definitionOfDone',
+  summary: 'finalSummary',
+};
+
+/** Расстояние Левенштейна — только для подсказок «ближайшие имена полей» (VL-260). */
+function levenshtein(a: string, b: string): number {
+  // Обычная DP по двум строкам; имена полей короткие, оптимизации не нужны.
+  const prev: number[] = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i += 1) {
+    let diag = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const tmp = prev[j];
+      prev[j] = Math.min(
+        prev[j] + 1,
+        prev[j - 1] + 1,
+        diag + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+      diag = tmp;
+    }
+  }
+  return prev[b.length];
+}
+
+/**
+ * Подсказывает ближайшие допустимые имена для опечатки/незнакомого слова (VL-260).
+ *
+ * Сравнение идёт по нормализованной форме (camelToSnake), порог — расстояние не
+ * больше max(2, len/3) либо вхождение подстроки (ловятся `notes` → `implementationNotes`).
+ * Подсказка никогда не подставляется автоматически — только показывается в `_warning`.
+ */
+function suggestFieldNames(field: string, validKeys: string[], limit = 3): string[] {
+  const token = camelToSnake(field);
+  const scored: Array<{ key: string; dist: number }> = [];
+  for (const key of validKeys) {
+    const norm = camelToSnake(key);
+    const dist = levenshtein(token, norm);
+    const close = dist <= Math.max(2, Math.floor(token.length / 3))
+      || norm.includes(token) || token.includes(norm);
+    if (close) scored.push({ key, dist });
+  }
+  scored.sort((a, b) => a.dist - b.dist);
+  return scored.slice(0, limit).map((s) => s.key);
+}
+
+/**
+ * Резолвит список запрошенных полей: канонические ключи (дедуп по первому вхождению)
+ * и список неизвестных имён (VL-260).
+ *
+ * Валидация типа — на границе слоя (lesson-34): не-массив и не-строковые элементы
+ * дают явную ошибку, а не TypeError из camelToSnake.
+ */
+function resolveFields(fields: unknown, validKeys: string[]): { resolved: string[]; unknown: string[] } {
+  if (!Array.isArray(fields) || fields.some((f) => typeof f !== 'string')) {
+    throw new Error('Параметр fields должен быть массивом имён полей.');
+  }
+  const resolved: string[] = [];
+  const unknown: string[] = [];
+  for (const f of fields as string[]) {
+    const name = resolveFieldName(f, validKeys);
+    if (name === undefined) {
+      unknown.push(f);
+      continue;
+    }
+    // Дедуп: один канонический ключ, пришедший дважды (alias + canonical),
+    // не должен попасть в ответ дважды; порядок — по первому вхождению
+    if (!resolved.includes(name)) resolved.push(name);
+  }
+  return { resolved, unknown };
+}
+
+/**
+ * Текст предупреждения о проигнорированных полях (VL-260).
+ *
+ * VL-260/lesson-92: вместо отказа с пустым ответом агент получает валидные поля
+ * плюс явный следующий шаг — ближайшие имена и полный список допустимых.
+ */
+function unknownFieldsWarning(unknown: string[], validKeys: string[]): string {
+  const hints: string[] = [];
+  for (const f of unknown) {
+    for (const key of suggestFieldNames(f, validKeys)) {
+      if (!hints.includes(key) && !unknown.includes(key)) hints.push(key);
+    }
+  }
+  let text = `Неизвестные поля проигнорированы: ${unknown.join(', ')}.`;
+  if (hints.length > 0) text += ` Ближайшие: ${hints.slice(0, 3).join(', ')}.`;
+  text += ` Допустимые: ${validKeys.join(', ')}.`;
+  return text;
+}
+
+/**
+ * Отбирает запрошенные поля из объекта задачи (VL-162, VL-260).
+ *
+ * Ключевой контракт: без неизвестных имён в ответе РОВНО запрошенные ключи
+ * (в порядке fields); при неизвестных — они не прерывают вызов, а добавляют
+ * в конец служебный ключ `_warning` (префикс `_` не конфликтует с ключами Task).
+ */
+function pickFields(obj: Record<string, unknown>, fields: unknown, validKeys: string[]): Record<string, unknown> {
+  const { resolved, unknown } = resolveFields(fields, validKeys);
+  const picked: Record<string, unknown> = {};
+  for (const name of resolved) picked[name] = obj[name];
+  if (unknown.length > 0) picked._warning = unknownFieldsWarning(unknown, validKeys);
+  return picked;
+}
+
+/**
+ * Отбирает поля из списка карточек: те же правила, что и pickFields, но предупреждение
+ * одно на весь ответ (а не повторяется в каждой карточке) — VL-260.
+ */
+function pickFieldsList(
+  items: Array<Record<string, unknown>>,
+  fields: unknown,
+  validKeys: string[],
+): { picked: Array<Record<string, unknown>>; warning?: string } {
+  const { resolved, unknown } = resolveFields(fields, validKeys);
+  const picked = items.map((item) => {
+    const one: Record<string, unknown> = {};
+    for (const name of resolved) one[name] = item[name];
+    return one;
+  });
+  return unknown.length > 0
+    ? { picked, warning: unknownFieldsWarning(unknown, validKeys) }
+    : { picked };
 }
 
 /**
@@ -885,41 +1054,14 @@ function toolViewTask(args: ToolArgs, cwd: string): string {
 
   // VL-162: урезанный режим с выбором полей. Имена полей — ключи интерфейса Task;
   // реестр не держим, Object.keys(task) всегда актуален (новые поля Task автоматически допустимы).
-  const fields = args.fields as string[] | undefined;
+  const fields = args.fields;
   // Обратная совместимость: без fields или с пустым массивом — полное представление,
   // как и раньше (веб-оркестратор и фазовые промпты зовут без параметров — регрессия исключена)
   if (fields === undefined || (Array.isArray(fields) && fields.length === 0)) {
     return JSON.stringify(task, null, 2);
   }
-  if (!Array.isArray(fields)) {
-    throw new Error('Параметр fields должен быть массивом имён полей.');
-  }
-  // VL-236: элементы fields обязаны быть строками — иначе camelToSnake упадёт
-  // с TypeError вместо понятной ошибки (lesson-34: валидация на границе слоя)
-  if (fields.some((f) => typeof f !== 'string')) {
-    throw new Error('Параметр fields должен быть массивом имён полей.');
-  }
-  // Нормализация имён перед валидацией: точное совпадение → snake_case-алиас.
-  // unknown собираем для сохранения прежнего текста ошибки с перечнем допустимых.
-  const valid = Object.keys(task);
-  const resolved: string[] = [];
-  const unknown: string[] = [];
-  for (const f of fields as string[]) {
-    const name = resolveFieldName(f, valid);
-    if (name === undefined) {
-      unknown.push(f);
-      continue;
-    }
-    // Дедуп: один канонический ключ, пришедший дважды (alias + canonical),
-    // не должен попасть в ответ дважды; порядок — по первому вхождению
-    if (!resolved.includes(name)) resolved.push(name);
-  }
-  if (unknown.length > 0) {
-    throw new Error(`Неизвестные поля: ${unknown.join(', ')}. Допустимые: ${valid.join(', ')}.`);
-  }
-  // Порядок ключей в ответе = порядок в fields (удобно для компактного контекста)
-  const picked: Record<string, unknown> = {};
-  for (const f of resolved) picked[f] = task[f as keyof Task];
+  // VL-260: неизвестные поля не валят вызов — отбор общим хелпером (+ `_warning`)
+  const picked = pickFields(task as unknown as Record<string, unknown>, fields, Object.keys(task));
   return JSON.stringify(picked, null, 2);
 }
 
@@ -1592,6 +1734,24 @@ function toolSearch(args: ToolArgs, cwd: string): string {
     labels: t.labels,
     milestone: t.milestone,
   }));
+  // VL-260: опциональный отбор полей карточки — общий хелпер с backlog_view_task
+  if (args.fields !== undefined) {
+    const { picked, warning } = pickFieldsList(
+      simplified as unknown as Array<Record<string, unknown>>,
+      args.fields,
+      Object.keys(simplified[0] ?? {
+        id: '', title: '', status: '', priority: '', type: '',
+        project: '', labels: [], milestone: '',
+      }),
+    );
+    return JSON.stringify(
+      warning
+        ? { found, returned: picked.length, tasks: picked, _warning: warning }
+        : { found, returned: picked.length, tasks: picked },
+      null,
+      2,
+    );
+  }
   return JSON.stringify({ found, returned: simplified.length, tasks: simplified }, null, 2);
 }
 

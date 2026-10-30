@@ -10,15 +10,15 @@ Vibelog.md реализует MCP-сервер поверх stdio (JSON-RPC 2.0)
 | Инструмент | Описание |
 |---|---|
 | `backlog_create_task` | Создать задачу (title, description, priority, labels, type, parentTaskId, milestone, ...) |
-| `backlog_list_tasks` | Список задач с фильтрацией (status, labels, type, parentTaskId, milestone, ready, sort) |
-| `backlog_view_task` | Просмотр задачи по ID; `fields` — выбор полей (алиасы camelCase/snake_case, напр. `modifiedFiles`) |
+| `backlog_list_tasks` | Список задач с фильтрацией (status, labels, type, parentTaskId, milestone, ready, sort); `fields` — выбор полей карточки |
+| `backlog_view_task` | Просмотр задачи по ID; `fields` — выбор полей (алиасы camelCase/snake_case + смысловые `notes`/`plan`/`ac`/`dod`/`summary`); неизвестный ключ не валит вызов — он игнорируется, а в ответ добавляется `_warning` с ближайшими именами |
 | `backlog_update_status` | Обновить статус задачи |
 | `backlog_update_task` | Универсальное обновление полей (type, plan, notes, ...) |
 | `backlog_manage_ac` | Управление критериями приёмки (add/check/uncheck/remove/list) |
 | `backlog_manage_dod` | Управление Definition of Done |
 | `backlog_add_comment` | Добавить комментарий к задаче |
 | `backlog_update_dependencies` | Зависимости задач (с детектом циклов) |
-| `backlog_search` | Поиск задач: токены (И-логика) с ранжированием id > title > labels > description; ответ `{found, returned, tasks}` |
+| `backlog_search` | Поиск задач: токены (И-логика) с ранжированием id > title > labels > description; ответ `{found, returned, tasks}`; `fields` — выбор полей карточки (те же правила `_warning`, что у `backlog_view_task`) |
 | `backlog_ready` | Задачи, готовые к выполнению |
 | `milestone_list` | Список вех (milestones) |
 | `milestone_add` | Создать веху |

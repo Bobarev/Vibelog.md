@@ -99,18 +99,17 @@ describe('backlog_view_task — параметр fields (VL-162)', () => {
     assert.ok(Array.isArray(parsed.comments));
   });
 
-  it('неизвестное поле — ошибка на русском с перечнем допустимых имён', async () => {
+  it('неизвестное поле — не ошибка: остальные поля + _warning (VL-260)', async () => {
     const t = createTaskFile(testDir, { id: 'vf-5', title: 'Плохой fields' });
-    await assert.rejects(
-      () => handleToolCall('backlog_view_task', { id: t.id, fields: ['id', 'nope'] }, testDir),
-      (err) => {
-        assert.ok(err.message.includes('Неизвестные поля: nope.'), `Текст ошибки: ${err.message}`);
-        // Перечень допустимых содержит реальные ключи Task
-        assert.ok(err.message.includes('description'), 'Ошибка перечисляет допустимые поля');
-        assert.ok(err.message.includes('acceptanceCriteria'));
-        return true;
-      },
-    );
+    const result = await handleToolCall('backlog_view_task', { id: t.id, fields: ['id', 'nope'] }, testDir);
+    const parsed = JSON.parse(result);
+    assert.equal(parsed.id, 'vf-5');
+    assert.equal(parsed.nope, undefined);
+    assert.ok(typeof parsed._warning === 'string', '_warning присутствует');
+    assert.ok(parsed._warning.includes('nope'), `Текст предупреждения: ${parsed._warning}`);
+    // Перечень допустимых содержит реальные ключи Task
+    assert.ok(parsed._warning.includes('description'));
+    assert.ok(parsed._warning.includes('acceptanceCriteria'));
   });
 
   it('fields не-массив (строка) — явная ошибка, а не тихое полное представление', async () => {
@@ -205,16 +204,13 @@ describe('backlog_view_task — camelCase-алиасы fields (VL-236)', () => {
     assert.deepStrictEqual(parsed.modified_files, ['x.ts']);
   });
 
-  it('мусорное имя в camelCase всё ещё ошибка с перечнем допустимых', async () => {
+  it('мусорное имя в camelCase — не ошибка, валидные поля + _warning (VL-260)', async () => {
     const t = createTaskFile(testDir, { id: 'vf-16', title: 'Мусор' });
-    await assert.rejects(
-      () => handleToolCall('backlog_view_task', { id: t.id, fields: ['id', 'nopeField'] }, testDir),
-      (err) => {
-        assert.ok(err.message.includes('Неизвестные поля: nopeField.'), `Текст ошибки: ${err.message}`);
-        assert.ok(err.message.includes('modified_files'), 'Ошибка перечисляет допустимые поля');
-        return true;
-      },
-    );
+    const result = await handleToolCall('backlog_view_task', { id: t.id, fields: ['id', 'nopeField'] }, testDir);
+    const parsed = JSON.parse(result);
+    assert.equal(parsed.id, 'vf-16');
+    assert.ok(parsed._warning.includes('nopeField'), `Текст: ${parsed._warning}`);
+    assert.ok(parsed._warning.includes('modified_files'), 'Предупреждение перечисляет допустимые поля');
   });
 
   it('не-строковый элемент fields — явная ошибка, а не TypeError', async () => {
@@ -223,5 +219,131 @@ describe('backlog_view_task — camelCase-алиасы fields (VL-236)', () => {
       () => handleToolCall('backlog_view_task', { id: t.id, fields: [null] }, testDir),
       /массивом имён полей/,
     );
+  });
+});
+
+/**
+ * VL-260: неизвестный ключ в fields не валит вызов + смысловые алиасы.
+ *
+ * Контракт: валидные поля возвращаются, неизвестные игнорируются и перечисляются
+ * в `_warning` с ближайшими именами; notes/plan/ac/dod/summary — алиасы; алиас
+ * не перебивает реальный ключ Task; списковые инструменты используют тот же хелпер.
+ */
+describe('VL-260 — неизвестные поля не валят вызов, алиасы', () => {
+  beforeAll(() => setup());
+  afterAll(() => cleanup());
+
+  it('fields: ["id","notes","phase"] → id + implementationNotes + _warning о phase, без ошибки', async () => {
+    const t = createTaskFile(testDir, {
+      id: 'vf-20',
+      title: 'Ключевой кейс',
+      implementationNotes: 'заметки',
+    });
+    const result = await handleToolCall(
+      'backlog_view_task',
+      { id: t.id, fields: ['id', 'notes', 'phase'] },
+      testDir,
+    );
+    const parsed = JSON.parse(result);
+    assert.equal(parsed.id, 'vf-20');
+    assert.equal(parsed.implementationNotes, 'заметки');
+    assert.equal(parsed.notes, undefined, 'алиас не попадает в ответ под своим именем');
+    assert.equal(parsed.phase, undefined);
+    assert.ok(typeof parsed._warning === 'string');
+    assert.ok(parsed._warning.includes('phase'), parsed._warning);
+    assert.ok(parsed._warning.includes('implementationPlan'), `Подсказка: ${parsed._warning}`);
+    assert.deepStrictEqual(Object.keys(parsed), ['id', 'implementationNotes', '_warning']);
+  });
+
+  it('смысловые алиасы plan/ac/dod резолвятся в канонические ключи', async () => {
+    const t = createTaskFile(testDir, {
+      id: 'vf-21',
+      title: 'Алиасы',
+      implementationPlan: '- шаг 1',
+      acceptanceCriteria: [{ text: 'AC-1', checked: false }],
+      definitionOfDone: [{ text: 'DoD-1', checked: false }],
+    });
+    const result = await handleToolCall(
+      'backlog_view_task',
+      { id: t.id, fields: ['plan', 'ac', 'dod'] },
+      testDir,
+    );
+    const parsed = JSON.parse(result);
+    assert.deepStrictEqual(
+      Object.keys(parsed),
+      ['implementationPlan', 'acceptanceCriteria', 'definitionOfDone'],
+    );
+    assert.equal(parsed.implementationPlan, '- шаг 1');
+    assert.equal(parsed.acceptanceCriteria.length, 1);
+    assert.equal(parsed.definitionOfDone.length, 1);
+  });
+
+  it('алиас не перебивает реальные ключи Task (modified_files остаётся собой)', async () => {
+    const t = createTaskFile(testDir, { id: 'vf-22', title: 'Без конфликта', modified_files: ['src/x.ts'] });
+    const result = await handleToolCall('backlog_view_task', { id: t.id, fields: ['modified_files'] }, testDir);
+    const parsed = JSON.parse(result);
+    assert.deepStrictEqual(Object.keys(parsed), ['modified_files']);
+    assert.deepStrictEqual(parsed.modified_files, ['src/x.ts']);
+  });
+
+  it('все поля неизвестны — {_warning} без ошибки', async () => {
+    const t = createTaskFile(testDir, { id: 'vf-23', title: 'Всё мимо' });
+    const result = await handleToolCall(
+      'backlog_view_task',
+      { id: t.id, fields: ['phase', 'sprint'] },
+      testDir,
+    );
+    const parsed = JSON.parse(result);
+    assert.deepStrictEqual(Object.keys(parsed), ['_warning']);
+    assert.ok(parsed._warning.includes('phase'));
+    assert.ok(parsed._warning.includes('sprint'));
+  });
+
+  it('дедуп alias + canonical: implementationNotes и notes → один ключ', async () => {
+    const t = createTaskFile(testDir, { id: 'vf-24', title: 'Дубль алиаса', implementationNotes: 'x' });
+    const result = await handleToolCall(
+      'backlog_view_task',
+      { id: t.id, fields: ['implementationNotes', 'notes'] },
+      testDir,
+    );
+    const parsed = JSON.parse(result);
+    assert.deepStrictEqual(Object.keys(parsed), ['implementationNotes']);
+  });
+
+  it('backlog_list_tasks с fields: валидное поле есть, неизвестное → _warning, без throw', async () => {
+    createTaskFile(testDir, { id: 'vf-25', title: 'Список с полями' });
+    const result = await handleToolCall(
+      'backlog_list_tasks',
+      { fields: ['id', 'nope'] },
+      testDir,
+    );
+    const parsed = JSON.parse(result);
+    assert.ok(Array.isArray(parsed.tasks), 'ответ содержит массив tasks');
+    assert.ok(parsed.tasks.some((t) => t.id === 'vf-25'));
+    assert.deepStrictEqual(Object.keys(parsed.tasks[0]), ['id']);
+    assert.ok(parsed._warning.includes('nope'), parsed._warning);
+  });
+
+  it('backlog_list_tasks без fields — прежний формат (массив)', async () => {
+    const result = await handleToolCall('backlog_list_tasks', {}, testDir);
+    const parsed = JSON.parse(result);
+    assert.ok(Array.isArray(parsed), 'без fields ответ — массив карточек');
+    assert.ok(parsed.length > 0);
+    assert.ok('parent_task_id' in parsed[0]);
+  });
+
+  it('backlog_search с fields: {found, returned, tasks} + _warning, карточки урезаны', async () => {
+    createTaskFile(testDir, { id: 'vf-26', title: 'Поиск по полям про совместимость' });
+    const result = await handleToolCall(
+      'backlog_search',
+      { query: 'совместимость', fields: ['id', 'title', 'bogus'] },
+      testDir,
+    );
+    const parsed = JSON.parse(result);
+    assert.ok(typeof parsed.found === 'number');
+    assert.equal(parsed.returned, parsed.tasks.length);
+    assert.ok(parsed.tasks.length > 0);
+    assert.deepStrictEqual(Object.keys(parsed.tasks[0]), ['id', 'title']);
+    assert.ok(parsed._warning.includes('bogus'), parsed._warning);
   });
 });
