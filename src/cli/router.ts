@@ -38,6 +38,7 @@ import { runDecision } from './commands/decision.js';
 import { runBot } from './commands/bot.js';
 import { runQwenDebug } from './commands/qwen-debug.js';
 import { runAgent } from './commands/agent.js';
+import { runSession } from './commands/session.js';
 import { runReference } from './commands/reference.js';
 import { runLesson } from './commands/lesson.js';
 
@@ -96,6 +97,11 @@ export async function route(args: string[]): Promise<void> {
       return runQwenDebug(cwd);
     case 'agent':
       return runAgent(subcommand, positional, flags, cwd);
+    // VL-261: сводка сессии агента по jsonl; agent-session — алиас из
+    // описания задачи (обе формы ведут в один обработчик)
+    case 'session':
+    case 'agent-session':
+      return runSession(subcommand, positional, flags, cwd);
     case 'doctor':
       return runDoctor(positional, flags, cwd);
     case 'milestone':
@@ -137,6 +143,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('browser', colors.cyan)} [--port N] [--no-open]      Веб-интерфейс
   ${colorize('bot', colors.cyan)}                             Telegram-бот (grammy)
   ${colorize('agent', colors.cyan)} [task-id]               Чат с LLM-агентом (TUI); analyze <ref> [комментарий] — анализ сессии
+  ${colorize('session', colors.cyan)} summary <id> [--task VL-N] [--json]  Сводка сессии: раны, tool-calls, payload, правки
   ${colorize('qwen-debug', colors.cyan)}                  Дебаг-прогон qwen (ping, stream-json)
   ${colorize('search', colors.cyan)} "query" [--status ...]      Поиск задач с фильтрами
   ${colorize('map', colors.cyan)} [query] [--dir src] [--limit N]  Карта проекта: модули + назначение + экспорты
@@ -346,6 +353,21 @@ tool-вызовов), вердикт «объём задачи vs тупик», 
   session-ref — vb:agent-XXX либо agent-XXX (только сессии vibelog-agent)
   комментарий — необязательный (VL-169): уточнение к разбору, как в /analyze бота`,
 
+    session: `
+vibelog session summary <sessionId|--task VL-N> [--json]
+
+Готовая сводка сессии агента (VL-261) вместо ручного чтения jsonl:
+  <sessionId>  — id сессии (agent-…); префикс vb:/qwen: снимается
+  --task VL-N  — последняя сессия задачи (по *.meta.json)
+  --json       — стабильная схема (schemaVersion, kind=session-summary)
+
+Выводит: строк/ранов; по каждому рану — фазу, строки-границы маркеров
+промптов, тайминги (мета/billing), LLM-запросы, input/output/cache/reasoning,
+max payload_bytes, инструменты, правки; агрегаты: tool→count, топ-5 скелетов
+run_shell_command, топ чтений и правок (edit / write_file раздельно).
+
+Алиас: vibelog agent-session summary ...`,
+
     draft: `
 vibelog draft <subcommand> [опции]
 
@@ -368,7 +390,8 @@ vibelog decision <subcommand> [опции]
 Статусы (free-form, дефолт proposed): proposed, accepted, rejected, superseded`,
   };
 
-  const text = helpTexts[command];
+  // VL-261: agent-session — алиас session; справка берётся у основной команды
+  const text = helpTexts[command === 'agent-session' ? 'session' : command];
   if (text) {
     console.log(text);
   } else {

@@ -84,6 +84,25 @@ tool-вызовов сессии) и `top` (до 10 ключей с числом
 <session-ref>`) — топ перечитываемых файлов и повторяющихся запросов виден
 без ручного пересчёта.
 
+**Сводка сессии (VL-261).** Разбор сессии начинается с готовых фактов, а не
+с ручного чтения JSONL:
+
+```bash
+vibelog session summary agent-1793328615846          # сводка по id
+vibelog session summary --task VL-235               # последняя сессия задачи
+vibelog session summary agent-1793328615846 --json  # стабильная схема для /analyze
+vibelog agent-session summary agent-1793328615846   # алиас
+```
+
+Выводит число строк и ранов; по каждому рану — фазу (из billing → маркера
+промпта фазы → меты), строки-границы маркеров в jsonl, тайминги, LLM-запросы,
+`input/output/cache/reasoning`, `max payload_bytes`, инструменты и правки;
+агрегаты по всей сессии — `tool → count`, топ-5 скелетов `run_shell_command`
+(`git status --porcelain` и `git status -s` попадают в один ключ), топ-5
+путей чтения и правок (`edit` и `write_file` раздельно), метрика повторов.
+`--json` отдаёт `{schemaVersion, kind: "session-summary", runs, totals}` —
+поле `schemaVersion` меняется при несовместимой правке схемы.
+
 ## Веб-чат (#/chat)
 
 Чат с LLM прямо в веб-интерфейсе (`vibelog browser` → пункт «Чат» в
