@@ -46,7 +46,7 @@ Definition of Done (DoD): {{taskDoD}}
    - Единственное исключение из полного прогона: diff не затрагивает `src/`, `templates/`, `package.json`, `tsconfig.json`, `vitest.config.mts` (чистые правки docs/backlog) — полный прогон допустимо пропустить, пропуск фиксируется в отчётном комментарии с причиной.
    Сборка или тесты падают и после классификации — НЕ выполняй шаги 6–10: вызови `backlog_finish_phase` с `"aborted": true` и отчётом-причиной (без status/dodChecks): «Фаза Close прервана: merge {{branch}} слит в master, но сборка/тесты падают: <детали>». Флаг `aborted` обязателен: без него завершение ран с кодом 0 применит `produces_status`.
 
-6. Удали worktree и ветку:
+6. Удали worktree и ветку (команды выполняются ИЗ главного cwd — не переходи в worktree: удаление собственного рабочего каталога отклоняется guard'ом):
    git worktree remove {{worktreeDir}}
    - remove отказался «contains modified or untracked files» — посмотри git status {{worktreeDir}} --short:
      в worktree ТОЛЬКО untracked-симлинки node_modules/refs (их кладёт туда оркестратор; это ссылки на главный репозиторий, данные не теряются) — удали с force: git worktree remove --force {{worktreeDir}};

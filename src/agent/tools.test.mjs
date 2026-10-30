@@ -8,11 +8,11 @@
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync, symlinkSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { listLocalTools, validateArgs, miniGlobToRegex, checkShellCommandInProject, truncateToolOutput, maskSecrets, formatFileSlice, TOOL_OUTPUT_MAX_CHARS, formatMissingPathHint, PATH_HINT_MAX_LINES } from '../../dist/agent/tools.js';
+import { listLocalTools, validateArgs, miniGlobToRegex, checkShellCommandInProject, checkSelfCwdDestruction, truncateToolOutput, maskSecrets, formatFileSlice, TOOL_OUTPUT_MAX_CHARS, formatMissingPathHint, PATH_HINT_MAX_LINES } from '../../dist/agent/tools.js';
 
 const TMP = mkdtempSync(join(tmpdir(), 'vibelog-agent-tools-'));
 let tools;
@@ -733,5 +733,69 @@ describe('VL-252 — диапазон строк в path (обязательны
     writeFileSync(join(TMP, 'a:1-2.md'), 'colon\n', 'utf-8');
     const colon = await byName.get('read_file').handler({ path: 'a:1-2.md' });
     assert.equal(colon, 'colon\n');
+  });
+});
+
+describe('VL-249 — запрет удаления собственного рабочего каталога', () => {
+  // Лексическая проверка: реальные файлы не нужны, cwd — путь worktree задачи.
+  const MAIN = '/tmp/vibelog-vl249-fake-project';
+  const WORKTREE = `${MAIN}/.vibelog/worktrees/vl-249`;
+
+  it('AC1: rm/rmdir по собственному cwd отклоняются', () => {
+    const rejected = [
+      'rm -rf .',
+      'rm -rf ./',
+      'rm -rf ..',
+      `rm -rf ${WORKTREE}`,
+      'cd . && rm -rf .',
+      'rmdir .',
+      'find . -maxdepth 1 -delete',
+      'find . -exec rm -rf {} ;',
+      'node -e "require(\'fs\').rmSync(process.cwd(),{recursive:true})"',
+      'node --input-type=module -e "import{rmSync}from\'node:fs\';rmSync(\'.\')"',
+      'git worktree remove .',
+      `git worktree remove ${WORKTREE}`,
+      'git worktree remove --force .',
+    ];
+    for (const cmd of rejected) {
+      const out = checkSelfCwdDestruction(cmd, WORKTREE);
+      assert.ok(out !== null, 'не отклонено: ' + cmd);
+      // AC1: русский текст с указанием правильного способа.
+      assert.match(out, /удаление собственного рабочего каталога агента/, cmd);
+      assert.match(out, /главного каталога проекта/, cmd);
+      assert.match(out, /git worktree remove/, cmd);
+    }
+  });
+
+  it('легальные удаления не отклоняются (регрессия Close-фазы и сборки)', () => {
+    const allowed = [
+      'rm -rf dist',
+      'rm -rf node_modules/.cache',
+      'rm -f a.txt',
+      'git worktree remove .vibelog/worktrees/vl-219',
+      'git worktree prune',
+      'git worktree list',
+      'git status',
+      'node -e "console.log(1)"',
+      'node -e "require(\'fs\').rmSync(\'dist\',{recursive:true})"',
+      'ls -la',
+    ];
+    for (const cmd of allowed) {
+      assert.equal(checkSelfCwdDestruction(cmd, MAIN), null, 'неожиданный отказ: ' + cmd);
+    }
+  });
+
+  it("AC3: run_shell_command отклоняет rm -rf . и не ломает cwd ('fatal: Unable to read current working directory')", async () => {
+    const selfDir = join(TMP, 'vl249', 'self');
+    mkdirSync(selfDir, { recursive: true });
+    writeFileSync(join(selfDir, 'keep.txt'), 'ok\n');
+    const out = await byName.get('run_shell_command').handler({ command: 'rm -rf .', cwd: 'vl249/self' });
+    assert.match(out, /удаление собственного рабочего каталога агента/);
+    assert.doesNotMatch(out, /fatal: Unable to read current working directory/);
+    // Каталог на месте — иначе bash уже потерял бы cwd.
+    assert.ok(existsSync(join(selfDir, 'keep.txt')), 'каталог self должен остаться');
+    // Контроль: без guard'а команда бы выполнилась (тот же вызов без cwd-ограничения).
+    const safe = await byName.get('run_shell_command').handler({ command: 'rm -rf dist', cwd: 'vl249/self' });
+    assert.doesNotMatch(safe, /удаление собственного рабочего каталога/);
   });
 });
