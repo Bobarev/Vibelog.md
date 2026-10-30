@@ -231,7 +231,44 @@ vibelog agent-session summary agent-1793328615846   # алиас
   в `web/src/App.tsx`; сам `ui/sidebar.tsx` не менялся.
 - **API тредов**: `GET /api/chat/threads` — список тредов (id, title,
   updatedAt, messageCount) без тел сообщений; `GET /api/chat/threads/:id` —
-  история треда для восстановления.
+  история треда для восстановления (дополнительно отдаёт `allowList` —
+  инструменты, разрешённые в треде навсегда).
+- **Внешний вид сообщений и tool-вызовов (VL-264)** — один-в-один по
+  референсу ref-22 (assistant-ui): layout сообщений из
+  `apps/docs/components/pages/examples/perplexity.tsx`, рендер тулзов из
+  `packages/ui/src/components/react/assistant-ui/elements/`. Ответ ассистента
+  — **без пузыря**: аватар-кружок `size-8` с border, текст прямо в ленте
+  шириной `--thread-max-width` (40rem). Сообщение пользователя — пузырь
+  `rounded-3xl rounded-tr-md` с border (не `bg-primary`), `max-w-[85%]`,
+  выровнен вправо. Action bar (Copy/Edit, Reload) — кнопки-призраки
+  `size-8 rounded-full`, появляются на hover/focus-within сообщения.
+  - **Read-инструменты** (`read_file`, `search_files`, `backlog_view_task`,
+    `backlog_search`, `project_map` и т.п.) — свёрнутая строка: chevron,
+    label/activeLabel (во время выполнения — shimmer), mono-чип с ключевым
+    аргументом (`query`/`path`/`id`), галочка по завершении; раскрытие
+    показывает блоки `Request` и `Result`. При ошибке строка авто-раскрыта.
+  - **Write-инструменты** — карточка-approval (иконка, title/subtitle,
+    description, блок details label/value, кнопки **Deny / Always allow /
+    Allow once**); после решения — status-строка (Approved running /
+    Finished / Denied) с фокусом на результат для скринридера.
+  - **Always allow** (VL-264): разрешение хранится **per-thread** в
+    `<проект>/.vibelog/chat-sessions/<threadId>.allow.json`; последующие
+    вызовы того же инструмента в этом треде идут без паузы (событие
+    `tool_start` с `auto: true`), карточка показывает пометку «Разрешено
+    всегда · отозвать». API: `GET /api/chat/threads/:id/allow` →
+    `{tools}`, `POST …/allow` (`{tool}`), `DELETE …/allow?tool=<name>`
+    (отзыв возвращает паузу; невалидный id/tool → 400). Решение с «always»
+    пишется в `approvals.jsonl` (`decided` + `always: true`).
+  - **Группировка** подряд идущих tool-вызовов — один аккордеон
+    «N вызовов инструментов» (`MessagePrimitive.GroupedParts` +
+    `groupPartByType`); write-вызовы в группу не прячутся — карточка
+    подтверждения остаётся активной.
+  - **Ошибки и обрыв**: ошибка стрима/инструмента — единая inline-плашка
+    `error-state` (не текст посреди ответа); прерванный/незавершённый run —
+    плашка `stopped-run` с причиной и кнопками «Продолжить»/«Скрыть».
+    Ошибки стрима в jsonl не сохраняются (после перезагрузки треда
+    восстанавливается только оборванный tool-call — показывается как
+    «Прервано»).
 - **Протокол**: `POST /api/chat` — SSE (`text/event-stream`), события
   `text`/`tool_start`/`tool_end`/`approval`/`done`/`error`.
 - **Подтверждения при нескольких write в одном ходе (VL-256)**: гейты
