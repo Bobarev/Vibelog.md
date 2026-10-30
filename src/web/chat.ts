@@ -37,6 +37,14 @@ import { ackDenied } from '../mcp/tool-result.js';
 import { chatToolDefs, isWriteOperation, loadChatSystemTemplate } from './tool-policy.js';
 import type { ChatLocalTool } from './tool-policy.js';
 import {
+  createTurnToolGuard,
+  duplicateCallResult,
+  limitCallResult,
+  resolveChatMaxToolCalls,
+  type ToolGuardStats,
+} from './tool-dedup.js';
+import { analyzeToolRepeats, type RepeatStats } from '../agent/repeat-tracker.js';
+import {
   DEFAULT_PERSONA_ID,
   loadPersonaPrompt,
   resolveDefaultStatus,
@@ -187,9 +195,69 @@ export function loadApprovalLog(cwd: string, threadId: string): ApprovalLogEntry
   return out;
 }
 
+/** Диагностика хода веб-чата (VL-255): метрика повторов + счётчики guard'а. */
+export interface ChatToolStats {
+  /** Момент записи (ISO) — перезапись на каждый ход. */
+  ts: string;
+  /** Номер хода (число user-сообщений в истории треда на момент завершения). */
+  turn: number;
+  /**
+   * Метрика повторов в формате агент-петли (VL-229, `analyzeToolRepeats`):
+   * tool_calls_total / repeat_calls / repeat_share / top — диагностика общая
+   * с `vibelog-agent`, отчёты читают одинаковые поля.
+   */
+  repeat_stats: RepeatStats;
+  /** Сколько вызовов реально исполнено (после дедупа и лимита). */
+  executed: number;
+  /** Сколько дословных дублей заблокировано. */
+  deduped: number;
+  /** Сколько вызовов заблокировано лимитом на ответ. */
+  limit_hits: number;
+}
+
+/** Файл диагностики хода: `<threadId>.repeat.json` (не `.jsonl` — не тред). */
+function toolStatsFile(cwd: string, threadId: string): string {
+  return join(chatSessionsDir(cwd), `${threadId}.repeat.json`);
+}
+
+/**
+ * Записать диагностику хода веб-чата (VL-255, AC5).
+ *
+ * Файл `<threadId>.repeat.json` лежит рядом с историей, но имеет расширение
+ * `.json` — `listChatThreads` (фильтр `.jsonl`) его не видит, треды не
+ * задваиваются. Сбой записи диагностики НЕ должен рвать диалог (паттерн
+ * recordApprovalLog): ловим любые ошибки fs молча.
+ */
+export function recordChatToolStats(
+  cwd: string,
+  threadId: string,
+  stats: Omit<ChatToolStats, 'ts'>,
+): void {
+  if (!THREAD_ID_RE.test(threadId)) return;
+  try {
+    const dir = chatSessionsDir(cwd);
+    mkdirSync(dir, { recursive: true });
+    const payload: ChatToolStats = { ts: new Date().toISOString(), ...stats };
+    writeFileSync(toolStatsFile(cwd, threadId), JSON.stringify(payload, null, 2) + '\n', 'utf8');
+  } catch {
+    // Сбой диагностики не должен рвать диалог (данные треда важнее).
+  }
+}
+
+/** Чтение диагностики хода; нет файла / битый JSON / чужой threadId → null. */
+export function loadChatToolStats(cwd: string, threadId: string): ChatToolStats | null {
+  if (!THREAD_ID_RE.test(threadId)) return null;
+  const file = toolStatsFile(cwd, threadId);
+  if (!existsSync(file)) return null;
+  try {
+    return JSON.parse(readFileSync(file, 'utf8')) as ChatToolStats;
+  } catch {
+    return null; // битый файл диагностики — просто нет данных
+  }
+}
+
 /**
  * Allow-list треда (VL-264, кнопка «Always allow» в approval-карточке).
- *
  * Разрешение «этот инструмент в этом треде больше не спрашивать» хранится
  * рядом с историей — `.vibelog/chat-sessions/<threadId>.allow.json`
  * (JSON-массив имён инструментов). Имя содержит точку, поэтому
@@ -619,11 +687,32 @@ async function produce(
    * VL-262: write-инструменты отвечают JSON-контрактом (ackOk: applied/skipped),
    * отказы подтверждения — ackDenied('denied' | 'not_confirmed'). Модель видит
    * снимок фактически применённого и причину отказа в машиночитаемом виде.
+   *
+   * VL-255: ПЕРЕД исполнением — guard хода. Дословный дубль уже исполненного
+   * вызова не исполняется (модель получает {ok:false,duplicate:true} с
+   * указанием использовать прежний результат), сверхлимитные вызовы ответа —
+   * {ok:false,limit:true} с указанием завершить ход. Единая точка ⇒ защита
+   * действует в обычном цикле, в resume-пути и в advanceToNextApproval.
    */
+  const toolGuard = createTurnToolGuard({ maxPerResponse: resolveChatMaxToolCalls(cwd) });
   const executeTool = async (name: string, args: Record<string, unknown>): Promise<string> => {
+    const verdict = toolGuard.check(name, args);
+    if (verdict === 'duplicate') return duplicateCallResult();
+    if (verdict === 'limit') return limitCallResult(toolGuard.maxPerResponse());
     const local = localHandlers.get(name);
     const raw = local ? await local.handler(args) : await handleToolCall(name, args, cwd, { defaultStatus: resolveDefaultStatus(activePersona) });
+    // Фиксируем исполнение ДО капа вывода: write инкрементит epoch ресурса,
+    // поэтому последующее чтение того же файла не считается дублем.
+    toolGuard.noteExecuted(name, args);
     return truncateToolOutput(raw);
+  };
+  /** Записать диагностику хода (VL-255): метрика повторов + счётчики guard'а. */
+  const finishStats = (): void => {
+    recordChatToolStats(cwd, threadId, {
+      turn: currentTurn(),
+      repeat_stats: analyzeToolRepeats(history),
+      ...(toolGuard.stats() as ToolGuardStats),
+    });
   };
   const started = Date.now();
 
@@ -705,6 +794,7 @@ async function produce(
       // VL-256: хвост write-вызовов без результата сделал бы payload невалидным
       // для провайдера — закрываем явным not_confirmed (машиночитаемо, с логом)
       closeUnconfirmedTail(history, cwd, threadId, queue, currentTurn());
+      finishStats(); // VL-255: диагностика хода пишется и на путях ошибок
       queue.push({
         type: 'error',
         message: `Превышен лимит итераций инструментов (${MAX_LLM_ITERATIONS}) — диалог остановлен`,
@@ -713,6 +803,7 @@ async function produce(
     }
     if (Date.now() - started > MAX_WALL_TIME_MS) {
       closeUnconfirmedTail(history, cwd, threadId, queue, currentTurn());
+      finishStats(); // VL-255
       queue.push({
         type: 'error',
         message: `Превышено время ответа (${Math.round(MAX_WALL_TIME_MS / 1000)} с) — диалог остановлен`,
@@ -727,10 +818,14 @@ async function produce(
 
     let resp;
     try {
+      // VL-255: новый ответ модели — счётчик вызовов ответа начинается с нуля
+      // (карта исполненных сигнатур сохраняется: дедуп действует на весь ход).
+      toolGuard.beginTurn();
       resp = await llm.streamChat([system, ...history], tools, {
         onToken: token => queue.push({ type: 'text', delta: token }),
       });
     } catch (err) {
+      finishStats(); // VL-255: ошибка LLM — диагностика хода тоже нужна
       queue.push({ type: 'error', message: err instanceof Error ? err.message : String(err) });
       return;
     }
@@ -740,6 +835,7 @@ async function produce(
       const assistant: ChatMessage = { role: 'assistant', content: resp.text };
       history.push(assistant);
       appendChatMessages(cwd, threadId, [assistant]);
+      finishStats(); // VL-255: диагностика хода (repeat_stats + deduped/limit_hits)
       queue.push({ type: 'done' });
       return;
     }

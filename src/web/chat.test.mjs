@@ -19,7 +19,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { runChat, loadChatHistory, loadApprovalLog } from '../../dist/web/chat.js';
+import { runChat, loadChatHistory, loadApprovalLog, loadChatToolStats, listChatThreads } from '../../dist/web/chat.js';
 import { startWebServer } from '../../dist/web/server.js';
 import { createTaskFile, listTasks } from '../../dist/core/store.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
@@ -853,5 +853,196 @@ describe('chat: роль ассистента (VL-265)', () => {
     assert.equal(history[0].content, historyAfterFirst[0].content, 'история не переписана');
     assert.equal(history[1].content, historyAfterFirst[1].content);
     assert.ok(!history.some(m => m.role === 'system'), 'system в истории не хранится');
+  });
+});
+
+/**
+ * VL-255: дедупликация и лимит tool-вызовов на ход в веб-чате.
+ *
+ * Отдельный cwd на каждый тест (mkdtemp — lesson-89): свои settings.json
+ * (chat_max_tool_calls), файлы проекта и allow-list для write-вызовов.
+ */
+describe('VL-255 — дедупликация и лимит tool-вызовов', () => {
+  /** Проект-фикстура: README.md + опционально settings.json. */
+  function makeProject({ settings } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-chat-dedup-'));
+    mkdirSync(join(dir, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(dir, 'README.md'), 'строка 1\nстрока 2\nстрока 3\n', 'utf-8');
+    writeFileSync(join(dir, 'backlog', 'config.yml'), stringifyYaml({
+      project_name: 'Dedup Test',
+      task_prefix: 'dd',
+      default_status: 'To Do',
+      statuses: ['To Do', 'Spec', 'Planned', 'In Progress', 'Done'],
+      definition_of_done: [],
+    }), 'utf-8');
+    if (settings !== undefined) {
+      mkdirSync(join(dir, '.vibelog'), { recursive: true });
+      writeFileSync(join(dir, '.vibelog', 'settings.json'), JSON.stringify(settings), 'utf-8');
+    }
+    return dir;
+  }
+
+  /** События runChat на отдельном проекте (+allow-list треда при need). */
+  async function collectOn(dir, body, deps, allowThread) {
+    if (allowThread) {
+      mkdirSync(join(dir, '.vibelog', 'chat-sessions'), { recursive: true });
+      writeFileSync(
+        join(dir, '.vibelog', 'chat-sessions', `${body.threadId}.allow.json`),
+        JSON.stringify(allowThread),
+        'utf-8',
+      );
+    }
+    const events = [];
+    for await (const ev of runChat(body, dir, deps)) events.push(ev);
+    return events;
+  }
+
+  it('три идентичных read_file: первый исполнен, два других — duplicate с пояснением', async () => {
+    const dir = makeProject();
+    try {
+      const call = { id: 'c1', name: 'read_file', arguments: { path: 'README.md' } };
+      const { llm } = fakeLlm([
+        { text: 'Читаю.', toolCalls: [call, { ...call, id: 'c2' }, { ...call, id: 'c3' }] },
+        { text: 'Готово.' },
+      ]);
+      const events = await collectOn(dir, { message: 'прочитай README', threadId: 'd-dup' }, { llm });
+
+      const ends = events.filter(e => e.type === 'tool_end');
+      assert.equal(ends.length, 3, 'tool_end есть для каждого вызова');
+      assert.equal(events.filter(e => e.type === 'tool_start').length, 3, 'парность tool_start/tool_end');
+      assert.match(ends[0].result, /строка 1/, 'первый вызов реально прочитан');
+      for (const blocked of ends.slice(1)) {
+        const parsed = JSON.parse(blocked.result);
+        assert.equal(parsed.ok, false);
+        assert.equal(parsed.duplicate, true);
+        assert.match(parsed.message, /Идентичный вызов уже выполнен в этом ходе/);
+        assert.ok(!blocked.result.includes('строка 1'), 'содержимое файла не повторяется');
+      }
+      const history = loadChatHistory(dir, 'd-dup');
+      assert.equal(history.filter(m => m.role === 'tool').length, 3, 'история сохраняет парность');
+      assert.equal(events.at(-1).type, 'done');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('30 разных вызовов: выполнены 16, остальные 14 — limit с пояснением', async () => {
+    const dir = makeProject();
+    try {
+      const calls = Array.from({ length: 30 }, (_, i) => ({
+        id: `c${i}`,
+        name: 'read_file',
+        arguments: { path: 'README.md', offset: i },
+      }));
+      const { llm } = fakeLlm([{ text: 'Читаю пачкой.', toolCalls: calls }, { text: 'Готово.' }]);
+      const events = await collectOn(dir, { message: 'прочитай', threadId: 'd-limit' }, { llm });
+
+      const ends = events.filter(e => e.type === 'tool_end');
+      assert.equal(ends.length, 30);
+      let limited = 0;
+      let executed = 0;
+      for (const e of ends) {
+        if (e.result.includes('Лимит tool-вызовов на один ответ исчерпан')) {
+          limited++;
+          const parsed = JSON.parse(e.result);
+          assert.equal(parsed.limit, true);
+          assert.match(parsed.message, /\(16\)/);
+          assert.match(parsed.message, /заверши ход и продолжи следующим/);
+        } else {
+          executed++;
+        }
+      }
+      assert.equal(executed, 16, 'выполнено ровно 16 (дефолтный лимит)');
+      assert.equal(limited, 14, 'остальные 14 заблокированы лимитом');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('чтение после записи того же файла не считается дублем (write из allow-list)', async () => {
+    const dir = makeProject();
+    try {
+      const { llm } = fakeLlm([
+        {
+          text: 'Правлю.',
+          toolCalls: [
+            { id: 'r1', name: 'read_file', arguments: { path: 'README.md' } },
+            { id: 'w1', name: 'write_file', arguments: { path: 'README.md', content: 'новое\n' } },
+            { id: 'r2', name: 'read_file', arguments: { path: 'README.md' } },
+          ],
+        },
+        { text: 'Готово.' },
+      ]);
+      const events = await collectOn(
+        dir,
+        { message: 'правь README', threadId: 'd-write' },
+        { llm },
+        ['write_file'],
+      );
+      const ends = events.filter(e => e.type === 'tool_end');
+      assert.equal(ends.length, 3);
+      assert.ok(!ends[2].result.includes('"duplicate":true'), 'повтор чтения после write разрешён');
+      assert.match(ends[2].result, /новое/, 'прочитано новое содержимое');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('chat_max_tool_calls из settings.json применяется; мусор → дефолт 16', async () => {
+    for (const [value, expected] of [[2, 2], ['abc', 16]]) {
+      const dir = makeProject({ settings: { chat_max_tool_calls: value } });
+      try {
+        const calls = Array.from({ length: 5 }, (_, i) => ({
+          id: `c${i}`,
+          name: 'read_file',
+          arguments: { path: 'README.md', offset: i },
+        }));
+        const { llm } = fakeLlm([{ text: 'Читаю.', toolCalls: calls }, { text: 'Готово.' }]);
+        const events = await collectOn(dir, { message: 'читай', threadId: 'd-cfg' }, { llm });
+        const ends = events.filter(e => e.type === 'tool_end');
+        const executed = ends.filter(e => !e.result.includes('Лимит tool-вызовов')).length;
+        const expectedExecuted = Math.min(calls.length, expected);
+        assert.equal(
+          executed,
+          expectedExecuted,
+          `chat_max_tool_calls=${JSON.stringify(value)} → ${expectedExecuted} исполнено`,
+        );
+        if (expected < calls.length) {
+          assert.match(
+            ends[expected].result,
+            new RegExp(`Лимит tool-вызовов на один ответ исчерпан \\(${expected}\\)`),
+          );
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('диагностика хода пишется в <threadId>.repeat.json и не ломает список тредов', async () => {
+    const dir = makeProject();
+    try {
+      const call = { id: 'c1', name: 'read_file', arguments: { path: 'README.md' } };
+      const { llm } = fakeLlm([
+        { text: 'Читаю.', toolCalls: [call, { ...call, id: 'c2' }, { ...call, id: 'c3' }] },
+        { text: 'Готово.' },
+      ]);
+      await collectOn(dir, { message: 'читай', threadId: 'd-stats' }, { llm });
+
+      const stats = loadChatToolStats(dir, 'd-stats');
+      assert.ok(stats, 'файл диагностики создан');
+      assert.equal(stats.executed, 1);
+      assert.equal(stats.deduped, 2);
+      assert.equal(stats.limit_hits, 0);
+      assert.ok(stats.repeat_stats, 'repeat_stats в формате агент-петли');
+      assert.equal(stats.repeat_stats.tool_calls_total, 3);
+      assert.ok(Array.isArray(stats.repeat_stats.top));
+      assert.equal(typeof stats.repeat_stats.repeat_share, 'number');
+      assert.equal(typeof stats.turn, 'number');
+      // Файл .repeat.json не должен считаться тредом в списке чатов
+      assert.deepEqual(listChatThreads(dir).map(t => t.threadId), ['d-stats']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
