@@ -66,13 +66,16 @@ tags:
 | `ready` | boolean | Только без невыполненных блокеров |
 | `sort` | string | priority / created / updated |
 | `limit` | number | Максимум задач |
+| `fields` | string[] | Отбор полей карточки (VL-260): `id,title,status,priority,type,project,labels,assignee,milestone,parent_task_id`; неизвестный ключ не прерывает вызов. Без `fields` — прежний массив; с `fields` при неизвестных ключах — `{ tasks, _warning }` |
 
 ### backlog_view_task — просмотр задачи
 
 | Параметр | Тип | Required | Описание |
 |---|---|---|---|
 | `id` | string | ✓ | |
-| `fields` | string[] | | Выбор возвращаемых полей Task — ключи интерфейса Task (напр. `["id","title","description"]` — контекст для фазы Spec); порядок ключей в ответе = порядок в `fields`; без параметра или при пустом массиве — полное представление (обратная совместимость); неизвестное имя — ошибка с перечнем допустимых имён (VL-162) |
+| `fields` | string[] | | Выбор возвращаемых полей Task; порядок ключей в ответе = порядок в `fields`; без параметра или при пустом массиве — полное представление (обратная совместимость; VL-162). Канонические ключи: `id, title, status, priority, assignee, reporter, labels, milestone, type, project, parent_task_id, created_date, updated_date, due_date, ordinal, description, acceptance_criteria, definition_of_done, implementation_plan, implementation_notes, final_summary, modified_files, references, lessons, documentation, token_usage` (регистр не важен: `modifiedFiles` → `modified_files`, VL-236). Алиасы: `notes`/`note` → `implementationNotes`, `plan`/`plans` → `implementationPlan`, `ac` → `acceptanceCriteria`, `dod` → `definitionOfDone`, `summary` → `finalSummary`. Неизвестный ключ **не прерывает вызов** (VL-260): остальные поля возвращаются, в ответе появляется `_warning` с проигнорированными именами, fuzzy-подсказкой ближайших и полным списком допустимых |
+
+**Поведение `fields` при ошибке в имени (VL-260).** Реестр допустимых ключей — рантайм `Object.keys(task)`, статический список в `description` схемы лишь подсказка (lesson-32), новые поля `Task` валидны автоматически. Неизвестные имена игнорируются: ответ содержит запрошенные поля и ключ `_warning` вида «Неизвестные поля проигнорированы: phase. Ближайшие: implementationPlan, implementationNotes. Допустимые: …»; если все запрошенные поля неизвестны — ответ `{ _warning }` без ошибки. При валидных именах ключа `_warning` в ответе нет (контракт VL-162 «ровно запрошенные ключи» сохраняется). Валидация типа сохранилась: `fields` не массив или содержит не-строки — ошибка. Тот же хелпер обслуживает `backlog_list_tasks` и `backlog_search`.
 
 ### backlog_update_status — смена статуса
 
@@ -134,11 +137,12 @@ tags:
 | `status`, `type`, `project`, `priority` | string | Фильтры полей (AND) |
 | `modifiedFiles` | string[] | Подстрока в modified_files задачи |
 | `hasLessons` | boolean | Задачи с (true) / без (false) связанных lessons (VL-153) |
+| `fields` | string[] | Отбор полей карточки результата (VL-260): `id,title,status,priority,type,project,labels,milestone`; неизвестный ключ не прерывает вызов — в корень ответа добавляется `_warning` (см. backlog_view_task) |
 | `limit` | number | 1–100 |
 
 **Ранжирование (VL-237).** Запрос токенизируется (lowercase, разделители — пробелы и пунктуация; дефис/подчёркивание сохраняются, чтобы `VL-237` и `deps.ts` не разваливались). Требуется вхождение **всех** токенов (И-логика) хотя бы в одном поле: для одного слова поведение ≈ прежнему substring плюс усечение основы. Веса: точное совпадение `id` (1000) » `id` содержит (500) » `title` (100) » `labels` (50) » `description` (10); порядок при равном счёте детерминирован: score desc → `created_date` desc → `id` asc. Морфология — усечение основы: для токенов длиной ≥6 символов сравниваются первые 5 символов (полноценного стеммера нет, ложные срабатывания на коротких основах приемлемы); слова с дефисом не усекаются.
 
-**Форма ответа:** объект `{ found, returned, tasks }` — `found` — полное число совпадений (до `limit`), `returned` — сколько отдано. Массив верхнего уровня больше не возвращается (VL-237): агент видит полноту выдачи и не переформулирует запрос вслепую.
+**Форма ответа:** объект `{ found, returned, tasks }` — `found` — полное число совпадений (до `limit`), `returned` — сколько отдано. Массив верхнего уровня больше не возвращается (VL-237): агент видит полноту выдачи и не переформулирует запрос вслепую. При `fields` с неизвестными ключами к объекту добавляется `_warning` (VL-260); карточки в `tasks` содержат только запрошенные поля.
 
 ### backlog_finish_phase — завершение фазы одним вызовом (VL-138)
 
@@ -405,6 +409,10 @@ src/core/reference-cache.ts — Локальный markdown-кэш references (V
 // Просмотр задачи: только нужные поля — экономия контекста (VL-162)
 { "name": "backlog_view_task", "arguments": {
   "id": "api-1", "fields": ["id", "title", "description"] } }
+
+// Поля с алиасами: notes → implementationNotes, неизвестное поле не валит вызов (VL-260)
+{ "name": "backlog_view_task", "arguments": {
+  "id": "api-1", "fields": ["id", "notes", "phase"] } }
 
 // Пачка отметок AC
 { "name": "backlog_manage_ac", "arguments": {
