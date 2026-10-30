@@ -49,6 +49,9 @@ import type { UpdateLessonInput } from '../core/lesson.js';
 import { findBacklogDir } from '../core/paths.js';
 import { buildProjectMap } from '../core/project-map.js';
 import { truncateToolOutput } from '../agent/tools.js';
+import { ackOk, unknownFields } from './tool-result.js';
+import type { SkippedField } from './tool-result.js';
+import { withIdempotency } from './idempotency.js';
 import type { Task, TaskComment, ChecklistItem } from '../core/task.js';
 import { addTaskTokenUsage } from '../core/store.js';
 import { hasUsageDelta, usageDelta } from '../core/analytics.js';
@@ -60,6 +63,29 @@ import {
 // completeTaskFile импортирован для паритета с оригинальным модулем;
 // в текущей логике инструментов не вызывается (оставлено без изменений).
 void completeTaskFile;
+
+/**
+ * Известные поля `backlog_create_task` (VL-262).
+ *
+ * Список — контракт «что инструмент реально понимает». Переданный ключ вне
+ * списка больше не игнорируется молча: он попадает в `skipped` ответа, и
+ * агент видит, что поле НЕ записано (источник «частичности» без отказа).
+ */
+const CREATE_TASK_FIELDS: readonly string[] = [
+  'title', 'description', 'priority', 'labels', 'dependencies', 'acceptanceCriteria',
+  'status', 'type', 'parentTaskId', 'due_date', 'ordinal', 'project', 'finalSummary',
+  'assignee', 'milestone', 'id', 'definitionOfDone', 'noDodDefaults', 'idempotencyKey',
+];
+
+/**
+ * Известные поля `backlog_update_task` (VL-262) — см. CREATE_TASK_FIELDS.
+ * `plan`/`notes`/`append_notes`/`final_summary` — имена аргументов секций тела.
+ */
+const UPDATE_TASK_FIELDS: readonly string[] = [
+  'id', 'title', 'description', 'priority', 'assignee', 'labels', 'milestone', 'type',
+  'parentTaskId', 'status', 'plan', 'notes', 'append_notes', 'final_summary',
+  'modifiedFiles', 'references', 'lessons', 'acceptanceCriteria', 'idempotencyKey',
+];
 
 /**
  * Аргументы MCP-инструмента: произвольный JSON со stdio.
@@ -100,6 +126,8 @@ export function listTools(): ToolDefinition[] {
           ordinal: { type: 'number', description: 'Порядковый номер для кастомной сортировки' },
           project: { type: 'string', description: 'Проект' },
           finalSummary: { type: 'string', maxLength: 20000, description: 'Итоговое резюме (для завершённых задач)' },
+          // VL-262: защита от дубля при повторе после отказа/таймаута
+          idempotencyKey: { type: 'string', description: 'Ключ идемпотентности: повтор с тем же ключом НЕ применяет изменения второй раз, а возвращает результат первого применения. Используй при повторе после отказа/таймаута.' },
         },
         required: ['title'],
       },
@@ -152,6 +180,8 @@ export function listTools(): ToolDefinition[] {
         properties: {
           id: { type: 'string', description: 'ID задачи' },
           status: { type: 'string', description: 'Новый статус' },
+          // VL-262: idempotencyKey — повтор не перезапишет updated_date
+          idempotencyKey: { type: 'string', description: 'Ключ идемпотентности: повтор с тем же ключом НЕ применяет изменения второй раз, а возвращает результат первого применения. Используй при повторе после отказа/таймаута.' },
         },
         required: ['id', 'status'],
       },
@@ -184,6 +214,8 @@ export function listTools(): ToolDefinition[] {
           lessons: { type: 'array', items: { type: 'string' }, description: 'ID lessons задачи (полная замена lessons)' },
           // VL-219: AC через update_task — полная замена чеклиста (симметрия с create)
           acceptanceCriteria: { type: 'array', items: { type: 'string' }, description: 'Критерии приёмки (полная замена, unchecked); JSON-строка массива тоже принимается' },
+          // VL-262: атомарность + идемпотентность повтора
+          idempotencyKey: { type: 'string', description: 'Ключ идемпотентности: повтор с тем же ключом НЕ применяет изменения второй раз, а возвращает результат первого применения. Используй при повторе после отказа/таймаута.' },
         },
         required: ['id'],
       },
@@ -225,6 +257,8 @@ export function listTools(): ToolDefinition[] {
           id: { type: 'string', description: 'ID задачи' },
           comment: { type: 'string', description: 'Текст комментария' },
           author: { type: 'string', description: 'Автор (по умолчанию @agent)' },
+          // VL-262: повтор не должен дублировать комментарий
+          idempotencyKey: { type: 'string', description: 'Ключ идемпотентности: повтор с тем же ключом НЕ применяет изменения второй раз, а возвращает результат первого применения. Используй при повторе после отказа/таймаута.' },
         },
         required: ['id', 'comment'],
       },
@@ -238,6 +272,7 @@ export function listTools(): ToolDefinition[] {
           id: { type: 'string', description: 'ID задачи' },
           add: { type: 'array', items: { type: 'string' }, description: 'ID задач для добавления в зависимости' },
           remove: { type: 'array', items: { type: 'string' }, description: 'ID задач для удаления из зависимостей' },
+          idempotencyKey: { type: 'string', description: 'Ключ идемпотентности: повтор с тем же ключом НЕ применяет изменения второй раз, а возвращает результат первого применения. Используй при повторе после отказа/таймаута.' },
         },
         required: ['id'],
       },
@@ -664,26 +699,28 @@ export async function handleToolCall(
   opts?: HandleToolCallOpts,
 ): Promise<string> {
   switch (name) {
+    // VL-262: write-инструменты задачи — идемпотентность по ключу вызывающего.
+    // Без idempotencyKey поведение прежнее (обёртка прозрачна).
     case 'backlog_create_task':
-      return toolCreateTask(args, cwd, opts);
+      return withIdempotency(cwd, name, args.idempotencyKey, () => toolCreateTask(args, cwd, opts));
     case 'backlog_list_tasks':
       return toolListTasks(args, cwd);
     case 'backlog_view_task':
       return toolViewTask(args, cwd);
     case 'backlog_update_status':
-      return toolUpdateStatus(args, cwd);
+      return withIdempotency(cwd, name, args.idempotencyKey, () => toolUpdateStatus(args, cwd));
     case 'backlog_update_task':
-      return toolUpdateTask(args, cwd);
+      return withIdempotency(cwd, name, args.idempotencyKey, () => toolUpdateTask(args, cwd));
     case 'backlog_manage_ac':
       return toolManageAc(args, cwd);
     case 'backlog_manage_dod':
       return toolManageDod(args, cwd);
     case 'backlog_add_comment':
-      return toolAddComment(args, cwd);
+      return withIdempotency(cwd, name, args.idempotencyKey, () => toolAddComment(args, cwd));
     case 'backlog_finish_phase':
       return toolFinishPhase(args, cwd);
     case 'backlog_update_dependencies':
-      return toolUpdateDependencies(args, cwd);
+      return withIdempotency(cwd, name, args.idempotencyKey, () => toolUpdateDependencies(args, cwd));
     case 'backlog_search':
       return toolSearch(args, cwd);
     case 'backlog_ready':
@@ -782,7 +819,27 @@ function toolCreateTask(args: ToolArgs, cwd: string, opts?: HandleToolCallOpts):
     project: (args.project as string) || '',
     finalSummary: (args.finalSummary as string) || '',
   });
-  return `Задача ${task.id} создана: ${task.title}`;
+  // VL-262: снимок фактически применённого — по задаче ПОСЛЕ записи, а не по
+  // переданным аргументам. skipped — переданные ключи вне известного набора
+  // (раньше молча игнорировались: агент считал поле записанным).
+  const applied: Record<string, unknown> = {
+    id: task.id,
+    title: task.title,
+    status: task.status,
+    priority: task.priority,
+    labels: task.labels ?? [],
+    assignee: task.assignee ?? [],
+    type: task.type || '',
+    parent_task_id: task.parent_task_id || '',
+    milestone: task.milestone || '',
+    due_date: task.due_date || '',
+    project: task.project || '',
+    ordinal: task.ordinal ?? null,
+    acceptanceCriteria: (task.acceptanceCriteria ?? []).length,
+    description: task.description ?? '',
+  };
+  const skipped = unknownFields(args, CREATE_TASK_FIELDS);
+  return ackOk(`Задача ${task.id} создана: ${task.title}`, applied, skipped);
 }
 
 /**
@@ -1070,7 +1127,7 @@ function toolViewTask(args: ToolArgs, cwd: string): string {
  */
 function toolUpdateStatus(args: ToolArgs, cwd: string): string {
   const task = updateTaskFile(cwd, args.id as string, { status: args.status as string });
-  return `Статус задачи ${task.id} обновлён: ${task.status}`;
+  return ackOk(`Статус задачи ${task.id} обновлён: ${task.status}`, { status: task.status });
 }
 
 // ============================================================
@@ -1146,11 +1203,40 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
   }
 
   if (Object.keys(updates).length === 0) {
+    // VL-262: пустой набор — либо ошибка (поля не переданы), либо все
+    // переданные ключи неизвестны. Разные подсказки: агенту нужно знать,
+    // что его ключи не распознаны (иначе он повторяет тот же вызов).
+    const skipped = unknownFields(args, UPDATE_TASK_FIELDS);
+    if (skipped.length > 0) {
+      throw new Error(
+        `Не указаны поля для обновления. Неизвестные поля: ${skipped.map(s => s.field).join(', ')}. ` +
+          `Допустимые: ${UPDATE_TASK_FIELDS.join(', ')}.`,
+      );
+    }
     throw new Error('Не указаны поля для обновления.');
   }
 
+  // VL-262: единственная запись — все валидации выше (parentTaskId, parseAcList)
+  // прошли до неё, поэтому «полуприменённого» состояния файла не бывает.
   const task = updateTaskFile(cwd, args.id as string, updates);
-  return `Задача ${task.id} обновлена: ${Object.keys(updates).join(', ')}`;
+
+  // applied — значения из задачи ПОСЛЕ записи (фактическое состояние файла,
+  // а не намерение вызова). Чеклист сворачиваем до длины: полный массив
+  // раздувает ответ без пользы для агента.
+  const applied: Record<string, unknown> = {};
+  for (const key of Object.keys(updates)) {
+    const value = (task as unknown as Record<string, unknown>)[key];
+    applied[key] = Array.isArray(value) && key === 'acceptanceCriteria' ? value.length : value;
+  }
+  // skipped: неизвестные ключи + переданный null (раньше type: null молча игнорировался)
+  const skipped: SkippedField[] = unknownFields(args, UPDATE_TASK_FIELDS);
+  for (const key of Object.keys(args)) {
+    if (args[key] === null && UPDATE_TASK_FIELDS.includes(key) && !skipped.some(s => s.field === key)) {
+      skipped.push({ field: key, reason: 'значение null не применяется: поле не изменено' });
+    }
+  }
+
+  return ackOk(`Задача ${task.id} обновлена: ${Object.keys(updates).join(', ')}`, applied, skipped);
 }
 
 /**
@@ -1361,7 +1447,11 @@ function toolAddComment(args: ToolArgs, cwd: string): string {
   const comments = [...(task.comments || []), comment];
   updateTaskFile(cwd, args.id as string, { comments });
 
-  return `Комментарий добавлен к задаче ${args.id} (${comment.author})`;
+  // VL-262: снимок применённого — что именно записалось, без повторного чтения
+  return ackOk(
+    `Комментарий добавлен к задаче ${args.id} (${comment.author})`,
+    { comment: { author: comment.author, created: comment.created, id: args.id } },
+  );
 }
 
 /**
@@ -1699,7 +1789,8 @@ function toolUpdateDependencies(args: ToolArgs, cwd: string): string {
   }
 
   updateTaskFile(cwd, args.id as string, { dependencies: deps });
-  return `Зависимости задачи ${args.id} обновлены: [${deps.join(', ')}]`;
+  // VL-262: applied — итоговый набор зависимостей из записи
+  return ackOk(`Зависимости задачи ${args.id} обновлены: [${deps.join(', ')}]`, { dependencies: deps });
 }
 
 // ============================================================

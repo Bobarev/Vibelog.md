@@ -86,8 +86,13 @@ export function historyToMessages(history: readonly HistoryMessage[]): ThreadMes
           // не-JSON результат (текст ошибки) оставляем строкой
         }
         part.result = parsed;
-        // {"error": ...} — отказ/ошибка инструмента без отдельного флага isError
-        if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
+        // {"error": ...} — отказ/ошибка инструмента без отдельного флага isError;
+        // VL-262: отказ подтверждения/ошибка в новом контракте — {ok:false, denied:true, …}
+        if (
+          typeof parsed === "object" &&
+          parsed !== null &&
+          ("error" in parsed || (parsed as { ok?: unknown }).ok === false)
+        ) {
           part.isError = true;
         }
       } else if (tc.name === "backlog_create_task") {

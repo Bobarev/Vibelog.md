@@ -86,7 +86,27 @@ describe('historyToMessages — восстановление истории тр
     assert.ok(!('result' in part));
   });
 
-  it('отказ в jsonl ({"error": ...}) → isError, чтобы карточка не врала', () => {
+  it('отказ в jsonl ({"ok":false,"denied":true}) → isError, чтобы карточка не врала', () => {
+    const out = historyToMessages([
+      { role: 'user', content: 'создай' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'tc2', name: 'backlog_create_task', arguments: { title: 'Y' } }],
+      },
+      // VL-262: отказ подтверждения — JSON-контракт {ok:false, denied:true, reason, …}
+      { role: 'tool', tool_call_id: 'tc2', content: '{"ok":false,"denied":true,"reason":"denied","message":"Пользователь отклонил операцию"}' },
+    ]);
+    const part = out[1].content[0];
+    assert.equal(part.isError, true);
+    assert.equal(part.result.denied, true);
+    assert.equal(part.result.reason, 'denied');
+    // результат есть → approval не pending, статус завершён
+    assert.ok(!('approval' in part));
+    assert.deepEqual(out[1].status, { type: 'complete', reason: 'unknown' });
+  });
+
+  it('старый формат отказа ({"error": ...}) по-прежнему isError — обратная совместимость', () => {
     const out = historyToMessages([
       { role: 'user', content: 'создай' },
       {
@@ -99,9 +119,6 @@ describe('historyToMessages — восстановление истории тр
     const part = out[1].content[0];
     assert.equal(part.isError, true);
     assert.deepEqual(part.result, { error: 'Пользователь отклонил' });
-    // результат есть → approval не pending, статус завершён
-    assert.ok(!('approval' in part));
-    assert.deepEqual(out[1].status, { type: 'complete', reason: 'unknown' });
   });
 
   it('обрыв до результата не-create инструмента → «Прервано» вместо вечного «выполняется»', () => {
