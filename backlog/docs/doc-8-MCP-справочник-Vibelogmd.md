@@ -190,6 +190,85 @@ tags:
 
 ---
 
+## Фазы и супервизор (VL-268, doc-19)
+
+Четыре инструмента дают чату управление фазами и очередью. Три из них — write-операции по природе (`trigger`/`queue`/`supervisor` в маркерах `isWriteOperation`), `backlog_phase_status` — read. Развязывает их не исключение из политики, а **grant на прогон** (§15 doc-19): внутри подтверждённого прогона вызовы с разрешёнными инструментами не требуют Allow/Deny, вне прогона работает обычная карточка подтверждения.
+
+### backlog_trigger_phase — запустить фазу задачи
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `id` | string | ✓ | ID задачи |
+| `phase` | string | | Фаза; не указана — первая доступная по workflow из текущего статуса (`getNextPhase`) |
+| `comment` | string | | Комментарий к запуску: пишется в задачу до старта и подставляется в промпт фазы (`{{comment}}`) |
+| `sameSession` | boolean | | Для фазы `code`: продолжить plan-сессию агента (`--resume`, VL-147); явное значение переопределяет `code_same_session` |
+
+Отказы — отдельным текстом, без `is_error`-мусора: задача не найдена; фаза не разрешена из текущего статуса (перечень доступных); фаза уже идёт у этой задачи; превышен `max_parallel_phases`; задача вне grant активного прогона (с предложением расширить прогон). Ответ на успех — сообщение + JSON-снимок `{started, pid, queued, sameSession}`.
+
+**Не повторяй вызов после таймаута** — идемпотентности у запуска нет (защита только in-memory `activeRuns`); состояние смотри через `backlog_phase_status`.
+
+### backlog_phase_status — состояние запуска
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `id` | string | ✓ | ID задачи |
+
+Read-only. Отдаёт из `getRun`: `running`, `phase`, `pid`, `exitCode`, `logTail`, `result`; плюс из меты последней сессии задачи (`repeat_stats`, `last_run.is_error`, `last_run.finishedAt`). `repeat_stats` берётся готовым из меты, при отсутствии — `analyzeToolRepeatsFromJsonlSync`; JSONL целиком не читается.
+
+### backlog_auto_queue — очередь автопрогона
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `action` | `add` \| `start` \| `stop` \| `status` | ✓ | `add` — добавить задачи; `start`/`stop` — переключить автопрогон; `status` — показать очередь |
+| `ids` | string[] | | ID задач для `add` (JSON-строка массива тоже принимается) |
+
+Поверх `src/core/auto-queue.ts` с теми же правилами дедупликации, что у бота (`/auto`): `pending`/`running`/`failed_permanent` — пропуск, `done`/`failed` — реанимация в `pending`.
+
+### backlog_supervisor — прогон (план, старт, стоп, статус)
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `action` | `plan` \| `start` \| `stop` \| `status` | ✓ | `plan` — сухой прогон; `start` — запустить (нужно подтверждение); `stop` — остановить и отозвать grant; `status` — состояние |
+| `ids` | string[] | | ID задач прогона (для `plan`/`start`) |
+| `expiresInHours` | number | | Срок действия grant в часах (по умолчанию 8, максимум 336) |
+| `expiresAt` | string | | Явный срок действия grant (ISO 8601), приоритетнее `expiresInHours` |
+
+`plan` ничего не пишет и не запускает: состав, порядок (High → Medium → Low, затем порядок `ids`), волны по внутренним зависимостям, `skipped` с причинами, текстовое обоснование.
+
+**Grant на прогон** — файл `.vibelog/supervisor/grants/<runId>.json`:
+
+```json
+{
+  "runId": "run-2026-10-31T22-00-00",
+  "taskIds": ["VL-263", "VL-264", "VL-268"],
+  "allowedTools": ["backlog_trigger_phase", "backlog_phase_status", "backlog_auto_queue", "backlog_supervisor", "backlog_create_task"],
+  "grantedAt": "2026-10-31T21:58:00Z",
+  "expiresAt": "2026-11-01T06:00:00Z"
+}
+```
+
+Правила проверки (перед **каждым** вызовом, не при старте хода):
+
+- задача вне `taskIds` → отказ «Задача VL-N вне прогона run-…: расширь прогон и подтверди заново»;
+- инструмент вне `allowedTools` → обычный Allow/Deny;
+- `expiresAt` истёк → текущая фаза доводится, новые не стартуют (карточка сообщает об истечении);
+- отзыв — при `stop` и при завершении прогона (все задачи в терминальном статусе): файл получает `revokedAt`, `findActiveGrant` его больше не видит, следующие вызовы снова требуют подтверждений;
+- `write_file`, `edit` и прочие файловые write-инструменты модели в grant **не входят никогда** — фильтр `GRANTABLE_TOOLS`, не пользовательский ввод;
+- `backlog_finish_phase` остаётся в `CHAT_DISALLOWED_TOOLS` — grant не открывает обходного пути к завершению фазы.
+
+**Пример.**
+
+```json
+{ "name": "backlog_supervisor", "arguments": { "action": "plan", "ids": ["VL-268", "VL-269"] } }
+{ "name": "backlog_supervisor", "arguments": { "action": "start", "ids": ["VL-268", "VL-269"], "expiresInHours": 4 } }
+{ "name": "backlog_trigger_phase", "arguments": { "id": "VL-268", "comment": "продолжаем после падения" } }
+{ "name": "backlog_phase_status", "arguments": { "id": "VL-268" } }
+```
+
+HTTP-эндпоинты карточки: `POST /api/chat/supervisor/grant-draft` (правки состава инструментов и срока до нажатия «Разрешить») и `GET /api/chat/supervisor/grant` (активный grant + последний прогон — для восстановления карточки после перезагрузки).
+
+---
+
 ## Вехи (milestones)
 
 ### milestone_list
