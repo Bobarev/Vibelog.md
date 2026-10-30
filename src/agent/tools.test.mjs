@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync, mkdtempSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { listLocalTools, validateArgs, miniGlobToRegex, checkShellCommandInProject, checkSelfCwdDestruction, truncateToolOutput, maskSecrets, formatFileSlice, TOOL_OUTPUT_MAX_CHARS, formatMissingPathHint, PATH_HINT_MAX_LINES } from '../../dist/agent/tools.js';
+import { listLocalTools, validateArgs, miniGlobToRegex, checkShellCommandInProject, checkSelfCwdDestruction, truncateToolOutput, maskSecrets, formatFileSlice, TOOL_OUTPUT_MAX_CHARS, formatMissingPathHint, PATH_HINT_MAX_LINES, clampShellTimeout } from '../../dist/agent/tools.js';
 
 const TMP = mkdtempSync(join(tmpdir(), 'vibelog-agent-tools-'));
 let tools;
@@ -195,6 +195,45 @@ describe('run_shell_command (VL-83)', () => {
     const elapsed = Date.now() - started;
     assert.ok(elapsed < 2000, `процесс не убит по abort: ${elapsed}мс`);
     assert.match(out, /отменено пользователем/);
+  });
+});
+
+describe('VL-254: таймаут команды против остатка бюджета фазы (AC3)', () => {
+  it('clampShellTimeout: 1500 с при остатке 5 с → усечение до 5000 мс + предупреждение', () => {
+    const res = clampShellTimeout(1_500_000, 5_000);
+    assert.equal(res.timeoutMs, 5_000);
+    assert.ok(res.warning);
+    assert.match(res.warning, /1500000 мс/);
+    assert.match(res.warning, /5000 мс/);
+    assert.match(res.warning, /превышает остаток бюджета фазы/);
+  });
+
+  it('clampShellTimeout: таймаут в пределах остатка — без изменений и предупреждения', () => {
+    assert.deepEqual(clampShellTimeout(1_000, 5_000), { timeoutMs: 1_000, warning: null });
+    // бюджета нет (нет wall-time лимита) — не усекаем
+    assert.deepEqual(clampShellTimeout(1_500_000, undefined), {
+      timeoutMs: 1_500_000,
+      warning: null,
+    });
+  });
+
+  it('clampShellTimeout: минимум 1000 мс даже при остатке меньше секунды', () => {
+    assert.equal(clampShellTimeout(120_000, 200).timeoutMs, 1_000);
+  });
+
+  it('AC3: handler с остатком 5 с и timeout_ms 1500000 → предупреждение в tool-выводе', async () => {
+    const out = await byName
+      .get('run_shell_command')
+      .handler({ command: 'echo ok', timeout_ms: 1_500_000 }, { remainingWallTimeMs: () => 5_000 });
+    assert.match(out, /превышает остаток бюджета фазы/);
+    assert.match(out, /усечён до 5000 мс/);
+    assert.match(out, /exit code: 0/);
+    assert.match(out, /ok/);
+  });
+
+  it('handler без ctx.remainingWallTimeMs — предупреждения нет', async () => {
+    const out = await byName.get('run_shell_command').handler({ command: 'echo ok' });
+    assert.doesNotMatch(out, /превышает остаток бюджета фазы/);
   });
 });
 

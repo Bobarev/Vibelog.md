@@ -25,8 +25,10 @@ import type { ApiMode, ChatMessage } from './llm.js';
 import { ensureLlmEnv, loadApiMode, activeModelLogLine } from './llm-env.js';
 import { loadProjectEnv } from '../bot/env.js';
 import { runLoop } from './loop.js';
+import type { LoopResult } from './loop.js';
 import { agentSessionsDir, appendSessionMessage, appendSessionRun, countToolCallsInMessages, createSessionId, latestSession, loadSession, loadSessionMetaSync, saveSession, saveSessionMeta, sumUsageFromMessages, updateSessionMeta } from './session.js';
 import { analyzeToolRepeats } from './repeat-tracker.js';
+import { appendCommitToProgress, commitProgressChanges } from './run-progress.js';
 import { taskWorktreeDir } from '../core/worktree.js';
 import { taskIdPattern } from '../core/config.js';
 import { buildSystemPrompt } from './system-prompt.js';
@@ -36,7 +38,7 @@ import type { ToolSpec } from './tools.js';
 import { McpClient, toolsAsSpecs } from './mcp-client.js';
 import { closeExternalMcpClients, connectExternalMcpServers } from './external-mcp.js';
 import { renderPrompt, taskExtraVars } from '../web/phase-prompt.js';
-import { addTaskTokenUsage, getTask } from '../core/store.js';
+import { addComment, addTaskTokenUsage, getTask } from '../core/store.js';
 import { getWorkflowForTask, getStatusAfterPhase } from '../core/workflow.js';
 import { hasUsageDelta, usageDelta } from '../core/analytics.js';
 import type { TokenUsage } from '../core/analytics.js';
@@ -242,6 +244,81 @@ export function parseArgs(argv: string[]): CliOptions {
     );
   }
   return opts;
+}
+
+/**
+ * Записывает прогресс оборвавшегося рана (VL-254, AC4).
+ *
+ * Делает три вещи, каждая в своём try/catch (обрыв уже случился — ни одна
+ * ошибка записи не должна менять exit-код фазы):
+ * 1. для фазы code — коммитит незакоммиченные изменения в текущую ветку
+ *    (`commitProgressChanges`, файлы backlog/ исключаются);
+ * 2. пишет блок «что сделано / что осталось» в мету сессии (`run_progress`);
+ * 3. добавляет тот же блок комментарием в задачу (файлы задач живут в
+ *    `VIBELOG_CWD` — в worktree-режиме это главный репозиторий).
+ *
+ * @returns true, если блок записан хотя бы куда-то (для тестов)
+ */
+export async function recordRunProgress(args: {
+  loopResult: Pick<LoopResult, 'is_error' | 'progress'>;
+  sessionsDir: string;
+  sessionId: string;
+  cwd: string;
+  /** Явные taskId/phase (в проде определяются из меты/env) — для тестов. */
+  taskId?: string;
+  phase?: string;
+}): Promise<boolean> {
+  const progress = args.loopResult.progress;
+  if (args.loopResult.is_error !== true || !progress) return false;
+  const { sessionsDir, sessionId, cwd } = args;
+  let anyWritten = false;
+  // Фаза рана: явная → VIBELOG_RUN_PHASE (оркестратор знает фактическую фазу
+  // resume-рана) → фаза сессии (lesson-40: she — фаза создания) → env.
+  let phase = args.phase;
+  let taskId = args.taskId;
+  try {
+    const meta = loadSessionMetaSync(sessionsDir, sessionId);
+    phase = phase ?? process.env.VIBELOG_RUN_PHASE ?? meta?.lastRunPhase ?? meta?.phase ?? process.env.VIBELOG_PHASE_NAME;
+    taskId = taskId ?? meta?.taskId ?? process.env.VIBELOG_PHASE_TASK_ID;
+  } catch (err) {
+    console.error(`Предупреждение: мета сессии ${sessionId} не прочитана для прогресса — ${(err as Error).message}`);
+  }
+  // taskCwd — где живут файлы задач (в branch-mode VIBELOG_CWD → главный репо)
+  const taskCwd = process.env.VIBELOG_CWD ?? cwd;
+  let current = progress;
+  if (phase === 'code') {
+    try {
+      current = appendCommitToProgress(progress, commitProgressChanges(cwd, taskId ?? 'task', progress.reason));
+    } catch (err) {
+      console.error(`Предупреждение: WIP-коммит прогресса не создан — ${(err as Error).message}`);
+    }
+  }
+  try {
+    updateSessionMeta(sessionsDir, sessionId, {
+      cwd,
+      run_progress: {
+        reason: current.reason,
+        ...(phase ? { phase } : {}),
+        finishedAt: new Date().toISOString(),
+        text: current.text,
+        done: current.done,
+        pending: current.pending,
+        commit: current.commit ?? null,
+      },
+    });
+    anyWritten = true;
+  } catch (err) {
+    console.error(`Предупреждение: прогресс рана в мету ${sessionId} не записан — ${(err as Error).message}`);
+  }
+  if (taskId) {
+    try {
+      addComment(taskCwd, taskId, current.text, '@agent');
+      anyWritten = true;
+    } catch (err) {
+      console.error(`Предупреждение: комментарий прогресса в задачу ${taskId} не добавлен — ${(err as Error).message}`);
+    }
+  }
+  return anyWritten;
 }
 
 /**
@@ -865,6 +942,14 @@ export async function main(argv: string[]): Promise<void> {
     console.error(`Предупреждение: учёт токенов сессии не выполнен — ${(err as Error).message}`);
   }
 
+  // ── VL-254: прогресс оборвавшегося рана ────────────────────────────────
+  // Фаза code, убитая wall-time'ом, раньше не оставляла ни коммита, ни
+  // отчёта: ветка vl-235 осталась с M-файлами, а транскрипт был единственным
+  // источником правды. Теперь при обрыве пишем блок «что сделано / что
+  // осталось» в мету сессии, коммитим WIP-изменения (только code) и
+  // добавляем комментарий в задачу.
+  await recordRunProgress({ loopResult, sessionsDir, sessionId, cwd });
+
   // VL-203 (AC1): итоговая диагностика фазы в stderr → logTail оркестратора
   // (хвост 50 строк): байты payload последнего запроса + usage по фазе —
   // по ним отличаем content-based отказ провайдера от размерного.
@@ -876,6 +961,10 @@ export async function main(argv: string[]): Promise<void> {
       // диагностике — при разборе лога видно зацикливание без парсинга jsonl
       `повторов=${loopResult.repeat_stats.repeat_calls}/${loopResult.repeat_stats.tool_calls_total} ` +
       `(${Math.round(loopResult.repeat_stats.repeat_share * 100)}%), ` +
+      // VL-254 (AC1): shell-вызовы отдельной строкой — в VL-235 они дали 65%
+      // tool-calls, и в общей доле этот вклад не виден без разбивки
+      `shell-повторов=${loopResult.repeat_stats.shell_repeat_calls}/${loopResult.repeat_stats.shell_tool_calls} ` +
+      `(${Math.round(loopResult.repeat_stats.shell_share * 100)}%), ` +
       `топ-повторов=${loopResult.repeat_stats.top.slice(0, 3).map((e) => `${e.key}×${e.count}`).join(', ') || 'нет'}, ` +
       `payload последнего запроса=${loopResult.last_payload_bytes ?? 'н/д'} байт ` +
       `(макс ${loopResult.max_payload_bytes ?? 'н/д'}), usage=${JSON.stringify(loopResult.usage)}`,

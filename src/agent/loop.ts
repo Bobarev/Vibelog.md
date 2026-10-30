@@ -33,11 +33,13 @@ import { truncateToolOutput } from './tools.js';
 import {
   REPEAT_READ_LIMIT_DEFAULT,
   REPEAT_SEARCH_LIMIT_DEFAULT,
+  REPEAT_SHELL_LIMIT_DEFAULT,
   analyzeToolRepeats,
   createRepeatGuard,
   type RepeatGuard,
   type RepeatStats,
 } from './repeat-tracker.js';
+import { buildRunProgress, type RunProgress, type RunProgressReason } from './run-progress.js';
 
 /** Лимиты цикла; дефолты — 100 tool-calls и 900 секунд wall-time. */
 export interface LoopLimits {
@@ -85,6 +87,12 @@ export interface LoopLimits {
    */
   repeatReadLimit?: number;
   /**
+   * VL-254: порог повторов shell-скелета — N-й `run_shell_command` с тем же
+   * скелетом команды даёт модели предупреждение (дефолт 3,
+   * REPEAT_SHELL_LIMIT_DEFAULT).
+   */
+  repeatShellLimit?: number;
+  /**
    * VL-229: выключить guard повторов (метрика repeat_stats при этом
    * считается: отчёты не страдают).
    */
@@ -117,6 +125,11 @@ export interface LoopLimits {
    * тестов; дефолт PAYLOAD_WARN_BYTES = 70% от maxPayloadBytes).
    */
   payloadWarnBytes?: number;
+  /**
+   * VL-254: доли бюджета wall-time, на которых модели инжектируется
+   * предупреждение с остатком времени и текущим payload (дефолт [0.7, 0.9]).
+   */
+  wallTimeWarnRatios?: number[];
 }
 
 /** Результат фазы (совместим по полям с QwenResult CLI). */
@@ -158,6 +171,13 @@ export interface LoopResult {
    * в мету сессии — следующий resume блокирует повторы без исполнения.
    */
   blocked_signatures?: string[];
+  /**
+   * VL-254: блок «что сделано / что осталось» — заполняется только при
+   * обрыве по wall-time/max-requests. CLI пишет его в мету сессии
+   * (`run_progress`), коммитит WIP-изменения фазы code и добавляет
+   * комментарий в задачу.
+   */
+  progress?: RunProgress;
 }
 
 /** Опции запуска loop. */
@@ -207,6 +227,12 @@ export interface RunLoopOptions {
   onMessage?: (m: ChatMessage) => void | Promise<void>;
   /** Отмена фазы: прокидывается в LLM-запросы и handler'ы инструментов. */
   signal?: AbortSignal;
+  /**
+   * VL-254: источник текущего времени (только для тестов). Дефолт `Date.now`.
+   * Позволяет проверять мягкий wall-time guard и обрыв по лимиту без sleep:
+   * тест двигает виртуальные часы между ходами мока LLM.
+   */
+  now?: () => number;
 }
 
 const MAX_TOOL_CALLS_DEFAULT = 100;
@@ -265,6 +291,34 @@ export function loopDetectionDirective(name: string, repeatLimit: number): strin
 }
 
 /**
+ * Текст мягкого предупреждения о бюджете времени фазы (VL-254).
+ *
+ * Жёсткая проверка wall-time просто убивает фазу — модель узнаёт о лимите
+ * постфактум, уже потеряв работу рана (VL-235: старт полного `pnpm test` на
+ * 1500 с за три минуты до конца). Предупреждение приходит заранее, на 70% и
+ * 90% бюджета, и содержит два числа, которых модели не хватало: остаток
+ * времени и текущий размер payload (VL-230 компактит историю, но агенту об
+ * этом никто не сообщал).
+ */
+export function wallTimeWarnText(
+  remainingMs: number,
+  totalMs: number,
+  payloadBytes: number,
+  warnBytes: number,
+): string {
+  const remainingSec = Math.max(0, Math.round(remainingMs / 1000));
+  const totalSec = Math.round(totalMs / 1000);
+  const usedPct = totalMs > 0 ? Math.round(((totalMs - remainingMs) / totalMs) * 100) : 0;
+  return (
+    `Осталось ${remainingSec} с из ${totalSec} (израсходовано ${usedPct}% бюджета времени фазы). ` +
+    `Payload последнего запроса: ${payloadBytes} байт, порог компакта истории: ${warnBytes} байт. ` +
+    `Не запускай команды дольше остатка: сократи проверку до затронутых файлов ` +
+    `(например, один тест-файл вместо полного прогона). При нехватке времени — заверши фазу ` +
+    `честным отчётом «что сделано / что осталось» и зафиксируй прогресс в задаче.`
+  );
+}
+
+/**
  * Строит wire-копию истории для LLM-запроса (VL-122): system-сообщения +
  * первое user-сообщение (постановка) + сообщения с липкого якоря `from`.
  *
@@ -306,7 +360,9 @@ export function compactWireMessages(messages: ChatMessage[], from: number): Chat
  * CLI оборачивает результат в JSON и не зависает (AC#2 VL-75).
  */
 export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
-  const startedAt = Date.now();
+  // VL-254: тест-хук времени — дефолт системные часы
+  const now = options.now ?? Date.now;
+  const startedAt = now();
   const maxToolCalls = options.limits?.maxToolCalls ?? MAX_TOOL_CALLS_DEFAULT;
   // Кумулятивный per-session лимит (VL-223): без maxToolCallsPerSession
   // проверка пропускается — поведение без --tool-calls-per-session прежнее
@@ -342,6 +398,8 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       : createRepeatGuard({
           searchLimit: options.limits?.repeatSearchLimit ?? REPEAT_SEARCH_LIMIT_DEFAULT,
           readLimit: options.limits?.repeatReadLimit ?? REPEAT_READ_LIMIT_DEFAULT,
+          // VL-254: shell-скелеты — самый частый вид зацикливания (VL-235: 65%)
+          shellLimit: options.limits?.repeatShellLimit ?? REPEAT_SHELL_LIMIT_DEFAULT,
         });
   // Предупреждения, выданные в текущем ране (кап — REPEAT_WARN_MAX_PER_RUN)
   let repeatWarnCount = 0;
@@ -350,6 +408,15 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   const compactEnabled = options.limits?.compactDisabled !== true;
   const compactTail = options.limits?.compactTailMessages ?? COMPACT_TAIL_DEFAULT;
   const compactAtTokens = options.limits?.compactAtTokens ?? COMPACT_AT_TOKENS_DEFAULT;
+  // VL-254: байтовые пороги нужны и мягкому wall-time guard'у (сообщение
+  // содержит payload и порог компакта), поэтому вычисляются до цикла, а не
+  // внутри try на каждом ходе.
+  const maxPayloadLimit = options.limits?.maxPayloadBytes ?? MAX_PAYLOAD_BYTES;
+  const payloadWarn =
+    options.limits?.payloadWarnBytes ?? Math.floor(maxPayloadLimit * PAYLOAD_WARN_RATIO);
+  // VL-254: доли бюджета времени, на которых модели уходит предупреждение
+  const wallTimeWarnRatios = options.limits?.wallTimeWarnRatios ?? [0.7, 0.9];
+  const warnedRatios = new Set<number>();
 
   const messages: ChatMessage[] = [...options.messages];
   /**
@@ -412,7 +479,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   let lastPayload: number | undefined;
   let maxPayload: number | undefined;
 
-  const duration = (): number => Date.now() - startedAt;
+  const duration = (): number => now() - startedAt;
 
   /**
    * Ошибка фазы: partial-текст + текст ошибки, без исключений наружу.
@@ -446,17 +513,54 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
     };
   };
 
+  /**
+   * Обрыв фазы с блоком прогресса (VL-254).
+   *
+   * Отличие от fail() — только в поле `progress`: жёсткая проверка лимита
+   * убивала фазу текстом «превышен лимит», и вся работа рана терялась (нет
+   * коммита, нет отчёта — VL-235). Блок строится по фактическим следам работы
+   * (правки-пути, последняя реплика модели) и уходит в мету сессии и
+   * комментарий задачи через CLI.
+   */
+  const failWithProgress = (errorText: string, reason: RunProgressReason): LoopResult => {
+    const base = fail(errorText);
+    const progress = buildRunProgress({
+      messages: base.messages,
+      reason,
+      durationMs: base.duration_ms,
+      ...(maxPayload !== undefined ? { payloadBytes: maxPayload } : {}),
+    });
+    return { ...base, progress };
+  };
+
   for (;;) {
     // Лимит wall-time — на каждой итерации, включая первую (0 мс — ок).
     if (duration() > maxWallTimeMs) {
-      return fail(
+      return failWithProgress(
         `Превышен лимит --max-wall-time (${Math.round(maxWallTimeMs / 1000)} секунд) — фаза прервана.`,
+        'wall-time',
       );
     }
     // Лимит LLM-запросов (VL-104): проверяем ДО streamChat — не отправляем
     // запрос, который заведомо превысит лимит ходов (numTurns ещё не вырос).
     if (maxRequests !== undefined && numTurns + 1 > maxRequests) {
-      return fail(`Превышен лимит --max-requests (${maxRequests}) — фаза прервана.`);
+      return failWithProgress(`Превышен лимит --max-requests (${maxRequests}) — фаза прервана.`, 'max-requests');
+    }
+    // VL-254: мягкий guard бюджета времени. Пороги 70%/90% — по одному
+    // сообщению на порог за ран (Set), каждое ≤400 символов: даже при
+    // длинном ране это ≤800 байт контекста. Инъекция на границе хода (после
+    // всех tool-результатов прошлого хода) не ломает паринг assistant↔tool
+    // (lesson-91).
+    if (maxWallTimeMs > 0) {
+      const elapsed = duration();
+      for (const ratio of wallTimeWarnRatios) {
+        if (warnedRatios.has(ratio) || elapsed < maxWallTimeMs * ratio) continue;
+        warnedRatios.add(ratio);
+        await pushMessage({
+          role: 'user',
+          content: wallTimeWarnText(maxWallTimeMs - elapsed, maxWallTimeMs, lastPayload ?? 0, payloadWarn),
+        });
+      }
     }
 
     let response;
@@ -490,11 +594,9 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // провайдера, а не оптимизация контекста (VL-230).
       let wire = payload;
       const wireBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
-      const maxPayloadLimit = options.limits?.maxPayloadBytes ?? MAX_PAYLOAD_BYTES;
+      // VL-254: лимит и порог посчитаны до цикла (нужны и мягкому guard'у).
       // Порог по умолчанию — 70% от действующего лимита (при override лимита
       // в тестах порог пересчитывается, а не остаётся от дефолтных 900 КБ).
-      const payloadWarn =
-        options.limits?.payloadWarnBytes ?? Math.floor(maxPayloadLimit * PAYLOAD_WARN_RATIO);
       if (wireBytes >= payloadWarn) {
         console.error(
           `[vibelog-agent] предупреждение payload: ${wireBytes} байт >= порог ${payloadWarn} ` +
@@ -803,7 +905,12 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       } else {
         options.onToolStart?.(call.name, call.arguments ?? {});
         try {
-          output = await spec.handler(call.arguments ?? {}, { signal: options.signal });
+          output = await spec.handler(call.arguments ?? {}, {
+            signal: options.signal,
+            // VL-254: остаток бюджета — run_shell_command усекает timeout_ms,
+            // чтобы shell-таймаут не наложился на wall-time фазы
+            remainingWallTimeMs: () => Math.max(maxWallTimeMs - duration(), 0),
+          });
         } catch (err) {
           // Ошибка handler не фатальна: текст уходит модели как tool-результат.
           toolError = true;

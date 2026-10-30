@@ -37,6 +37,15 @@ import {
 /** Опции выполнения handler'а инструмента (прокидка отмены из loop). */
 export interface ToolHandlerContext {
   signal?: AbortSignal;
+  /**
+   * VL-254: остаток бюджета wall-time фазы в миллисекундах.
+   *
+   * Колбэк, а не число: loop вычисляет остаток в момент вызова инструмента, и
+   * `run_shell_command` усекает `timeout_ms` до него — иначе shell-таймаут
+   * накладывается на wall-time фазы, и команда убивается без предупреждения,
+   * а фаза сгорает без отчёта о прогрессе (инцидент VL-235).
+   */
+  remainingWallTimeMs?: () => number;
 }
 
 /** Описание одного инструмента: JSON-схема + handler. */
@@ -1236,12 +1245,46 @@ export function checkSelfCwdDestruction(command: string, workDir: string): Valid
   return null;
 }
 
+/** Минимальный таймаут усечённой команды: короткие команды должны успевать. */
+const SHELL_TIMEOUT_MIN_MS = 1000;
+
+/**
+ * Согласует запрошенный таймаут команды с остатком бюджета wall-time фазы.
+ *
+ * VL-254: агент, не видя бюджета, стартует полный прогон тестов с
+ * `timeout_ms: 1500000` за три минуты до конца фазы — гарантированный обрыв
+ * без отчёта (инцидент VL-235). Функция усекает таймаут до остатка (не ниже
+ * SHELL_TIMEOUT_MIN_MS) и возвращает текст предупреждения для tool-вывода:
+ * агент видит, что команда может быть убита, и может сократить проверку.
+ *
+ * @param requestedMs — таймаут, запрошенный моделью (или дефолт инструмента)
+ * @param remainingMs — остаток бюджета фазы; undefined — бюджета нет, не усекаем
+ * @returns действующий таймаут и предупреждение (null — усечения не было)
+ */
+export function clampShellTimeout(
+  requestedMs: number,
+  remainingMs?: number,
+): { timeoutMs: number; warning: string | null } {
+  if (remainingMs === undefined || !Number.isFinite(remainingMs) || requestedMs <= remainingMs) {
+    return { timeoutMs: requestedMs, warning: null };
+  }
+  const timeoutMs = Math.max(SHELL_TIMEOUT_MIN_MS, Math.floor(remainingMs));
+  return {
+    timeoutMs,
+    warning:
+      `Внимание: timeout ${requestedMs} мс превышает остаток бюджета фазы ${Math.floor(remainingMs)} мс — ` +
+      `таймаут усечён до ${timeoutMs} мс, команда может быть убита. Сократи проверку до затронутых файлов ` +
+      `или заверши фазу честным отчётом «что сделано / что осталось».`,
+  };
+}
+
 /**
  * Инструмент run_shell_command: bash -lc с аргументами массивом (без
  * shell:true — интерполирует только bash, Node не парсит команду второй
  * раз). Таймаут по умолчанию 120с с SIGKILL; abort-сигнал тоже убивает
- * процесс. Обрезка вывода до 64КБ на поток. Перед запуском — два guard'а:
- * путей вне проекта (VL-99) и удаления собственного cwd (VL-249).
+ * процесс. Обрезка вывода до 64КБ на поток. Перед запуском — три guard'а:
+ * путей вне проекта (VL-99), удаления собственного cwd (VL-249) и
+ * согласования таймаута с остатком wall-time фазы (VL-254, clampShellTimeout).
  */
 function makeRunShellCommand(cwd: string): ToolSpec {
   return {
@@ -1261,10 +1304,16 @@ function makeRunShellCommand(cwd: string): ToolSpec {
       new Promise<string>((resolvePromise) => {
         const command = args.command as string;
         const TIMEOUT_DEFAULT = 120_000;
-        const timeout =
+        const requestedTimeout =
           typeof args.timeout_ms === 'number' && args.timeout_ms > 0
             ? Math.floor(args.timeout_ms)
             : TIMEOUT_DEFAULT;
+        // VL-254: таймаут согласуется с остатком бюджета фазы — команда,
+        // которая заведомо дольше остатка, усекается с предупреждением.
+        const { timeoutMs: timeout, warning: timeoutWarning } = clampShellTimeout(
+          requestedTimeout,
+          ctx?.remainingWallTimeMs?.(),
+        );
         let workDir = cwd;
         if (args.cwd !== undefined) {
           const target = resolveInProject(cwd, args.cwd as string, { allowRoot: true });
@@ -1311,6 +1360,8 @@ function makeRunShellCommand(cwd: string): ToolSpec {
             const exitCode = typeof err?.code === 'number' ? err.code : err ? 1 : 0;
             const timedOut = err !== null && (err as NodeJS.ErrnoException & { killed?: boolean }).killed === true && !ctx?.signal?.aborted;
             const parts = [
+              // AC3 VL-254: предупреждение — первой строкой, до stdout/stderr
+              ...(timeoutWarning ? [timeoutWarning] : []),
               `exit code: ${exitCode}`,
               `stdout:\n${cut(stdout ?? '')}`,
               `stderr:\n${cut(stderr ?? '')}`,
