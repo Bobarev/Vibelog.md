@@ -814,6 +814,10 @@ describe('MCP-сервер', () => {
       delete env.VIBELOG_CWD;
       delete env.VIBELOG_PHASE_TASK_ID;
       delete env.VIBELOG_PHASE_NAME;
+      // VL-254: env рана агента протекает в тест-раннер и подменяет фазу из
+      // меты (VIBELOG_RUN_PHASE приоритетнее) — изолируем, как в общем хелпере
+      delete env.VIBELOG_RUN_PHASE;
+      delete env.VIBELOG_RUN_STARTED_AT;
       env.VIBELOG_SESSION_ID = sessionId;
       const srv = spawn('node', [cliPath, 'mcp', 'start'], { cwd: testDir, env, stdio: ['pipe', 'pipe', 'pipe'] });
       try {

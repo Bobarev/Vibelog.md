@@ -886,3 +886,37 @@ describe('VL-105 — инварианты промптов', () => {
   });
 });
 
+// ============================================================
+// VL-254 — правила бюджета времени и против node -e-обходчиков
+// ============================================================
+// Инвариант по трём файлам: правило про остаток wall-time (phase-code) и
+// запрет `node -e`-обходчиков дерева / выборки строк вместо project_map и
+// read_file (phase-plan + agent-prompt). Текст в шаблонах — контракт:
+// именно его читает модель в фазе, поэтому тест фиксирует подстроки.
+describe('VL-254 — бюджет времени и запрет node -e-обходчиков в промптах', () => {
+  const read = (...parts) =>
+    readFileSync(fileURLToPath(new URL(`../../${parts.join('/')}`, import.meta.url)), 'utf-8');
+
+  it('phase-code.md: правило остатка бюджета времени и отказа от полного прогона', () => {
+    const text = read('templates', 'phases', 'phase-code.md');
+    assert.ok(text.includes('Бюджет времени фазы'), 'phase-code.md: раздел про бюджет времени');
+    assert.ok(text.includes('полный прогон'), 'phase-code.md: при остатке не запускать полный прогон');
+    assert.ok(/меньше 5 минут|осталось/.test(text), 'phase-code.md: порог остатка времени');
+    assert.ok(text.includes('комментарием в задаче'), 'phase-code.md: фиксировать прогресс в задаче');
+  });
+
+  it('phase-plan.md: project_map/read_file вместо node -e-обходчиков и диапазоны вместо sed', () => {
+    const text = read('templates', 'phases', 'phase-plan.md');
+    assert.ok(text.includes('project_map'), 'phase-plan.md: project_map для обзора дерева/модулей');
+    assert.ok(/обходчики/.test(text), 'phase-plan.md: запрет node -e-обходчиков');
+    assert.ok(text.includes('read_file` с диапазоном'), 'phase-plan.md: read_file с диапазоном вместо sed');
+  });
+
+  it('agent-prompt.md: те же два правила в общих правилах агента', () => {
+    const text = read('templates', 'agent-prompt.md');
+    assert.ok(text.includes('project_map'), 'agent-prompt.md: project_map для обзора дерева/модулей');
+    assert.ok(/обходчики/.test(text), 'agent-prompt.md: запрет node -e-обходчиков');
+    assert.ok(text.includes('read_file` с диапазоном'), 'agent-prompt.md: read_file с диапазоном вместо sed');
+  });
+});
+

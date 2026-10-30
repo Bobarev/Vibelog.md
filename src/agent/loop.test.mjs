@@ -496,8 +496,7 @@ describe('runLoop лимиты (VL-83)', () => {
     assert.equal(toolState.calls, 1, 'второй LLM-ход не должен стартовать');
   });
 
-  it('частичный текст сохраняется в partial-результате при лимите', async () => {
-    const { llm } = fakeLlm([
+  it('частичный текст сохраняется в partial-результате при лимите', async () => {    const { llm } = fakeLlm([
       { text: 'промежуточный текст', toolCalls: [{ id: 'c1', name: 'nope', arguments: {} }] },
       { text: '', toolCalls: [{ id: 'c2', name: 'nope', arguments: { y: 1 } }] },
       { text: '', toolCalls: [{ id: 'c3', name: 'nope', arguments: { y: 2 } }] },
@@ -1667,5 +1666,192 @@ describe('runLoop guard повторов обращений (VL-229)', () => {
     const warnings = res.messages.filter(hasWarn);
     assert.equal(warnings.length, 1, 'только на 5-м чтении (4-е — молчание)');
     assert.match(warnings[0].content, /5 раз/);
+  });
+});
+
+describe('VL-254: бюджет wall-time и прогресс до обрыва (AC2/AC4)', () => {
+  /** Управляемые часы: тест двигает время между ходами без sleep. */
+  function clock(start = 1_000_000) {
+    const state = { value: start };
+    return { now: () => state.value, state };
+  }
+
+  /** Инструмент с произвольным набором аргументов (lint требует свойства). */
+  function anyTool(name) {
+    return {
+      name,
+      description: 'тестовый инструмент',
+      inputSchema: { type: 'object', properties: {} },
+      handler: async (args) => `ok:${name}:${JSON.stringify(args)}`,
+    };
+  }
+
+  it('AC2: на 70% и 90% бюджета (10 с) инжектируются предупреждения, фаза продолжается', async () => {
+    const { spec } = countingTool('t');
+    const c = clock();
+    let turn = 0;
+    const { llm } = fakeLlm([
+      () => ({
+        text: '',
+        toolCalls: [{ id: `a${++turn}`, name: 't', arguments: { x: turn } }],
+        usage: zeroUsage(),
+      }),
+      () => ({
+        text: '',
+        toolCalls: [{ id: `b${++turn}`, name: 't', arguments: { x: turn } }],
+        usage: zeroUsage(),
+      }),
+      { text: 'Готово!' },
+    ]);
+    // Часы двигаются ДО запроса: 1-й ход → 7000 мс (70%), 2-й → 9500 мс (90%).
+    // Продвижение привязано к вызову now() — иначе guard не увидит прогресс.
+    c.state.value = 0;
+    const now = () => c.state.value;
+    const llmWithClock = {
+      async streamChat(messages, tools, opts) {
+        const before = turn;
+        const res = await llm.streamChat(messages, tools, opts);
+        // после ответа сдвигаем часы на нужную долю бюджета
+        if (before === 0) c.state.value = 7_000;
+        else if (before === 1) c.state.value = 9_500;
+        return res;
+      },
+    };
+    const res = await runLoop({
+      llm: llmWithClock,
+      messages: USER_MSG,
+      tools: [spec],
+      limits: { maxWallTimeMs: 10_000 },
+      now,
+    });
+    assert.equal(res.is_error, false, 'предупреждения не прерывают фазу');
+    const warns = res.messages.filter(
+      (m) => m.role === 'user' && `${m.content}`.includes('Осталось') && `${m.content}`.includes('Payload'),
+    );
+    assert.equal(warns.length, 2, 'ровно два предупреждения (70% и 90%)');
+    assert.match(warns[0].content, /Осталось 3 с из 10/);
+    assert.match(warns[1].content, /Осталось 1 с из 10/);
+    assert.match(warns[0].content, /порог компакта/);
+  });
+
+  it('AC4: обрыв по wall-time → progress.reason=wall-time, блок «Сделано/Осталось»', async () => {
+    const editTool = {
+      name: 'edit',
+      description: 'правка',
+      inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+      handler: async (args) => `ok:${args.path}`,
+    };
+    const c = clock();
+    c.state.value = 0;
+    const { llm } = fakeLlm([
+      { text: 'правлю файл', toolCalls: [{ id: 'c1', name: 'edit', arguments: { path: 'src/a.ts' } }] },
+      { text: 'ещё правка', toolCalls: [{ id: 'c2', name: 'edit', arguments: { path: 'src/b.ts' } }] },
+    ]);
+    // Часы уходят за бюджет после первого хода — обрыв на следующей итерации
+    const res = await runLoop({
+      llm: {
+        async streamChat(messages, tools, opts) {
+          const out = await llm.streamChat(messages, tools, opts);
+          c.state.value = 99_999;
+          return out;
+        },
+      },
+      messages: USER_MSG,
+      tools: [editTool],
+      limits: { maxWallTimeMs: 10_000 },
+      now: c.now,
+    });
+    assert.equal(res.is_error, true);
+    assert.match(res.result, /--max-wall-time/);
+    assert.ok(res.progress, 'блок прогресса заполнен');
+    assert.equal(res.progress.reason, 'wall-time');
+    assert.match(res.progress.text, /Сделано/);
+    assert.match(res.progress.text, /Осталось/);
+    assert.ok(res.progress.done.includes('src/a.ts'), 'пути правок попали в «Сделано»');
+  });
+
+  it('AC4: обрыв по max-requests → progress.reason=max-requests', async () => {
+    const { spec } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 2 } }] },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec], limits: { maxRequests: 1 } });
+    assert.equal(res.progress?.reason, 'max-requests');
+  });
+
+  it('успешная фаза progress не содержит', async () => {
+    const { llm } = fakeLlm([{ text: 'Готово!' }]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [] });
+    assert.equal(res.progress, undefined);
+  });
+
+  it('AC1: три shell-вызова с одним скелетом → предупреждение guard’а + shell_* в метрике', async () => {
+    const shell = {
+      name: 'run_shell_command',
+      description: 'shell',
+      inputSchema: { type: 'object', properties: { command: { type: 'string' } } },
+      handler: async (args) => `ok:${args.command}`,
+    };
+    const cmd = 'node -e "const fs=require(\'fs\');fs.readdirSync(\'.\')"';
+    const other = (id) => ({ id, name: 'read_file', arguments: { path: `${id}.ts` } });
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 's1', name: 'run_shell_command', arguments: { command: cmd } }, other('o1')] },
+      { text: '', toolCalls: [{ id: 's2', name: 'run_shell_command', arguments: { command: cmd } }, other('o2')] },
+      { text: '', toolCalls: [{ id: 's3', name: 'run_shell_command', arguments: { command: cmd } }, other('o3')] },
+      { text: 'Готово!' },
+    ]);
+    const readTool = {
+      name: 'read_file',
+      description: 'чтение',
+      inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+      handler: async (args) => `ok:${args.path}`,
+    };
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [shell, readTool] });
+    const warns = res.messages.filter(
+      (m) => m.role === 'user' && `${m.content}`.includes('используй ранее полученный результат'),
+    );
+    assert.equal(warns.length, 1, 'предупреждение на 3-м shell-скелете');
+    assert.match(warns[0].content, /3 раз/);
+    assert.equal(res.repeat_stats.shell_tool_calls, 3);
+    assert.equal(res.repeat_stats.shell_repeat_calls, 2);
+  });
+
+  it('shell-скелет в ctx: remainingWallTimeMs доходит до handler', async () => {
+    let seen = null;
+    const shell = {
+      name: 'run_shell_command',
+      description: 'shell',
+      inputSchema: { type: 'object', properties: { command: { type: 'string' } } },
+      handler: async (args, ctx) => {
+        seen = ctx?.remainingWallTimeMs?.();
+        return 'ok';
+      },
+    };
+    const c = clock();
+    c.state.value = 0;
+    const { llm } = fakeLlm([
+      () => ({
+        text: '',
+        toolCalls: [{ id: 's1', name: 'run_shell_command', arguments: { command: 'ls' } }],
+        usage: zeroUsage(),
+      }),
+      { text: 'Готово!' },
+    ]);
+    await runLoop({
+      llm: {
+        async streamChat(messages, tools, opts) {
+          const res = await llm.streamChat(messages, tools, opts);
+          // после первого хода прошло 4 с из 10 — handler увидит остаток 6 с
+          if (res.toolCalls.length > 0) c.state.value = 4_000;
+          return res;
+        },
+      },
+      messages: USER_MSG,
+      tools: [shell],
+      limits: { maxWallTimeMs: 10_000 },
+      now: c.now,
+    });
+    assert.equal(seen, 6_000, 'остаток бюджета передан в handler (10 с − 4 с)');
   });
 });

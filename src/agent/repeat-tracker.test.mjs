@@ -12,10 +12,12 @@ import assert from 'node:assert/strict';
 import {
   REPEAT_READ_LIMIT_DEFAULT,
   REPEAT_SEARCH_LIMIT_DEFAULT,
+  REPEAT_SHELL_LIMIT_DEFAULT,
   analyzeToolRepeats,
   createRepeatGuard,
   emptyRepeatStats,
   repeatKey,
+  shellCommandKey,
   toolRepeatKind,
   toolRepeatTarget,
 } from '../../dist/agent/repeat-tracker.js';
@@ -35,10 +37,11 @@ describe('repeat-tracker: ключ повтора (VL-229)', () => {
     assert.equal(toolRepeatTarget('write_file', { path: 'b.ts', content: 'x' }), 'b.ts');
   });
 
-  it('run_shell_command и неизвестные инструменты → null (в метрику не идут)', () => {
-    assert.equal(toolRepeatTarget('run_shell_command', { command: 'ls' }), null);
+  it('run_shell_command → скелет команды (VL-254); неизвестные → null', () => {
+    assert.equal(toolRepeatTarget('run_shell_command', { command: 'ls' }), 'ls');
+    assert.equal(repeatKey('run_shell_command', { command: 'ls' }), 'run_shell_command|ls');
     assert.equal(toolRepeatTarget('backlog_view_task', { id: 'VL-1' }), null);
-    assert.equal(repeatKey('run_shell_command', { command: 'ls' }), null);
+    assert.equal(toolRepeatTarget('run_shell_command', {}), null);
   });
 
   it('пустой/отсутствующий аргумент → null (не считается повтором)', () => {
@@ -52,14 +55,36 @@ describe('repeat-tracker: ключ повтора (VL-229)', () => {
     assert.equal(repeatKey('grep_search', { pattern: 'foo' }), 'grep_search|foo');
   });
 
-  it('категории: search/read/write и null для прочих', () => {
+  it('категории: search/read/write/shell и null для прочих', () => {
     assert.equal(toolRepeatKind('grep_search'), 'search');
     assert.equal(toolRepeatKind('search_files'), 'search');
     assert.equal(toolRepeatKind('glob'), 'search');
     assert.equal(toolRepeatKind('read_file'), 'read');
     assert.equal(toolRepeatKind('edit'), 'write');
     assert.equal(toolRepeatKind('write_file'), 'write');
-    assert.equal(toolRepeatKind('run_shell_command'), null);
+    assert.equal(toolRepeatKind('run_shell_command'), 'shell');
+    assert.equal(toolRepeatKind('backlog_view_task'), null);
+  });
+});
+
+describe('repeat-tracker: shell-скелет (VL-254, AC1)', () => {
+  it('node -e → node-e|<hash> независимо от текста, одинаковый скрипт — один ключ', () => {
+    const a = shellCommandKey('node -e "console.log(1)"');
+    assert.match(a, /^node-e\|[0-9a-f]{8}$/);
+    assert.equal(shellCommandKey('node -e "console.log(1)"'), a);
+    assert.equal(shellCommandKey('node --eval "console.log(1)"'), a);
+    assert.equal(shellCommandKey('node --input-type=module -e "console.log(1)"'), a);
+    assert.notEqual(shellCommandKey('node -e "console.log(2)"'), a);
+  });
+
+  it('цепочка берётся по первому сегменту; значимые аргументы сортируются', () => {
+    assert.equal(shellCommandKey('pnpm build && pnpm test'), 'pnpm build');
+    assert.equal(shellCommandKey('git status | head -5'), 'git status');
+    assert.equal(shellCommandKey('grep -rn foo src'), shellCommandKey('grep -rn bar src'));
+    assert.equal(shellCommandKey('grep -rn foo src'), 'grep -rn');
+    assert.equal(shellCommandKey('grep -rn foo src/a.ts'), 'grep -rn src/a.ts');
+    assert.equal(shellCommandKey('   '), '');
+    assert.ok(shellCommandKey(`ls ${'x/'.repeat(80)}`).length <= 80);
   });
 });
 
@@ -102,7 +127,7 @@ describe('repeat-tracker: метрика по транскрипту (VL-229, AC
     assert.equal(stats.repeat_calls, 1);
   });
 
-  it('run_shell_command входит в total, но не в топ; доля не завышается', () => {
+  it('shell-вызовы учитываются в total и в отдельной строке shell_* (VL-254)', () => {
     const messages = [
       call('run_shell_command', { command: 'ls' }),
       call('run_shell_command', { command: 'ls' }),
@@ -111,9 +136,27 @@ describe('repeat-tracker: метрика по транскрипту (VL-229, AC
     ];
     const stats = analyzeToolRepeats(messages);
     assert.equal(stats.tool_calls_total, 4, 'shell-вызовы тоже tool-вызовы сессии');
-    assert.equal(stats.repeat_calls, 1, 'повтор только у отслеживаемого ключа');
-    assert.equal(stats.repeat_share, 0.25);
-    assert.deepEqual(stats.top, [{ key: 'grep_search|x', count: 2 }]);
+    assert.equal(stats.repeat_calls, 2, 'повтор у shell-скелета и у grep');
+    assert.equal(stats.repeat_share, 0.5);
+    assert.equal(stats.shell_tool_calls, 2);
+    assert.equal(stats.shell_repeat_calls, 1);
+    assert.equal(stats.shell_share, 0.5);
+    assert.deepEqual(stats.shell_top, [{ key: 'run_shell_command|ls', count: 2 }]);
+    assert.ok(stats.top.some((e) => e.key === 'run_shell_command|ls'));
+  });
+
+  it('AC1: три node -e с одним скриптом → shell_repeat_calls=2, один ключ в shell_top', () => {
+    const messages = [
+      call('run_shell_command', { command: 'node -e "const fs=require(\'fs\');fs.readdirSync(\'.\')"' }),
+      call('run_shell_command', { command: 'node -e "const fs=require(\'fs\');fs.readdirSync(\'.\')"' }),
+      call('run_shell_command', { command: 'node -e "const fs=require(\'fs\');fs.readdirSync(\'.\')"' }),
+    ];
+    const stats = analyzeToolRepeats(messages);
+    assert.equal(stats.shell_tool_calls, 3);
+    assert.equal(stats.shell_repeat_calls, 2);
+    assert.equal(stats.shell_top.length, 1);
+    assert.match(stats.shell_top[0].key, /^run_shell_command\|node-e\|[0-9a-f]{8}$/);
+    assert.equal(stats.shell_top[0].count, 3);
   });
 
   it('пустой транскрипт → нули без деления на ноль', () => {
@@ -176,22 +219,36 @@ describe('repeat-tracker: guard-предупреждение (VL-229, AC2)', () 
     }
   });
 
-  it('run_shell_command и неизвестные инструменты — без счётчика и предупреждений', () => {
+  it('AC1: shell-скелет — предупреждение на 3-м вызове, «используй полученный вывод»', () => {
     const guard = createRepeatGuard();
-    for (let i = 0; i < 10; i++) {
-      assert.equal(guard.note('run_shell_command', { command: 'ls' }), null);
-      assert.equal(guard.note('backlog_view_task', { id: 'VL-1' }), null);
-    }
+    const cmd = 'node -e "const fs=require(\'fs\');fs.readdirSync(\'.\')"';
+    assert.equal(guard.note('run_shell_command', { command: cmd }), null);
+    assert.equal(guard.note('run_shell_command', { command: cmd }), null);
+    const warn = guard.note('run_shell_command', { command: cmd });
+    assert.ok(warn, '3-й одинаковый shell-скелет — предупреждение');
+    assert.match(warn, /используй ранее полученный результат/);
+    assert.match(warn, /project_map/);
+    assert.match(warn, /3 раз/);
+  });
+
+  it('разные shell-команды не смешиваются (только скелет — ключ)', () => {
+    const guard = createRepeatGuard();
+    assert.equal(guard.note('run_shell_command', { command: 'git status' }), null);
+    assert.equal(guard.note('run_shell_command', { command: 'ls src' }), null);
+    assert.equal(guard.note('run_shell_command', { command: 'pnpm build' }), null);
   });
 
   it('пороги конфигурируемы через options (для тестов/лимитов loop)', () => {
-    const guard = createRepeatGuard({ searchLimit: 2, readLimit: 2 });
+    const guard = createRepeatGuard({ searchLimit: 2, readLimit: 2, shellLimit: 2 });
     assert.equal(guard.note('grep_search', { pattern: 'x' }), null);
     assert.ok(guard.note('grep_search', { pattern: 'x' }));
+    assert.equal(guard.note('run_shell_command', { command: 'ls' }), null);
+    assert.ok(guard.note('run_shell_command', { command: 'ls' }));
   });
 
-  it('дефолтные пороги соответствуют AC (3 поиска / 5 чтений)', () => {
+  it('дефолтные пороги соответствуют AC (3 поиска / 5 чтений / 3 shell)', () => {
     assert.equal(REPEAT_SEARCH_LIMIT_DEFAULT, 3);
     assert.equal(REPEAT_READ_LIMIT_DEFAULT, 5);
+    assert.equal(REPEAT_SHELL_LIMIT_DEFAULT, 3);
   });
 });

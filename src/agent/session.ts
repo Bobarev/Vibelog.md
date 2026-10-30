@@ -204,6 +204,24 @@ export interface SessionMeta {
    * неверный вывод «сгорела фаза Plan»). Кап — RUN_HISTORY_MAX записей.
    */
   runs?: SessionRun[];
+  /**
+   * VL-254: блок «что сделано / что осталось» при обрыве рана по
+   * wall-time/max-requests. Раньше прогресс можно было восстановить только
+   * чтением килобайтов JSONL (инцидент VL-235: ветка осталась с M-файлами,
+   * транскрипт — единственный источник правды).
+   */
+  run_progress?: {
+    reason: string;
+    /** Фаза оборвавшегося рана (code/plan/…). */
+    phase?: string;
+    finishedAt?: string;
+    /** Готовый markdown-блок («Сделано» / «Осталось»). */
+    text: string;
+    done: string[];
+    pending: string[];
+    /** Хэш WIP-коммита прогресса (только фаза code); null — коммита нет. */
+    commit?: string | null;
+  };
 }
 
 /** Сколько записей истории ранов хранить в мете (VL-259): не пухнем за тысячи resume. */
