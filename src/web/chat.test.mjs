@@ -729,3 +729,129 @@ describe('chat: HTTP-интеграция', () => {
     assert.equal(JSON.parse(lines[1]).role, 'assistant');
   });
 });
+
+describe('chat: роль ассистента (VL-265)', () => {
+  let pcwd;
+
+  beforeAll(() => {
+    pcwd = mkdtempSync(join(tmpdir(), 'vibelog-chat-persona-'));
+    mkdirSync(join(pcwd, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(pcwd, 'backlog', 'config.yml'), stringifyYaml({
+      project_name: 'Persona Test',
+      task_prefix: 'pp',
+      default_status: 'To Do',
+      statuses: ['To Do', 'Spec', 'Planned', 'In Progress', 'Done'],
+      definition_of_done: [],
+    }), 'utf-8');
+    mkdirSync(join(pcwd, '.vibelog'), { recursive: true });
+    writeFileSync(join(pcwd, '.vibelog', 'settings.json'), JSON.stringify({
+      chat_personas: {
+        researcher: { label: 'Ресёрчер', description: 'Ищет информацию', prompt: 'researcher' },
+      },
+    }, null, 2), 'utf-8');
+    mkdirSync(join(pcwd, '.vibelog', 'prompts', 'personas'), { recursive: true });
+    writeFileSync(
+      join(pcwd, '.vibelog', 'prompts', 'personas', 'researcher.md'),
+      'Ты — ресёрчер проекта: ищи источники.',
+      'utf-8',
+    );
+  });
+
+  afterAll(() => {
+    rmSync(pcwd, { recursive: true, force: true });
+  });
+
+  /** Сбор событий runChat на отдельном cwd (свои настройки ролей). */
+  async function collectP(body, deps) {
+    const events = [];
+    for await (const ev of runChat(body, pcwd, deps)) events.push(ev);
+    return events;
+  }
+
+  it('роль architect добавляет свой блок в системный промпт', async () => {
+    const { llm, state } = fakeLlm([{ text: 'Ок.' }]);
+    await collectP({ message: 'привет', threadId: 'p-arch', persona: 'architect' }, { llm });
+    const system = state.messages[0][0].content;
+    assert.ok(system.includes('## Текущая роль: Архитектор'), 'блок роли в промпте');
+    assert.ok(system.includes('Planned'), 'текст роли architect в промпте');
+    // Общая часть идёт раньше блока роли (AC7)
+    assert.ok(system.indexOf('Правило доступа') < system.indexOf('## Текущая роль'));
+  });
+
+  it('проектная роль читается из .vibelog/prompts/personas', async () => {
+    const { llm, state } = fakeLlm([{ text: 'Ок.' }]);
+    await collectP({ message: 'привет', threadId: 'p-res', persona: 'researcher' }, { llm });
+    const system = state.messages[0][0].content;
+    assert.ok(system.includes('## Текущая роль: Ресёрчер'));
+    assert.ok(system.includes('ищи источники'));
+  });
+
+  it('роль определяет defaultStatus: architect → Planned, helper → Spec', async () => {
+    const mk = (tcId, title) => fakeLlm([
+      { toolCalls: [{ id: tcId, name: 'backlog_create_task', arguments: { title } }] },
+      { text: 'Создал.' },
+    ]);
+    const arch = mk('tc-p-arch', 'Architect-задача VL-265');
+    await collectP({ message: 'создай', threadId: 'p-arch-status', persona: 'architect' }, arch);
+    await collectP(
+      { threadId: 'p-arch-status', persona: 'architect', approval: { toolCallId: 'tc-p-arch', approved: true } },
+      arch,
+    );
+    const archTask = listTasks(pcwd, {}).find(t => t.title === 'Architect-задача VL-265');
+    assert.equal(archTask.status, 'Planned', 'architect → Planned');
+
+    const helper = mk('tc-p-helper', 'Helper-задача VL-265');
+    await collectP({ message: 'создай', threadId: 'p-helper-status' }, helper);
+    await collectP(
+      { threadId: 'p-helper-status', approval: { toolCallId: 'tc-p-helper', approved: true } },
+      helper,
+    );
+    const helperTask = listTasks(pcwd, {}).find(t => t.title === 'Helper-задача VL-265');
+    assert.equal(helperTask.status, 'Spec', 'без persona → helper → Spec');
+  });
+
+  it('явный status в вызове приоритетнее роли', async () => {
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-p-explicit', name: 'backlog_create_task', arguments: { title: 'Explicit-задача VL-265', status: 'In Progress' } }] },
+      { text: 'Создал.' },
+    ]);
+    await collectP({ message: 'создай', threadId: 'p-explicit', persona: 'architect' }, { llm });
+    await collectP(
+      { threadId: 'p-explicit', persona: 'architect', approval: { toolCallId: 'tc-p-explicit', approved: true } },
+      { llm },
+    );
+    const task = listTasks(pcwd, {}).find(t => t.title === 'Explicit-задача VL-265');
+    assert.equal(task.status, 'In Progress');
+  });
+
+  it('неизвестная роль → error-событие, ход не начинается (jsonl не создан)', async () => {
+    const { llm, state } = fakeLlm([{ text: 'Ок.' }]);
+    const events = await collectP({ message: 'привет', threadId: 'p-bad', persona: 'nope' }, { llm });
+    const err = events.find(e => e.type === 'error');
+    assert.ok(err, 'событие error');
+    assert.equal(err.message, 'Неизвестная роль: nope');
+    assert.equal(events.at(-1).type, 'error');
+    assert.equal(state.calls, 0, 'LLM не вызывался');
+    assert.ok(!existsSync(join(pcwd, '.vibelog', 'chat-sessions', 'p-bad.jsonl')), 'история не создана');
+  });
+
+  it('persona не строка → error-событие', async () => {
+    const { llm } = fakeLlm([{ text: 'Ок.' }]);
+    const events = await collectP({ message: 'привет', threadId: 'p-type', persona: 42 }, { llm });
+    const err = events.find(e => e.type === 'error');
+    assert.ok(err);
+    assert.match(err.message, /Некорректная роль/);
+  });
+
+  it('смена роли посреди треда применяется к следующему ходу, история не переписывается', async () => {
+    const { llm, state } = fakeLlm([{ text: 'Ок.' }]);
+    await collectP({ message: 'первый', threadId: 'p-switch' }, { llm });
+    const historyAfterFirst = loadChatHistory(pcwd, 'p-switch');
+    await collectP({ message: 'второй', threadId: 'p-switch', persona: 'architect' }, { llm });
+    assert.ok(state.messages[1][0].content.includes('## Текущая роль: Архитектор'));
+    const history = loadChatHistory(pcwd, 'p-switch');
+    assert.equal(history[0].content, historyAfterFirst[0].content, 'история не переписана');
+    assert.equal(history[1].content, historyAfterFirst[1].content);
+    assert.ok(!history.some(m => m.role === 'system'), 'system в истории не хранится');
+  });
+});

@@ -90,6 +90,21 @@ describe('models (VL-209)', () => {
       });
       expect(models.available['direct/plain'].api_mode).toBeUndefined();
     });
+
+    it('description модели читается (VL-265), отсутствие — ключ не появляется', () => {
+      writeSettings({
+        providers: { p: { base_url: 'https://x/v1', api_key: 'k' } },
+        models: {
+          available: {
+            'p/with-desc': { provider: 'p', model: 'm1', description: 'Быстрая и дешёвая' },
+            'p/no-desc': { provider: 'p', model: 'm2' },
+          },
+        },
+      });
+      const models = loadModels(dir);
+      expect(models.available['p/with-desc'].description).toBe('Быстрая и дешёвая');
+      expect('description' in models.available['p/no-desc']).toBe(false);
+    });
   });
 
   describe('resolveActiveModel', () => {

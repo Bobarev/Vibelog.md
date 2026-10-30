@@ -36,6 +36,13 @@ import { handleToolCall } from '../mcp/tools.js';
 import { ackDenied } from '../mcp/tool-result.js';
 import { chatToolDefs, isWriteOperation, loadChatSystemTemplate } from './tool-policy.js';
 import type { ChatLocalTool } from './tool-policy.js';
+import {
+  DEFAULT_PERSONA_ID,
+  loadPersonaPrompt,
+  resolveDefaultStatus,
+  resolvePersona,
+} from './personas.js';
+import type { PersonaConfig } from './personas.js';
 
 /** SSE-событие чата (data-строка — JSON с полем type). */
 export type ChatEvent =
@@ -54,6 +61,12 @@ export interface ChatRequestBody {
   threadId?: unknown;
   /** Переопределение модели чата (id из models.available, VL-209). */
   model?: unknown;
+  /**
+   * Роль ассистента (id из реестра chat_personas, VL-265): задаёт блок
+   * системного промпта и дефолтный статус создаваемой задачи. Отсутствие
+   * поля — роль helper; неизвестный id — error-событие без начала хода.
+   */
+  persona?: unknown;
   /**
    * Решение по approval-gate. `always` (VL-264) — «Always allow»: инструмент
    * добавляется в allow-list треда, последующие вызовы идут без паузы.
@@ -360,11 +373,15 @@ function lastUserText(history: ChatMessage[]): string {
 /**
  * System-сообщение: статическая часть из шаблона (VL-219: переопределение
  * .vibelog/prompts/chat-system.md → templates/prompts/chat-system.md,
- * fail-closed) + динамический контекст globalSearch по последнему сообщению
- * (поверх шаблона — контекст рантаймовый, в шаблон не выносится).
+ * fail-closed) + блок роли (VL-265: общая часть не дублируется в файлах
+ * ролей, роль идёт отдельным блоком) + динамический контекст globalSearch
+ * по последнему сообщению (всегда последним — он рантаймовый).
  */
-function buildSystemPrompt(cwd: string, lastUser: string): string {
-  const parts: string[] = [loadChatSystemTemplate(cwd)];
+function buildSystemPrompt(cwd: string, lastUser: string, persona: PersonaConfig): string {
+  const parts: string[] = [
+    loadChatSystemTemplate(cwd),
+    `## Текущая роль: ${persona.label}\n\n${loadPersonaPrompt(cwd, persona)}`,
+  ];
   if (lastUser.trim()) {
     const hits = globalSearch(cwd, lastUser.trim());
     const context = {
@@ -487,6 +504,37 @@ async function produce(
   deps: ChatDeps,
   queue: EventQueue,
 ): Promise<void> {
+  // --- роль (VL-265) --------------------------------------------------------
+  // Валидация ДО чтения истории: неизвестный id — ход не начинается, jsonl
+  // треда не меняется. Отсутствие поля — роль helper. Роль НЕ влияет на
+  // модель: body.model и body.persona разбираются независимо.
+  let pickedPersona: PersonaConfig | null;
+  if (body.persona === undefined || body.persona === null || body.persona === '') {
+    pickedPersona = resolvePersona(cwd, DEFAULT_PERSONA_ID);
+  } else if (typeof body.persona !== 'string') {
+    queue.push({
+      type: 'error',
+      message: 'Некорректная роль: ожидается строка id из chat_personas settings.json',
+    });
+    return;
+  } else {
+    pickedPersona = resolvePersona(cwd, body.persona);
+    if (pickedPersona === null) {
+      queue.push({ type: 'error', message: `Неизвестная роль: ${body.persona}` });
+      return;
+    }
+  }
+  if (pickedPersona === null) {
+    // Нет даже встроенного helper — шаблон пакета собран без ролей
+    queue.push({
+      type: 'error',
+      message: `Роль по умолчанию "${DEFAULT_PERSONA_ID}" отсутствует в реестре chat_personas`,
+    });
+    return;
+  }
+  // const — чтобы сужение типа жило в замыканиях executeTool и LLM-цикла
+  const activePersona: PersonaConfig = pickedPersona;
+
   const history = loadChatHistory(cwd, threadId);
   // VL-256: номер хода для лога подтверждений. Считается по истории В МОМЕНТ
   // записи события: resume не добавляет user-сообщение, поэтому все гейты
@@ -574,7 +622,7 @@ async function produce(
    */
   const executeTool = async (name: string, args: Record<string, unknown>): Promise<string> => {
     const local = localHandlers.get(name);
-    const raw = local ? await local.handler(args) : await handleToolCall(name, args, cwd, { defaultStatus: 'Spec' });
+    const raw = local ? await local.handler(args) : await handleToolCall(name, args, cwd, { defaultStatus: resolveDefaultStatus(activePersona) });
     return truncateToolOutput(raw);
   };
   const started = Date.now();
@@ -674,7 +722,7 @@ async function produce(
 
     const system: ChatMessage = {
       role: 'system',
-      content: buildSystemPrompt(cwd, lastUserText(history)),
+      content: buildSystemPrompt(cwd, lastUserText(history), activePersona),
     };
 
     let resp;

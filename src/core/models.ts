@@ -40,6 +40,11 @@ export interface ProviderConfig {
 export interface ModelConfig {
   /** Человекочитаемая подпись для CLI/бота/веба. */
   label?: string;
+  /**
+   * Короткое описание модели для пикеров веб-чата (VL-265): вторая строка
+   * в дропдауне выбора модели. Необязательно — пикер рендерит только label.
+   */
+  description?: string;
   /** Ссылка на providers[<id>]. */
   provider: string;
   /** Имя модели у провайдера (после base_url, напр. "xiaomi/mimo-v2.6-pro"). */
@@ -123,6 +128,9 @@ export function loadModels(cwd: string): ModelsConfig {
       if (typeof mm.model !== 'string' || mm.model === '') continue;
       const conf: ModelConfig = { provider: mm.provider, model: mm.model };
       if (typeof mm.label === 'string' && mm.label !== '') conf.label = mm.label;
+      if (typeof mm.description === 'string' && mm.description !== '') {
+        conf.description = mm.description;
+      }
       if (mm.api_mode === 'chat' || mm.api_mode === 'responses') conf.api_mode = mm.api_mode;
       if (typeof mm.pricing === 'object' && mm.pricing !== null && !Array.isArray(mm.pricing)) {
         const p = mm.pricing as Record<string, unknown>;

@@ -97,6 +97,18 @@ describe('GET /api/models (VL-209)', () => {
     assert.deepEqual(res.body.available, []);
     assert.deepEqual(res.body.providers, []);
   });
+
+  it('отдаёт description модели, если задано (VL-265), и не добавляет пустой ключ', () => {
+    const settings = baseSettings();
+    settings.models.available['routerai/MiMo/Pro'].description = 'Быстрая модель для чата';
+    writeSettingsFile(settings);
+    const res = handleApi('GET', '/api/models', null, cwd);
+    assert.equal(res.status, 200);
+    const withDesc = res.body.available.find(m => m.id === 'routerai/MiMo/Pro');
+    assert.equal(withDesc.description, 'Быстрая модель для чата');
+    const withoutDesc = res.body.available.find(m => m.id === 'direct/plain');
+    assert.equal('description' in withoutDesc, false, 'без description ключ отсутствует');
+  });
 });
 
 describe('PUT /api/models (VL-209)', () => {
