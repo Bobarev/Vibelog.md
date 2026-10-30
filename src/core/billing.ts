@@ -18,8 +18,24 @@ import type { TokenUsage } from './analytics.js';
 export interface BillingSession {
   /** ID сессии агента (sessionId jsonl/meta). */
   sessionId: string;
-  /** Фаза сессии (spec/plan/code/close/comment/prompt). */
+  /**
+   * Фаза РАНА (spec/plan/code/close/comment/prompt) — VL-243: именно фаза
+   * этого запуска, а не фаза сессии. У resume-ранов (code_same_session)
+   * сессия принадлежит plan, а ран относится к code — раньше запись
+   * маркировалась 'plan' и code-запись в журнале «пропадала».
+   */
   phase?: string;
+  /**
+   * Фаза СЕССИИ (VL-243): заполняется, только когда отличается от `phase`
+   * (resume-ран). По ней видно, к какой фазе относится накопленный контекст.
+   */
+  sessionPhase?: string;
+  /**
+   * VL-243: запись дописана оркестратором «по факту» (fallback) — CLI-пост-ран
+   * не оставил своей записи (ран убит сигналом/упал до учёта). Поле нужно,
+   * чтобы такие записи были отличимы от штатных при сверке с провайдером.
+   */
+  fallback?: boolean;
   /** Начало сессии (ISO). */
   startedAt?: string;
   /** Окончание рана (ISO). */
