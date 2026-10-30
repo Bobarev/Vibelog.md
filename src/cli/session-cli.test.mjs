@@ -220,6 +220,23 @@ describe('VL-261 — vibelog session summary', () => {
     assert.equal(process.exitCode, 1);
   });
 
+  it('битые строки jsonl пропускаются, сводка не падает', async () => {
+    const brokenId = 'agent-1793328615999';
+    const sessions = join(testRoot, '.vibelog', 'agent-sessions');
+    writeFileSync(
+      join(sessions, `${brokenId}.jsonl`),
+      '{"role":"user","content":"Ты — автоматический исполнитель Vibelog (Фаза 2: Plan) для задачи VL-9."}\n' +
+        '{битая строка\n' +
+        '{"role":"assistant","content":null,"usage":{"input_tokens":5,"output_tokens":1,"cache_read_input_tokens":0,"total_tokens":6,"reasoning_tokens":0}}\n',
+      'utf8',
+    );
+    const { out } = await capture(() => run(['session', 'summary', brokenId, '--json']));
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.runs.length, 1);
+    assert.equal(parsed.totals.requests, 1);
+    assert.equal(parsed.totals.input, 5);
+  });
+
   it('неизвестная подкоманда: справка и exitCode 1', async () => {
     const { err } = await capture(() => run(['session', 'nope']));
     assert.match(err, /Неизвестная подкоманда session: nope/);
