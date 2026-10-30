@@ -65,6 +65,13 @@ export interface LoopLimits {
   maxRequests?: number;
   /** Сколько одинаковых подряд вызовов считать зацикливанием (дефолт 3). */
   loopDetectionRepeat?: number;
+  /**
+   * VL-251: сигнатуры `name|JSON(args)`, отклонённые loop detection в
+   * ПРОШЛЫХ ранах сессии (из меты сессии, `blocked_signatures`). Такой вызов
+   * не исполняется — модели уходит tool-результат «заблокирован», иначе
+   * после resume (кнопка «Продолжить») луп повторялся с нуля (инцидент VL-234).
+   */
+  blockedSignatures?: string[];
   /** Сколько ходов подряд с одним и тем же промежуточным текстом считать зацикливанием намерений (VL-119, дефолт 4). */
   intentLoopRepeat?: number;
   /**
@@ -145,6 +152,12 @@ export interface LoopResult {
    * корректна для сессии, а не только для текущего рана.
    */
   repeat_stats: RepeatStats;
+  /**
+   * VL-251: новые сигнатуры, заблокированные loop detection в этом ране
+   * (подмножество уже отброшенных + добавленные сейчас). CLI дописывает их
+   * в мету сессии — следующий resume блокирует повторы без исполнения.
+   */
+  blocked_signatures?: string[];
 }
 
 /** Опции запуска loop. */
@@ -221,6 +234,30 @@ const COMPACT_TAIL_DEFAULT = 50;
 const COMPACT_AT_TOKENS_DEFAULT = 850_000;
 
 /**
+ * Подсказка следующего шага для директивы loop detection (VL-251).
+ *
+ * Сообщение о зацикливании раньше было констатацией («проверь, не зациклился
+ * ли агент») и уходило ролью assistant — модель не понимала, что делать
+ * вместо повтора. Теперь директива уходит tool-результатом (модель читает её
+ * как ответ рантайма) и заканчивается конкретным действием.
+ */
+const NEXT_STEP_HINT =
+  'Следующий шаг: смени аргументы или инструмент, прочитай актуальное состояние (backlog_view_task / git status / grep) либо заверши фазу финальным текстом.';
+
+/**
+ * Текст директивы loop detection для tool-результата заблокированного вызова.
+ *
+ * Маркерная подстрока «Loop detection» сохранена намеренно (lesson-76):
+ * по ней распознают событие существующие тесты и разборы сессий.
+ */
+export function loopDetectionDirective(name: string, repeatLimit: number): string {
+  return (
+    `Loop detection: инструмент ${name} вызван ${repeatLimit} раза подряд с одинаковыми аргументами — вызов НЕ выполнен и заблокирован. ` +
+    `Повтор с теми же аргументами бесполезен. ${NEXT_STEP_HINT}`
+  );
+}
+
+/**
  * Строит wire-копию истории для LLM-запроса (VL-122): system-сообщения +
  * первое user-сообщение (постановка) + сообщения с липкого якоря `from`.
  *
@@ -272,6 +309,15 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // Лимит LLM-запросов (VL-104): без значения — без лимита (поведение прежнее)
   const maxRequests = options.limits?.maxRequests;
   const repeatLimit = options.limits?.loopDetectionRepeat ?? LOOP_DETECTION_REPEAT_DEFAULT;
+  // VL-251: сигнатуры, заблокированные loop detection (прошлые раны = из меты
+  // сессии + добавленные в этом ране). Такой вызов НЕ исполняется: модели
+  // уходит tool-результат с директивой «следующий шаг», а не нейтральный
+  // текст роли assistant (AC4), и повтор после resume не проходит (AC5).
+  const blocked = new Set<string>(options.limits?.blockedSignatures ?? []);
+  const blockedInitial = [...blocked];
+  // Серия подряд идущих заблокированных вызовов: 2-й подряд — фазовый отказ
+  // (модель проигнорировала директиву в tool-результате).
+  let blockedStreak = 0;
   // Лимит guard'а зацикливания намерений (VL-119): N ходов подряд с одним
   // промежуточным текстом → fail штатным путём (контракт resume VL-103).
   const intentRepeatLimit = options.limits?.intentLoopRepeat ?? INTENT_LOOP_REPEAT_DEFAULT;
@@ -380,6 +426,11 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       last_payload_bytes: lastPayload,
       max_payload_bytes: maxPayload,
       repeat_stats: analyzeToolRepeats(messages),
+      // VL-251: новые сигнатуры блока — CLI дописывает их в мету сессии,
+      // следующий resume блокирует повторы без исполнения (AC5)
+      ...(blocked.size > blockedInitial.length
+        ? { blocked_signatures: [...blocked].filter((s) => !blockedInitial.includes(s)) }
+        : {}),
     };
   };
 
@@ -545,6 +596,10 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         max_payload_bytes: maxPayload,
         // VL-229 (AC1): метрика по всему транскрипту — включая прошлые раны
         repeat_stats: analyzeToolRepeats(messages),
+        // VL-251: блокировки, накопленные в этом ране (успешный финал)
+        ...(blocked.size > blockedInitial.length
+          ? { blocked_signatures: [...blocked].filter((s) => !blockedInitial.includes(s)) }
+          : {}),
       };
     }
     // Guard зацикливания намерений (VL-119, инцидент VL-98): N ходов подряд
@@ -622,18 +677,54 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
     // tool-результатами сломала бы паринг assistant↔tool (риск 1 плана).
     const repeatWarnings: string[] = [];
     for (const call of validCalls) {
-      // Loop detection: сигнатура = имя + JSON аргументов; N подряд — выход.
+      // Loop detection: сигнатура = имя + JSON аргументов; N подряд — вызов
+      // блокируется (VL-251: раньше фаза падала сразу, а текст ошибки уходил
+      // роли assistant — модель читала его как свой текст и после resume
+      // повторяла тот же вызов; инцидент VL-234).
       const signature = `${call.name}|${JSON.stringify(call.arguments ?? {})}`;
+      // Фатальный отказ нужен, если модель игнорирует директиву в tool-результате:
+      // 2 заблокированных вызова ПОДРЯД — фаза прерывается штатным fail().
+      const blockAndPush = async (): Promise<void> => {
+        blockedStreak++;
+        blocked.add(signature);
+        // Директива — tool-результатом (AC4): привязка tool_call_id
+        // сохраняет паринг assistant↔tool, провайдер payload принимает.
+        await pushMessage({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: loopDetectionDirective(call.name, repeatLimit),
+        });
+        // Диагностика в точке срабатывания → logTail оркестратора (lesson-77)
+        console.error(`[vibelog-agent] loop detection: ${call.name} заблокирован`);
+      };
+
+      if (blocked.has(signature)) {
+        // AC5: сигнатура отклонена в прошлом ране (resume) — не исполняем
+        await blockAndPush();
+        if (blockedStreak >= 2) {
+          return fail(
+            `Loop detection: инструмент ${call.name} вызван ${repeatLimit} раза подряд с одинаковыми аргументами — вызов повторно заблокирован (та же сигнатура уже отклонялась в этой сессии), фаза прервана. ${NEXT_STEP_HINT}`,
+          );
+        }
+        continue;
+      }
+
       if (signature === prevSignature) {
         streak++;
       } else {
         streak = 1;
         prevSignature = signature;
+        // Серия прервалась: другой вызов — сбрасываем счётчик подряд идущих блоков
+        blockedStreak = 0;
       }
       if (streak >= repeatLimit) {
-        return fail(
-          `Loop detection: инструмент ${call.name} вызван ${repeatLimit} раза подряд с одинаковыми аргументами — фаза прервана. Проверь, не зациклился ли агент.`,
-        );
+        await blockAndPush();
+        if (blockedStreak >= 2) {
+          return fail(
+            `Loop detection: инструмент ${call.name} вызван ${repeatLimit} раза подряд с одинаковыми аргументами — вызов заблокирован, фаза прервана (модель повторила заблокированный вызов). ${NEXT_STEP_HINT}`,
+          );
+        }
+        continue;
       }
 
       // Лимит tool-calls: проверяем ДО выполнения, чтобы не выполнять лишний вызов.
