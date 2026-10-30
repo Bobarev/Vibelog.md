@@ -45,6 +45,8 @@ describe('VL-219 — isWriteOperation (по природе операции)', (
       'document_create', 'document_update',
       'reference_add', 'reference_update', 'reference_remove', 'reference_sync',
       'lesson_create', 'lesson_update', 'lesson_supersede', 'reference_link',
+      // VL-268: супервизор — запуск фаз/очереди/прогона меняет состояние
+      'backlog_trigger_phase', 'backlog_auto_queue', 'backlog_supervisor',
     ]) {
       assert.equal(isWriteOperation(name), true, `${name} должен быть write`);
     }
@@ -58,8 +60,17 @@ describe('VL-219 — isWriteOperation (по природе операции)', (
       'reference_list', 'reference_view', 'reference_search',
       'lesson_list', 'lesson_view', 'lesson_search_lessons',
       'project_map', // VL-235: карта проекта — read-only
+      'backlog_phase_status', // VL-268: состояние запуска — чистый read
     ]) {
       assert.equal(isWriteOperation(name), false, `${name} должен быть read`);
+    }
+  });
+
+  it('VL-268: backlog_finish_phase остаётся в CHAT_DISALLOWED_TOOLS', () => {
+    assert.ok(CHAT_DISALLOWED_TOOLS.includes('backlog_finish_phase'));
+    // Новые инструменты супервизора НЕ открывают обходного пути к завершению фазы
+    for (const name of ['backlog_trigger_phase', 'backlog_supervisor']) {
+      assert.ok(!CHAT_DISALLOWED_TOOLS.includes(name), `${name} не должен быть запрещён технически`);
     }
   });
 

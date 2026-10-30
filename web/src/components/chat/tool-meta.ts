@@ -21,11 +21,15 @@ const WRITE_MARKERS = [
   "manage", "finish", "supersede", "link", "sync", "cache",
   "write", "edit", "delete", "set", "put", "run", "spawn",
   "promote", "reject", "complete", "append", "mkdir",
+  // VL-268: паритет с серверным isWriteOperation (запуск фаз/очереди/прогона)
+  "trigger", "start", "stop", "queue",
 ]
 
 /** Маркеры read-операции (проверяются после write — write приоритетнее). */
 const READ_MARKERS = [
   "list", "view", "search", "get", "read", "ready", "glob", "grep", "help", "map",
+  // VL-268: состояние запуска фазы — чистый read
+  "status",
 ]
 
 /** Токенизация имени инструмента: lowercase + split по не-буквенно-цифровым. */
@@ -82,6 +86,11 @@ const TOOL_LABELS: Record<string, [string, string]> = {
   milestone_add: ["Создал веху", "Создаю веху"],
   milestone_rename: ["Переименовал веху", "Переименовываю веху"],
   reference_add: ["Добавил reference", "Добавляю reference"],
+  // VL-268: супервизор
+  backlog_trigger_phase: ["Запустил фазу", "Запускаю фазу"],
+  backlog_phase_status: ["Состояние фазы", "Читаю состояние фазы"],
+  backlog_auto_queue: ["Изменил автоочередь", "Правлю автоочередь"],
+  backlog_supervisor: ["Управление прогоном", "Управляю прогоном"],
 }
 
 /** Завершённое действие инструмента (для свёрнутой строки). */

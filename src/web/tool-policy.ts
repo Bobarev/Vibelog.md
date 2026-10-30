@@ -64,6 +64,8 @@ const WRITE_MARKERS = [
   'manage', 'finish', 'supersede', 'link', 'sync', 'cache',
   'write', 'edit', 'delete', 'set', 'put', 'run', 'spawn',
   'promote', 'reject', 'complete', 'append', 'mkdir',
+  // VL-268: запуск фаз/очереди/прогона — побочный эффект по природе
+  'trigger', 'start', 'stop', 'queue',
 ] as const;
 
 /**
@@ -72,6 +74,8 @@ const WRITE_MARKERS = [
  */
 const READ_MARKERS = [
   'list', 'view', 'search', 'get', 'read', 'ready', 'glob', 'grep', 'help', 'map',
+  // VL-268: состояние запуска фазы — чистый read
+  'status',
 ] as const;
 
 /** Токенизует имя инструмента: lowercase + split по не-буквенно-цифровым. */
