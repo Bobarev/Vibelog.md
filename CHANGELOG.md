@@ -29,6 +29,19 @@
 
 ### Исправлено
 
+- **VL-250: `read_file` применяет `offset`/`limit` до обрезки вывода — JSONL-сессии агента читаемы** — бюджет
+  `TOOL_OUTPUT_MAX_CHARS` (8192) применялся к содержимому файла до нарезки по строкам, поэтому в
+  `.vibelog/agent-sessions/*.jsonl` (одна запись = одна строка на 8–30 КБ) любой вызов возвращал первую
+  строку и подсказку «сузь запрос», которая ничего не меняла. Новый экспортируемый хелпер `formatFileSlice`
+  (`src/agent/tools.ts`) — общий для агента (`makeReadFile`) и веб-чата (`makeReadFileTool` в
+  `src/web/tool-policy.ts`): срез `lines.slice(offset, offset+limit)` строится первым, влезающий в лимит
+  срез отдаётся дословно (поведение обычных файлов не меняется), иначе бюджет расходуется на выбранные
+  строки, слишком длинная строка усекается с маркером `…[строка усечена: показано K из M символов]`, а
+  хвост подсказывает следующий `offset` (без подсказки модель зацикливается). Инвариант длины —
+  жёсткий `slice(0, TOOL_OUTPUT_MAX_CHARS)`. Обходной путь для shell: `scripts/agent-session.mjs`
+  (построчный просмотр JSONL через `node:readline`, `--grep`, `--full N`). Тесты: `src/agent/tools.test.mjs`
+  (+`describe('VL-250 — длинные строки (JSONL) в read_file')`), `src/web/tool-policy.test.mjs` +1. Документация:
+  README (блок «`read_file`»), `templates/prompts/chat-system.md`.
 - **VL-251: `backlog_finish_phase` — явная ошибка на no-op и без отчёта, loop detection блокирует повторы после resume** —
   нейтральный успех на повторном/неполном вызове зацикливал агента (инцидент VL-234: три байт-в-байт одинаковых
   `finish_phase` с нулевым `tokenUsage`, abort, «Продолжить» → второй круг лупа). Три правки: (1) `toolFinishPhase`
