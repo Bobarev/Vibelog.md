@@ -21,7 +21,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
-import { miniGlobToRegex, resolveInProject, truncateToolOutput } from './tools.js';
+import { formatMissingPathHint, miniGlobToRegex, resolveInProject, truncateToolOutput } from './tools.js';
 
 /**
  * Каталоги, которые обход не рассматривает (шум, размер репозитория, а для
@@ -221,8 +221,13 @@ export async function searchProjectFiles(
   let startIsFile = false;
   try {
     startIsFile = !statSync(start.path).isDirectory();
-  } catch (err) {
-    return `Не удалось прочитать путь: ${err instanceof Error ? err.message : String(err)}`;
+  } catch {
+    // VL-257: отсутствующий path — листинг ближайшего существующего каталога
+    // и похожие пути вместо голого «Не удалось прочитать путь: ENOENT…».
+    const hint = formatMissingPathHint(cwd, opts.path);
+    return truncateToolOutput(
+      hint === null ? `Путь не найден: ${opts.path}` : `Путь не найден: ${opts.path}\n\n${hint}`,
+    );
   }
   if (startIsFile) {
     files = [

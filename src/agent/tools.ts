@@ -20,7 +20,7 @@ import {
   writeFileSync,
   statSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { searchProjectFiles, walkFiles } from './search-files.js';
 
@@ -433,6 +433,204 @@ export function formatDirListing(
   return { ok: true, text: header + '\n' + shown.join('\n') + suffix };
 }
 
+/**
+ * Лимит строк листинга в подсказке при отсутствующем пути (VL-257):
+ * подсказка добавляется к каждой ошибке чтения, поэтому её объём ограничен
+ * отдельно от DIR_LISTING_MAX — ответ уходит модели целиком.
+ */
+export const PATH_HINT_MAX_LINES = 30;
+
+/** Максимум fuzzy-кандидатов («Возможно, вы имели в виду») в подсказке. */
+export const PATH_HINT_MAX_CANDIDATES = 5;
+
+/** Путь внутри проекта (без выхода наружу через `..`/абсолютный путь). */
+function isInside(cwd: string, abs: string): boolean {
+  const rel = relative(cwd, abs);
+  return !(rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel));
+}
+
+/**
+ * Ближайший существующий каталог на пути к цели (VL-257): сам путь, затем
+ * его предки вверх до cwd включительно. Нужен, потому что путь вида
+ * `backlog/active/VL-254.md` не существует целиком, а структуру полезно
+ * показать от существующей части дерева.
+ */
+function nearestExistingDir(cwd: string, absTarget: string): string | null {
+  let dir = absTarget;
+  for (;;) {
+    try {
+      if (statSync(dir).isDirectory()) return dir;
+    } catch {
+      // Не существует (или не каталог) — поднимаемся к родителю.
+    }
+    const parent = dirname(dir);
+    if (parent === dir || !isInside(cwd, parent)) {
+      // Дошли до корня проекта (или вышли за него) — cwd существует всегда,
+      // но проверяем его отдельно, чтобы не вернуть путь наружу.
+      try {
+        if (statSync(cwd).isDirectory()) return cwd;
+      } catch {
+        return null;
+      }
+      return null;
+    }
+    dir = parent;
+  }
+}
+
+/** Имя без расширения, в нижнем регистре — ключ сравнения fuzzy-кандидатов. */
+function stemOf(name: string): string {
+  const dot = name.lastIndexOf('.');
+  return (dot > 0 ? name.slice(0, dot) : name).toLowerCase();
+}
+
+/** ID задачи в имени файла/пути: `VL-254`, `back-100` и т.п. */
+const TASK_ID_RE = /([A-Za-z]+-\d+)/;
+
+/**
+ * Кандидаты-файлы задач по ID (VL-257): инцидент — агент трижды угадывал
+ * `backlog/tasks/VL-254.md`, `backlog/active/VL-254.md`, `backlog/VL-254.md`,
+ * хотя задача лежит как `backlog/tasks/VL-254 - <заголовок>.md`. Индекс
+ * задач — это каталоги backlog, а не плоские `<id>.md`.
+ */
+function collectTaskCandidates(cwd: string, id: string): string[] {
+  const upper = id.toUpperCase();
+  const out: string[] = [];
+  for (const dirName of ['backlog/tasks', 'backlog/completed', 'backlog/drafts']) {
+    const abs = join(cwd, dirName);
+    let names: string[];
+    try {
+      if (!statSync(abs).isDirectory()) continue;
+      names = readdirSync(abs);
+    } catch {
+      continue; // каталога нет — этот вид хранения не используется
+    }
+    for (const name of names.sort((a, b) => a.localeCompare(b, 'en'))) {
+      const nameUpper = name.toUpperCase();
+      if (
+        nameUpper === upper ||
+        nameUpper.startsWith(`${upper} `) ||
+        nameUpper.startsWith(`${upper}-`) ||
+        nameUpper.startsWith(`${upper}.`)
+      ) {
+        out.push(`${dirName}/${name}`);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Похожие пути для подсказки «Возможно, вы имели в виду» (VL-257):
+ * совпадение по basename без учёта регистра и расширения — так `vl-254`
+ * находит `VL-254 - …md`, а `B.TS` — `sub/b.ts`. Порядок: сначала файлы
+ * задач по ID (самый вероятный промах), затем совпадения в дереве
+ * ближайшего каталога, затем записи самого каталога (в т.ч. подкаталоги).
+ */
+function fuzzyCandidates(cwd: string, nearestDir: string, rawPath: string): string[] {
+  const out: string[] = [];
+  const push = (rel: string): void => {
+    if (out.length >= PATH_HINT_MAX_CANDIDATES) return;
+    if (!out.includes(rel)) out.push(rel);
+  };
+  const base = basename(rawPath);
+  const idMatch = TASK_ID_RE.exec(base);
+  if (idMatch) {
+    for (const rel of collectTaskCandidates(cwd, idMatch[1])) push(rel);
+  }
+  const stem = stemOf(base);
+  if (stem !== '') {
+    const relNearest = relative(cwd, nearestDir).split(sep).join('/');
+    let walked: string[] = [];
+    try {
+      // Тот же обход, что у search_files; выполняется только в ветке ошибки.
+      walked = walkFiles(nearestDir, 5000);
+    } catch {
+      walked = [];
+    }
+    const matched = walked
+      .filter((rel) => {
+        const name = rel.slice(rel.lastIndexOf('/') + 1);
+        const candidateStem = stemOf(name);
+        return (
+          candidateStem === stem ||
+          candidateStem.includes(stem) ||
+          stem.includes(candidateStem)
+        );
+      })
+      .sort((a, b) => a.localeCompare(b, 'en'));
+    for (const rel of matched) push(relNearest === '' ? rel : `${relNearest}/${rel}`);
+  }
+  // Записи самого каталога: ловит промах в одном уровне, в т.ч. каталоги.
+  try {
+    const relNearest = relative(cwd, nearestDir).split(sep).join('/');
+    const names = readdirSync(nearestDir, { withFileTypes: true })
+      .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
+      .sort((a, b) => a.localeCompare(b, 'en'));
+    for (const name of names) {
+      const candidateStem = stemOf(name.replace(/\/$/, ''));
+      if (candidateStem === stem || candidateStem.includes(stem) || stem.includes(candidateStem)) {
+        push(relNearest === '' ? name : `${relNearest}/${name}`);
+      }
+    }
+  } catch {
+    // Каталог не читается — кандидатов этого вида просто нет.
+  }
+  return out;
+}
+
+/**
+ * Подсказка при отсутствующем пути (VL-257): листинг ближайшего
+ * существующего каталога + похожие пути + инструкция для ID задачи.
+ *
+ * Зачем: раньше неудачный `read_file` возвращал только абсолютный путь,
+ * и агент угадывал следующий вариант вслепую (инцидент: `backlog/tasks/VL-254.md`
+ * → `backlog/active/VL-254.md` → `backlog/VL-254.md`, все три — ENOENT).
+ *
+ * Возвращает `null`, если подсказку собрать нельзя (путь вне проекта,
+ * служебный каталог, нечитаемый листинг) — тогда поверхность печатает
+ * прежнюю ошибку без листинга.
+ *
+ * @param cwd — корень проекта (границы доступа)
+ * @param rawPath — путь, который запросил агент (относительный или абсолютный)
+ */
+export function formatMissingPathHint(cwd: string, rawPath: string): string | null {
+  if (typeof rawPath !== 'string' || rawPath === '') return null;
+  const abs = resolve(cwd, rawPath);
+  // Вне проекта и служебные каталоги — прежнее поведение (AC5): структура
+  // проекта наружу не раскрывается.
+  if (!isInside(cwd, abs)) return null;
+  const nearest = nearestExistingDir(cwd, abs);
+  if (nearest === null) return null;
+  const listing = formatDirListing(cwd, nearest);
+  if (!listing.ok) return null;
+  const lines = listing.text.split('\n');
+  // Первая строка листинга — его шапка («Листинг каталога …»): заголовок
+  // подсказки формируем сами, шапку выкидываем. Маркеры усечения листинга
+  // тоже убираем — свой добавляем ниже.
+  const entries = lines.slice(1).filter((line) => !line.startsWith('…['));
+  const shown = entries.slice(0, PATH_HINT_MAX_LINES);
+  const relNearest = relative(cwd, nearest).split(sep).join('/');
+  const label = relNearest === '' ? './' : `${relNearest}/`;
+  const parts: string[] = [`Ближайший существующий каталог: ${label}`, ...shown];
+  if (entries.length > shown.length) {
+    parts.push(`…[подсказка усечена: показано ${shown.length} из ${entries.length} записей]`);
+  }
+  const candidates = fuzzyCandidates(cwd, nearest, rawPath);
+  if (candidates.length > 0) {
+    parts.push('Возможно, вы имели в виду:');
+    for (const candidate of candidates) parts.push(`  ${candidate}`);
+  }
+  const idMatch = TASK_ID_RE.exec(basename(rawPath));
+  if (idMatch) {
+    parts.push(
+      `Подсказка: задачи Vibelog хранятся не по пути ${idMatch[1]}.md — ` +
+        `используй MCP-инструмент backlog_view_task {"id":"${idMatch[1]}"}.`,
+    );
+  }
+  return parts.join('\n');
+}
+
 /** Читает файл как utf-8 текстом модели (ошибки — текстом, не исключением). */
 function readTextFile(abs: string): { ok: true; content: string } | { ok: false; error: string } {
   try {
@@ -462,7 +660,10 @@ function makeReadFile(cwd: string): ToolSpec {
       'Если path — каталог, возвращает отсортированный листинг (каталоги с "/", лимит 200 записей; ' +
       'offset/limit игнорируются; node_modules/.git/dist не разворачиваются). ' +
       'Файлы с очень длинными строками (JSONL) читаются по диапазонам: offset/limit применяются ' +
-      'до обрезки лимита 8 КБ, слишком длинная строка усекается с подсказкой следующего offset.',
+      'до обрезки лимита 8 КБ, слишком длинная строка усекается с подсказкой следующего offset. ' +
+      'Если файла нет, ответ содержит листинг ближайшего существующего каталога, похожие пути ' +
+      '(«Возможно, вы имели в виду») и подсказку о том, что задачи читаются через backlog_view_task — ' +
+      'повторно угадывать путь не нужно.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -490,7 +691,13 @@ function makeReadFile(cwd: string): ToolSpec {
         return listing.ok ? truncateToolOutput(listing.text) : listing.error;
       }
       const read = readTextFile(target.path);
-      if (!read.ok) return read.error;
+      if (!read.ok) {
+        // VL-257: ошибка чтения сама даёт структуру ближайшего каталога и
+        // похожие пути — иначе агент угадывает следующий вариант вслепую.
+        // Первая строка «Файл не найден» сохраняется (маркер для тестов).
+        const hint = existsSync(target.path) ? null : formatMissingPathHint(cwd, parsed.path);
+        return truncateToolOutput(hint === null ? read.error : `${read.error}\n\n${hint}`);
+      }
       return formatFileSlice(
         read.content,
         parsed.offset ?? args.offset,
@@ -938,7 +1145,18 @@ function makeGrepSearch(cwd: string): ToolSpec {
       if (!start.ok) return start.error;
       const globRegex = typeof args.glob === 'string' && args.glob ? miniGlobToRegex(args.glob) : null;
       const LIMIT = 200;
-      const rootFiles = statSync(start.path).isDirectory()
+      let startIsDir = false;
+      try {
+        startIsDir = statSync(start.path).isDirectory();
+      } catch {
+        // VL-257: отсутствующий path — та же подсказка, что у read_file
+        // (единая функция), вместо исключения из statSync.
+        const hint = formatMissingPathHint(cwd, startRel);
+        return truncateToolOutput(
+          hint === null ? `Путь не найден: ${startRel}` : `Путь не найден: ${startRel}\n\n${hint}`,
+        );
+      }
+      const rootFiles = startIsDir
         ? walkFiles(start.path, 10_000).map((rel) => ({
             // glob матчится по пути ОТНОСИТЕЛЬНО корня поиска (как пишет
             // пользователь), а вывод — относительно проекта.

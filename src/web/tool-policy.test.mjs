@@ -118,6 +118,25 @@ describe('VL-219 — chatToolDefs', () => {
     const root = await tool.handler({ path: '.' });
     assert.match(root, /Листинг каталога \.\//);
   });
+
+  it('VL-257: makeReadFileTool на отсутствующем пути → листинг + похожие пути', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'vl257-read-'));
+    tmpDirs.push(cwd);
+    mkdirSync(join(cwd, 'src'), { recursive: true });
+    writeFileSync(join(cwd, 'src', 'main.ts'), 'x\n', 'utf8');
+    const tool = makeReadFileTool(cwd);
+    // Целевой каталог не существует (на macOS ФС регистронезависима, поэтому
+    // fuzzy проверяем через отсутствующий подкаталог, а не через другой регистр).
+    const out = await tool.handler({ path: 'src/nested/main.ts' });
+    assert.match(out.split('\n')[0], /Файл не найден/);
+    assert.match(out, /Ближайший существующий каталог: src\//);
+    assert.match(out, /Возможно, вы имели в виду:/);
+    assert.ok(out.includes('main.ts'), out);
+    // Вне проекта — прежняя ошибка без листинга.
+    const outside = await tool.handler({ path: '../outside.txt' });
+    assert.match(outside, /выходит за пределы проекта/);
+    assert.ok(!outside.includes('Ближайший существующий каталог'));
+  });
 });
 
 describe('VL-219 — loadChatSystemTemplate', () => {
