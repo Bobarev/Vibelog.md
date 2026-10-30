@@ -2140,9 +2140,12 @@ setTimeout(() => {
       assert.equal(r2.started, true, JSON.stringify(r2));
       assert.equal(r2.queued, true, 'второй close в очереди');
       assert.equal(r2.pid, 0, 'процесс очереди ещё не создан');
+      // VL-246: сообщение очереди знает, чей close удерживает очередь
+      assert.equal(r2.queuedBehind, 'VL-1', 'второй close ждёт за VL-1');
       const r3 = startPhase(root, 'VL-3', 'close');
       assert.equal(r3.started, true, JSON.stringify(r3));
       assert.equal(r3.queued, true, 'третий close в очереди');
+      assert.equal(r3.queuedBehind, 'VL-1', 'третий close ждёт за VL-1');
       // getRun отражает состояние очереди
       const g2 = getRun('VL-2');
       assert.equal(g2.running, false);
@@ -2214,6 +2217,44 @@ setTimeout(() => {
       // Обе фазы завершаются — иначе стабы остаются висеть в воркере
       await waitDone('VL-4', 8000);
       await waitDone('VL-5', 8000);
+    } finally {
+      setStubEnv({ VIBELOG_QWEN_BIN: undefined, VL146_LOCK: undefined, VL146_LOCK_SLEEP: undefined });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('VL-246: close в branch-mode не стартует при незавершённом merge (MERGE_HEAD)', async () => {
+    // Проект с настоящим git (нужен .git/MERGE_HEAD), branch_mode включён
+    const root = makeBmRoot('vibelog-orch-vl246-');
+    createTaskFile(root, { id: 'VL-1', title: 'Задача VL-246 merge-guard' });
+    const lockPath = join(root, 'close-lock.txt');
+    const lockBin = join(root, 'qwen-lock-stub.cjs');
+    writeFileSync(lockBin, LOCK_STUB, 'utf-8');
+    chmodSync(lockBin, 0o755);
+    const git = (args) => spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
+    const sha = git(['rev-parse', 'HEAD']).stdout.trim();
+    // Имитируем чужой незавершённый merge: git пишет MERGE_HEAD в .git/
+    writeFileSync(join(root, '.git', 'MERGE_HEAD'), sha + '\n', 'utf-8');
+    const statusBefore = getTask(root, 'VL-1')?.status;
+    setStubEnv({ VIBELOG_QWEN_BIN: lockBin, VL146_LOCK: lockPath, VL146_LOCK_SLEEP: '200' });
+    try {
+      // AC1: старт отклонён с понятным сообщением (sha короткий, причина названа)
+      const res = startPhase(root, 'VL-1', 'close');
+      assert.ok('error' in res, JSON.stringify(res));
+      assert.match(res.error, /незавершённый merge/, 'причина названа');
+      assert.ok(res.error.includes(sha.slice(0, 7)), 'в сообщении короткий sha MERGE_HEAD');
+      // Процесс не спавнился: стаб не оставил lock-файл
+      assert.ok(!existsSync(lockPath), 'qwen не запускался при MERGE_HEAD');
+      // Статус задачи не изменился (guard стоит до spawn/markPhaseStarted)
+      assert.equal(getTask(root, 'VL-1')?.status, statusBefore, 'статус задачи не меняется');
+      // Guard не залипает: после завершения чужого merge close стартует штатно
+      rmSync(join(root, '.git', 'MERGE_HEAD'), { force: true });
+      const ok = startPhase(root, 'VL-1', 'close');
+      assert.equal(ok.started, true, JSON.stringify(ok));
+      const done = await waitDone('VL-1', 8000);
+      assert.equal(done.running, false, 'close после очистки MERGE_HEAD завершился');
+      // produced lock-файл — доказательство реального спавна после снятия guard'а
+      assert.ok(existsSync(lockPath), 'close после очистки MERGE_HEAD действительно стартовал');
     } finally {
       setStubEnv({ VIBELOG_QWEN_BIN: undefined, VL146_LOCK: undefined, VL146_LOCK_SLEEP: undefined });
       rmSync(root, { recursive: true, force: true });

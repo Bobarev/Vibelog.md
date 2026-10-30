@@ -270,6 +270,63 @@ export function parseGitLog(stdout: string): GitCommit[] {
 }
 
 /**
+ * Состояние незавершённого merge в репозитории (VL-246).
+ *
+ * Нужен оркестратору фаз: close в branch-mode начинает `git merge` в главном
+ * репозитории, а если там уже висит чужой незавершённый merge (MERGE_HEAD,
+ * конфликты UU) — слияние гарантированно упадёт с «Merging is not possible
+ * because you have unmerged files» (инцидент VL-212/VL-219, lesson-82).
+ * Предпроверка позволяет не тратить ран агента.
+ */
+export interface MergeState {
+  /** true ⇔ в репозитории есть MERGE_HEAD (merge начат и не завершён). */
+  inProgress: boolean;
+  /** sha коммита, который вливается (из MERGE_HEAD); '' — merge не идёт. */
+  head: string;
+  /** Файлы с неразрешёнными конфликтами (`git diff --diff-filter=U`). */
+  unmerged: string[];
+}
+
+/**
+ * Читает состояние незавершённого merge (VL-246).
+ *
+ * Read-only: `git rev-parse --verify -q MERGE_HEAD` + `git diff --name-only
+ * --diff-filter=U`. `-q` у rev-parse гасит stderr и даёт exit 1 при отсутствии
+ * MERGE_HEAD — это не ошибка, а штатное «merge не идёт».
+ *
+ * **Fail-open**: git недоступен или каталог не git-репозиторий → merge не
+ * считается начатым (`inProgress: false`). Предпроверка — вспомогательный
+ * guard фазы close; бросать исключение нельзя: это сломало бы close в
+ * не-git проектах, где веток и merge просто нет.
+ *
+ * @param cwd — директория проекта (может быть подкаталогом репозитория)
+ * @param env — окружение для запуска git (в тестах — изоляция от глобального конфига)
+ */
+export function getMergeState(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env
+): MergeState {
+  const run = (args: string[]): { status: number | null; stdout: string } => {
+    const res = spawnSync('git', args, { cwd, encoding: 'utf-8', env });
+    return { status: res.status, stdout: res.stdout ?? '' };
+  };
+  const head = run(['rev-parse', '--verify', '--quiet', 'MERGE_HEAD']);
+  if (head.status !== 0) {
+    // 1 — MERGE_HEAD нет; 128/ENOENT — не git/нет git: тоже «merge не идёт»
+    return { inProgress: false, head: '', unmerged: [] };
+  }
+  const conflicts = run(['diff', '--name-only', '--diff-filter=U']);
+  const unmerged =
+    conflicts.status === 0
+      ? conflicts.stdout
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+      : [];
+  return { inProgress: true, head: head.stdout.trim(), unmerged };
+}
+
+/**
  * Собирает последние N коммитов git-репозитория для /commits (VL-90).
  *
  * Read-only: только чтение git log, ничего не коммитится.
