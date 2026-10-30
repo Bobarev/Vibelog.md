@@ -19,7 +19,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { runChat, loadChatHistory } from '../../dist/web/chat.js';
+import { runChat, loadChatHistory, loadApprovalLog } from '../../dist/web/chat.js';
 import { startWebServer } from '../../dist/web/server.js';
 import { createTaskFile, listTasks } from '../../dist/core/store.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
@@ -397,7 +397,7 @@ describe('chat: VL-219 read_file/write_file и Spec-статус', () => {
     );
   });
 
-  it('второй write того же хода без подтверждения → reason=not_confirmed (а не denied) (VL-262)', async () => {
+  it('второй write того же хода получает СВОЙ approval, а не синтетический отказ (VL-256)', async () => {
     const t1 = createTaskFile(cwd, { title: 'Первая 262' });
     const t2 = createTaskFile(cwd, { title: 'Вторая 262' });
     const { llm } = fakeLlm([
@@ -409,19 +409,31 @@ describe('chat: VL-219 read_file/write_file и Spec-статус', () => {
       },
       { text: 'Готово.' },
     ]);
-    await collect({ message: 'обнови две задачи', threadId: 't-262-two' }, { llm });
-    // Подтверждаем только первый write; второй закрывается синтетическим отказом
-    await collectWithThread(
+    const events1 = await collect({ message: 'обнови две задачи', threadId: 't-262-two' }, { llm });
+    assert.equal(events1.at(-1).type, 'approval');
+    assert.equal(events1.at(-1).toolCallId, 'tc-262-w1');
+
+    // Подтверждаем первый write → ход НЕ закрывает второй, а показывает свой гейт
+    const events2 = await collectWithThread(
       { approval: { toolCallId: 'tc-262-w1', approved: true } }, { llm }, 't-262-two',
     );
-    const toolMsgs = loadChatHistory(cwd, 't-262-two').filter(m => m.role === 'tool');
+    assert.equal(events2.at(-1).type, 'approval', `ожидали гейт для второго write: ${JSON.stringify(events2)}`);
+    assert.equal(events2.at(-1).toolCallId, 'tc-262-w2');
+    // До решения по второму вызову его результат в истории отсутствует
+    let toolMsgs = loadChatHistory(cwd, 't-262-two').filter(m => m.role === 'tool');
+    assert.equal(toolMsgs.length, 1, 'второй write не закрыт синтетическим отказом');
+    assert.ok(!toolMsgs.some(m => m.tool_call_id === 'tc-262-w2'));
+
+    // Решение по второму — Deny: явный отказ, первый остаётся применённым
+    const events3 = await collectWithThread(
+      { approval: { toolCallId: 'tc-262-w2', approved: false } }, { llm }, 't-262-two',
+    );
+    assert.equal(events3.at(-1).type, 'done');
+    toolMsgs = loadChatHistory(cwd, 't-262-two').filter(m => m.role === 'tool');
     const second = toolMsgs.find(m => m.tool_call_id === 'tc-262-w2');
-    assert.ok(second, 'результат второго write есть в истории');
     const ack = JSON.parse(second.content);
-    assert.equal(ack.reason, 'not_confirmed', `причина отказа второго write: ${second.content}`);
-    assert.equal(ack.denied, true);
-    assert.ok(ack.hint.includes('idempotencyKey'), 'подсказка про безопасный повтор');
-    // Первый применился, второй — нет
+    assert.equal(ack.reason, 'denied', `второй write отклонён пользователем: ${second.content}`);
+    assert.ok(ack.hint.includes('Повтор'), 'подсказка про явный отказ');
     assert.equal(listTasks(cwd, {}).find(x => x.id === t1.id).title, 'Первый обновлён');
     assert.equal(listTasks(cwd, {}).find(x => x.id === t2.id).title, 'Вторая 262', 'второй не применён');
   });
@@ -488,6 +500,95 @@ describe('chat: VL-219 read_file/write_file и Spec-статус', () => {
     assert.ok(system.content.includes('write_file'), 'описание write_file в системном промпте');
     assert.ok(system.content.includes('backlog_update_task'), 'описание backlog_update_task');
     assert.ok(system.content.includes('подтверждени'), 'правило read/write по природе операции');
+  });
+});
+
+describe('chat: несколько write в одном ходе (VL-256)', () => {
+  it('три write → три последовательных гейта; Allow/Allow/Deny', async () => {
+    const t1 = createTaskFile(cwd, { title: 'Гейт 1' });
+    const t2 = createTaskFile(cwd, { title: 'Гейт 2' });
+    const t3 = createTaskFile(cwd, { title: 'Гейт 3' });
+    const { llm } = fakeLlm([
+      {
+        toolCalls: [
+          { id: 'tc-256-g1', name: 'backlog_update_task', arguments: { id: t1.id, title: 'Гейт 1 обновлён' } },
+          { id: 'tc-256-g2', name: 'backlog_update_task', arguments: { id: t2.id, title: 'Гейт 2 обновлён' } },
+          { id: 'tc-256-g3', name: 'backlog_update_task', arguments: { id: t3.id, title: 'Гейт 3 обновлён' } },
+        ],
+      },
+      { text: 'Готово.' },
+    ]);
+    const first = await collect({ message: 'обнови три задачи', threadId: 't-256-gates' }, { llm });
+    assert.equal(first.at(-1).type, 'approval');
+    assert.equal(first.at(-1).toolCallId, 'tc-256-g1');
+
+    const second = await collectWithThread(
+      { approval: { toolCallId: 'tc-256-g1', approved: true } }, { llm }, 't-256-gates',
+    );
+    assert.equal(second.at(-1).type, 'approval', 'после 1-го Allow — гейт для 2-го write');
+    assert.equal(second.at(-1).toolCallId, 'tc-256-g2');
+
+    const third = await collectWithThread(
+      { approval: { toolCallId: 'tc-256-g2', approved: true } }, { llm }, 't-256-gates',
+    );
+    assert.equal(third.at(-1).type, 'approval', 'после 2-го Allow — гейт для 3-го write');
+    assert.equal(third.at(-1).toolCallId, 'tc-256-g3');
+
+    const fourth = await collectWithThread(
+      { approval: { toolCallId: 'tc-256-g3', approved: false } }, { llm }, 't-256-gates',
+    );
+    assert.equal(fourth.at(-1).type, 'done', 'после решения по последнему write ход продолжается');
+
+    const tasks = listTasks(cwd, {});
+    assert.equal(tasks.find(x => x.id === t1.id).title, 'Гейт 1 обновлён');
+    assert.equal(tasks.find(x => x.id === t2.id).title, 'Гейт 2 обновлён');
+    assert.equal(tasks.find(x => x.id === t3.id).title, 'Гейт 3', 'третий отклонён — не применён');
+
+    const toolMsgs = loadChatHistory(cwd, 't-256-gates').filter(m => m.role === 'tool');
+    const denied = JSON.parse(toolMsgs.find(m => m.tool_call_id === 'tc-256-g3').content);
+    assert.equal(denied.denied, true);
+    assert.equal(denied.reason, 'denied');
+
+    // Лог: 3 запроса и 3 решения в одном ходе (turn одинаков)
+    const log = loadApprovalLog(cwd, 't-256-gates');
+    const requested = log.filter(e => e.event === 'requested');
+    const decided = log.filter(e => e.event === 'decided');
+    assert.equal(requested.length, 3, `requested: ${JSON.stringify(log)}`);
+    assert.equal(decided.length, 3, `decided: ${JSON.stringify(log)}`);
+    assert.equal(new Set(requested.map(e => e.turn)).size, 1, 'все запросы одного хода');
+    assert.equal(decided.find(e => e.toolCallId === 'tc-256-g3').approved, false);
+  });
+
+  it('read-only вызов между write исполняется сразу, затем гейт следующего write', async () => {
+    const t1 = createTaskFile(cwd, { title: 'Между 1' });
+    const t2 = createTaskFile(cwd, { title: 'Между 2' });
+    const { llm } = fakeLlm([
+      {
+        toolCalls: [
+          { id: 'tc-256-r1', name: 'backlog_update_task', arguments: { id: t1.id, title: 'Между 1 обновлён' } },
+          { id: 'tc-256-r2', name: 'backlog_search', arguments: { query: 'Между' } },
+          { id: 'tc-256-r3', name: 'backlog_update_task', arguments: { id: t2.id, title: 'Между 2 обновлён' } },
+        ],
+      },
+      { text: 'Готово.' },
+    ]);
+    const first = await collect({ message: 'обнови и поищи', threadId: 't-256-mixed' }, { llm });
+    assert.equal(first.at(-1).toolCallId, 'tc-256-r1');
+
+    const second = await collectWithThread(
+      { approval: { toolCallId: 'tc-256-r1', approved: true } }, { llm }, 't-256-mixed',
+    );
+    const searchStart = second.find(e => e.type === 'tool_start' && e.id === 'tc-256-r2');
+    assert.ok(searchStart, 'read-only вызов исполняется сразу, без гейта');
+    assert.ok(second.some(e => e.type === 'tool_end' && e.id === 'tc-256-r2'));
+    assert.equal(second.at(-1).type, 'approval', 'следующий write ждёт своего решения');
+    assert.equal(second.at(-1).toolCallId, 'tc-256-r3');
+
+    const third = await collectWithThread(
+      { approval: { toolCallId: 'tc-256-r3', approved: true } }, { llm }, 't-256-mixed',
+    );
+    assert.equal(third.at(-1).type, 'done');
+    assert.equal(listTasks(cwd, {}).find(x => x.id === t2.id).title, 'Между 2 обновлён');
   });
 });
 
