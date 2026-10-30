@@ -47,6 +47,7 @@ import {
 } from '../core/lesson.js';
 import type { UpdateLessonInput } from '../core/lesson.js';
 import { findBacklogDir } from '../core/paths.js';
+import { markPhaseAborted } from '../core/phase-transient.js';
 import { buildProjectMap } from '../core/project-map.js';
 import { truncateToolOutput } from '../agent/tools.js';
 import { ackOk, unknownFields } from './tool-result.js';
@@ -434,7 +435,7 @@ export function listTools(): ToolDefinition[] {
     // === Завершение фазы (VL-138) ===
     {
       name: 'backlog_finish_phase',
-      description: 'Завершение фазы одним вызовом: статус + отчётный комментарий + modifiedFiles + батч-отметки AC/DoD. `comment` объявлен в required — заполняй его отчётом о фазе. Если comment всё же не передан (VL-253), сервер собирает отчёт автоматически из статуса, отметок AC/DoD, modified_files и фрагмента плана и завершает фазу без ошибки. Повторный вызов со статусом, равным текущему (already_finished), возвращает ошибку с датой и источником существующего отчёта: не повторяй такой вызов, а заверши фазу финальным текстом. Невалидные значения полей (статус вне конфига, битый индекс AC/DoD) пропускаются с сообщением в сводке — частичное применение. Пример сводки: «Статус: Review; отчёт добавлен; отмечено AC: 2, DoD: 1; файлов: 3».',
+      description: 'Завершение фазы одним вызовом: статус + отчётный комментарий + modifiedFiles + батч-отметки AC/DoD. `comment` объявлен в required — заполняй его отчётом о фазе. Если comment всё же не передан (VL-253), сервер собирает отчёт автоматически из статуса, отметок AC/DoD, modified_files и фрагмента плана и завершает фазу без ошибки. Повторный вызов со статусом, равным текущему (already_finished), возвращает ошибку с датой и источником существующего отчёта: не повторяй такой вызов, а заверши фазу финальным текстом. Невалидные значения полей (статус вне конфига, битый индекс AC/DoD) пропускаются с сообщением в сводке — частичное применение. Пример сводки: «Статус: Review; отчёт добавлен; отмечено AC: 2, DoD: 1; файлов: 3». Если фаза прервана (не выполнена) — передай `aborted: true` вместе с отчётом-причиной и БЕЗ status: produces_status к такой фазе не применяется (VL-244).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -457,6 +458,13 @@ export function listTools(): ToolDefinition[] {
             additionalProperties: false,
           },
           phase: { type: 'string', description: 'Фаза для by_phase (редкий override; по умолчанию env VIBELOG_PHASE_NAME → мета сессии)' },
+          // VL-244: явный сигнал итога фазы. Без него аварийная ветка
+          // («фаза прервана, статус не меняем») завершалась кодом 0 и
+          // получала produces_status — Done незавершённой задаче (VL-219).
+          aborted: {
+            type: 'boolean',
+            description: 'Явный сигнал: фаза завершается АВАРИЙНО (не выполнена). При true статус-переход produces_status НЕ применяется — транзиент откатит задачу к статусу до фазы и запишет комментарий-причину. Используй в аварийных ветках шаблонов вместо отчёта без status.',
+          },
         },
         // VL-253: comment в required — tool-calling генерирует только объявленные
         // обязательные поля; требование в description не влияет на аргументы.
@@ -1539,6 +1547,20 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
 
   const errors: string[] = [];
   const updates: Partial<Task> = {};
+  // ── VL-244: явный сигнал «фаза прервана» ───────────────────────────────
+  // Флаг живёт в transient-кэше: MCP-сервер и процесс оркестратора разные,
+  // record до оркестратора не доходит. Пишем ДО записи задачи: даже если
+  // updateTaskFile ниже упадёт, finalizePhaseStatus увидит aborted и не
+  // применит produces_status. Отсутствие записи кэша (служебная фаза или
+  // транзиент не ставился) — не ошибка: статус и так никто не тронет,
+  // isError не отдаём (иначе модель зациклится, lesson-92).
+  let abortedPart = '';
+  if (args.aborted === true) {
+    const saved = markPhaseAborted(cwd, id, typeof args.comment === 'string' ? args.comment : undefined);
+    abortedPart = saved
+      ? 'aborted: фаза помечена прерванной (статус не применён)'
+      : 'aborted: фаза вне транзиента (флаг не сохранён, статус не менялся)';
+  }
   // Фактически применённые действия — каждый элемент сводки отражает запись,
   // а не переданный параметр (неприменённое поле не «светится» в сводке)
   let statusPart = 'Статус: не менялся';
@@ -1752,7 +1774,7 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
     errors.push(`token_usage: ${(err as Error).message}`);
   }
 
-  const summary = `${statusPart}; ${commentPart}; отмечено AC: ${acCount}, DoD: ${dodCount}; ${filesPart}` +
+  const summary = `${statusPart}; ${commentPart}${abortedPart ? `; ${abortedPart}` : ''}; отмечено AC: ${acCount}, DoD: ${dodCount}; ${filesPart}` +
     (tokenPart ? `; ${tokenPart}` : '') +
     (tokenFallbackNote ? `; ${tokenFallbackNote}` : '') +
     (errors.length > 0 ? `; Ошибки: ${errors.join(' | ')}` : '');

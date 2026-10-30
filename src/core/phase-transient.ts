@@ -40,6 +40,17 @@ export interface PhaseTransientEntry {
   pid?: number;
   /** ISO-время старта (диагностика; не участвует в логике). */
   startedAt: string;
+  /**
+   * Фаза завершилась АВАРИЙНО: агент прислал `aborted: true` в
+   * backlog_finish_phase (VL-244). Признак переживает границу процессов —
+   * MCP-сервер и оркестратор разные процессы, поэтому единственный общий
+   * носитель сигнала — этот кэш. Флаг отменяет применение produces_status:
+   * даже exitCode 0 уходит в fail-ветку (иначе Review → close → Done
+   * ставится незавершённой задаче, инцидент VL-219).
+   */
+  aborted?: boolean;
+  /** Причина аварии для комментария-причины (текст отчёта агента, обрезка 500). */
+  abortedReason?: string;
 }
 
 /** Кэш-файл проекта: { "VL-196": PhaseTransientEntry, ... }. */
@@ -177,6 +188,51 @@ function removeEntry(cwd: string, taskKey: string): void {
 }
 
 /**
+ * Помечает текущую фазу задачи как АВАРИЙНО завершённую (VL-244).
+ *
+ * Зачем: агент может закончить фазу обычным текстом с кодом выхода 0 —
+ * тогда finalizePhaseStatus применил бы produces_status (и поставил Done
+ * незавершённой задаче, инцидент VL-219). Явный сигнал `aborted: true`
+ * из backlog_finish_phase доезжает до оркестратора ТОЛЬКО через кэш
+ * (MCP-сервер и оркестратор — разные процессы), поэтому пишем флаг сюда.
+ *
+ * Семантика:
+ * - ключ нормализуется в UPPER: в кэше ключи канонические (markPhaseStarted
+ *   получает key уже из оркестратора, VL-145), а MCP-инструмент получает
+ *   raw `task.id`;
+ * - записи нет (служебная фаза, транзиент не ставился) → no-op, false:
+ *   отсутствие транзиента — не ошибка, ронять MCP-вызов нельзя (иначе
+ *   модель зациклится на повторе, lesson-92);
+ * - любые сбои записи глотаются с логом (fail-open как во всём модуле).
+ *
+ * @param cwd — директория проекта (та же, что у finalizePhaseStatus)
+ * @param taskKey — ID задачи в любом регистре
+ * @param reason — причина аварии (текст отчёта агента), обрезается до 500
+ * @returns true, если флаг действительно записан в существующую запись кэша
+ */
+export function markPhaseAborted(cwd: string, taskKey: string, reason?: string): boolean {
+  try {
+    const key = taskKey.toUpperCase();
+    const cache = readCache(cwd);
+    const entry = cache[key];
+    if (!entry) {
+      // Транзиента нет — сигнал некуда писать; статус фазы и так не тронут
+      return false;
+    }
+    entry.aborted = true;
+    if (typeof reason === 'string' && reason.trim() !== '') {
+      entry.abortedReason = reason.trim().slice(0, 500);
+    }
+    writeCache(cwd, cache);
+    console.log(`[phase-transient] ${key}: фаза ${entry.phase} помечена прерванной (aborted)`);
+    return true;
+  } catch (err) {
+    console.log(`[phase-transient] markPhaseAborted(${taskKey}) не удался: ${(err as Error).message}`);
+    return false;
+  }
+}
+
+/**
  * Финализирует транзиентный статус ЗАВЕРШИВШЕЙСЯ фазы.
  *
  * Вызывается в finish() spawnQwenRun строго ДО onExit: авто-очередь
@@ -188,9 +244,10 @@ function removeEntry(cwd: string, taskKey: string): void {
  * - записи нет (служебная фаза/транзиент не ставился) → выход;
  * - статус уже не In Progress → агент сам зафиксировал итог
  *   (backlog_finish_phase/rejectTaskFile) → не перетираем, только чистим кэш;
- * - успех (exitCode 0 и не is_error) → produces_status от исходного статуса
- *   (fallback — сам исходный, если перехода вдруг нет);
- * - провал → откат к исходному статусу + комментарий-причина (@agent).
+ * - успех (exitCode 0, не is_error и НЕ aborted — VL-244) → produces_status
+ *   от исходного статуса (fallback — сам исходный, если перехода вдруг нет);
+ * - провал (в т.ч. при exitCode 0, если агент прислал aborted: true) →
+ *   откат к исходному статусу + комментарий-причина (@agent).
  *
  * @param record — финальный PhaseRun (exitCode/result/logTail)
  */
@@ -210,7 +267,10 @@ export function finalizePhaseStatus(
     if (!task) return;
     if (task.status !== 'In Progress') return; // итог зафиксирован агентом
     const phaseName = entry.phase || phase;
-    if (record.exitCode === 0 && record.result?.is_error !== true) {
+    // VL-244: явный aborted-флаг агента сильнее кода выхода — «обычный текст
+    // с exit 0» больше не означает «фаза выполнена»
+    const aborted = entry.aborted === true;
+    if (!aborted && record.exitCode === 0 && record.result?.is_error !== true) {
       const workflow = getWorkflowForTask(cwd, task);
       const next = getStatusAfterPhase(workflow, entry.prevStatus, phaseName) ?? entry.prevStatus;
       updateTaskFile(cwd, taskKey, { status: next });
@@ -218,16 +278,16 @@ export function finalizePhaseStatus(
         `[phase-transient] ${taskKey}: фаза ${phaseName} завершилась — статус ${entry.prevStatus} → ${next}`
       );
     } else {
-      const tail = record.logTail ? `: ${record.logTail.slice(-200)}` : '';
+      // Причина: либо явный aborted-флаг (с текстом отчёта агента), либо
+      // код выхода + хвост лога. Fallback по тексту лога («не завершена»)
+      // НЕ используется как критерий — только диагностика (VL-244).
+      const reason = aborted
+        ? `Фаза ${phaseName} прервана агентом (aborted)${entry.abortedReason ? `: ${entry.abortedReason}` : ''} — статус возвращён к ${entry.prevStatus}.`
+        : `Фаза ${phaseName} не удалась (код выхода ${record.exitCode ?? '—'})${record.logTail ? `: ${record.logTail.slice(-200)}` : ''} — статус возвращён к ${entry.prevStatus}.`;
       updateTaskFile(cwd, taskKey, { status: entry.prevStatus });
-      addComment(
-        cwd,
-        taskKey,
-        `Фаза ${phaseName} не удалась (код выхода ${record.exitCode ?? '—'})${tail} — статус возвращён к ${entry.prevStatus}.`,
-        '@agent'
-      );
+      addComment(cwd, taskKey, reason, '@agent');
       console.log(
-        `[phase-transient] ${taskKey}: фаза ${phaseName} провалена — статус откачен к ${entry.prevStatus}`
+        `[phase-transient] ${taskKey}: фаза ${phaseName} ${aborted ? 'прервана агентом (aborted)' : 'провалена'} — статус откачен к ${entry.prevStatus}`
       );
     }
   } catch (err) {

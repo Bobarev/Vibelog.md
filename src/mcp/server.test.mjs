@@ -209,6 +209,13 @@ describe('MCP-сервер', () => {
       `comment должен быть в required схемы: ${JSON.stringify(finishDef.inputSchema.required)}`,
     );
     assert.equal(finishDef.inputSchema.properties.comment.type, 'string', 'comment объявлен в properties как string');
+    // VL-244 (AC3): явный сигнал «фаза прервана» — без него аварийные ветки
+    // шаблонов завершались кодом 0 и получали produces_status (VL-219)
+    assert.equal(
+      finishDef.inputSchema.properties.aborted.type,
+      'boolean',
+      'aborted объявлен в properties как boolean',
+    );
   });
 
   it('tools/call — backlog_create_task создаёт задачу', async () => {
