@@ -12,7 +12,7 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync, mkdtempSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { listLocalTools, validateArgs, miniGlobToRegex, checkShellCommandInProject, truncateToolOutput, maskSecrets, TOOL_OUTPUT_MAX_CHARS } from '../../dist/agent/tools.js';
+import { listLocalTools, validateArgs, miniGlobToRegex, checkShellCommandInProject, truncateToolOutput, maskSecrets, formatFileSlice, TOOL_OUTPUT_MAX_CHARS } from '../../dist/agent/tools.js';
 
 const TMP = mkdtempSync(join(tmpdir(), 'vibelog-agent-tools-'));
 let tools;
@@ -536,5 +536,66 @@ describe('VL-233 — листинг каталога в read_file', () => {
   it('AC3: пустой путь → «Путь не задан»', async () => {
     const out = await byName.get('read_file').handler({ path: '' });
     assert.equal(out, 'Путь не задан');
+  });
+});
+
+describe('VL-250 — длинные строки (JSONL) в read_file', () => {
+  // Каждая запись JSONL — одна длинная строка (> лимита вывода), поэтому
+  // старый «slice по строкам + посимвольная обрезка» давал всегда первую запись.
+  const L0 = 'line0:' + 'a'.repeat(10000);
+  const L1 = 'line1:' + 'b'.repeat(10000);
+  const L2 = 'line2:' + 'c'.repeat(10000);
+  const JSONL = [L0, L1, L2].join('\n');
+
+  beforeAll(() => {
+    writeFileSync(join(TMP, 'session.jsonl'), JSONL, 'utf-8');
+    writeFileSync(join(TMP, 'one-huge.txt'), 'Z'.repeat(30000), 'utf-8');
+  });
+
+  it('AC1: offset=1 возвращает вторую запись, а не первую', async () => {
+    const out = await byName.get('read_file').handler({ path: 'session.jsonl', offset: 1, limit: 1 });
+    assert.ok(out.startsWith('line1:'), `ожидалась вторая запись, получено: ${out.slice(0, 40)}`);
+    assert.ok(!out.startsWith('line0:'));
+    assert.match(out, /…\[вывод обрезан: показаны строки 2–2 из 3/);
+  });
+
+  it('AC2: ответ ≤ лимита и для среза без limit, и для одной огромной строки', async () => {
+    const noLimit = await byName.get('read_file').handler({ path: 'session.jsonl', offset: 1 });
+    assert.ok(noLimit.length <= TOOL_OUTPUT_MAX_CHARS, `длина ${noLimit.length}`);
+    assert.match(noLimit, /…\[вывод обрезан/);
+
+    const huge = await byName.get('read_file').handler({ path: 'one-huge.txt' });
+    assert.ok(huge.length <= TOOL_OUTPUT_MAX_CHARS, `длина ${huge.length}`);
+    assert.match(huge, /…\[вывод обрезан/);
+  });
+
+  it('AC2: усечённая строка помечена и указан следующий offset', async () => {
+    const out = await byName.get('read_file').handler({ path: 'one-huge.txt', limit: 1 });
+    assert.match(out, /…\[строка усечена: показано \d+ из 30000 символов\]/);
+    assert.match(out, /продолжение — offset=\d+/);
+  });
+
+  it('formatFileSlice — чистая функция: границы и дефолты', () => {
+    // Пустой срез (offset за концом файла) — как раньше пустая строка.
+    assert.equal(formatFileSlice('a\nb', 5, 1), '');
+    // Невалидные offset/limit → дефолты (0 и «до конца»), как раньше.
+    assert.equal(formatFileSlice('a\nb', -1, 0), 'a\nb');
+    // Срез целиком в лимите возвращается дословно.
+    assert.equal(formatFileSlice('alpha\nbeta\nalpha', 0, undefined), 'alpha\nbeta\nalpha');
+    assert.equal(formatFileSlice('alpha\nbeta\nalpha', 1, 1), 'beta');
+    // Инвариант длины для среза из многих длинных строк.
+    const many = [L0, L1, L2, L0].join('\n');
+    assert.ok(formatFileSlice(many, 0, undefined).length <= TOOL_OUTPUT_MAX_CHARS);
+    // Все три записи достижимы по offset (файл читаем по диапазонам).
+    for (const [i, prefix] of ['line0:', 'line1:', 'line2:'].entries()) {
+      assert.ok(formatFileSlice(JSONL, i, 1).startsWith(prefix), `offset=${i}`);
+    }
+  });
+
+  it('AC4: обычные файлы читаются как раньше', async () => {
+    const full = await byName.get('read_file').handler({ path: 'grep/f1.txt' });
+    assert.equal(full, 'alpha\nbeta\nalpha\n');
+    const slice = await byName.get('read_file').handler({ path: 'grep/f1.txt', offset: 1, limit: 1 });
+    assert.equal(slice, 'beta');
   });
 });

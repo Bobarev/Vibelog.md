@@ -24,6 +24,7 @@ import {
   chatToolDefs,
   loadChatSystemTemplate,
   CHAT_DISALLOWED_TOOLS,
+  makeReadFileTool,
 } from '../../dist/web/tool-policy.js';
 import { listTools } from '../../dist/mcp/tools.js';
 
@@ -169,5 +170,34 @@ describe('VL-219 — loadChatSystemTemplate', () => {
     assert.ok(text.includes('подтверждени'), 'правило подтверждения write-операций');
     // Текст запрета destructive-операций (вариант (c))
     assert.ok(text.includes('Запрещены в чате'), 'текст запрета CHAT_DISALLOWED_TOOLS');
+  });
+});
+
+describe('VL-250 — read_file веб-чата на JSONL с длинными строками', () => {
+  it('offset=1 отдаёт вторую запись, ответ ≤ 8 КБ', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'vl250-chat-read-'));
+    tmpDirs.push(cwd);
+    const line = (tag) => tag + ': ' + tag.repeat(9000);
+    writeFileSync(
+      join(cwd, 's.jsonl'),
+      [line('first'), line('second'), line('third')].join('\n'),
+      'utf-8',
+    );
+    const tool = makeReadFileTool(cwd);
+    const second = await tool.handler({ path: 's.jsonl', offset: 1, limit: 1 });
+    assert.ok(second.startsWith('second:'), `ожидалась вторая запись, получено: ${second.slice(0, 30)}`);
+    assert.ok(second.length <= 8192, `длина ${second.length}`);
+
+    // Все три записи достижимы по offset — файл читаем по диапазонам.
+    for (const [i, prefix] of ['first:', 'second:', 'third:'].entries()) {
+      const out = await tool.handler({ path: 's.jsonl', offset: i, limit: 1 });
+      assert.ok(out.startsWith(prefix), `offset=${i}`);
+      assert.ok(out.length <= 8192, `длина offset=${i}: ${out.length}`);
+    }
+
+    // Обычный файл — прежнее поведение.
+    writeFileSync(join(cwd, 'a.txt'), 'alpha\nbeta\nalpha\n', 'utf-8');
+    assert.equal(await tool.handler({ path: 'a.txt' }), 'alpha\nbeta\nalpha\n');
+    assert.equal(await tool.handler({ path: 'a.txt', offset: 1, limit: 1 }), 'beta');
   });
 });

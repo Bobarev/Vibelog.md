@@ -76,6 +76,79 @@ export function truncateToolOutput(text: string): string {
   );
 }
 
+/** Минимальный бюджет на одну строку: маркер усечения строки должен помещаться. */
+const READ_LINE_MIN_CHARS = 200;
+
+/**
+ * Форматирует срез файла по строкам с бюджетом TOOL_OUTPUT_MAX_CHARS (VL-250).
+ *
+ * offset/limit применяются ДО обрезки: бюджет символов расходуется на выбранные
+ * строки, а не на весь файл. Без этого одна строка длиннее лимита (запись
+ * JSONL-сессии агента) съедала весь бюджет, и `offset`/`limit` не могли сдвинуть
+ * окно — файл становился нечитаемым в принципе (инцидент VL-250: 8.3 КБ
+ * system-промпта в первой строке при любом диапазоне).
+ *
+ * Если выбранный срез целиком помещается в лимит — возвращается без изменений
+ * (регрессия обычных файлов, AC4). Иначе строки копятся до бюджета, первая
+ * не влезающая строка обрезается с маркером, а хвост ответа подсказывает
+ * следующий offset (иначе модель зацикливается на «сузь запрос», lesson-92).
+ *
+ * @param content — содержимое файла целиком (utf-8)
+ * @param offsetRaw — 0-based номер строки начала (невалидное → 0)
+ * @param limitRaw — максимум строк (невалидное/0 → до конца файла)
+ */
+export function formatFileSlice(content: string, offsetRaw: unknown, limitRaw: unknown): string {
+  const lines = content.split('\n');
+  const offset =
+    typeof offsetRaw === 'number' && offsetRaw >= 0 ? Math.floor(offsetRaw) : 0;
+  const limit =
+    typeof limitRaw === 'number' && limitRaw > 0 ? Math.floor(limitRaw) : lines.length;
+  const slice = lines.slice(offset, offset + limit);
+  const joined = slice.join('\n');
+  // Быстрый путь: срез влезает в лимит — отдаём дословно, как до VL-250.
+  if (joined.length <= TOOL_OUTPUT_MAX_CHARS) return joined;
+  if (slice.length === 0) return joined;
+
+  // Резерв под хвостовую пометку. Ширина чисел в ней неизвестна заранее,
+  // поэтому берём шаблон с 6-значными числами — он заведомо не короче
+  // реального (иначе итог вылезал бы за лимит и резался в середине слова).
+  const reserve = `\n…[вывод обрезан: показаны строки 000000–000000 из 000000; продолжение — offset=000000]`.length;
+  const budget = TOOL_OUTPUT_MAX_CHARS - reserve;
+
+  const parts: string[] = [];
+  let used = 0;
+  let truncatedLine = false;
+  for (let i = 0; i < slice.length; i += 1) {
+    const line = slice[i];
+    const add = (parts.length > 0 ? 1 : 0) + line.length; // +1 на '\n'
+    if (used + add <= budget) {
+      parts.push(line);
+      used += add;
+      continue;
+    }
+    // Строка не влезает в остаток бюджета: режем её (не меньше минимума),
+    // чтобы модели было видно содержимое записи, а не пустота.
+    const available = budget - used - (parts.length > 0 ? 1 : 0);
+    const marker = `\n…[строка усечена: показано 000000 из 000000 символов]`;
+    const cut = available - marker.length;
+    if (cut >= READ_LINE_MIN_CHARS) {
+      parts.push(line.slice(0, cut) + `\n…[строка усечена: показано ${cut} из ${line.length} символов]`);
+      truncatedLine = true;
+    }
+    break;
+  }
+
+  const shownTo = offset + parts.length; // номер последней показанной строки (0-based + 1)
+  const lastShown = Math.max(offset + 1, shownTo);
+  const tail =
+    `\n…[вывод обрезан: показаны строки ${offset + 1}–${lastShown} из ${lines.length}; ` +
+    `продолжение — offset=${lastShown}]` +
+    (truncatedLine ? '\n…[последняя строка усечена: остаток недоступен, читай её через grep_search или run_shell_command]' : '');
+  const out = parts.join('\n') + tail;
+  // Жёсткий инвариант AC2: ответ никогда не превышает лимит.
+  return out.length <= TOOL_OUTPUT_MAX_CHARS ? out : out.slice(0, TOOL_OUTPUT_MAX_CHARS);
+}
+
 /**
  * Валидация аргументов по JSON-схеме (top-level): обязательные поля и типы
  * string/number/boolean/array/object. Нарушение — строка модели вида
@@ -258,7 +331,9 @@ function makeReadFile(cwd: string): ToolSpec {
     description:
       'Читает текстовый файл проекта (offset — 0-based номер строки начала, limit — максимум строк). ' +
       'Если path — каталог, возвращает отсортированный листинг (каталоги с "/", лимит 200 записей; ' +
-      'offset/limit игнорируются; node_modules/.git/dist не разворачиваются).',
+      'offset/limit игнорируются; node_modules/.git/dist не разворачиваются). ' +
+      'Файлы с очень длинными строками (JSONL) читаются по диапазонам: offset/limit применяются ' +
+      'до обрезки лимита 8 КБ, слишком длинная строка усекается с подсказкой следующего offset.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -279,11 +354,7 @@ function makeReadFile(cwd: string): ToolSpec {
       }
       const read = readTextFile(target.path);
       if (!read.ok) return read.error;
-      const lines = read.content.split('\n');
-      const offset = typeof args.offset === 'number' && args.offset >= 0 ? Math.floor(args.offset) : 0;
-      const limit = typeof args.limit === 'number' && args.limit > 0 ? Math.floor(args.limit) : lines.length;
-      const slice = lines.slice(offset, offset + limit);
-      return truncateToolOutput(slice.join('\n'));
+      return formatFileSlice(read.content, args.offset, args.limit);
     },
   };
 }
