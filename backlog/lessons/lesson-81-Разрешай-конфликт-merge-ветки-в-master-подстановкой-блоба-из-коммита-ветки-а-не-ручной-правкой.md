@@ -12,6 +12,7 @@ source_tasks:
   - VL-219
 linked_tasks:
   - VL-219
+  - VL-235
 created_date: 2026-10-30
 updated_date: 2026-10-30
 supersedes: ''
