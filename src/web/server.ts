@@ -1,7 +1,10 @@
 /**
  * HTTP-сервер веб-интерфейса Vibelog.md.
  *
- * Слушает только на 127.0.0.1 (не 0.0.0.0) — безопасно по умолчанию.
+ * Слушает адрес из параметра host — по умолчанию 127.0.0.1 (безопасно:
+ * доска открыта только на этой машине). VL-266: `--host 0.0.0.0` открывает
+ * доступ из локальной сети; при этом в консоль печатаются и локальный URL,
+ * и LAN-адреса машины.
  * Обслуживает:
  * - Статику React-приложения (web/dist) на / и /assets/*
  * - REST API на /api/*
@@ -19,6 +22,7 @@ import { runChat } from './chat.js';
 import { getAssetsHtml } from './assets.js';
 import { serveStatic } from './static.js';
 import { recoverStalePhaseStatuses } from '../core/phase-transient.js';
+import { DEFAULT_WEB_HOST, lanAddresses, startupLines, startupUrls } from './host-binding.js';
 
 // Путь к собранному React UI. Вычисляется от расположения этого модуля
 // (dist/web/server.js → ../../web/dist), а не от cwd: команда vibelog browser
@@ -31,8 +35,17 @@ const webDistDir = fileURLToPath(new URL('../../web/dist', import.meta.url));
  * @param cwd — рабочая директория проекта
  * @param port — порт для прослушивания
  * @param openBrowser — открывать ли браузер автоматически
+ * @param staticDir — каталог статики React UI
+ * @param host — адрес прослушивания (VL-266): '127.0.0.1' по умолчанию,
+ *   '0.0.0.0' — доступ из локальной сети
  */
-export function startWebServer(cwd: string, port = 3030, openBrowser = true, staticDir: string = webDistDir): Server {
+export function startWebServer(
+  cwd: string,
+  port = 3030,
+  openBrowser = true,
+  staticDir: string = webDistDir,
+  host: string = DEFAULT_WEB_HOST,
+): Server {
   // VL-196: recovery «зависших» транзиентных In Progress после рестарта
   // процесса (AC3) — сбой recovery не должен мешать подъёму сервера
   try {
@@ -130,14 +143,23 @@ export function startWebServer(cwd: string, port = 3030, openBrowser = true, sta
     res.end('Not found');
   });
 
-  server.listen(port, '127.0.0.1', () => {
-    const url = `http://127.0.0.1:${port}`;
-    console.log(`Веб-интерфейс Vibelog.md: ${url}`);
+  server.listen(port, host, () => {
+    // VL-266: фактический порт берём у сокета: при port=0 (тесты) в
+    // параметре остался бы 0, а не выданный ОС эфемерный порт
+    const addr = server.address();
+    const actualPort = addr && typeof addr === 'object' ? addr.port : port;
+
+    // VL-266: первая строка — local-URL в прежнем формате (контракт /web start
+    // бота, VL-161); при wildcard-хосте ниже добавляются LAN-адреса машины
+    const addresses = lanAddresses();
+    const { local } = startupUrls(host, actualPort, addresses);
+    for (const line of startupLines(host, actualPort, addresses)) console.log(line);
 
     if (openBrowser) {
-      // Открываем браузер на macOS / Linux
+      // Открываем браузер на macOS / Linux — всегда local-URL:
+      // `open http://0.0.0.0:3030` на части систем не срабатывает
       const cmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
-      exec(`${cmd} ${url}`, () => {});
+      exec(`${cmd} ${local}`, () => {});
     }
   });
 

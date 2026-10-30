@@ -140,7 +140,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('init', colors.cyan)} [name] [--prefix LB]          Инициализировать backlog
   ${colorize('task', colors.cyan)} create|list|view|edit|...     Управление задачами
   ${colorize('board', colors.cyan)} [--export]                   Канбан-доска
-  ${colorize('browser', colors.cyan)} [--port N] [--no-open]      Веб-интерфейс
+  ${colorize('browser', colors.cyan)} [--port N] [--host ADDR]   Веб-интерфейс
   ${colorize('bot', colors.cyan)}                             Telegram-бот (grammy)
   ${colorize('agent', colors.cyan)} [task-id]               Чат с LLM-агентом (TUI); analyze <ref> [комментарий] — анализ сессии
   ${colorize('session', colors.cyan)} summary <id> [--task VL-N] [--json]  Сводка сессии: раны, tool-calls, payload, правки
@@ -378,6 +378,18 @@ vibelog draft <subcommand> [опции]
   edit <id> [--title ...] [-d desc] [-l labels]
   promote <id>      — черновик → задача (черновик удаляется)
   archive <id>      — перенос в completed/`,
+
+    browser: `
+vibelog browser [--port N] [--host ADDR] [--no-open]
+
+Веб-интерфейс (kanban с drag-and-drop).
+  --port  — порт (по умолчанию default_port из config, иначе 3030)
+  --host  — адрес прослушивания: 127.0.0.1 (по умолчанию) или 0.0.0.0
+            для доступа из локальной сети. При wildcard-адресе в консоль
+            печатаются локальный URL и LAN-адреса машины
+  --no-open — не открывать браузер
+
+Хост можно задать настройкой web_host в .vibelog/settings.json (флаг приоритетнее).`,
 
     decision: `
 vibelog decision <subcommand> [опции]

@@ -11,7 +11,7 @@
  * настоящий web/dist репозитория.
  */
 
-import { describe, it, beforeAll, afterAll } from 'vitest';
+import { describe, it, beforeAll, afterAll, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -139,6 +139,41 @@ describe('vibelog browser + web/dist (VL-26)', () => {
       assert.doesNotMatch(html, /id="root"/);
     } finally {
       server.close();
+    }
+  });
+
+  it('VL-266: host=0.0.0.0 — сервер слушает wildcard и печатает LAN-адрес', async () => {
+    // console.log перехватываем — строки старта пишет сервер
+    const lines = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((...args) => {
+      lines.push(args.map(String).join(' '));
+    });
+    let server;
+    try {
+      server = startWebServer(cwd, 0, false, reactDist, '0.0.0.0');
+      await new Promise(resolve => server.on('listening', () => resolve()));
+      const { port } = server.address();
+
+      // Adress сокета — wildcard (на части систем node отдаёт '0.0.0.0')
+      const bound = server.address().address;
+      assert.equal(bound, '0.0.0.0');
+
+      // Первая строка — прежний формат контракта /web start бота (VL-161)
+      assert.equal(lines[0], `Веб-интерфейс Vibelog.md: http://127.0.0.1:${port}`);
+      // LAN-строки — по одной на адрес машины; на CI их может не быть, поэтому
+      // проверяем формат тех, что есть, и не требуем наличия хотя бы одной
+      const lanLines = lines.filter(l => l.startsWith('Доступ из локальной сети: '));
+      assert.equal(lanLines.length, lines.length - 1, 'после local-строки только LAN');
+      for (const line of lanLines) {
+        assert.match(line, new RegExp(`^Доступ из локальной сети: http://[^:]+:\\d+$`));
+      }
+
+      // Сервер реально обслуживает loopback-запрос при wildcard-биндинге
+      const res = await fetch(`http://127.0.0.1:${port}/`);
+      assert.equal(res.status, 200);
+    } finally {
+      logSpy.mockRestore();
+      server?.close();
     }
   });
 });

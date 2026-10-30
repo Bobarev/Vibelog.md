@@ -45,6 +45,9 @@ vibelog board
 
 # Веб-интерфейс (kanban с drag-and-drop)
 vibelog browser
+
+# ...с доступом из локальной сети (по умолчанию слушает только 127.0.0.1)
+vibelog browser --host 0.0.0.0
 ```
 
 Остальные команды, флаги и диагностика — в [CLI-справочнике](backlog/docs/doc-7-CLI-справочник-Vibelogmd.md).
