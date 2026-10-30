@@ -18,7 +18,7 @@ Vibelog.md реализует MCP-сервер поверх stdio (JSON-RPC 2.0)
 | `backlog_manage_dod` | Управление Definition of Done |
 | `backlog_add_comment` | Добавить комментарий к задаче |
 | `backlog_update_dependencies` | Зависимости задач (с детектом циклов) |
-| `backlog_search` | Поиск по текстовому запросу |
+| `backlog_search` | Поиск задач: токены (И-логика) с ранжированием id > title > labels > description; ответ `{found, returned, tasks}` |
 | `backlog_ready` | Задачи, готовые к выполнению |
 | `milestone_list` | Список вех (milestones) |
 | `milestone_add` | Создать веху |

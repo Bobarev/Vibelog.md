@@ -247,8 +247,9 @@ describe('MCP-сервер', () => {
     const callResp = responses.find(r => r.id === 2);
     assert.ok(callResp);
     const data = JSON.parse(callResp.result.content[0].text);
-    assert.ok(data.length >= 1);
-    assert.ok(data[0].title.includes('MCP'));
+    assert.ok(data.found >= 1);
+    assert.ok(data.tasks.length >= 1);
+    assert.ok(data.tasks[0].title.includes('MCP'));
   });
 
   it('tools/call — backlog_ready возвращает готовые задачи', async () => {
