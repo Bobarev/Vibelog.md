@@ -79,6 +79,43 @@ export function truncateToolOutput(text: string): string {
 /** Минимальный бюджет на одну строку: маркер усечения строки должен помещаться. */
 const READ_LINE_MIN_CHARS = 200;
 
+/** Максимальная длина пути в маркере продолжения: длиннее — печатаем только offset. */
+const TAIL_PATH_MAX_CHARS = 200;
+
+/**
+ * Собирает хвостовую пометку об обрезке среза (VL-250, VL-252).
+ *
+ * Отдельная функция нужна потому, что резерв бюджета считается ДО формирования
+ * реального хвоста: подставляем в ту же формулу числа заведомо большей ширины
+ * (7–8 знаков), и резерв гарантированно не короче фактического.
+ *
+ * `offsetHint` — 0-based номер строки начала продолжения (для необязательного
+ * `offset`), `pathFrom`/`pathEnd` — 1-based границы диапазона для `path`.
+ * Подстроки `…[вывод обрезан` и `продолжение — offset=` сохраняются в обоих
+ * вариантах: на них матчат существующие тесты (lesson-76). Готовый `path`
+ * печатается дополнительно — модель заполняет обязательный `path` всегда,
+ * поэтому строка копируется в следующий вызов без правок (VL-252).
+ * Слишком длинный путь в маркер не попадает — иначе бюджет вывода схлопывается.
+ */
+function buildSliceTail(
+  fromLine: number,
+  lastShown: number,
+  totalLines: number,
+  offsetHint: number,
+  pathFrom: number,
+  pathEnd: number,
+  pathLabel?: string,
+): string {
+  const rangeHint =
+    pathLabel !== undefined && pathLabel.length <= TAIL_PATH_MAX_CHARS
+      ? `, path="${pathLabel}:${pathFrom}-${pathEnd}"`
+      : '';
+  return (
+    `\n…[вывод обрезан: показаны строки ${fromLine}–${lastShown} из ${totalLines}; ` +
+    `продолжение — offset=${offsetHint}${rangeHint}]`
+  );
+}
+
 /**
  * Форматирует срез файла по строкам с бюджетом TOOL_OUTPUT_MAX_CHARS (VL-250).
  *
@@ -96,8 +133,18 @@ const READ_LINE_MIN_CHARS = 200;
  * @param content — содержимое файла целиком (utf-8)
  * @param offsetRaw — 0-based номер строки начала (невалидное → 0)
  * @param limitRaw — максимум строк (невалидное/0 → до конца файла)
+ * @param pathLabel — относительный путь файла для маркера продолжения (VL-252).
+ *   Если передан, хвост печатает готовый к копированию аргумент
+ *   `path="<файл>:<начало>-<конец>"`: модель заполняет обязательный `path`
+ *   всегда, а необязательный `offset` — нет (инцидент VL-252: ~25 вызовов
+ *   с одним `{path}` подряд при указанном в маркере offset).
  */
-export function formatFileSlice(content: string, offsetRaw: unknown, limitRaw: unknown): string {
+export function formatFileSlice(
+  content: string,
+  offsetRaw: unknown,
+  limitRaw: unknown,
+  pathLabel?: string,
+): string {
   const lines = content.split('\n');
   const offset =
     typeof offsetRaw === 'number' && offsetRaw >= 0 ? Math.floor(offsetRaw) : 0;
@@ -110,9 +157,17 @@ export function formatFileSlice(content: string, offsetRaw: unknown, limitRaw: u
   if (slice.length === 0) return joined;
 
   // Резерв под хвостовую пометку. Ширина чисел в ней неизвестна заранее,
-  // поэтому берём шаблон с 6-значными числами — он заведомо не короче
+  // поэтому берём шаблон с 7–8-значными числами — он заведомо не короче
   // реального (иначе итог вылезал бы за лимит и резался в середине слова).
-  const reserve = `\n…[вывод обрезан: показаны строки 000000–000000 из 000000; продолжение — offset=000000]`.length;
+  const reserve = buildSliceTail(
+    1000000,
+    1000000,
+    10000000,
+    10000000,
+    1000000,
+    10000000,
+    pathLabel,
+  ).length;
   const budget = TOOL_OUTPUT_MAX_CHARS - reserve;
 
   const parts: string[] = [];
@@ -140,9 +195,12 @@ export function formatFileSlice(content: string, offsetRaw: unknown, limitRaw: u
 
   const shownTo = offset + parts.length; // номер последней показанной строки (0-based + 1)
   const lastShown = Math.max(offset + 1, shownTo);
+  // Следующий диапазон — чанк того же размера, что и показанный, но не за
+  // концом файла (иначе маркер предлагал бы пустой хвост).
+  const nextFrom = lastShown + 1;
+  const nextEnd = Math.min(lastShown + Math.max(1, parts.length), lines.length);
   const tail =
-    `\n…[вывод обрезан: показаны строки ${offset + 1}–${lastShown} из ${lines.length}; ` +
-    `продолжение — offset=${lastShown}]` +
+    buildSliceTail(offset + 1, lastShown, lines.length, lastShown, nextFrom, nextEnd, pathLabel) +
     (truncatedLine ? '\n…[последняя строка усечена: остаток недоступен, читай её через grep_search или run_shell_command]' : '');
   const out = parts.join('\n') + tail;
   // Жёсткий инвариант AC2: ответ никогда не превышает лимит.
@@ -150,10 +208,73 @@ export function formatFileSlice(content: string, offsetRaw: unknown, limitRaw: u
 }
 
 /**
- * Валидация аргументов по JSON-схеме (top-level): обязательные поля и типы
- * string/number/boolean/array/object. Нарушение — строка модели вида
- * «Невалидные аргументы инструмента X: …», не исключение.
+ * Разбирает `path` инструмента read_file с необязательным суффиксом диапазона
+ * строк (VL-252): `файл:171-340`, `файл:171`, алиас `файл#L171-L340`.
+ *
+ * Зачем: `offset`/`limit` — необязательные поля схемы, и модель, формируя
+ * tool-вызов, их просто не заполняет («читаю с начала»), даже когда маркер
+ * предыдущего ответа прямо называет следующий offset. Инструмент не может
+ * отличить «намеренно не передан» от «не удалось передать», поэтому диапазон
+ * в маркере должен ехать в ОБЯЗАТЕЛЬНОМ аргументе `path` — он заполняется
+ * всегда (инцидент VL-252: ~25 одинаковых вызовов `{path}` подряд).
+ *
+ * Порядок разбора важен: сначала проверяем, существует ли путь как есть
+ * (в файловых системах macOS `:` допустим в имени файла — `a:1-2.md` должен
+ * читаться как файл), и только потом трактуем суффикс как диапазон.
  */
+export function parseReadPath(
+  cwd: string,
+  rawPath: string,
+):
+  | { ok: true; path: string; offset?: number; limit?: number; rangeRel?: string }
+  | { ok: false; error: string } {
+  // 1. Существующий путь — обычный файл, суффикс не трогаем.
+  if (existsSync(resolve(cwd, rawPath))) return { ok: true, path: rawPath };
+
+  // 2. Суффикс диапазона: `:НАЧАЛО[-КОНЕЦ]` по последнему `:` либо `#L…`.
+  //    Обе регулярки привязаны к концу строки — «последний `:` + цифры + конец».
+  let base: string | undefined;
+  let startText: string | undefined;
+  let endText: string | undefined;
+  const colon = /^(.*):(\d+)(?:-(\d+))?$/s.exec(rawPath);
+  if (colon) {
+    base = colon[1];
+    startText = colon[2];
+    endText = colon[3];
+  } else {
+    const hash = /^(.*)#L(\d+)(?:-L(\d+))?$/s.exec(rawPath);
+    if (hash) {
+      base = hash[1];
+      startText = hash[2];
+      endText = hash[3];
+    }
+  }
+  // Суффикс не распознан (`файл:abc`) — обычный путь; ошибку «Файл не найден»
+  // выдаст handler штатно.
+  if (base === undefined || startText === undefined) return { ok: true, path: rawPath };
+  if (base === '') return { ok: false, error: 'Путь не задан' };
+
+  const start = Number(startText);
+  const end = endText === undefined ? undefined : Number(endText);
+  if (!Number.isFinite(start) || start < 1 || (end !== undefined && (!Number.isFinite(end) || end < start))) {
+    return {
+      ok: false,
+      error:
+        `Некорректный диапазон строк в path: "${rawPath}". ` +
+        'Формат: путь:НАЧАЛО-КОНЕЦ или путь:НАЧАЛО (1-based, включительно)',
+    };
+  }
+
+  return {
+    ok: true,
+    path: base,
+    offset: start - 1,
+    limit: end === undefined ? undefined : end - start + 1,
+    rangeRel: rawPath,
+  };
+}
+
+
 export function validateArgs(
   schema: Record<string, unknown>,
   args: Record<string, unknown>,
@@ -324,12 +445,18 @@ function readTextFile(abs: string): { ok: true; content: string } | { ok: false;
  * Инструмент read_file: строки файла (offset 0-based, limit сверху) либо
  * листинг каталога (VL-233). Путь резолвится с allowRoot — `path: '.']`
  * даёт листинг корня проекта, а не отказ «Путь должен указывать на файл».
+ * Диапазон строк допустим прямо в `path` (VL-252, parseReadPath): обязательный
+ * аргумент надёжнее необязательного offset, который модель опускает.
  */
 function makeReadFile(cwd: string): ToolSpec {
   return {
     name: 'read_file',
     description:
       'Читает текстовый файл проекта (offset — 0-based номер строки начала, limit — максимум строк). ' +
+      'Диапазон можно задать прямо в path: "файл:171-340" — строки 171–340 (1-based, включительно), ' +
+      '"файл:171" — с 171-й до конца; диапазон в path приоритетнее offset/limit. ' +
+      'Маркер обрезки в конце ответа содержит готовый path="…:НАЧАЛО-КОНЕЦ" — скопируй его ' +
+      'в следующий вызов, чтобы прочитать продолжение. ' +
       'Если path — каталог, возвращает отсортированный листинг (каталоги с "/", лимит 200 записей; ' +
       'offset/limit игнорируются; node_modules/.git/dist не разворачиваются). ' +
       'Файлы с очень длинными строками (JSONL) читаются по диапазонам: offset/limit применяются ' +
@@ -337,7 +464,12 @@ function makeReadFile(cwd: string): ToolSpec {
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Путь к файлу или каталогу относительно корня проекта' },
+        path: {
+          type: 'string',
+          description:
+            'Путь к файлу или каталогу относительно корня проекта; ' +
+            'допустим суффикс диапазона строк ":НАЧАЛО-КОНЕЦ" или ":НАЧАЛО" (1-based, включительно)',
+        },
         offset: { type: 'number', description: '0-based номер строки начала' },
         limit: { type: 'number', description: 'Максимум возвращаемых строк' },
       },
@@ -346,7 +478,10 @@ function makeReadFile(cwd: string): ToolSpec {
     handler: async (args) => {
       const rawPath = args.path;
       if (typeof rawPath !== 'string' || rawPath === '') return 'Путь не задан';
-      const target = resolveInProject(cwd, rawPath, { allowRoot: true });
+      // Диапазон в path (VL-252) переопределяет необязательные offset/limit.
+      const parsed = parseReadPath(cwd, rawPath);
+      if (!parsed.ok) return parsed.error;
+      const target = resolveInProject(cwd, parsed.path, { allowRoot: true });
       if (!target.ok) return target.error;
       if (existsSync(target.path) && statSync(target.path).isDirectory()) {
         const listing = formatDirListing(cwd, target.path);
@@ -354,7 +489,12 @@ function makeReadFile(cwd: string): ToolSpec {
       }
       const read = readTextFile(target.path);
       if (!read.ok) return read.error;
-      return formatFileSlice(read.content, args.offset, args.limit);
+      return formatFileSlice(
+        read.content,
+        parsed.offset ?? args.offset,
+        parsed.limit ?? args.limit,
+        relative(cwd, target.path),
+      );
     },
   };
 }

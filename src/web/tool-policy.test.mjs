@@ -201,3 +201,54 @@ describe('VL-250 — read_file веб-чата на JSONL с длинными с
     assert.equal(await tool.handler({ path: 'a.txt', offset: 1, limit: 1 }), 'beta');
   });
 });
+
+describe('VL-252 — диапазон строк в path для read_file веб-чата', () => {
+  // Тот же общий хелпер parseReadPath, что и у агента (AC5): поведение обязано совпадать.
+  const line = (tag) => tag + ': ' + tag.repeat(9000);
+
+  it('AC1/AC2: path="файл:1-2" и "файл:2" дают нужные записи, ответ ≤ 8 КБ', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'vl252-chat-range-'));
+    tmpDirs.push(cwd);
+    // Короткие записи: проверяем именно выбор диапазона, а не бюджет.
+    const rec = (tag) => tag + ': value';
+    writeFileSync(
+      join(cwd, 'r.jsonl'),
+      [rec('first'), rec('second'), rec('third')].join('\n'),
+      'utf-8',
+    );
+    const tool = makeReadFileTool(cwd);
+    const two = await tool.handler({ path: 'r.jsonl:1-2' });
+    assert.ok(two.startsWith('first:'), `получено: ${two.slice(0, 30)}`);
+    assert.ok(two.includes('second:'), 'вторая запись тоже в диапазоне');
+    assert.ok(!two.includes('third:'), 'третья запись вне диапазона');
+    assert.ok(two.length <= 8192, `длина ${two.length}`);
+
+    const fromSecond = await tool.handler({ path: 'r.jsonl:2' });
+    assert.ok(fromSecond.startsWith('second:'), `получено: ${fromSecond.slice(0, 30)}`);
+    assert.ok(fromSecond.includes('third:'), 'до конца файла');
+    assert.ok(fromSecond.length <= 8192, `длина ${fromSecond.length}`);
+  });
+
+  it('AC3: маркер обрезки содержит копируемый path="s.jsonl:…-…"', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'vl252-chat-tail-'));
+    tmpDirs.push(cwd);
+    writeFileSync(
+      join(cwd, 's.jsonl'),
+      Array.from({ length: 40 }, (_, i) => line(`rec${i}`)).join('\n'),
+      'utf-8',
+    );
+    const out = await makeReadFileTool(cwd).handler({ path: 's.jsonl' });
+    assert.match(out, /…\[вывод обрезан/);
+    assert.match(out, /path="s\.jsonl:\d+-\d+"/);
+    assert.ok(!out.includes(cwd), 'путь в маркере относительный');
+    assert.ok(out.length <= 8192, `длина ${out.length}`);
+  });
+
+  it('AC6: некорректный диапазон — понятная ошибка', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'vl252-chat-bad-'));
+    tmpDirs.push(cwd);
+    writeFileSync(join(cwd, 's.jsonl'), 'one\ntwo\n', 'utf-8');
+    const out = await makeReadFileTool(cwd).handler({ path: 's.jsonl:10-5' });
+    assert.match(out, /Некорректный диапазон строк/);
+  });
+});

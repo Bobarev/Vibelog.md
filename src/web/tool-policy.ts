@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ToolDef } from '../agent/llm.js';
-import { resolveInProject, truncateToolOutput, formatDirListing, formatFileSlice } from '../agent/tools.js';
+import { resolveInProject, truncateToolOutput, formatDirListing, formatFileSlice, parseReadPath } from '../agent/tools.js';
 import { listTools } from '../mcp/tools.js';
 
 /** Локальный инструмент чата: ToolDef + handler (ToolDef из llm.ts без handler — wire-описание). */
@@ -102,8 +102,10 @@ export function isWriteOperation(name: string): boolean {
 /**
  * Инструмент read_file чата: чтение файла проекта БЕЗ подтверждения
  * (isWriteOperation('read_file') === false). Путь + опциональный диапазон
- * строк (offset 0-based, limit). Границы проекта — resolveInProject;
- * вывод — truncateToolOutput (единая точка капа, lesson-30).
+ * строк (offset 0-based, limit) либо диапазон прямо в path (VL-252,
+ * parseReadPath — общий хелпер с агентом, lesson-37). Границы проекта —
+ * resolveInProject; вывод — formatFileSlice/truncateToolOutput (единая точка
+ * капа, lesson-30).
  */
 export function makeReadFileTool(cwd: string): ChatLocalTool {
   return {
@@ -111,6 +113,10 @@ export function makeReadFileTool(cwd: string): ChatLocalTool {
     description:
       'Читает текстовый файл проекта БЕЗ подтверждения пользователя. ' +
       'offset — 0-based номер строки начала, limit — максимум строк. ' +
+      'Диапазон можно задать прямо в path: "файл:171-340" — строки 171–340 (1-based, включительно), ' +
+      '"файл:171" — с 171-й до конца; диапазон в path приоритетнее offset/limit. ' +
+      'Маркер обрезки в конце ответа содержит готовый path="…:НАЧАЛО-КОНЕЦ" — скопируй его ' +
+      'в следующий вызов, чтобы прочитать продолжение. ' +
       'Если path — каталог, возвращает отсортированный листинг (каталоги с "/", лимит 200 записей). ' +
       'Файлы с очень длинными строками (JSONL) читаются по диапазонам: offset/limit применяются ' +
       'до обрезки лимита 8 КБ, слишком длинная строка усекается с подсказкой следующего offset. ' +
@@ -118,7 +124,12 @@ export function makeReadFileTool(cwd: string): ChatLocalTool {
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Путь к файлу относительно корня проекта' },
+        path: {
+          type: 'string',
+          description:
+            'Путь к файлу относительно корня проекта; ' +
+            'допустим суффикс диапазона строк ":НАЧАЛО-КОНЕЦ" или ":НАЧАЛО" (1-based, включительно)',
+        },
         offset: { type: 'number', description: '0-based номер строки начала' },
         limit: { type: 'number', description: 'Максимум возвращаемых строк' },
       },
@@ -129,7 +140,10 @@ export function makeReadFileTool(cwd: string): ChatLocalTool {
       // resolveInProject с allowRoot: '.' — листинг корня проекта, а не отказ
       // «должен указывать на файл» (VL-233); пустой путь отклоняется явно.
       if (typeof rawPath !== 'string' || rawPath === '') return 'Путь не задан';
-      const target = resolveInProject(cwd, rawPath, { allowRoot: true });
+      // Диапазон в path (VL-252) переопределяет необязательные offset/limit.
+      const parsed = parseReadPath(cwd, rawPath);
+      if (!parsed.ok) return parsed.error;
+      const target = resolveInProject(cwd, parsed.path, { allowRoot: true });
       if (!target.ok) return target.error;
       try {
         if (statSync(target.path).isDirectory()) {
@@ -146,8 +160,14 @@ export function makeReadFileTool(cwd: string): ChatLocalTool {
       } catch (err) {
         return `Не удалось прочитать файл: ${err instanceof Error ? err.message : String(err)}`;
       }
-      // formatFileSlice: offset/limit применяются до обрезки бюджета (VL-250).
-      return formatFileSlice(content, args.offset, args.limit);
+      // formatFileSlice: offset/limit применяются до обрезки бюджета (VL-250);
+      // path в маркере — относительный, чтобы копировался в следующий вызов.
+      return formatFileSlice(
+        content,
+        parsed.offset ?? args.offset,
+        parsed.limit ?? args.limit,
+        relative(cwd, target.path),
+      );
     },
   };
 }

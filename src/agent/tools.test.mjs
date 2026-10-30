@@ -599,3 +599,66 @@ describe('VL-250 — длинные строки (JSONL) в read_file', () => {
     assert.equal(slice, 'beta');
   });
 });
+
+describe('VL-252 — диапазон строк в path (обязательный аргумент вместо offset)', () => {
+  // Диапазон едет в path, потому что offset/limit — необязательные поля схемы:
+  // модель их опускает и получает ту же первую порцию (замкнутый круг VL-252).
+  beforeAll(() => {
+    writeFileSync(
+      join(TMP, 'range.txt'),
+      Array.from({ length: 20 }, (_, i) => `l${i + 1}`).join('\n') + '\n',
+      'utf-8',
+    );
+  });
+
+  it('AC1: path="файл:5-7" возвращает ровно строки 5–7 (1-based, включительно)', async () => {
+    const out = await byName.get('read_file').handler({ path: 'range.txt:5-7' });
+    assert.equal(out, 'l5\nl6\nl7');
+  });
+
+  it('AC2: path="файл:5" возвращает строки с 5-й до конца файла', async () => {
+    const out = await byName.get('read_file').handler({ path: 'range.txt:5' });
+    // 20 строк данных + завершающий '\n' даёт пустую 21-ю строку (как и при обычном чтении).
+    assert.equal(out, Array.from({ length: 16 }, (_, i) => `l${i + 5}`).join('\n') + '\n');
+    assert.ok(out.startsWith('l5\n'));
+  });
+
+  it('диапазон в path приоритетнее offset/limit из аргументов', async () => {
+    const out = await byName.get('read_file').handler({ path: 'range.txt:5-7', offset: 0, limit: 1 });
+    assert.equal(out, 'l5\nl6\nl7');
+  });
+
+  it('алиас GitHub-стиля "#L5-L7" даёт тот же диапазон', async () => {
+    const out = await byName.get('read_file').handler({ path: 'range.txt#L5-L7' });
+    assert.equal(out, 'l5\nl6\nl7');
+  });
+
+  it('AC3: маркер обрезки содержит копируемый path с относительным путём', async () => {
+    const out = await byName.get('read_file').handler({ path: 'big.txt' });
+    assert.match(out, /…\[вывод обрезан/);
+    assert.match(out, /продолжение — offset=\d+/);
+    assert.match(out, /path="big\.txt:\d+-\d+"/);
+    assert.ok(!out.includes(TMP), 'в маркере должен быть относительный путь, а не абсолютный');
+    assert.ok(out.length <= TOOL_OUTPUT_MAX_CHARS, `длина ${out.length}`);
+  });
+
+  it('AC6: некорректный диапазон — понятная ошибка с подсказкой формата', async () => {
+    for (const bad of ['range.txt:10-5', 'range.txt:0-3']) {
+      const out = await byName.get('read_file').handler({ path: bad });
+      assert.match(out, /Некорректный диапазон строк/, `${bad}: ${out}`);
+      assert.match(out, /путь:НАЧАЛО-КОНЕЦ/);
+    }
+    // Нецифровой суффикс не распознан как диапазон — штатное «Файл не найден».
+    const abc = await byName.get('read_file').handler({ path: 'range.txt:abc' });
+    assert.match(abc, /Файл не найден|Некорректный диапазон/);
+  });
+
+  it('AC4: обычный путь и offset/limit работают как раньше (регрессия)', async () => {
+    const plain = await byName.get('read_file').handler({ path: 'range.txt', offset: 1, limit: 2 });
+    assert.equal(plain, 'l2\nl3');
+    // Существующий файл с двоеточием в имени читается как файл, а не как диапазон.
+    writeFileSync(join(TMP, 'a:1-2.md'), 'colon\n', 'utf-8');
+    const colon = await byName.get('read_file').handler({ path: 'a:1-2.md' });
+    assert.equal(colon, 'colon\n');
+  });
+});
