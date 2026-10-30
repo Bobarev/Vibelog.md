@@ -61,6 +61,7 @@ import { useChatThreadId } from "@/lib/use-hash-route"
 import { ApprovalCard } from "./approval-card"
 import { CHAT_ERROR_PART, ChatRuntimeProvider } from "./chat-runtime"
 import { ChatErrorState } from "./error-state"
+import { ModelPicker, PersonaPicker } from "./pickers"
 import { StoppedRun } from "./stopped-run"
 import { ToolCall, ToolGroup, type ToolPart } from "./tool-call"
 import { isWriteTool } from "./tool-meta"
@@ -416,33 +417,42 @@ function AssistantMessage() {
 function Composer({ placeholder }: { placeholder: string }) {
   const { textareaRef, onKeyDown } = useCtrlEnterNewline()
   return (
-    <ComposerPrimitive.Root className="flex w-full items-end gap-2 rounded-2xl border bg-background p-2 shadow-sm focus-within:border-border/80">
+    // VL-265: две строки — ввод сверху, нижняя строка с пикерами роли (слева)
+    // и модели + Send (справа), как в ref-22 (perplexity.tsx). Высота каркаса
+    // ограничена выше (lesson-112), поэтому доп. ряд не ломает скролл.
+    <ComposerPrimitive.Root className="flex w-full flex-col gap-1 rounded-2xl border bg-background p-2 shadow-sm focus-within:border-border/80">
       <ComposerPrimitive.Input
         ref={textareaRef}
         onKeyDown={onKeyDown}
         rows={1}
         name="chat-message"
         placeholder={placeholder}
-        className="max-h-40 min-h-9 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm focus:outline-none"
+        className="max-h-40 min-h-9 w-full flex-1 resize-none bg-transparent px-2 py-1.5 text-sm focus:outline-none"
       />
-      <div className="relative size-8 shrink-0">
-        {/* Стриминг: кнопка-квадрат отменяет текущий run */}
-        <ThreadPrimitive.If running>
-          <ComposerPrimitive.Cancel
-            className="absolute inset-0 flex size-8 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90"
-            aria-label="Остановить"
-          >
-            <Square className="size-3.5 fill-current" />
-          </ComposerPrimitive.Cancel>
-        </ThreadPrimitive.If>
-        {/* Покой: отправка (disabled при пустом вводе — логика Send) */}
-        <ThreadPrimitive.If running={false}>
-          <ComposerPrimitive.Send asChild>
-            <Button size="icon" className="size-8 rounded-full" aria-label="Отправить">
-              <ArrowUp className="size-4" />
-            </Button>
-          </ComposerPrimitive.Send>
-        </ThreadPrimitive.If>
+      <div className="flex items-center justify-between gap-1">
+        <PersonaPicker />
+        <div className="flex items-center gap-1">
+          <ModelPicker />
+          <div className="relative size-8 shrink-0">
+            {/* Стриминг: кнопка-квадрат отменяет текущий run */}
+            <ThreadPrimitive.If running>
+              <ComposerPrimitive.Cancel
+                className="absolute inset-0 flex size-8 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90"
+                aria-label="Остановить"
+              >
+                <Square className="size-3.5 fill-current" />
+              </ComposerPrimitive.Cancel>
+            </ThreadPrimitive.If>
+            {/* Покой: отправка (disabled при пустом вводе — логика Send) */}
+            <ThreadPrimitive.If running={false}>
+              <ComposerPrimitive.Send asChild>
+                <Button size="icon" className="size-8 rounded-full" aria-label="Отправить">
+                  <ArrowUp className="size-4" />
+                </Button>
+              </ComposerPrimitive.Send>
+            </ThreadPrimitive.If>
+          </div>
+        </div>
       </div>
     </ComposerPrimitive.Root>
   )

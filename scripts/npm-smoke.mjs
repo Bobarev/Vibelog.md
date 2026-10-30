@@ -162,6 +162,12 @@ try {
   check('старого каталога qwen-commands в пакете НЕТ', !existsSync(join(pkg, 'templates', 'qwen-commands')));
   check('шаблон agent-prompt.md (системный промпт vb) читается', existsSync(join(pkg, 'templates', 'agent-prompt.md')));
   check('шаблон chat-system.md (системный промпт чата, VL-219) в пакете', existsSync(join(pkg, 'templates', 'prompts', 'chat-system.md')));
+  for (const persona of ['helper', 'architect', 'orchestrator']) {
+    check(
+      `шаблон роли ${persona}.md (chat_personas, VL-265) в пакете`,
+      existsSync(join(pkg, 'templates', 'prompts', 'personas', `${persona}.md`)),
+    );
+  }
   check('web/dist/index.html в пакете', existsSync(join(pkg, 'web', 'dist', 'index.html')));
   check('backlog/ НЕ в пакете', !existsSync(join(pkg, 'backlog')));
   check('.qwen НЕ в пакете', !existsSync(join(pkg, '.qwen')));

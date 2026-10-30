@@ -55,6 +55,8 @@ export async function putSettings(patch: SettingsPatch): Promise<SettingsData> {
 export interface ModelInfo {
   id: string;
   label: string;
+  /** Короткое описание для второй строки пикера (VL-265), необязательно. */
+  description?: string;
   provider: string;
   api_mode: "chat" | "responses";
 }
@@ -91,4 +93,27 @@ export async function putModelDefault(id: string): Promise<void> {
     const errBody = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(errBody.error || `PUT /api/models: ${res.status}`);
   }
+}
+
+// ── VL-265: роли ассистента (chat_personas) ──
+
+/** Роль для пикера: БЕЗ текста промпта (его собирает сервер). */
+export interface PersonaInfo {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+/** Ответ GET /api/personas. errors — проблемы секции chat_personas. */
+export interface PersonasData {
+  personas: PersonaInfo[];
+  default: string;
+  errors?: string[];
+}
+
+/** Реестр ролей. Бросает при ошибке — вызывающий показывает сообщение. */
+export async function fetchPersonas(): Promise<PersonasData> {
+  const res = await fetch("/api/personas");
+  if (!res.ok) throw new Error(`GET /api/personas: ${res.status}`);
+  return (await res.json()) as PersonasData;
 }

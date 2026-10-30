@@ -15,18 +15,9 @@
 import * as React from "react"
 
 import { Button } from "@/components/ui/button"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { cn } from "@/lib/utils"
-import { fetchModels, type ModelsData } from "@/components/settings/api"
 import { usePreferences } from "@/components/preferences"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { setActiveModelId } from "./chat-runtime"
 import { PanelLeftIcon, Plus } from "lucide-react"
 
 /** Метаданные треда (зеркало ChatSummary из src/web/api.ts). */
@@ -49,55 +40,6 @@ function formatThreadDate(iso: string): string {
   return sameDay
     ? d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
     : d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })
-}
-
-/**
- * Переключатель модели чата (VL-209): список из GET /api/models, выбор
- * пишется в module-state адаптера (setActiveModelId) — следующий POST
- * /api/chat уходит с model. Записи в settings.json НЕТ: это разовое
- * переопределение для чата (default в #/settings не меняется).
- * Секции models нет/сервер недоступен → селект не рендерится.
- */
-function ModelSwitcher() {
-  const [data, setData] = React.useState<ModelsData | null>(null)
-  React.useEffect(() => {
-    let cancelled = false
-    fetchModels()
-      .then((d) => {
-        if (!cancelled) setData(d)
-      })
-      .catch(() => {
-        // переключатель — не критично: прячем при недоступности
-        if (!cancelled) setData({ default: null, available: [], providers: [] })
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  if (!data || data.available.length === 0) return null
-  return (
-    <div className="border-b px-3 py-2">
-      <Select
-        value={data.default ?? ""}
-        onValueChange={(v) => {
-          setActiveModelId(v)
-          setData((prev) => (prev ? { ...prev, default: v } : prev))
-        }}
-      >
-        <SelectTrigger className="h-8 w-full text-xs" aria-label="Модель чата">
-          <SelectValue placeholder="Модель" />
-        </SelectTrigger>
-        <SelectContent>
-          {data.available.map((m) => (
-            <SelectItem key={m.id} value={m.id}>
-              {m.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
-  )
 }
 
 export function ThreadSidebar({
@@ -208,17 +150,6 @@ export function ThreadSidebar({
           </Button>
         </div>
       )}
-
-      <div
-        className={cn(
-          "overflow-hidden transition-opacity duration-150",
-          collapsed && "pointer-events-none opacity-0",
-        )}
-        aria-hidden={collapsed}
-        inert={collapsed}
-      >
-        <ModelSwitcher />
-      </div>
 
       <nav
         className={cn(

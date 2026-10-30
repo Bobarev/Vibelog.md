@@ -16,6 +16,7 @@
  * - PUT  /api/settings       — патч настроек с валидацией (VL-156)
  * - GET  /api/models         — реестр LLM-моделей/провайдеров без ключей (VL-209)
  * - PUT  /api/models         — смена models.default с валидацией (VL-209)
+ * - GET  /api/personas       — реестр ролей чата (chat_personas) без промптов (VL-265)
  * - POST /api/tasks/:id/trigger — запуск фазы оркестратора (VL-28); поле
  *   comment (VL-172) — сначала addComment в задачу, затем {{comment}} промпта;
  *   общий с ботом хелпер startTaskPhase + агент default_agent (VL-180)
@@ -69,6 +70,7 @@ import { listChatThreads, getChatThread, loadThreadAllowList, addThreadAllow, re
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadSettings, saveSettingsPatch } from '../core/settings.js';
 import { loadModels, loadProviders } from '../core/models.js';
+import { DEFAULT_PERSONA_ID, listPersonas } from './personas.js';
 import { loadBotSettings, saveBotSettings } from '../bot/settings.js';
 import type { BotSettings } from '../bot/settings.js';
 import { startTaskPhase, getRun, rejectTask } from './orchestrator.js';
@@ -240,6 +242,8 @@ export function handleApi(
           available: Object.entries(models.available).map(([id, m]) => ({
             id,
             label: m.label ?? id,
+            // VL-265: описание модели для пикера чата (undefined — ключ не сериализуется)
+            ...(m.description ? { description: m.description } : {}),
             provider: m.provider,
             api_mode: m.api_mode ?? 'chat',
           })),
@@ -272,6 +276,19 @@ export function handleApi(
         models: { ...((settings.models ?? {}) as Record<string, unknown>), default: id },
       });
       return { status: 200, body: { default: id } };
+    }
+
+    // GET /api/personas — реестр ролей веб-чата (VL-265): id, label,
+    // description для пикера роли. Тексты промптов НЕ отдаются (они живут
+    // в markdown-шаблонах и собираются сервером в системный промпт).
+    // errors — понятные проблемы секции chat_personas settings.json
+    // (валидация терпимая: роли работают, ошибки только сообщаются).
+    if (method === 'GET' && url === '/api/personas') {
+      const { personas, errors } = listPersonas(cwd);
+      return {
+        status: 200,
+        body: { personas, default: DEFAULT_PERSONA_ID, errors },
+      };
     }
 
     // GET /api/references — список references (VL-174).

@@ -102,16 +102,34 @@ export function setAlwaysAllowed(tools: readonly string[] | undefined): void {
 }
 
 /**
- * Текущая модель чата (VL-209): id из models.available, выбранный
- * ModelSwitcher в сайдбаре тредов. undefined — default из settings.json
- * (сервер сам резолвит). Хранение — module-state как activeThreadId:
- * селект меняет значение → следующий POST /api/chat уходит с model.
+ * Текущая модель чата (VL-209): id из models.available, выбранный пикером
+ * модели у инпута (VL-265). undefined — default из settings.json (сервер
+ * сам резолвит). Хранение — module-state как activeThreadId: пикер меняет
+ * значение → следующий POST /api/chat уходит с model.
  */
 let activeModelId: string | undefined
 
-/** Установка активной модели чата (вызывает ModelSwitcher). */
+/** Установка активной модели чата (вызывает ModelPicker). */
 export function setActiveModelId(id: string | undefined): void {
   activeModelId = id
+}
+
+/**
+ * Текущая роль ассистента (VL-265): id из реестра chat_personas. ВСЕГДА
+ * `helper` при старте/перезагрузке — localStorage не используется (AC14):
+ * дефолт в коде, смена живёт только до перезагрузки страницы.
+ * Роль не связана с моделью: пикеры независимы (AC15).
+ */
+let activePersonaId: string = "helper"
+
+/** Текущая роль (для пикера при маунте — дефолт helper). */
+export function getActivePersonaId(): string {
+  return activePersonaId
+}
+
+/** Установка активной роли (вызывает PersonaPicker). */
+export function setActivePersonaId(id: string): void {
+  activePersonaId = id
 }
 
 /** Решения, уже отправленные на сервер (идемпотентность resume). */
@@ -310,6 +328,9 @@ const chatAdapter: ChatModelAdapter = {
         ...(activeThreadId ? { threadId: activeThreadId } : {}),
         // VL-209: переопределение модели (undefined — default из settings.json)
         ...(activeModelId ? { model: activeModelId } : {}),
+        // VL-265: роль применяется к следующему сообщению; история треда
+        // не переписывается (system-сообщение пересобирается на каждый ход)
+        persona: activePersonaId,
       }
     }
 
