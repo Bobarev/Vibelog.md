@@ -378,7 +378,7 @@ In Progress никогда не «производится» ни одной ф�
 ## 9. Поиск
 
 ```bash
-vibelog search "авторизация"                  # substring по id/title/description/меткам
+vibelog search "авторизация"                  # токены (И-логика) по id/title/description/меткам, по релевантности
 vibelog search --status "To Do"               # только фильтр, без запроса
 vibelog search --type bug --priority High     # комбинация фильтров (AND)
 vibelog search --limit 5 --json               # обрезка + JSON
