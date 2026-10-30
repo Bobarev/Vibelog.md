@@ -59,11 +59,18 @@ describe('validateArgs (VL-83)', () => {
 });
 
 describe('listLocalTools (VL-83)', () => {
-  it('содержит ровно 6 инструментов', () => {
+  it('содержит ровно 7 инструментов', () => {
     assert.deepEqual(
       [...byName.keys()].sort(),
-      ['edit', 'glob', 'grep_search', 'read_file', 'run_shell_command', 'write_file'],
+      ['edit', 'glob', 'grep_search', 'read_file', 'run_shell_command', 'search_files', 'write_file'],
     );
+  });
+
+  // VL-234: новый инструмент зарегистрирован в локальном наборе агента
+  it('search_files ищет по фейковому дереву (VL-234)', async () => {
+    const out = await byName.get('search_files').handler({ pattern: 'alpha', path: 'grep', glob: '*.txt' });
+    assert.match(out, /^grep\/f1\.txt$/m);
+    assert.match(out, /^ {2}1: alpha$/m);
   });
 });
 

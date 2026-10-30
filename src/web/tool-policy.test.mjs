@@ -52,7 +52,7 @@ describe('VL-219 — isWriteOperation (по природе операции)', (
 
   it('read-маркеры → false (выполняются без подтверждения)', () => {
     for (const name of [
-      'read_file', 'grep_search', 'glob',
+      'read_file', 'grep_search', 'glob', 'search_files',
       'backlog_search', 'backlog_view_task', 'backlog_list_tasks', 'backlog_ready',
       'milestone_list', 'document_list', 'document_view', 'document_search',
       'reference_list', 'reference_view', 'reference_search',
@@ -78,9 +78,12 @@ describe('VL-219 — chatToolDefs', () => {
       assert.ok(!names.includes(dis), `${dis} не должен попасть в инструменты чата`);
     }
 
-    // read_file/write_file присутствуют
+    // read_file/write_file/search_files присутствуют
     assert.ok(names.includes('read_file'));
     assert.ok(names.includes('write_file'));
+    assert.ok(names.includes('search_files'), 'search_files (VL-234) должен быть в инструментах чата');
+    // search_files — read-операция: без approval-гейта (VL-234)
+    assert.equal(isWriteOperation('search_files'), false);
 
     // Остальные MCP-инструменты присутствуют
     for (const t of listTools()) {
