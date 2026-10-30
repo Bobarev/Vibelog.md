@@ -1118,3 +1118,147 @@ describe('chat: VL-268 — grant прогона развязывает инст�
     }
   });
 });
+
+describe('chat: лимиты хода из конфига (VL-269)', () => {
+  /** Запись секции chat в settings.json общего cwd. */
+  function writeChatSettings(chat) {
+    mkdirSync(join(cwd, '.vibelog'), { recursive: true });
+    const file = join(cwd, '.vibelog', 'settings.json');
+    let current = {};
+    try {
+      current = JSON.parse(readFileSync(file, 'utf-8'));
+    } catch {
+      current = {};
+    }
+    writeFileSync(file, JSON.stringify({ ...current, chat }, null, 2), 'utf-8');
+  }
+
+  /** Удаление секции chat из settings.json (изоляция от соседних тестов). */
+  function clearChatSettings() {
+    const file = join(cwd, '.vibelog', 'settings.json');
+    try {
+      const current = JSON.parse(readFileSync(file, 'utf-8'));
+      delete current.chat;
+      writeFileSync(file, JSON.stringify(current, null, 2), 'utf-8');
+    } catch {
+      rmSync(file, { force: true });
+    }
+  }
+
+  afterAll(() => {
+    clearChatSettings();
+  });
+
+  it('лимит итераций исчерпан → событие truncated/iterations, история цела', async () => {
+    writeChatSettings({ max_iterations: 2 });
+    /* Каждый ответ — tool_call (backlog_search): ход сам не завершается */
+    const step = n => ({ toolCalls: [{ id: `tc-limit-${n}`, name: 'backlog_search', arguments: { query: `q${n}` } }] });
+    const { llm } = fakeLlm([step(1), step(2), step(3), step(4)]);
+    const events = await collect({ message: 'ищи', threadId: 't-trunc-iter' }, { llm });
+
+    const truncated = events.find(e => e.type === 'truncated');
+    assert.ok(truncated, 'должно прийти событие truncated');
+    assert.equal(truncated.reason, 'iterations');
+    assert.equal(truncated.saved, true);
+    assert.equal(truncated.step, 2);
+    assert.equal(truncated.limits.maxIterations, 2);
+    assert.ok(!events.some(e => e.type === 'error' && /лимит итераций/i.test(e.message)));
+
+    /* История jsonl к моменту truncated: user + 2 пары assistant/tool */
+    const history = loadChatHistory(cwd, 't-trunc-iter');
+    assert.equal(history[0].role, 'user');
+    assert.equal(history.filter(m => m.role === 'assistant').length, 2, 'два ответа модели сохранены');
+    assert.equal(history.filter(m => m.role === 'tool').length, 2, 'два tool-результата сохранены');
+  });
+
+  it('лимит времени исчерпан → truncated/wall_time, история цела', async () => {
+    writeChatSettings({ max_wall_time: 1, max_iterations: 50 });
+    let calls = 0;
+    /* Первый ответ медленный (перебор бюджета 1 с) и содержит tool-вызов:
+       цикл идёт на следующую итерацию, где бюджет уже исчерпан */
+    const slowLlm = {
+      async streamChat() {
+        calls++;
+        await new Promise(r => setTimeout(r, 1100));
+        return {
+          text: `ответ-${calls}`,
+          toolCalls: [{ id: `tc-wall-${calls}`, name: 'backlog_search', arguments: { query: `w${calls}` } }],
+          usage: zeroUsage(),
+        };
+      },
+    };
+    const events = await collect({ message: 'медленно', threadId: 't-trunc-wall' }, { llm: slowLlm });
+
+    const truncated = events.find(e => e.type === 'truncated');
+    assert.ok(truncated, 'должно прийти событие truncated');
+    assert.equal(truncated.reason, 'wall_time');
+    assert.equal(truncated.saved, true);
+    const history = loadChatHistory(cwd, 't-trunc-wall');
+    assert.equal(history[0].role, 'user');
+    assert.ok(history.some(m => m.role === 'assistant' && m.content === 'ответ-1'), 'первый ответ сохранён');
+  });
+
+  it('continue:true — продолжение без нового user-сообщения', async () => {
+    clearChatSettings();
+    const { llm } = fakeLlm([{ text: 'Сначала.' }, { text: 'Продолжил.' }]);
+    await collect({ message: 'начни', threadId: 't-continue' }, { llm });
+    const usersBefore = loadChatHistory(cwd, 't-continue').filter(m => m.role === 'user').length;
+
+    const events = await collect({ continue: true, threadId: 't-continue' }, { llm });
+    assert.ok(events.some(e => e.type === 'done'), 'ход завершился done');
+    assert.ok(!events.some(e => e.type === 'error'));
+
+    const after = loadChatHistory(cwd, 't-continue');
+    assert.equal(after.filter(m => m.role === 'user').length, usersBefore, 'user-сообщений не прибавилось');
+    assert.equal(after.at(-1).role, 'assistant');
+    assert.equal(after.at(-1).content, 'Продолжил.');
+  });
+
+  it('continue:true на пустой истории → error «Нечего продолжать»', async () => {
+    const { llm } = fakeLlm([{ text: 'не должно выполниться' }]);
+    const events = await collect({ continue: true, threadId: 't-continue-empty' }, { llm });
+    const error = events.find(e => e.type === 'error');
+    assert.ok(error);
+    assert.match(error.message, /Нечего продолжать/);
+  });
+
+  it('изменение конфига применяется к следующему ходу без перезапуска (AC2)', async () => {
+    writeChatSettings({ max_iterations: 1 });
+    const step = n => ({ toolCalls: [{ id: `tc-reconf-${n}`, name: 'backlog_search', arguments: { query: `r${n}` } }] });
+    const first = fakeLlm([step(1), step(2)]);
+    const events1 = await collect({ message: 'раз', threadId: 't-reconf' }, { llm: first.llm });
+    assert.equal(events1.find(e => e.type === 'truncated')?.reason, 'iterations');
+
+    writeChatSettings({ max_iterations: 5 });
+    const second = fakeLlm([step(3), { text: 'Готово.' }]);
+    const events2 = await collect({ continue: true, threadId: 't-reconf' }, { llm: second.llm });
+    assert.ok(!events2.some(e => e.type === 'truncated'), 'лимит из нового конфига не сработал');
+    assert.equal(events2.at(-1).type, 'done');
+  });
+
+  it('мусорный конфиг не роняет чат — работают дефолты', async () => {
+    writeChatSettings({ max_iterations: 'много', call_timeout: -5 });
+    const { llm } = fakeLlm([{ text: 'Ответ на дефолтах.' }]);
+    const events = await collect({ message: 'привет', threadId: 't-badlimits' }, { llm });
+    assert.ok(!events.some(e => e.type === 'error'));
+    assert.equal(events.at(-1).type, 'done');
+    assert.equal(loadChatHistory(cwd, 't-badlimits').at(-1).content, 'Ответ на дефолтах.');
+  });
+
+  it('per-call таймаут молчащего вызова → truncated/wall_time, а не error', async () => {
+    writeChatSettings({ call_timeout: 1, max_wall_time: 300, max_iterations: 10 });
+    /* LLM «висит», пока guard не абортит сигнал */
+    const hungLlm = {
+      streamChat(_messages, _tools, opts) {
+        return new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener('abort', () => reject(new Error('Операция прервана')));
+        });
+      },
+    };
+    const events = await collect({ message: 'висни', threadId: 't-call-timeout' }, { llm: hungLlm });
+    const truncated = events.find(e => e.type === 'truncated');
+    assert.ok(truncated, 'per-call таймаут даёт truncated');
+    assert.equal(truncated.reason, 'wall_time');
+    assert.equal(truncated.limits.callTimeoutSec, 1);
+  });
+});

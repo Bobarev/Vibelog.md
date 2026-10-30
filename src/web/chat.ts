@@ -36,6 +36,7 @@ import { handleToolCall } from '../mcp/tools.js';
 import { ackDenied } from '../mcp/tool-result.js';
 import { chatToolDefs, isWriteOperation, loadChatSystemTemplate } from './tool-policy.js';
 import type { ChatLocalTool } from './tool-policy.js';
+import { createCallGuard, formatChatLimitsErrors, resolveChatLimits } from './chat-limits.js';
 import {
   createTurnToolGuard,
   duplicateCallResult,
@@ -63,7 +64,21 @@ export type ChatEvent =
   | { type: 'tool_end'; id: string; result: string; isError?: boolean }
   | { type: 'approval'; toolCallId: string; name: string; args: Record<string, unknown>; grant?: SupervisorGrantPreview }
   | { type: 'done' }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  /**
+   * VL-269: ход остановлен лимитом, но история сохранена — клиент сам
+   * продолжает ход (`continue: true`), пользователю не нужно писать «Продолжи».
+   */
+  | {
+      type: 'truncated';
+      reason: 'iterations' | 'wall_time';
+      /** Номер шага (итерации), на котором сработал лимит. */
+      step: number;
+      /** Действующие лимиты хода (для текста статуса и диагностики). */
+      limits: { maxIterations: number; maxWallTimeSec: number; maxAutoContinue: number; callTimeoutSec: number };
+      /** История jsonl к этому моменту сохранена (все assistant/tool дописаны). */
+      saved: boolean;
+    };
 
 /** Тело запроса: новый ход ЛИБО решение по approval (resume). */
 export interface ChatRequestBody {
@@ -83,6 +98,12 @@ export interface ChatRequestBody {
    * добавляется в allow-list треда, последующие вызовы идут без паузы.
    */
   approval?: { toolCallId?: unknown; approved?: unknown; reason?: unknown; always?: unknown };
+  /**
+   * VL-269: продолжить ход без нового user-сообщения — так клиент реагирует
+   * на событие `truncated`. История jsonl не меняется (пустой строки в
+   * треде не появляется), LLM-цикл стартует по уже накопленным сообщениям.
+   */
+  continue?: unknown;
 }
 
 /** Зависимости для тестов: подменный LLM-клиент (паттерн runLoopOptions.llm). */
@@ -90,9 +111,11 @@ export interface ChatDeps {
   llm?: Pick<LlmClient, 'streamChat'>;
 }
 
-/** Лимиты LLM-цикла на один запрос (консервативно: чат — не фаза агента). */
-const MAX_LLM_ITERATIONS = 8;
-const MAX_WALL_TIME_MS = 120_000;
+/**
+ * Лимиты LLM-цикла на один ход читаются из `.vibelog/settings.json`
+ * (секция `chat`, VL-269) — см. `resolveChatLimits` в `chat-limits.ts`.
+ * Дефолты без секции: 8 итераций / 120 с — прежнее поведение.
+ */
 
 /** threadId попадает в имя файла — защита от path-traversal. */
 const THREAD_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -537,8 +560,8 @@ export async function* runChat(
     typeof approval.toolCallId === 'string' &&
     typeof approval.approved === 'boolean';
 
-  if (!hasMessage && !hasApproval) {
-    yield { type: 'error', message: 'Пустой запрос: ожидается поле message или approval' };
+  if (!hasMessage && !hasApproval && body.continue !== true) {
+    yield { type: 'error', message: 'Пустой запрос: ожидается поле message, approval или continue' };
     return;
   }
 
@@ -605,6 +628,21 @@ async function produce(
   }
   // const — чтобы сужение типа жило в замыканиях executeTool и LLM-цикла
   const activePersona: PersonaConfig = pickedPersona;
+
+  // --- лимиты хода (VL-269) -------------------------------------------------
+  // Читаются на КАЖДЫЙ ход, а не на старте процесса: правка settings.json
+  // применяется к следующему ходу без перезапуска веб-сервера (AC2).
+  // Мусорные значения уже откатаны к дефолтам — здесь только предупреждение
+  // в лог сервера, ход продолжается (AC3).
+  const { limits, errors: limitsErrors } = resolveChatLimits(cwd);
+  if (limitsErrors.length > 0) console.error(formatChatLimitsErrors(limitsErrors));
+  /** Компактный снимок лимитов для события truncated (секунды — как в конфиге). */
+  const limitsView = {
+    maxIterations: limits.maxIterations,
+    maxWallTimeSec: Math.round(limits.maxWallTimeMs / 1000),
+    maxAutoContinue: limits.maxAutoContinue,
+    callTimeoutSec: Math.round(limits.callTimeoutMs / 1000),
+  };
 
   const history = loadChatHistory(cwd, threadId);
   // VL-256: номер хода для лога подтверждений. Считается по истории В МОМЕНТ
@@ -784,8 +822,17 @@ async function produce(
       queue.push({ type: 'approval', toolCallId: next.id, name: next.name, args: next.arguments, ...(grantPreviewOf(cwd, next.name, next.arguments) ? { grant: grantPreviewOf(cwd, next.name, next.arguments) } : {}) });
       return; // ход снова на паузе: ждём решение по следующему вызову
     }
+  } else if (body.continue === true) {
+    // VL-269: авто-продолжение после truncated — нового user-сообщения НЕТ,
+    // пустая строка в тред не попадает (AC8). Ход стартует по уже
+    // накопленной истории; закрывать approval-хвосты не нужно: truncated
+    // отдаётся только после closeUnconfirmedTail (парность tool_calls↔tool
+    // к этому моменту восстановлена).
+    if (history.length === 0) {
+      queue.push({ type: 'error', message: 'Нечего продолжать: история треда пуста' });
+      return;
+    }
   } else {
-    // Новое сообщение: закрываем висящие approval-хвосты ДО user-сообщения.
     const closedCount = closePendingToolCalls(history);
     if (closedCount > 0) {
       appendChatMessages(cwd, threadId, history.slice(-closedCount));
@@ -798,23 +845,33 @@ async function produce(
   // --- LLM-цикл -------------------------------------------------------------
   let iterations = 0;
   for (;;) {
-    if (++iterations > MAX_LLM_ITERATIONS) {
+    if (++iterations > limits.maxIterations) {
       // VL-256: хвост write-вызовов без результата сделал бы payload невалидным
       // для провайдера — закрываем явным not_confirmed (машиночитаемо, с логом)
       closeUnconfirmedTail(history, cwd, threadId, queue, currentTurn());
       finishStats(); // VL-255: диагностика хода пишется и на путях ошибок
+      // VL-269 (AC6): лимит итераций — не обрыв хода с ошибкой, а truncated:
+      // история в jsonl цела (append после каждого сообщения), клиент сам
+      // повторит ход с continue: true.
       queue.push({
-        type: 'error',
-        message: `Превышен лимит итераций инструментов (${MAX_LLM_ITERATIONS}) — диалог остановлен`,
+        type: 'truncated',
+        reason: 'iterations',
+        step: limits.maxIterations,
+        limits: limitsView,
+        saved: true,
       });
       return;
     }
-    if (Date.now() - started > MAX_WALL_TIME_MS) {
+    if (Date.now() - started > limits.maxWallTimeMs) {
       closeUnconfirmedTail(history, cwd, threadId, queue, currentTurn());
       finishStats(); // VL-255
+      // VL-269 (AC7): то же для бюджета времени — truncated, не error.
       queue.push({
-        type: 'error',
-        message: `Превышено время ответа (${Math.round(MAX_WALL_TIME_MS / 1000)} с) — диалог остановлен`,
+        type: 'truncated',
+        reason: 'wall_time',
+        step: iterations,
+        limits: limitsView,
+        saved: true,
       });
       return;
     }
@@ -825,17 +882,39 @@ async function produce(
     };
 
     let resp;
+    // VL-269 (AC12): per-call таймаут — окно неактивности одного вызова модели,
+    // а не бюджет хода. Живой стрим перевзводит таймер на каждом токене.
+    const callGuard = createCallGuard(limits.callTimeoutMs);
     try {
       // VL-255: новый ответ модели — счётчик вызовов ответа начинается с нуля
       // (карта исполненных сигнатур сохраняется: дедуп действует на весь ход).
       toolGuard.beginTurn();
       resp = await llm.streamChat([system, ...history], tools, {
-        onToken: token => queue.push({ type: 'text', delta: token }),
+        onToken: token => {
+          callGuard.noteActivity();
+          queue.push({ type: 'text', delta: token });
+        },
+        signal: callGuard.signal,
       });
     } catch (err) {
+      // Таймаут одного вызова — тоже truncated: ход продолжится клиентом
+      // или кнопкой «Продолжить», история цела. Прочие ошибки — как раньше.
+      if (callGuard.timedOut()) {
+        finishStats();
+        queue.push({
+          type: 'truncated',
+          reason: 'wall_time',
+          step: iterations,
+          limits: limitsView,
+          saved: true,
+        });
+        return;
+      }
       finishStats(); // VL-255: ошибка LLM — диагностика хода тоже нужна
       queue.push({ type: 'error', message: err instanceof Error ? err.message : String(err) });
       return;
+    } finally {
+      callGuard.dispose();
     }
 
     if (resp.toolCalls.length === 0) {

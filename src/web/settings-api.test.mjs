@@ -165,3 +165,80 @@ describe('PUT /api/settings — запись (VL-156)', () => {
     assert.deepEqual(file.chats, [9]);
   });
 });
+
+describe('GET/PUT /api/settings: секция chat (VL-269)', () => {
+  it('GET отдаёт chat после записи секции, env по-прежнему не отдаётся', () => {
+    writeSettingsFile({
+      chats: [1],
+      env: { TELEGRAM_BOT_TOKEN: 'secret-xyz' },
+      chat: { max_iterations: 20, max_wall_time: 600, max_auto_continue: 3, call_timeout: 90 },
+    });
+    const res = handleApi('GET', '/api/settings', null, cwd);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.settings.chat, {
+      max_iterations: 20,
+      max_wall_time: 600,
+      max_auto_continue: 3,
+      call_timeout: 90,
+    });
+    assert.equal('env' in res.body.settings, false, 'env-секция не утекает');
+  });
+
+  it('GET отбрасывает мусорные ключи секции chat (только положительные целые)', () => {
+    writeSettingsFile({ chat: { max_iterations: 'много', max_wall_time: 300, call_timeout: -1 } });
+    const res = handleApi('GET', '/api/settings', null, cwd);
+    assert.deepEqual(res.body.settings.chat, { max_wall_time: 300 });
+  });
+
+  it('PUT принимает chat с валидацией, сохраняет env и chats', () => {
+    writeSettingsFile({ chats: [7], env: { TELEGRAM_BOT_TOKEN: 'secret-abc' } });
+    const res = handleApi('PUT', '/api/settings', {
+      chat: { max_iterations: 30, max_wall_time: 900 },
+    }, cwd);
+    assert.equal(res.status, 200);
+    const file = readSettingsFile();
+    assert.deepEqual(file.chat, { max_iterations: 30, max_wall_time: 900 });
+    assert.deepEqual(file.chats, [7], 'chats сохранены');
+    assert.equal(file.env.TELEGRAM_BOT_TOKEN, 'secret-abc', 'env сохранён');
+    assert.deepEqual(res.body.settings.chat, { max_iterations: 30, max_wall_time: 900 });
+  });
+
+  it('PUT: 0/null по ключу секции — сброс этого ключа', () => {
+    writeSettingsFile({ chat: { max_iterations: 30, max_wall_time: 900 } });
+    const res = handleApi('PUT', '/api/settings', {
+      chat: { max_iterations: 0, max_wall_time: 900 },
+    }, cwd);
+    assert.equal(res.status, 200);
+    assert.deepEqual(readSettingsFile().chat, { max_wall_time: 900 });
+  });
+
+  it('PUT: пустая секция chat — полный сброс, ключ удаляется', () => {
+    writeSettingsFile({ chats: [3], chat: { max_iterations: 30 } });
+    const res = handleApi('PUT', '/api/settings', { chat: {} }, cwd);
+    assert.equal(res.status, 200);
+    const file = readSettingsFile();
+    assert.equal('chat' in file, false, 'ключ chat удалён');
+    assert.deepEqual(file.chats, [3], 'прочие поля целы');
+  });
+
+  it('PUT: мусорное значение → 400, файл не меняется', () => {
+    writeSettingsFile({ chats: [4], chat: { max_iterations: 30 } });
+    const before = readSettingsFile();
+    const bad = [
+      { chat: { max_iterations: 'много' } },
+      { chat: { max_iterations: -5 } },
+      { chat: { max_iterations: 2.5 } },
+      { chat: { max_iterations: 999 } }, // сверх потолка 200
+      { chat: { call_timeout: 0.5 } },
+      { chat: { неизвестный_ключ: 5 } },
+      { chat: 'мусор' },
+      { chat: [] },
+    ];
+    for (const body of bad) {
+      const res = handleApi('PUT', '/api/settings', body, cwd);
+      assert.equal(res.status, 400, `ожидался 400 для ${JSON.stringify(body)}`);
+      assert.ok(typeof res.body.error === 'string' && res.body.error.length > 0);
+    }
+    assert.deepEqual(readSettingsFile(), before, 'файл не изменился');
+  });
+});
