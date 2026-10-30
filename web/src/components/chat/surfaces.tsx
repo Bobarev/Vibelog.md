@@ -14,12 +14,17 @@
  *   dark mode из коробки;
  * - `useIsomorphicLayoutEffect` из их utils заменён на `React.useLayoutEffect`
  *   (у нас нет SSR — Vite-сборка SPA);
- * - анимация раскрытия висит на `--radix-collapsible-content-height`
- *   (Radix Collapsible отдаёт именно её; см. риск R4 плана).
+ * - анимация раскрытия НЕ висит на `--radix-collapsible-content-height`
+ *   (VL-271): Radix пишет в переменную высоту содержимого на момент
+ *   ОТКРЫТИЯ, а `overflow-hidden` срезал всё, что выросло позже (длинный
+ *   Result после переноса строк, вложенный ToolCall внутри ToolGroup).
+ *   Вместо этого — grid-rows трюк `0fr ↔ 1fr`: высота всегда по контенту,
+ *   вложенность любой глубины работает без измерения (см. `collapsePanel`).
  */
 
 import * as React from "react"
 
+import { CollapsibleContent } from "@/components/ui/collapsible"
 import { cn } from "@/lib/utils"
 
 /** Карточка на «бумаге»: approval-карточка, error-state (ref: paper). */
@@ -40,12 +45,87 @@ export const inkButton =
 export const mono = "font-mono text-[11px] tracking-tight"
 
 /**
- * Анимация раскрытия Collapsible. Radix пишет высоту в
- * `--radix-collapsible-content-height`, поэтому анимируем её (R4 плана:
- * `--collapsible-panel-height` из референса у нас не существует).
+ * Анимация раскрытия Collapsible — grid-rows трюк (VL-271).
+ *
+ * Почему не `h-(--radix-collapsible-content-height)`: Radix пишет в переменную
+ * высоту содержимого НА МОМЕНТ ОТКРЫТИЯ. Если контент потом вырос (длинный
+ * Result переносится по строкам, вложенный ToolCall раскрылся внутри
+ * ToolGroup), панель оставалась на старой высоте и `overflow-hidden` срезал
+ * прирост — визуально «разворачивается в невидимую область».
+ *
+ * Классы и keyframes живут в `web/src/index.css` (`.collapse-panel`):
+ * `grid-template-rows: 1fr ↔ 0fr` (fr в auto-высоте = max-content) даёт высоту
+ * всегда по контенту, анимация в обе стороны — на CSS keyframes, потому что
+ * transition по `grid-template-rows` на React-пути не стартует (браузер сразу
+ * видит конечное значение), а Radix `Presence` вообще ждёт `animationend`.
  */
-export const collapsePanel =
-  "h-(--radix-collapsible-content-height) overflow-hidden transition-[height] duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] data-[state=closed]:h-0 motion-reduce:transition-none"
+export const collapsePanel = "collapse-panel"
+
+/**
+ * Панель раскрытия с grid-rows анимацией (VL-271).
+ *
+ * `forceMount` обязателен: Radix `Presence` монтирует/размонтирует контент по
+ * `animationend`, а без постоянного присутствия узла закрытие теряло бы
+ * анимацию и повторное открытие пересоздавало DOM. Плата — скрытый контент
+ * остаётся в DOM, поэтому состояние дублируем на обёртку (`inert` +
+ * `aria-hidden`): иначе Tab и скринридер попадали бы в невидимые
+ * Request/Result.
+ *
+ * При открытии докручиваем панель в видимую область: `autoScroll` у
+ * `ThreadPrimitive.Viewport` реагирует на новые сообщения, а не на рост уже
+ * отрисованного узла, поэтому раскрытие внизу треда иначе уезжало за нижнюю
+ * кромку viewport (AC8). `block: "nearest"` не дёргает ленту, если панель и
+ * так видна; высокую панель подтягивает так, чтобы был виден её верх.
+ */
+export function CollapseContent({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<typeof CollapsibleContent>) {
+  const innerRef = React.useRef<HTMLDivElement>(null)
+
+  React.useEffect(() => {
+    const inner = innerRef.current
+    // Сам CollapsibleContent — родитель обёртки (свой ref он не отдаёт).
+    const panel = inner?.parentElement
+    if (!inner || !panel) return undefined
+    let scrollTimer: number | undefined
+    const sync = () => {
+      const closed = panel.getAttribute("data-state") === "closed"
+      inner.toggleAttribute("inert", closed)
+      if (closed) inner.setAttribute("aria-hidden", "true")
+      else inner.removeAttribute("aria-hidden")
+      if (closed) {
+        // закрытие прерывает запланированную докрутку открытия
+        if (scrollTimer !== undefined) window.clearTimeout(scrollTimer)
+        scrollTimer = undefined
+        return
+      }
+      if (scrollTimer !== undefined) return
+      // ждём конца анимации (200ms) — высота панели к этому моменту финальна
+      scrollTimer = window.setTimeout(() => {
+        scrollTimer = undefined
+        const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        inner.scrollIntoView({ block: "nearest", behavior: reduced ? "auto" : "smooth" })
+      }, 240)
+    }
+    sync()
+    const observer = new MutationObserver(sync)
+    observer.observe(panel, { attributes: true, attributeFilter: ["data-state"] })
+    return () => {
+      if (scrollTimer !== undefined) window.clearTimeout(scrollTimer)
+      observer.disconnect()
+    }
+  }, [])
+
+  return (
+    <CollapsibleContent forceMount className={cn(collapsePanel, className)} {...props}>
+      <div ref={innerRef} className="collapse-panel-inner">
+        {children}
+      </div>
+    </CollapsibleContent>
+  )
+}
 
 /** Слой подписи в SwapLabel (ref: labelSwap / labelSwapIn / labelSwapOut). */
 const labelSwap =

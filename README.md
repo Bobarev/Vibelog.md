@@ -287,6 +287,19 @@ vibelog session outline agent-1793328615846 --json    # kind: "session-outline"
     «N вызовов инструментов» (`MessagePrimitive.GroupedParts` +
     `groupPartByType`); write-вызовы в группу не прячутся — карточка
     подтверждения остаётся активной.
+  - **Раскрытие панелей (VL-271)** — общий механизм `CollapseContent` в
+    `web/src/components/chat/surfaces.tsx` (класс `.collapse-panel` в
+    `web/src/index.css`) на grid-rows трюке (`grid-template-rows: 1fr ↔ 0fr`,
+    где `1fr` в auto-высоте = max-content) с `forceMount`: высота панели всегда
+    по контенту и вложенность любой глубины работает без измерения. Раньше
+    высота фиксировалась Radix-переменной `--radix-collapsible-content-height`
+    (значение на момент открытия), поэтому длинный `Result` и раскрытый внутри
+    группы `ToolCall` срезались `overflow-hidden` — «разворачивались в
+    невидимую область». Анимация — CSS keyframes `vl-collapse-down/up`
+    (transition по `grid-template-rows` на React-пути не стартует, а Radix
+    `Presence` ждёт `animationend`); при раскрытии панель докручивается в
+    viewport (`scrollIntoView`), скрытый контент закрытой панели помечается
+    `inert` + `aria-hidden`, чтобы не ловить Tab.
   - **Ошибки и обрыв**: ошибка стрима/инструмента — единая inline-плашка
     `error-state` (не текст посреди ответа); прерванный/незавершённый run —
     плашка `stopped-run` с причиной и кнопками «Продолжить»/«Скрыть».
