@@ -244,7 +244,7 @@ function checkSourcesMatch(): CheckResult {
  */
 function checkMcpToolsCount(): CheckResult {
   const tools = listTools();
-  const expected = 38;
+  const expected = 42;
   const ok = tools.length === expected;
   return {
     name: 'mcp_tools_count',
@@ -292,6 +292,10 @@ function checkMcpToolsList(): CheckResult {
     'lesson_link',
     'lesson_supersede',
     'project_map',
+    'backlog_trigger_phase',
+    'backlog_phase_status',
+    'backlog_auto_queue',
+    'backlog_supervisor',
   ].sort();
 
   const missing = expected.filter(e => !actual.includes(e));

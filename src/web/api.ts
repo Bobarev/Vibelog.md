@@ -67,6 +67,7 @@ import { getAvailablePhases, getWorkflowForTask, canMoveTo, loadWorkflows } from
 import { loadPhaseStyles } from '../core/phase-styles.js';
 import { globalSearch } from '../core/search.js';
 import { listChatThreads, getChatThread, loadThreadAllowList, addThreadAllow, removeThreadAllow } from './chat.js';
+import { GRANTABLE_TOOLS, findActiveGrant, isValidRunId, latestGrantDraft, saveGrantDraft } from './supervisor-grant.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadSettings, saveSettingsPatch } from '../core/settings.js';
 import { loadModels, loadProviders } from '../core/models.js';
@@ -117,6 +118,50 @@ export function handleApi(
       }
       const q = new URLSearchParams(queryString).get('q') ?? '';
       return { status: 200, body: globalSearch(cwd, q) };
+    }
+
+    // /api/chat/supervisor/grant-draft — правки карточки grant до решения
+    // Allow/Deny (VL-268, AC10): чекбоксы инструментов и срок. POST пишет
+    // draft (его подхватывает backlog_supervisor start), GET отдаёт активный
+    // grant и последний draft (восстановление карточки после перезагрузки).
+    if (url === '/api/chat/supervisor/grant-draft' || url === '/api/chat/supervisor/grant') {
+      if (method === 'GET') {
+        return {
+          status: 200,
+          body: {
+            grant: findActiveGrant(cwd),
+            draft: latestGrantDraft(cwd),
+          },
+        };
+      }
+      if (method === 'POST' && url === '/api/chat/supervisor/grant-draft') {
+        const runId = body?.runId;
+        const taskIds = body?.taskIds;
+        const allowedTools = body?.allowedTools;
+        const expiresAt = body?.expiresAt;
+        if (!isValidRunId(runId)) {
+          return { status: 400, body: { error: 'Ожидается runId прогона (например run-2026-10-31T22-00-00)' } };
+        }
+        if (!Array.isArray(taskIds) || taskIds.some(t => typeof t !== 'string' || t.trim() === '')) {
+          return { status: 400, body: { error: 'Ожидается taskIds — массив ID задач' } };
+        }
+        if (!Array.isArray(allowedTools) || allowedTools.some(t => typeof t !== 'string')) {
+          return { status: 400, body: { error: 'Ожидается allowedTools — массив имён инструментов' } };
+        }
+        if (typeof expiresAt !== 'string' || Number.isNaN(Date.parse(expiresAt))) {
+          return { status: 400, body: { error: 'Ожидается expiresAt — срок ISO 8601' } };
+        }
+        // Фильтр по GRANTABLE_TOOLS: write_file и прочие файловые write сюда
+        // попасть не могут даже вручную (AC9)
+        const draft = saveGrantDraft(cwd, {
+          runId,
+          taskIds: (taskIds as string[]).map(t => t.trim()),
+          allowedTools: allowedTools as string[],
+          expiresAt,
+        });
+        return { status: 200, body: { draft, grantableTools: GRANTABLE_TOOLS } };
+      }
+      return { status: 405, body: { error: 'Метод не поддерживается' } };
     }
 
     // GET /api/chat/threads — список тредов чата (VL-207): сайдбар тредов и

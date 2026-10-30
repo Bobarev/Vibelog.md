@@ -51,6 +51,9 @@ import {
   resolvePersona,
 } from './personas.js';
 import type { PersonaConfig } from './personas.js';
+import { checkSupervisorGrant } from './supervisor-grant.js';
+import type { SupervisorGrantPreview } from './supervisor.js';
+import { supervisorGrantPreview } from '../mcp/supervisor.js';
 
 /** SSE-событие чата (data-строка — JSON с полем type). */
 export type ChatEvent =
@@ -58,7 +61,7 @@ export type ChatEvent =
   | { type: 'text'; delta: string }
   | { type: 'tool_start'; id: string; name: string; args: Record<string, unknown>; auto?: boolean }
   | { type: 'tool_end'; id: string; result: string; isError?: boolean }
-  | { type: 'approval'; toolCallId: string; name: string; args: Record<string, unknown> }
+  | { type: 'approval'; toolCallId: string; name: string; args: Record<string, unknown>; grant?: SupervisorGrantPreview }
   | { type: 'done' }
   | { type: 'error'; message: string };
 
@@ -699,6 +702,11 @@ async function produce(
     const verdict = toolGuard.check(name, args);
     if (verdict === 'duplicate') return duplicateCallResult();
     if (verdict === 'limit') return limitCallResult(toolGuard.maxPerResponse());
+    // VL-268: grant прогона проверяется на КАЖДОМ вызове. Задача вне taskIds —
+    // отказ без исполнения; инструмент вне allowedTools сюда не доходит
+    // (гейт вызовов уже отправил его в Allow/Deny).
+    const grant = checkGrant(cwd, name, args);
+    if (grant.kind === 'error') return grantDeniedResult(grant.error, name);
     const local = localHandlers.get(name);
     const raw = local ? await local.handler(args) : await handleToolCall(name, args, cwd, { defaultStatus: resolveDefaultStatus(activePersona) });
     // Фиксируем исполнение ДО капа вывода: write инкрементит epoch ресурса,
@@ -773,7 +781,7 @@ async function produce(
         tool: next.name,
       turn: currentTurn(),
       });
-      queue.push({ type: 'approval', toolCallId: next.id, name: next.name, args: next.arguments });
+      queue.push({ type: 'approval', toolCallId: next.id, name: next.name, args: next.arguments, ...(grantPreviewOf(cwd, next.name, next.arguments) ? { grant: grantPreviewOf(cwd, next.name, next.arguments) } : {}) });
       return; // ход снова на паузе: ждём решение по следующему вызову
     }
   } else {
@@ -854,7 +862,20 @@ async function produce(
     // инструмент из allow-list треда проходит без паузы (auto: true —
     // клиент помечает вызов как разрешённый заранее).
     for (const tc of resp.toolCalls) {
-      const autoAllowed = isWriteOperation(tc.name) && isToolAllowed(cwd, threadId, tc.name);
+      // VL-268: grant прогона развязывает инструменты супервизора в пределах
+      // задачи/набора; остальные инструменты политика обрабатывает как раньше
+      const grantGate = checkGrant(cwd, tc.name, tc.arguments);
+      if (grantGate.kind === 'error') {
+        // Задача вне прогона: отказ без паузы и без исполнения (AC8)
+        const content = grantDeniedResult(grantGate.error, tc.name);
+        history.push({ role: 'tool', tool_call_id: tc.id, content });
+        appendChatMessages(cwd, threadId, [{ role: 'tool', tool_call_id: tc.id, content }]);
+        queue.push({ type: 'tool_end', id: tc.id, result: content, isError: true });
+        continue;
+      }
+      const grantAllowed = grantGate.kind === 'granted';
+      const autoAllowed =
+        grantAllowed || (isWriteOperation(tc.name) && isToolAllowed(cwd, threadId, tc.name));
       if (isWriteOperation(tc.name) && !autoAllowed) {
         recordApprovalLog(cwd, threadId, {
           event: 'requested',
@@ -862,7 +883,14 @@ async function produce(
           tool: tc.name,
       turn: currentTurn(),
         });
-        queue.push({ type: 'approval', toolCallId: tc.id, name: tc.name, args: tc.arguments });
+        const preview = grantPreviewOf(cwd, tc.name, tc.arguments);
+        queue.push({
+          type: 'approval',
+          toolCallId: tc.id,
+          name: tc.name,
+          args: tc.arguments,
+          ...(preview ? { grant: preview } : {}),
+        });
         return; // состояние уже в jsonl; ждём resume с решением
       }
       queue.push({
@@ -901,6 +929,67 @@ function hasApprovalOf(body: ChatRequestBody): boolean {
 }
 
 /**
+ * Инструменты, которыми управляет grant прогона (VL-268, AC8).
+ *
+ * Только они проверяются grant-путём: для остальных инструментов поведение
+ * прежнее (read — сразу, write — Allow/Deny).
+ */
+const SUPERVISOR_TOOLS: ReadonlySet<string> = new Set([
+  'backlog_trigger_phase',
+  'backlog_phase_status',
+  'backlog_auto_queue',
+  'backlog_supervisor',
+  'backlog_create_task',
+]);
+
+/** Вердикт grant-гейта: исполнять без паузы / обычный Allow/Deny / отказ. */
+type GrantGate =
+  | { kind: 'n/a' }
+  | { kind: 'granted'; runId: string }
+  | { kind: 'approval'; expired?: boolean }
+  | { kind: 'error'; error: string };
+
+/**
+ * Проверка grant ПЕРЕД каждым вызовом инструмента супервизора (AC8).
+ *
+ * Вызывается в трёх точках approval-гейта (цикл хода, resume, продвижение к
+ * следующему гейту), а не один раз при старте хода: отзыв grant'а (stop или
+ * завершение прогона) должен действовать немедленно, даже посреди хода.
+ */
+function checkGrant(cwd: string, name: string, args: Record<string, unknown>): GrantGate {
+  if (!SUPERVISOR_TOOLS.has(name)) return { kind: 'n/a' };
+  const verdict = checkSupervisorGrant(cwd, name, args);
+  if ('granted' in verdict && verdict.granted) return { kind: 'granted', runId: verdict.runId };
+  if ('error' in verdict) return { kind: 'error', error: verdict.error };
+  return { kind: 'approval', ...(verdict.expired ? { expired: true } : {}) };
+}
+
+/** Данные карточки grant для approval-события (AC10); ошибки не рвут ход. */
+function grantPreviewOf(cwd: string, name: string, args: Record<string, unknown>): SupervisorGrantPreview | undefined {
+  if (name !== 'backlog_supervisor') return undefined;
+  if (typeof args.action !== 'string' || args.action !== 'start') return undefined;
+  try {
+    return supervisorGrantPreview(cwd, args);
+  } catch {
+    return undefined; // предпросмотр — украшение карточки, не повод падать
+  }
+}
+
+/** Машиночитаемый отказ по grant'у (без исполнения инструмента). */
+function grantDeniedResult(error: string, tool: string): string {
+  return JSON.stringify(
+    {
+      ok: false,
+      error,
+      tool,
+      hint: 'Задача вне набора прогона: предложи пользователю расширить прогон (backlog_supervisor start с новым набором ids) и подтвердить заново.',
+    },
+    null,
+    2,
+  );
+}
+
+/**
  * VL-256: продвижение к следующему гейту после решения по одному вызову.
  *
  * Read-only вызовы хвоста хода (search/view/read_file) исполняются сразу —
@@ -928,7 +1017,18 @@ async function advanceToNextApproval(
 ): Promise<ToolCall | null> {
   for (const tc of pendingToolCalls(history)) {
     if (tc.id === skipId) continue;
-    const autoAllowed = isWriteOperation(tc.name) && isToolAllowed(cwd, threadId, tc.name);
+    // VL-268: grant прогона действует и на хвосте хода (проверка на каждый вызов)
+    const grantGate = checkGrant(cwd, tc.name, tc.arguments);
+    if (grantGate.kind === 'error') {
+      const content = grantDeniedResult(grantGate.error, tc.name);
+      history.push({ role: 'tool', tool_call_id: tc.id, content });
+      appendChatMessages(cwd, threadId, [{ role: 'tool', tool_call_id: tc.id, content }]);
+      queue.push({ type: 'tool_end', id: tc.id, result: content, isError: true });
+      continue;
+    }
+    const grantAllowed = grantGate.kind === 'granted';
+    const autoAllowed =
+      grantAllowed || (isWriteOperation(tc.name) && isToolAllowed(cwd, threadId, tc.name));
     if (isWriteOperation(tc.name) && !autoAllowed) return tc;
     queue.push({
       type: 'tool_start',

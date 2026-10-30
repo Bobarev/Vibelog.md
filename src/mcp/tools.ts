@@ -60,6 +60,7 @@ import type { TokenUsage } from '../core/analytics.js';
 import {
   agentSessionsDir, loadSessionMetaSync, sumUsageFromJsonlSync, updateSessionMeta,
 } from '../agent/session.js';
+import { SUPERVISOR_TOOL_DEFS, handleSupervisorTool } from './supervisor.js';
 
 // completeTaskFile импортирован для паритета с оригинальным модулем;
 // в текущей логике инструментов не вызывается (оставлено без изменений).
@@ -683,6 +684,8 @@ export function listTools(): ToolDefinition[] {
         required: [],
       },
     },
+    // === Супервизор: запуск фаз, очередь, прогон (VL-268) ===
+    ...SUPERVISOR_TOOL_DEFS,
   ];
 }
 
@@ -785,6 +788,14 @@ export async function handleToolCall(
       return toolLessonSupersede(args, cwd);
     case 'project_map':
       return toolProjectMap(args, cwd);
+    // VL-268: инструменты супервизора (фазы, очередь, прогон). Идемпотентность
+    // by-key здесь не применяется: они не пишут поля задачи, а запускают фазы
+    // и прогоны (дедуп add-очереди и «фаза уже идёт» даёт ядро/оркестратор).
+    case 'backlog_trigger_phase':
+    case 'backlog_phase_status':
+    case 'backlog_auto_queue':
+    case 'backlog_supervisor':
+      return handleSupervisorTool(name, args, cwd);
     default:
       throw new Error(`Неизвестный инструмент: ${name}`);
   }

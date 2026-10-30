@@ -30,6 +30,7 @@ import { CheckIcon, Loader2Icon, TerminalIcon, XIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { addAlwaysAllowed, getActiveThreadId, isToolAlwaysAllowed, removeAlwaysAllowed } from "./chat-runtime"
 import { field, ghostButton, inkButton, mono, paper } from "./surfaces"
+import { GrantScope, grantPreviewOf, saveGrantDraft, type GrantEdits } from "./grant-scope"
 import { primaryArg, requestDetails, toolLabel } from "./tool-meta"
 import type { ToolPart } from "./tool-call"
 
@@ -106,6 +107,9 @@ export function ApprovalCard({
 
   const args = part.args as Record<string, unknown>
   const details = requestDetails(part.toolName, part.args)
+  // VL-268: прогон супервизора — карточка показывает состав, инструменты и срок
+  const grant = grantPreviewOf(part)
+  const [grantEdits, setGrantEdits] = React.useState<GrantEdits | null>(null)
   const description = typeof args.description === "string" ? args.description : undefined
   const command = part.toolName === "write_file" && typeof args.path === "string" ? args.path : undefined
   const subtitleParts = [primaryArg(part.args), allowed || auto ? "разрешено заранее" : ""].filter(Boolean)
@@ -115,6 +119,15 @@ export function ApprovalCard({
     setBusy(mode)
     setError(null)
     try {
+      // VL-268: правки карточки grant уходят на сервер ДО решения — start
+      // подхватит draft с подтверждёнными инструментами и сроком
+      if (approved && grant && grantEdits) {
+        const saved = await saveGrantDraft(grant, grantEdits)
+        if (!saved.ok) {
+          setError(`Не удалось сохранить условия прогона: ${saved.error}`)
+          return
+        }
+      }
       await part.respondToApproval(
         approved ? { approved: true } : { approved: false, reason: "Отклонено в чате" },
       )
@@ -214,6 +227,14 @@ export function ApprovalCard({
             </div>
           ))}
         </dl>
+      )}
+
+      {grant && (
+        <GrantScope
+          preview={grant}
+          disabled={state !== "request" || busy !== null}
+          onChange={setGrantEdits}
+        />
       )}
 
       {error && <p className="text-xs text-destructive">{error}</p>}

@@ -48,7 +48,14 @@ type ChatEvent =
   /** auto (VL-264) — write-вызов прошёл по allow-list треда («Always allow»). */
   | { type: "tool_start"; id: string; name: string; args: Record<string, unknown>; auto?: boolean }
   | { type: "tool_end"; id: string; result: string; isError?: boolean }
-  | { type: "approval"; toolCallId: string; name: string; args: Record<string, unknown> }
+  | {
+      type: "approval"
+      toolCallId: string
+      name: string
+      args: Record<string, unknown>
+      /** VL-268: данные карточки grant (состав прогона, инструменты, срок). */
+      grant?: unknown
+    }
   | { type: "done" }
   | { type: "error"; message: string }
 
@@ -261,13 +268,19 @@ function applyEvent(parts: Part[], ev: ChatEvent): boolean {
       return false
     }
     case "approval": {
+      // VL-268: данные карточки grant (состав прогона, инструменты, срок) едут
+      // в providerMetadata — свободный слот протокола, как `auto` в VL-264.
+      const grantMeta =
+        ev.name === "backlog_supervisor" && ev.grant !== undefined && ev.grant !== null
+          ? { providerMetadata: { vibelog: { grant: ev.grant } } }
+          : {}
       // VL-256: гейты последовательные — повторное событие для того же
       // toolCallId не должно создавать второй part (два part'а с одним id
       // дали бы два диалога, а tool_end попал бы в первый)
       const exists = parts.findIndex(p => p.type === "tool-call" && p.toolCallId === ev.toolCallId)
       if (exists >= 0) {
         const prev = parts[exists] as Extract<Part, { type: "tool-call" }>
-        parts[exists] = { ...prev, approval: { id: ev.toolCallId } }
+        parts[exists] = { ...prev, approval: { id: ev.toolCallId }, ...grantMeta }
         return true
       }
       // write-операция: part с approval-gate, run ставится на паузу
@@ -278,6 +291,7 @@ function applyEvent(parts: Part[], ev: ChatEvent): boolean {
         args: JSON.parse(JSON.stringify(ev.args)),
         argsText: JSON.stringify(ev.args),
         approval: { id: ev.toolCallId },
+        ...grantMeta,
       })
       return true
     }
