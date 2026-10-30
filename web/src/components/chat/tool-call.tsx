@@ -17,9 +17,9 @@ import * as React from "react"
 import type { EnrichedPartState } from "@assistant-ui/react"
 import { CheckIcon, ChevronRightIcon, TriangleAlertIcon } from "lucide-react"
 
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { Collapsible, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { cn } from "@/lib/utils"
-import { collapsePanel, field, mono, ShimmerLabel, SwapLabel } from "./surfaces"
+import { CollapseContent, field, mono, ShimmerLabel, SwapLabel } from "./surfaces"
 import { formatRequest, formatResult, primaryArg, toolActiveLabel, toolLabel } from "./tool-meta"
 
 /** Tool-call part из children-рендера MessagePrimitive (GroupedParts/Parts). */
@@ -74,7 +74,7 @@ export function ToolCall({ part, auto = false }: { part: ToolPart; auto?: boolea
           )}
         </span>
       </CollapsibleTrigger>
-      <CollapsibleContent className={cn(collapsePanel, "outline-none")}>
+      <CollapseContent className="outline-none">
         <div className={cn(field, "mt-2 overflow-hidden rounded-2xl text-xs")}>
           <div className="px-3.5 pt-2.5 pb-2">
             <p className={cn(mono, "mb-1 text-muted-foreground")}>Request</p>
@@ -88,7 +88,7 @@ export function ToolCall({ part, auto = false }: { part: ToolPart; auto?: boolea
             </p>
           </div>
         </div>
-      </CollapsibleContent>
+      </CollapseContent>
     </Collapsible>
   )
 }
@@ -109,9 +109,9 @@ export function ToolGroup({ count, children }: { count: number; children: React.
         <ChevronRightIcon className="size-3.5 shrink-0 opacity-60 transition-transform duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] group-data-[state=open]/trigger:rotate-90 motion-reduce:transition-none" />
         <span className="shrink-0 whitespace-nowrap">{count} вызовов инструментов</span>
       </CollapsibleTrigger>
-      <CollapsibleContent className={cn(collapsePanel, "outline-none")}>
+      <CollapseContent className="outline-none">
         <div className="mt-1 flex flex-col gap-0.5 border-l border-border/60 pl-3">{children}</div>
-      </CollapsibleContent>
+      </CollapseContent>
     </Collapsible>
   )
 }
