@@ -58,6 +58,34 @@ type ChatEvent =
     }
   | { type: "done" }
   | { type: "error"; message: string }
+  /**
+   * VL-269: ход остановлен лимитом, история сохранена. Клиент продолжает ход
+   * сам (до `maxAutoContinue` раз), без нового user-сообщения.
+   */
+  | {
+      type: "truncated"
+      reason: "iterations" | "wall_time"
+      step: number
+      saved?: boolean
+      limits?: {
+        maxIterations: number
+        maxWallTimeSec: number
+        maxAutoContinue: number
+        callTimeoutSec: number
+      }
+    }
+
+/**
+ * Имя data-части «ход остановлен лимитом» (VL-269): рендерится плашкой со
+ * причиной и кнопкой «Продолжить» — когда авто-продолжения уже исчерпаны.
+ */
+export const CHAT_TRUNCATED_PART = "chat-truncated"
+
+/**
+ * Сколько авто-продолжений делает клиент, если сервер не сообщил свой лимит
+ * (`chat.max_auto_continue`, VL-269). Значение приходит в событии truncated.
+ */
+const MAX_AUTO_CONTINUE_FALLBACK = 3
 
 /**
  * Имя data-части ошибки стрима (VL-264, AC9). Раньше ошибка дописывалась
@@ -216,8 +244,15 @@ function parseEvent(line: string): ChatEvent | null {
 /**
  * Кладёт событие в накопленный content. Возвращает true, если run должен
  * завершиться паузой (approval-gate).
+ *
+ * `state.truncated` (VL-269) фиксирует событие лимита: content получает
+ * data-часть плашки, а решение «продолжать автоматически» принимает run.
  */
-function applyEvent(parts: Part[], ev: ChatEvent): boolean {
+function applyEvent(
+  parts: Part[],
+  ev: ChatEvent,
+  state?: { truncated?: Extract<ChatEvent, { type: "truncated" }> },
+): boolean {
   switch (ev.type) {
     case "thread":
       activeThreadId = ev.threadId
@@ -312,111 +347,171 @@ function applyEvent(parts: Part[], ev: ChatEvent): boolean {
       return false
     case "done":
       return false
+    case "truncated": {
+      // VL-269: ход остановлен лимитом, история сохранена. Плашку с причиной
+      // и кнопкой «Продолжить» рендерит thread.tsx (PartView); флаг читает
+      // run — он решает, продолжать автоматически или отдать кнопку.
+      if (state) state.truncated = ev
+      parts.push({
+        type: "data",
+        name: CHAT_TRUNCATED_PART,
+        data: { reason: ev.reason, step: ev.step, saved: ev.saved !== false },
+      })
+      return false
+    }
     default:
       return false
   }
 }
 
-/** Наш ChatModelAdapter: один run = один POST /api/chat (ход ИЛИ resume). */
+/**
+ * Наш ChatModelAdapter: один run = один ход, но ход может состоять из
+ * нескольких POST. Событие `truncated` (VL-269) означает «сервер упёрся в
+ * лимит, история сохранена» — клиент сам повторяет ход с `continue: true`
+ * (без нового user-сообщения), пока не исчерпает `max_auto_continue`.
+ * Дальше плашка с кнопкой «Продолжить» — ручное продолжение как аварийный
+ * выход, а не рабочий ритм.
+ */
 const chatAdapter: ChatModelAdapter = {
   async *run(options): AsyncGenerator<ChatModelRunResult, void> {
     const parts: Part[] = []
-    let pausedOnApproval = false
-
-    // --- тело запроса: resume (решение по approval) ИЛИ новое сообщение ---
+    // Решения по approval читаются один раз: авто-продолжение уже не resume
     const decisions = pendingApprovalDecisions(options)
-    let body: Record<string, unknown>
-    if (decisions.length > 0) {
-      const d = decisions[0]!
-      sentApprovals.add(d.toolCallId)
-      body = {
-        threadId: activeThreadId,
-        approval: {
-          toolCallId: d.toolCallId,
-          approved: d.approved,
-          ...(d.reason ? { reason: d.reason } : {}),
-        },
-      }
-      if (!body.threadId) {
-        // решения без треда (перезагрузка) — сервер отвечает error-событием
-        delete body.threadId
-      }
-    } else {
-      body = {
-        message: lastUserText(options.messages),
-        ...(activeThreadId ? { threadId: activeThreadId } : {}),
-        // VL-209: переопределение модели (undefined — default из settings.json)
-        ...(activeModelId ? { model: activeModelId } : {}),
-        // VL-265: роль применяется к следующему сообщению; история треда
-        // не переписывается (system-сообщение пересобирается на каждый ход)
-        persona: activePersonaId,
-      }
-    }
+    /** Сколько авто-продолжений сделано в этом ходе (AC9). */
+    let autoContinues = 0
 
-    // --- стриминг: читаем поток сами, yield после каждого события ---------
-    let res: Response
-    try {
-      res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: options.abortSignal,
-      })
-    } catch (err) {
-      if (options.abortSignal.aborted) return // отмена пользователем
-      const message = err instanceof Error ? err.message : String(err)
-      parts.push(errorPart(message))
-      yield { content: [...parts] as Parts }
-      return
-    }
-    if (!res.ok || !res.body) {
-      parts.push(errorPart(`сервер ответил ${res.status}`))
-      yield { content: [...parts] as Parts }
-      return
-    }
+    for (;;) {
+      const state: { truncated?: Extract<ChatEvent, { type: "truncated" }> } = {}
+      let pausedOnApproval = false
 
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ""
-    const handleChunk = (chunk: string): "pause" | "none" => {
-      for (const line of chunk.split("\n")) {
-        const ev = parseEvent(line)
-        if (!ev) continue
-        if (applyEvent(parts, ev)) return "pause"
-      }
-      return "none"
-    }
-
-    try {
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        let sep = buffer.indexOf("\n\n")
-        while (sep !== -1) {
-          const chunk = buffer.slice(0, sep)
-          buffer = buffer.slice(sep + 2)
-          if (handleChunk(chunk) === "pause") {
-            pausedOnApproval = true
-            break
-          }
-          sep = buffer.indexOf("\n\n")
+      // --- тело очередного POST -------------------------------------------
+      let body: Record<string, unknown>
+      if (decisions.length > 0 && autoContinues === 0) {
+        const d = decisions[0]!
+        sentApprovals.add(d.toolCallId)
+        body = {
+          threadId: activeThreadId,
+          approval: {
+            toolCallId: d.toolCallId,
+            approved: d.approved,
+            ...(d.reason ? { reason: d.reason } : {}),
+          },
         }
-        if (pausedOnApproval) break
-        if (parts.length > 0) yield { content: [...parts] as Parts }
+        if (!body.threadId) {
+          // решения без треда (перезагрузка) — сервер отвечает error-событием
+          delete body.threadId
+        }
+      } else if (autoContinues > 0) {
+        // VL-269 (AC8): продолжение хода без user-сообщения и без пустой
+        // строки в треде — сервер дописывает историю к уже накопленной.
+        body = {
+          continue: true,
+          ...(activeThreadId ? { threadId: activeThreadId } : {}),
+          ...(activeModelId ? { model: activeModelId } : {}),
+        }
+      } else {
+        body = {
+          message: lastUserText(options.messages),
+          ...(activeThreadId ? { threadId: activeThreadId } : {}),
+          // VL-209: переопределение модели (undefined — default из settings.json)
+          ...(activeModelId ? { model: activeModelId } : {}),
+          // VL-265: роль применяется к следующему сообщению; история треда
+          // не переписывается (system-сообщение пересобирается на каждый ход)
+          persona: activePersonaId,
+        }
       }
-      if (!pausedOnApproval && buffer.trim()) handleChunk(buffer)
-    } catch (err) {
-      if (options.abortSignal.aborted) return // отмена пользователем
-      const message = err instanceof Error ? err.message : String(err)
-      parts.push(errorPart(message))
-    }
 
-    if (pausedOnApproval) {
-      yield { content: [...parts] as Parts, status: { type: "requires-action", reason: "tool-calls" } }
+      // --- стриминг: читаем поток сами, yield после каждого события -------
+      let res: Response
+      try {
+        res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: options.abortSignal,
+        })
+      } catch (err) {
+        if (options.abortSignal.aborted) return // отмена пользователем
+        const message = err instanceof Error ? err.message : String(err)
+        parts.push(errorPart(message))
+        yield { content: [...parts] as Parts }
+        return
+      }
+      if (!res.ok || !res.body) {
+        parts.push(errorPart(`сервер ответил ${res.status}`))
+        yield { content: [...parts] as Parts }
+        return
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+      const handleChunk = (chunk: string): "pause" | "none" => {
+        for (const line of chunk.split("\n")) {
+          const ev = parseEvent(line)
+          if (!ev) continue
+          if (applyEvent(parts, ev, state)) return "pause"
+        }
+        return "none"
+      }
+
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          let sep = buffer.indexOf("\n\n")
+          while (sep !== -1) {
+            const chunk = buffer.slice(0, sep)
+            buffer = buffer.slice(sep + 2)
+            if (handleChunk(chunk) === "pause") {
+              pausedOnApproval = true
+              break
+            }
+            sep = buffer.indexOf("\n\n")
+          }
+          if (pausedOnApproval) break
+          if (parts.length > 0) yield { content: [...parts] as Parts }
+        }
+        if (!pausedOnApproval && buffer.trim()) handleChunk(buffer)
+      } catch (err) {
+        if (options.abortSignal.aborted) return // отмена пользователем
+        const message = err instanceof Error ? err.message : String(err)
+        parts.push(errorPart(message))
+        yield { content: [...parts] as Parts }
+        return
+      }
+
+      if (pausedOnApproval) {
+        yield { content: [...parts] as Parts, status: { type: "requires-action", reason: "tool-calls" } }
+        return
+      }
+
+      // AC11: остановка пользователем прерывает авто-продолжение — новый ход
+      // не запускается (ComposerPrimitive.Cancel абортит abortSignal).
+      if (options.abortSignal.aborted) return
+
+      // --- авто-продолжение (AC8/AC9/AC10) --------------------------------
+      const truncated = state.truncated
+      if (truncated) {
+        const maxAuto = truncated.limits?.maxAutoContinue ?? MAX_AUTO_CONTINUE_FALLBACK
+        if (autoContinues < maxAuto) {
+          autoContinues++
+          const why = truncated.reason === "wall_time" ? "лимит времени" : "лимит итераций"
+          parts.push({
+            type: "text",
+            text: `\n\n_Продолжаю — шаг ${autoContinues}, ${why} исчерпан._\n\n`,
+          })
+          yield { content: [...parts] as Parts }
+          continue
+        }
+        // Авто-продолжения исчерпаны: плашка truncated остаётся в content,
+        // thread.tsx показывает по ней кнопку «Продолжить» (ручной ход).
+      }
+
+      yield { content: [...parts] as Parts }
       return
     }
-    yield { content: [...parts] as Parts }
   },
 }
 

@@ -16,6 +16,20 @@ export interface SettingsData {
   /** undefined = включён (VL-122): ключ пишется только для explicit off. */
   compact?: boolean;
   code_same_session?: boolean;
+  /** Лимиты веб-чата (VL-269): секция `chat` settings.json. */
+  chat?: ChatSettings;
+}
+
+/** Лимиты веб-чата: секунды/штуки как в конфиге; отсутствие ключа — дефолт. */
+export interface ChatSettings {
+  /** Максимум итераций LLM-цикла на ход (дефолт 8). */
+  max_iterations?: number;
+  /** Общий бюджет хода, секунды (дефолт 120). */
+  max_wall_time?: number;
+  /** Максимум авто-продолжений подряд (дефолт 3). */
+  max_auto_continue?: number;
+  /** Таймаут одного вызова модели, секунды (дефолт 90). */
+  call_timeout?: number;
 }
 
 /** Числовые лимиты: undefined — не заданы (сброс, дефолт агента). */
@@ -24,6 +38,13 @@ export type SettingsPatch = {
 } & {
   max_wall_time?: number | null;
   max_requests?: number | null;
+  /** Секция chat: ключ со значением null/0 удаляется (сброс к дефолту). */
+  chat?: {
+    max_iterations?: number | null;
+    max_wall_time?: number | null;
+    max_auto_continue?: number | null;
+    call_timeout?: number | null;
+  };
 };
 
 /** Текущие настройки. Бросает при ошибке — вызывающий показывает сообщение. */

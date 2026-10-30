@@ -48,6 +48,11 @@ interface FormState {
   branch_mode: boolean;
   compact: boolean;
   code_same_session: boolean;
+  /* VL-269: лимиты веб-чата — текст числовых полей (пусто/0 = сброс) */
+  chat_max_iterations: string;
+  chat_max_wall_time: string;
+  chat_max_auto_continue: string;
+  chat_call_timeout: string;
 }
 
 /** Настройки → состояние формы: undefined-числа → пустая строка, compact default-on. */
@@ -62,6 +67,11 @@ function toFormState(s: SettingsData): FormState {
     // compact: undefined = ВКЛ (VL-122) — читаем только строгое false
     compact: s.compact !== false,
     code_same_session: s.code_same_session === true,
+    // VL-269: числа секции chat → строки; отсутствие ключа = дефолт чата
+    chat_max_iterations: s.chat?.max_iterations != null ? String(s.chat.max_iterations) : "",
+    chat_max_wall_time: s.chat?.max_wall_time != null ? String(s.chat.max_wall_time) : "",
+    chat_max_auto_continue: s.chat?.max_auto_continue != null ? String(s.chat.max_auto_continue) : "",
+    chat_call_timeout: s.chat?.call_timeout != null ? String(s.chat.call_timeout) : "",
   };
 }
 
@@ -140,6 +150,14 @@ export function SettingsPage() {
         branch_mode: form.branch_mode,
         compact: form.compact,
         code_same_session: form.code_same_session,
+        // VL-269: секция chat передаётся целиком (полная замена, как в API);
+        // пустое/0 → null — сервер удаляет ключ, чат берёт дефолт
+        chat: {
+          max_iterations: parseLimit(form.chat_max_iterations),
+          max_wall_time: parseLimit(form.chat_max_wall_time),
+          max_auto_continue: parseLimit(form.chat_max_auto_continue),
+          call_timeout: parseLimit(form.chat_call_timeout),
+        },
       });
       setForm(toFormState(updated));
       setSaved(true);
@@ -341,6 +359,79 @@ export function SettingsPage() {
               checked={form.code_same_session}
               onCheckedChange={(v) => update("code_same_session", v)}
             />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* VL-269: лимиты хода веб-чата — читаются на каждый ход, рестарт не нужен */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Лимиты веб-чата</CardTitle>
+          <CardDescription>
+            Применяются к следующему ходу чата без перезапуска сервера. Пусто или 0 —
+            сброс к дефолту: 8 итераций, 120 с на ход, 3 авто-продолжения, 90 с на вызов
+            модели.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="chat-max-iterations">Итераций на ход</Label>
+              <Input
+                id="chat-max-iterations"
+                type="number"
+                min={0}
+                placeholder="8"
+                value={form.chat_max_iterations}
+                onChange={(e) => update("chat_max_iterations", e.target.value)}
+              />
+              <p className="text-muted-foreground text-xs">
+                Один ответ модели + его tool-вызовы = одна итерация. Дефолт 8, максимум 200.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="chat-max-wall-time">Бюджет хода, с</Label>
+              <Input
+                id="chat-max-wall-time"
+                type="number"
+                min={0}
+                placeholder="120"
+                value={form.chat_max_wall_time}
+                onChange={(e) => update("chat_max_wall_time", e.target.value)}
+              />
+              <p className="text-muted-foreground text-xs">
+                Общее время одного хода. По исчерпании ход не обрывается ошибкой — клиент
+                продолжит его сам.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="chat-max-auto-continue">Авто-продолжений подряд</Label>
+              <Input
+                id="chat-max-auto-continue"
+                type="number"
+                min={0}
+                placeholder="3"
+                value={form.chat_max_auto_continue}
+                onChange={(e) => update("chat_max_auto_continue", e.target.value)}
+              />
+              <p className="text-muted-foreground text-xs">
+                Сколько раз чат продолжит ход сам. Дальше — кнопка «Продолжить».
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="chat-call-timeout">Таймаут вызова модели, с</Label>
+              <Input
+                id="chat-call-timeout"
+                type="number"
+                min={0}
+                placeholder="90"
+                value={form.chat_call_timeout}
+                onChange={(e) => update("chat_call_timeout", e.target.value)}
+              />
+              <p className="text-muted-foreground text-xs">
+                Ожидание без единого токена. Живой стрим таймаут не срабатывает.
+              </p>
+            </div>
           </div>
         </CardContent>
       </Card>

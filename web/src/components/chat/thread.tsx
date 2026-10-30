@@ -59,7 +59,7 @@ import { Button } from "@/components/ui/button"
 import { historyToMessages } from "@/lib/chat-threads"
 import { useChatThreadId } from "@/lib/use-hash-route"
 import { ApprovalCard } from "./approval-card"
-import { CHAT_ERROR_PART, ChatRuntimeProvider } from "./chat-runtime"
+import { CHAT_ERROR_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider } from "./chat-runtime"
 import { ChatErrorState } from "./error-state"
 import { ModelPicker, PersonaPicker } from "./pickers"
 import { StoppedRun } from "./stopped-run"
@@ -141,6 +141,28 @@ function PartView({ part }: { part: GroupedPartLike }) {
   if (part.type === "data" && part.name === CHAT_ERROR_PART) {
     const payload = part.data as { message?: unknown; retryable?: unknown } | undefined
     return <ChatErrorState message={typeof payload?.message === "string" ? payload.message : "Неизвестная ошибка"} />
+  }
+  if (part.type === "data" && part.name === CHAT_TRUNCATED_PART) {
+    // VL-269 (AC9/AC10): авто-продолжения исчерпаны — вместо них явная
+    // кнопка «Продолжить»; каждое нажатие = один ход (Reload перезапускает run).
+    const payload = part.data as { reason?: unknown; step?: unknown } | undefined
+    const why = payload?.reason === "wall_time" ? "Превышен лимит времени хода" : "Превышен лимит итераций"
+    return (
+      <StoppedRun
+        reason={why}
+        retry={
+          <ActionBarPrimitive.Reload asChild>
+            <button
+              type="button"
+              className="flex h-7 items-center gap-1 rounded-full px-2.5 text-xs font-medium text-foreground/70 transition-[background-color,color,scale] duration-150 hover:bg-foreground/[0.06] hover:text-foreground/95 active:scale-[0.96]"
+            >
+              Продолжить
+              <ArrowRight className="size-3" />
+            </button>
+          </ActionBarPrimitive.Reload>
+        }
+      />
+    )
   }
   return null
 }

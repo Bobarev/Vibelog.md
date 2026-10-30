@@ -48,6 +48,49 @@ export interface BotSettings {
    * выключен (undefined = off, текущее поведение сохраняется).
    */
   code_same_session?: boolean;
+  /**
+   * Лимиты веб-чата (VL-269): секция `chat` settings.json. Значения — в
+   * секундах/штуках, как их видит пользователь; ключ отсутствует, если
+   * пользователь его не задавал (тогда чат берёт дефолт из chat-limits.ts).
+   */
+  chat?: ChatSectionSettings;
+}
+
+/** Лимиты веб-чата в том виде, в котором они лежат в settings.json. */
+export interface ChatSectionSettings {
+  /** Максимум итераций LLM-цикла на ход (дефолт 8). */
+  max_iterations?: number;
+  /** Общий бюджет хода, секунды (дефолт 120). */
+  max_wall_time?: number;
+  /** Максимум авто-продолжений подряд на клиенте (дефолт 3). */
+  max_auto_continue?: number;
+  /** Таймаут одного вызова модели, секунды (дефолт 90). */
+  call_timeout?: number;
+}
+
+/** Ключи секции chat — единый список для чтения/записи валидации. */
+export const CHAT_SECTION_KEYS = [
+  'max_iterations',
+  'max_wall_time',
+  'max_auto_continue',
+  'call_timeout',
+] as const;
+
+/**
+ * Секция `chat` из сырого settings.json: только положительные целые числа.
+ * Мусор (0, отрицательное, строка, дробное) отбрасывается как отсутствующий
+ * ключ — чат возьмёт дефолт (VL-269, lesson-117: битая настройка не отключает
+ * рабочие дефолты).
+ */
+function readChatSection(raw: unknown): ChatSectionSettings | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const src = raw as Record<string, unknown>;
+  const out: ChatSectionSettings = {};
+  for (const key of CHAT_SECTION_KEYS) {
+    const value = readPositiveInt(src[key]);
+    if (value !== undefined) out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**
@@ -110,6 +153,8 @@ export function loadBotSettings(cwd: string): BotSettings {
   // Code в сессии Plan (VL-147): только строгое true; любое другое значение
   // (false, строка, мусор) → undefined → resolveCodeSameSession даст false
   const codeSameSession = raw.code_same_session === true ? true : undefined;
+  // Лимиты веб-чата (VL-269): секция chat, только положительные целые
+  const chat = readChatSection(raw.chat);
   return {
     chats: chats.map(Number).filter((n) => Number.isFinite(n)),
     ...(defaultAgent ? { default_agent: defaultAgent } : {}),
@@ -118,6 +163,7 @@ export function loadBotSettings(cwd: string): BotSettings {
     ...(branchMode !== undefined ? { branch_mode: branchMode } : {}),
     ...(compact !== undefined ? { compact } : {}),
     ...(codeSameSession !== undefined ? { code_same_session: codeSameSession } : {}),
+    ...(chat !== undefined ? { chat } : {}),
     // Пользовательские записи перекрывают дефолты; поле всегда объект —
     // handlers не пишет ?? {} (VL-82)
     task_type_styles: { ...DEFAULT_TASK_TYPE_STYLES, ...extractTaskTypeStyles(raw.task_type_styles) },
@@ -159,6 +205,8 @@ export function saveBotSettings(cwd: string, settings: BotSettings): void {
     // code_same_session пишем всегда, когда задан (в т.ч. false — /set
     // code-same-session off должен оставить явный ключ в settings.json)
     code_same_session: settings.code_same_session,
+    // VL-269: секция лимитов веб-чата; undefined удаляет ключ (сброс к дефолту)
+    chat: settings.chat,
     task_type_styles: Object.keys(userStyles).length > 0 ? userStyles : undefined,
   };
   saveSettingsPatch(cwd, patch);

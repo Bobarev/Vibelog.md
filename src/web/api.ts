@@ -72,8 +72,9 @@ import { resolveGitUserName } from '../core/project-settings.js';
 import { loadSettings, saveSettingsPatch } from '../core/settings.js';
 import { loadModels, loadProviders } from '../core/models.js';
 import { DEFAULT_PERSONA_ID, listPersonas } from './personas.js';
-import { loadBotSettings, saveBotSettings } from '../bot/settings.js';
+import { CHAT_SECTION_KEYS, loadBotSettings, saveBotSettings } from '../bot/settings.js';
 import type { BotSettings } from '../bot/settings.js';
+import { CHAT_LIMITS_CEILING } from './chat-limits.js';
 import { startTaskPhase, getRun, rejectTask } from './orchestrator.js';
 
 /** HTTP-ответ API. */
@@ -699,6 +700,17 @@ function enrichWithWorkflow(cwd: string, task: Task): Record<string, unknown> {
   };
 }
 
+/**
+ * Соответствие ключей секции `chat` потолкам из `chat-limits.ts` (VL-269):
+ * секунды для времени, штуки для счётчиков — как в конфиге пользователя.
+ */
+const CEILING_KEY: Record<(typeof CHAT_SECTION_KEYS)[number], keyof typeof CHAT_LIMITS_CEILING> = {
+  max_iterations: 'maxIterations',
+  max_wall_time: 'maxWallTimeSec',
+  max_auto_continue: 'maxAutoContinue',
+  call_timeout: 'callTimeoutSec',
+};
+
 function validateSettingsPatch(
   body: Record<string, unknown> | null
 ): { patch: Partial<BotSettings> } | { error: string } {
@@ -736,6 +748,35 @@ function validateSettingsPatch(
         }
         patch[key] = value;
         break;
+      case 'chat': {
+        // VL-269: секция лимитов веб-чата — зеркало валидации max_wall_time:
+        // 0/null по ключу — сброс; положительное целое в потолке — значение;
+        // неизвестный ключ/тип — 400 (веб не пишет в settings.json мусор).
+        if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+          return { error: `chat: ожидается объект с ключами ${CHAT_SECTION_KEYS.join(', ')}` };
+        }
+        const section: Record<string, unknown> = {};
+        for (const [subKey, subValue] of Object.entries(value as Record<string, unknown>)) {
+          if (!(CHAT_SECTION_KEYS as readonly string[]).includes(subKey)) {
+            return { error: `Неизвестный ключ настройки: chat.${subKey}` };
+          }
+          if (subValue === null || subValue === 0) continue; // сброс ключа
+          const n = Number(subValue);
+          const ceiling =
+            CHAT_LIMITS_CEILING[
+              CEILING_KEY[subKey as (typeof CHAT_SECTION_KEYS)[number]]
+            ];
+          if (!Number.isInteger(n) || n <= 0 || n > ceiling) {
+            return {
+              error: `chat.${subKey}: ожидается положительное целое 1..${ceiling} (или 0/null — сброс), получено ${JSON.stringify(subValue)}`,
+            };
+          }
+          section[subKey] = n;
+        }
+        // Пустая секция = полный сброс: ключ chat удаляется из settings.json
+        patch.chat = Object.keys(section).length > 0 ? (section as BotSettings['chat']) : undefined;
+        break;
+      }
       default:
         return { error: `Неизвестный ключ настройки: ${key}` };
     }
