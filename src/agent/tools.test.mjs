@@ -59,11 +59,36 @@ describe('validateArgs (VL-83)', () => {
 });
 
 describe('listLocalTools (VL-83)', () => {
-  it('содержит ровно 7 инструментов', () => {
+  it('содержит ровно 8 инструментов', () => {
     assert.deepEqual(
       [...byName.keys()].sort(),
-      ['edit', 'glob', 'grep_search', 'read_file', 'run_shell_command', 'search_files', 'write_file'],
+      ['agent_session_outline', 'edit', 'glob', 'grep_search', 'read_file', 'run_shell_command', 'search_files', 'write_file'],
     );
+  });
+
+  // VL-258: обзор транскрипта сессии — 5 строк, одна 50 КБ → компактный обзор
+  it('agent_session_outline: обзор jsonl одним вызовом (VL-258)', async () => {
+    const big = 'x'.repeat(50_000);
+    const lines = [
+      { role: 'system', content: 'system' },
+      { role: 'user', content: 'Ты — автоматический исполнитель Vibelog (Фаза 2: Plan) для задачи VL-9.' },
+      { role: 'assistant', content: big },
+      { role: 'user', content: 'Продолжи с текущего места' },
+      { role: 'assistant', content: 'готово' },
+    ];
+    const file = join(TMP, 'agent-outline.jsonl');
+    writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+    const out = await byName.get('agent_session_outline').handler({ path: 'agent-outline.jsonl' });
+    assert.ok(out.length <= TOOL_OUTPUT_MAX_CHARS, `обзор ${out.length} ≤ ${TOOL_OUTPUT_MAX_CHARS}`);
+    assert.match(out, /5 строк, 2 ранов/);
+    assert.match(out, /Раны: 1 → стр\. 2 \(plan\), 2 → стр\. 4 \(resume\)/);
+    assert.ok(!out.includes('x'.repeat(200)), 'тело гигантской строки не попало в обзор');
+  });
+
+  it('agent_session_outline: несуществующий файл → «Файл не найден» + подсказка (VL-257)', async () => {
+    const out = await byName.get('agent_session_outline').handler({ path: 'нет-такого.jsonl' });
+    assert.match(out, /Файл не найден/);
+    assert.match(out, /Ближайший существующий каталог/);
   });
 
   // VL-234: новый инструмент зарегистрирован в локальном наборе агента

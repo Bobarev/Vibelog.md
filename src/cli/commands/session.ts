@@ -24,18 +24,25 @@ import type { FlagValues } from '../args.js';
 import { printError } from '../ui.js';
 import { agentSessionsDir, findLatestTaskSessionSync, loadSessionMetaSync } from '../../agent/session.js';
 import { buildSessionSummary, formatSessionSummary } from '../../agent/session-summary.js';
+import { buildSessionOutline, formatSessionOutline } from '../../agent/session-outline.js';
+import { parseJsonlWithBytes } from '../../agent/tools.js';
 import { billingPath, readBilling } from '../../core/billing.js';
 import type { BillingSession } from '../../core/billing.js';
 import type { ChatMessage } from '../../agent/llm.js';
 
 /** Справка команды: печатается при неизвестной подкоманде. */
 const USAGE = `vibelog session summary <sessionId|--task VL-N> [--json]
+vibelog session outline <sessionId|--task VL-N> [--offset N] [--limit N] [--json]
 
 Печатает сводку сессии агента: раны (фазы, строки, токены, payload),
 tool-calls по инструментам, топ shell-команд и топ правок файлов.
   <sessionId>   — id сессии (agent-…); префикс vb:/qwen: снимается
   --task VL-N   — взять последнюю сессию задачи из меты
   --json        — стабильная схема (schemaVersion) для /analyze и тестов
+
+outline — обзор транскрипта без чтения килобайтов: по строке индекс, роль,
+размер в байтах, tool_calls, маркер рана/фазы и первые 80 символов; плюс
+секция «Раны» (фаза → строка). offset — 0-based строка начала, limit — окно.
 
 Алиас: vibelog agent-session summary ...`;
 
@@ -53,7 +60,7 @@ export async function runSession(
   flags: FlagValues,
   cwd: string,
 ): Promise<void> {
-  if (subcommand !== 'summary') {
+  if (subcommand !== 'summary' && subcommand !== 'outline') {
     printError(`Неизвестная подкоманда session: ${subcommand || '(пусто)'}\n\n${USAGE}`);
     process.exitCode = 1;
     return;
@@ -88,6 +95,34 @@ export async function runSession(
   if (!existsSync(jsonlPath)) {
     printError(`Сессия ${resolved} не найдена: ${jsonlPath}`);
     process.exitCode = 1;
+    return;
+  }
+
+  // VL-258: обзор транскрипта — отдельная ветка: та же резолюция сессии,
+  // но вместо агрегатов печатается таблица строк (роль/байты/tool_calls/
+  // фаза/сниппет) и секция «Раны».
+  if (subcommand === 'outline') {
+    const parsed = parseJsonlWithBytes(jsonlPath);
+    if (!parsed.ok) {
+      printError(parsed.error);
+      process.exitCode = 1;
+      return;
+    }
+    const offset = Number(getFlag(flags, 'offset', '0'));
+    const limit = Number(getFlag(flags, 'limit', '0'));
+    const outline = buildSessionOutline({
+      messages: parsed.messages,
+      sessionId: resolved,
+      path: jsonlPath,
+      lineBytes: parsed.lineBytes,
+      offset: Number.isFinite(offset) && offset > 0 ? offset : 0,
+      limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+    });
+    if (hasFlag(flags, 'json')) {
+      console.log(JSON.stringify(outline, null, 2));
+      return;
+    }
+    console.log(formatSessionOutline(outline));
     return;
   }
 

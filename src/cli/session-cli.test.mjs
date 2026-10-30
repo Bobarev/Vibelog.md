@@ -244,3 +244,39 @@ describe('VL-261 — vibelog session summary', () => {
     assert.equal(process.exitCode, 1);
   });
 });
+
+describe('VL-258 — vibelog session outline', () => {
+  it('печатает обзор: шапка, секция «Раны» и строки таблицы', async () => {
+    const { out } = await capture(() => run(['session', 'outline', SESSION_ID]));
+    assert.match(out, new RegExp(`Сессия ${SESSION_ID}: ${JSONL.length} строк`));
+    assert.match(out, /Раны: 1 → стр\. 2 \(plan\), 2 → стр\. 6 \(code\)/);
+    assert.match(out, /2 tools \(run_shell_command, edit\)/);
+    assert.ok(out.length <= 8 * 1024, `обзор ${out.length} ≤ 8192`);
+  });
+
+  it('--json: схема kind=session-outline с полями строк', async () => {
+    const { out } = await capture(() => run(['session', 'outline', SESSION_ID, '--json']));
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.kind, 'session-outline');
+    assert.equal(parsed.sessionId, SESSION_ID);
+    assert.equal(parsed.lines, JSONL.length);
+    assert.equal(parsed.runs.length, 2);
+    assert.equal(parsed.entries[1].role, 'user');
+    assert.equal(parsed.entries[1].runIndex, 1);
+    assert.ok(parsed.entries[0].bytes > 0, 'размер строки посчитан по исходному jsonl');
+  });
+
+  it('--limit ограничивает окно, --task находит ту же сессию', async () => {
+    const { out } = await capture(() => run(['session', 'outline', '--task', 'VL-9', '--limit', '2', '--json']));
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.sessionId, SESSION_ID);
+    assert.equal(parsed.entries.length, 2);
+    assert.equal(parsed.entries[0].line, 1);
+  });
+
+  it('несуществующая сессия: ошибка и exitCode 1', async () => {
+    const { err } = await capture(() => run(['session', 'outline', 'agent-0000000000000']));
+    assert.match(err, /не найдена/);
+    assert.equal(process.exitCode, 1);
+  });
+});
