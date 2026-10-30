@@ -189,6 +189,46 @@ export interface SessionMeta {
    * иначе ран учитывался бы дважды (паттерн usage_recorded, lesson-58).
    */
   billing_recorded?: { sessionId: string; finishedAt: string };
+  /**
+   * VL-259: фаза ПОСЛЕДНЕГО рана сессии. Заполняется пост-раном (CLI) и
+   * finish() оркестратора. Важно: `phase` выше — это фаза СОЗДАНИЯ сессии
+   * (по ней работает findTaskPhaseSessionSync, VL-147/lesson-40), поэтому
+   * фаза текущего рана хранится отдельным полем, а не переприсваиванием
+   * `phase` (иначе план-сессия «затиралась» бы code-раном, инцидент VL-185).
+   */
+  lastRunPhase?: string;
+  /**
+   * VL-259: история ранов сессии — по записи на ran: в какой фазе шёл, когда
+   * реально начался/закончился, сколько стоил. Нужна для разбора сессий
+   * (раньше в мете была видна только фаза создания, и разбор VL-235 сделал
+   * неверный вывод «сгорела фаза Plan»). Кап — RUN_HISTORY_MAX записей.
+   */
+  runs?: SessionRun[];
+}
+
+/** Сколько записей истории ранов хранить в мете (VL-259): не пухнем за тысячи resume. */
+export const RUN_HISTORY_MAX = 50;
+
+/** Одна запись истории ранов сессии (VL-259). */
+export interface SessionRun {
+  /** ID сессии (дубликат — запись самодостаточна). */
+  sessionId: string;
+  /** Фаза ЭТОГО рана (spec/plan/code/close/…); undefined, если неизвестна. */
+  phase?: string;
+  /** Фаза сессии, если отличается от фазы рана (resume-ран). */
+  sessionPhase?: string;
+  /** Фактическое начало рана (ISO). */
+  startedAt: string;
+  /** Окончание рана (ISO). */
+  finishedAt: string;
+  /** Длительность рана (мс). */
+  durationMs?: number;
+  /** Кумулятивное использование токенов сессии на конец рана. */
+  usage?: TokenUsage;
+  /** Агент-исполнитель: 'vb' | 'qwen'. */
+  agent?: string;
+  /** Кто оставил запись в billing: штатный пост-ран ('run') или fallback оркестратора. */
+  billing?: 'run' | 'fallback';
 }
 
 /**
@@ -255,6 +295,50 @@ export function updateSessionMeta(
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(merged), 'utf-8');
   return merged;
+}
+
+/**
+ * Дописывает запись истории ранов в мету сессии (VL-259).
+ *
+ * История ранов — аддитивное поле `runs[]`: фаза рана, фактические времена
+ * начала/окончания, usage. Пишется пост-раном CLI и finish() оркестратора,
+ * чтобы по мете можно было восстановить «сколько было ранов, в какой фазе
+ * шёл каждый, когда начался и сколько стоил» (разбор сессий VL-235/VL-254).
+ *
+ * Мета НЕ перезаписывается: `phase`/`taskId` (фаза создания сессии) и прочие
+ * поля сохраняются (lesson-40, инвариант findTaskPhaseSessionSync VL-147);
+ * меняются только `runs[]` (с капом RUN_HISTORY_MAX) и `lastRunPhase`.
+ *
+ * @param dir — каталог сессий (agentSessionsDir)
+ * @param sessionId — ID сессии (без префикса vb:)
+ * @param run — запись рана; `startedAt`/`finishedAt` обязательны
+ * @returns актуальная мета (при ошибке — прочитанная до попытки)
+ */
+export function appendSessionRun(dir: string, sessionId: string, run: SessionRun): SessionMeta {
+  let current: SessionMeta | null = null;
+  try {
+    current = loadSessionMetaSync(dir, sessionId);
+    const merged: SessionMeta = {
+      // cwd обязателен для ветки «меты нет» — у рана он берётся из текущей
+      // меты, а если её нет, вызывающему нечего восстанавливать: пишем без cwd
+      ...(current ?? { cwd: '' }),
+      runs: [...(current?.runs ?? []), run].slice(-RUN_HISTORY_MAX),
+      ...(run.phase ? { lastRunPhase: run.phase } : {}),
+      sessionId,
+    };
+    // updateSessionMeta читает мету заново и мержит — здесь передаём уже
+    // готовые поля, чтобы не гонять двойное чтение в горячем пути
+    return updateSessionMeta(dir, sessionId, {
+      cwd: merged.cwd,
+      runs: merged.runs,
+      ...(merged.lastRunPhase ? { lastRunPhase: merged.lastRunPhase } : {}),
+    });
+  } catch (err) {
+    // Учёт истории не должен ронять фазу/пост-ран: предупреждение в stderr
+    // (попадает в logTail оркестратора) и возврат того, что прочитали
+    console.error(`Предупреждение: история ранов ${sessionId} не записана — ${(err as Error).message}`);
+    return current ?? { cwd: '' };
+  }
 }
 
 /**

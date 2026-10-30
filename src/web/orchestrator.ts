@@ -36,7 +36,7 @@ import { getWorkflowForTask, getStatusAfterPhase, isPhaseAllowed } from '../core
 // VL-196: транзиентный In Progress на время workflow-фазы — mark после спавна,
 // finalize в finish() до onExit (единая точка spawnQwenRun для всех запусков)
 import { markPhaseStarted, finalizePhaseStatus } from '../core/phase-transient.js';
-import { agentSessionsDir, analyzeToolRepeatsFromJsonlSync, findTaskPhaseSessionSync, listTaskSessionMetas, loadSessionMetaSync, saveSessionMeta, updateSessionMeta } from '../agent/session.js';
+import { agentSessionsDir, analyzeToolRepeatsFromJsonlSync, appendSessionRun, findTaskPhaseSessionSync, listTaskSessionMetas, loadSessionMetaSync, saveSessionMeta, updateSessionMeta } from '../agent/session.js';
 import { hasUsageDelta, usageDelta } from '../core/analytics.js';
 import type { TokenUsage } from '../core/analytics.js';
 import { appendBilling } from '../core/billing.js';
@@ -768,11 +768,36 @@ function spawnQwenRun(
   // остаётся на прежнем пути без env.
   const phaseTaskId =
     taskIdPattern(cwd).test(key) ? key.toUpperCase() : (worktreeTaskId ?? '');
+  // VL-259: момент старта рана — фактическое начало ЭТОГО запуска. Уходит в
+  // env (CLI/post-run пишут его в billing/мету) и используется finish()'ом
+  // для проверки маркера billing_recorded (маркер >= старта = запись этого рана).
+  const runStartedAt = new Date().toISOString();
+  // VL-259: фаза РАНА для учёта (billing.phase, by_phase). У resume-рана
+  // (startResume) phase='prompt' — служебная фаза, которая не должна попадать
+  // в by_phase: фактическая фаза рана берётся из меты сессии (продолжение
+  // план-сессии — это работа plan-фазы). Мету не прочитать — undefined,
+  // ниже срабатывает фолбэк на фазу сессии (прежнее поведение).
+  const runPhase = (() => {
+    if (phase !== 'prompt') return phase;
+    const idx = extraArgs.indexOf('--resume');
+    const sid = idx >= 0 ? extraArgs[idx + 1]?.replace(/^vb:/, '') : undefined;
+    if (!sid) return undefined;
+    try {
+      return loadSessionMetaSync(agentSessionsDir(cwd), sid)?.phase;
+    } catch {
+      return undefined; // битая мета — фаза рана неизвестна, деградируем молча
+    }
+  })();
   if (phaseTaskId !== '') {
     spawnEnv = {
       ...baseEnv(),
       VIBELOG_PHASE_TASK_ID: phaseTaskId,
       VIBELOG_PHASE_NAME: phase,
+      // VL-259: учёт фазы/времени РАНА наследуется и MCP-сервером агента
+      // (VIBELOG_RUN_PHASE → by_phase в finish_phase, VIBELOG_RUN_STARTED_AT
+      // → billing.startedAt в CLI пост-ране)
+      ...(runPhase ? { VIBELOG_RUN_PHASE: runPhase } : {}),
+      VIBELOG_RUN_STARTED_AT: runStartedAt,
     };
   }
   if (resolveBranchMode(cwd) && branchTask !== '') {
@@ -860,9 +885,9 @@ function spawnQwenRun(
   });
 
   activeRuns.set(key, { phase, child, onExit, agent });
-  // VL-243: момент старта рана — по нему finish() решает, оставил ли CLI
-  // пост-ран свою billing-запись (маркер billing_recorded.finishedAt >= старта)
-  const runStartedAt = new Date().toISOString();
+  // VL-243/259: runStartedAt посчитан ДО спавна (он уходит в env рана) —
+  // по нему finish() решает, оставил ли CLI пост-ран свою billing-запись
+  // (маркер billing_recorded.finishedAt >= старта).
   lastRuns.delete(key);
   // VL-196: транзиентный In Progress — задачные workflow-фазы после успешного
   // спавна (гарды до этого места уже прошли — при ошибке запуска статус не
@@ -1065,22 +1090,25 @@ function spawnQwenRun(
                 usage.reasoning = (metaNow.usage.reasoning ?? 0) + (runUsage.reasoning ?? 0);
               }
             }
-            // Фаза для by_phase — из меты (resume-ран reply идёт с phase='prompt',
-            // но токены относятся к исходной фазе сессии — lesson-40/VL-187)
+            // VL-259: фаза для by_phase — фаза РАНА (runPhase: у resume-рана
+            // фазой служебного 'prompt' не подменяем); usagePhase остаётся
+            // фазой СЕССИИ для аддитивного sessionPhase записи billing.
             const usagePhase = metaNow?.phase ?? phase;
+            const byPhaseKey = runPhase ?? phase;
             const delta = usageDelta(metaNow?.usage_recorded ?? {}, usage);
             if (hasUsageDelta(delta)) {
-              addTaskTokenUsage(cwd, phaseTaskId, usagePhase, delta, result.duration_ms);
+              addTaskTokenUsage(cwd, phaseTaskId, byPhaseKey, delta, result.duration_ms);
             }
             const finishedAt = new Date().toISOString();
             // VL-243: в billing — фаза ЭТОГО рана (resume-ран code в plan-сессии
             // раньше маркировался 'plan' и code-запись «терялась»), фаза сессии —
-            // в sessionPhase
+            // в sessionPhase. VL-259: startedAt — фактическое начало рана.
             appendBilling(cwd, phaseTaskId, {
               sessionId: result.session_id,
-              phase,
-              ...(usagePhase && usagePhase !== phase ? { sessionPhase: usagePhase } : {}),
-              startedAt: metaNow?.startedAt,
+              phase: byPhaseKey,
+              ...(usagePhase && usagePhase !== byPhaseKey ? { sessionPhase: usagePhase } : {}),
+              startedAt: runStartedAt,
+              startedAtKind: 'run',
               finishedAt,
               durationMs: result.duration_ms,
               usage: runUsage,
@@ -1098,6 +1126,20 @@ function spawnQwenRun(
               // VL-253: исход рана — finish_phase не доверяет явному tokenUsage
               // после упавшей фазы (паритет с CLI-путём)
               last_run: { is_error: result.is_error === true, finishedAt: new Date().toISOString() },
+            });
+            // VL-259: история ранов в мете — по ней разбор восстанавливает
+            // «сколько ранов, в какой фазе, когда начался» (раньше была видна
+            // только фаза создания сессии — источник неточности VL-254)
+            appendSessionRun(sessionsDir, result.session_id, {
+              sessionId: result.session_id,
+              phase: byPhaseKey,
+              ...(usagePhase && usagePhase !== byPhaseKey ? { sessionPhase: usagePhase } : {}),
+              startedAt: runStartedAt,
+              finishedAt,
+              durationMs: result.duration_ms,
+              usage,
+              agent: 'qwen',
+              billing: 'run',
             });
           })
           .catch((err) => {
@@ -1129,11 +1171,15 @@ function spawnQwenRun(
               ...(result.usage.reasoning_tokens ? { reasoning: result.usage.reasoning_tokens } : {}),
             };
             const finishedAt = new Date().toISOString();
+            // VL-259: фаза рана (не служебный 'prompt' resume'а), startedAt —
+            // фактическое начало рана (прежнее значение = время создания сессии)
+            const vbRunPhase = runPhase ?? phase;
             appendBilling(cwd, phaseTaskId, {
               sessionId: result.session_id,
-              phase,
-              ...(metaNow?.phase && metaNow.phase !== phase ? { sessionPhase: metaNow.phase } : {}),
-              startedAt: metaNow?.startedAt,
+              phase: vbRunPhase,
+              ...(metaNow?.phase && metaNow.phase !== vbRunPhase ? { sessionPhase: metaNow.phase } : {}),
+              startedAt: runStartedAt,
+              startedAtKind: 'run',
               finishedAt,
               durationMs: result.duration_ms,
               usage: runUsage,
@@ -1143,6 +1189,19 @@ function spawnQwenRun(
             updateSessionMeta(sessionsDir, result.session_id, {
               cwd: metaCwd,
               billing_recorded: { sessionId: result.session_id, finishedAt },
+            });
+            // VL-259: fallback-ран тоже попадает в историю ранов меты —
+            // иначе в runs[] были бы «дыры» и разбор не восстановил бы число ранов
+            appendSessionRun(sessionsDir, result.session_id, {
+              sessionId: result.session_id,
+              phase: vbRunPhase,
+              ...(metaNow?.phase && metaNow.phase !== vbRunPhase ? { sessionPhase: metaNow.phase } : {}),
+              startedAt: runStartedAt,
+              finishedAt,
+              durationMs: result.duration_ms,
+              usage: runUsage,
+              agent: 'vb',
+              billing: 'fallback',
             });
             console.log(
               `[phase ${key}] ${ts()} billing дописан оркестратором (fallback: CLI-пост-ран не записал)`

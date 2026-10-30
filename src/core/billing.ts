@@ -36,8 +36,20 @@ export interface BillingSession {
    * чтобы такие записи были отличимы от штатных при сверке с провайдером.
    */
   fallback?: boolean;
-  /** Начало сессии (ISO). */
+  /**
+   * Начало рана (ISO). VL-259: именно фактическое начало ЭТОГО рана, а не
+   * время создания сессии — иначе у всех resume-ранов сессии startedAt был
+   * одинаковый (журнал VL-235: 4 записи с одним startedAt и разными
+   * finishedAt — длительность и «первый/последний ран» не восстановить).
+   */
   startedAt?: string;
+  /**
+   * VL-259: происхождение `startedAt`. 'run' — фактический старт рана (новые
+   * записи), у старых записей поле отсутствует и `startedAt` ненадёжен
+   * (это время создания сессии) — начало восстанавливается через
+   * {@link billingRunStart}.
+   */
+  startedAtKind?: 'run' | 'session';
   /** Окончание рана (ISO). */
   finishedAt?: string;
   /** Длительность рана (мс). */
@@ -99,4 +111,26 @@ export function appendBilling(cwd: string, taskId: string, session: BillingSessi
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(record, null, 2) + '\n', 'utf-8');
   return record;
+}
+
+/**
+ * Восстанавливает фактическое начало рана из записи billing (VL-259).
+ *
+ * Новые записи пишут `startedAt` = старт рана и `startedAtKind: 'run'` — их
+ * значение достоверно. У старых записей (VL-198…VL-243) `startedAt` — время
+ * СОЗДАНИЯ сессии, поэтому у resume-ранов он совпадает; для них начало
+ * восстанавливается как `finishedAt − durationMs`. Ничего нет — undefined.
+ *
+ * Функция НЕ бросает: журнал может содержать записи любых версий, и разбор
+ * не должен падать на старых данных.
+ */
+export function billingRunStart(session: BillingSession): string | undefined {
+  if (session.startedAtKind === 'run' && session.startedAt) return session.startedAt;
+  const finished = typeof session.finishedAt === 'string' ? Date.parse(session.finishedAt) : NaN;
+  if (Number.isFinite(finished)) {
+    const dur = typeof session.durationMs === 'number' && session.durationMs > 0 ? session.durationMs : 0;
+    // Без durationMs восстановить нельзя — отдаём finishedAt (лучше, чем ничего)
+    return new Date(finished - dur).toISOString();
+  }
+  return typeof session.startedAt === 'string' ? session.startedAt : undefined;
 }

@@ -15,11 +15,13 @@ import { join } from 'node:path';
 import {
   agentSessionsDir,
   appendSessionMessage,
+  appendSessionRun,
   createSessionId,
   findTaskPhaseSessionSync,
   latestSession,
   loadSession,
   loadSessionMetaSync,
+  RUN_HISTORY_MAX,
   saveSession,
   saveSessionMeta,
   sumUsageFromJsonlSync,
@@ -398,5 +400,77 @@ describe('countToolCallsInMessages (VL-223)', () => {
       ] },
     ];
     assert.equal(countToolCallsInMessages(messages), 2);
+  });
+
+  // ── VL-259: история ранов в мете (runs[]/lastRunPhase) ──
+
+  it('appendSessionRun: записи накапливаются, lastRunPhase = фаза последнего рана', async () => {
+    const runsDir = mkdtempSync(join(tmpdir(), 'vibelog-runs-'));
+    try {
+      await saveSessionMeta(runsDir, 'agent-r1', { taskId: 'VL-259', phase: 'plan', cwd: runsDir });
+      const run = (phase, startedAt) => ({
+        sessionId: 'agent-r1',
+        phase,
+        startedAt,
+        finishedAt: new Date(Date.parse(startedAt) + 1000).toISOString(),
+        durationMs: 1000,
+        agent: 'vb',
+        billing: 'run',
+      });
+      appendSessionRun(runsDir, 'agent-r1', run('plan', '2026-10-30T03:00:00.000Z'));
+      appendSessionRun(runsDir, 'agent-r1', run('code', '2026-10-30T04:00:00.000Z'));
+      appendSessionRun(runsDir, 'agent-r1', run('code', '2026-10-30T05:00:00.000Z'));
+      const meta = loadSessionMetaSync(runsDir, 'agent-r1');
+      assert.equal(meta.runs.length, 3, 'три рана — три записи истории');
+      assert.deepEqual(meta.runs.map((r) => r.phase), ['plan', 'code', 'code']);
+      assert.equal(meta.lastRunPhase, 'code');
+      // Инвариант lesson-40/VL-147: фаза СОЗДАНИЯ сессии не перезаписана
+      assert.equal(meta.phase, 'plan', 'phase остаётся фазой создания сессии');
+      assert.equal(meta.taskId, 'VL-259');
+      // старты ранов различимы
+      assert.equal(new Set(meta.runs.map((r) => r.startedAt)).size, 3);
+    } finally {
+      rmSync(runsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('appendSessionRun: кап RUN_HISTORY_MAX — старые записи вытесняются', async () => {
+    const runsDir = mkdtempSync(join(tmpdir(), 'vibelog-runscap-'));
+    try {
+      await saveSessionMeta(runsDir, 'agent-r2', { taskId: 'VL-259', phase: 'plan', cwd: runsDir });
+      const total = RUN_HISTORY_MAX + 5;
+      for (let i = 0; i < total; i++) {
+        appendSessionRun(runsDir, 'agent-r2', {
+          sessionId: 'agent-r2',
+          phase: i === 0 ? 'plan' : 'code',
+          startedAt: new Date(Date.UTC(2026, 9, 30, 0, i)).toISOString(),
+          finishedAt: new Date(Date.UTC(2026, 9, 30, 0, i, 30)).toISOString(),
+        });
+      }
+      const meta = loadSessionMetaSync(runsDir, 'agent-r2');
+      assert.equal(meta.runs.length, RUN_HISTORY_MAX, 'мета не пухнет за тысячи ранов');
+      // первый вытеснен — остались самые свежие
+      assert.equal(meta.runs[0].phase, 'code');
+      assert.equal(meta.runs.at(-1).startedAt, new Date(Date.UTC(2026, 9, 30, 0, total - 1)).toISOString());
+    } finally {
+      rmSync(runsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('appendSessionRun: старая мета без runs читается и не падает', async () => {
+    const runsDir = mkdtempSync(join(tmpdir(), 'vibelog-runsold-'));
+    try {
+      await saveSessionMeta(runsDir, 'agent-r3', { taskId: 'VL-1', phase: 'plan', cwd: runsDir });
+      const meta = appendSessionRun(runsDir, 'agent-r3', {
+        sessionId: 'agent-r3',
+        phase: 'code',
+        startedAt: '2026-10-30T03:00:00.000Z',
+        finishedAt: '2026-10-30T03:10:00.000Z',
+      });
+      assert.equal(meta.runs.length, 1);
+      assert.equal(meta.phase, 'plan');
+    } finally {
+      rmSync(runsDir, { recursive: true, force: true });
+    }
   });
 });

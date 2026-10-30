@@ -126,6 +126,8 @@ function setStubEnv(patch) {
   const env = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (k === 'VIBELOG_CWD' || k === 'VIBELOG_PHASE_TASK_ID' || k === 'VIBELOG_PHASE_NAME') continue;
+    // VL-259: учёт фазы/времени рана — тоже не должен утекать из родительской фазы
+    if (k === 'VIBELOG_RUN_PHASE' || k === 'VIBELOG_RUN_STARTED_AT') continue;
     if (k === 'VIBELOG_AGENT_BIN' || k.startsWith('VL28_STUB_')) continue;
     env[k] = v;
   }
@@ -1052,6 +1054,9 @@ describe('orchestrator (VL-28)', () => {
       '  cwd: process.cwd(),',
       '  envPhaseTaskId: process.env.VIBELOG_PHASE_TASK_ID || null,',
       '  envPhaseName: process.env.VIBELOG_PHASE_NAME || null,',
+      // VL-259: фаза/время РАНА для учёта (by_phase, billing.startedAt)
+      '  envRunPhase: process.env.VIBELOG_RUN_PHASE || null,',
+      '  envRunStartedAt: process.env.VIBELOG_RUN_STARTED_AT || null,',
       '  envCwd: process.env.VIBELOG_CWD || null,',
       '  envLlmKey: process.env.VIBELOG_LLM_API_KEY || null,',
       '}));',
@@ -1078,6 +1083,9 @@ describe('orchestrator (VL-28)', () => {
       const m = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       assert.equal(m.envPhaseTaskId, 'VL-88', 'VIBELOG_PHASE_TASK_ID передаётся без worktree');
       assert.equal(m.envPhaseName, 'code', 'VIBELOG_PHASE_NAME = фаза');
+      // VL-259: фаза рана и его фактическое начало уходят в env учёта
+      assert.equal(m.envRunPhase, 'code', 'VIBELOG_RUN_PHASE = фаза рана');
+      assert.ok(m.envRunStartedAt && !Number.isNaN(Date.parse(m.envRunStartedAt)), 'VIBELOG_RUN_STARTED_AT — ISO рана');
       assert.equal(m.envCwd, null, 'без branch-mode VIBELOG_CWD не задаётся');
     } finally {
       setStubEnv({ VL28_STUB_MARKER: undefined });
@@ -1204,12 +1212,33 @@ describe('orchestrator (VL-28)', () => {
       assert.equal(record.sessions[0].sessionId, 'agent-close-243');
       assert.equal(record.sessions[0].usage.total, 15);
       assert.equal(record.sessions[0].agent, 'qwen');
+      // VL-259: startedAt — фактическое начало рана, и запись попала в историю меты
+      assert.equal(record.sessions[0].startedAtKind, 'run', 'происхождение startedAt = ран');
+      assert.ok(
+        Number.isFinite(Date.parse(record.sessions[0].startedAt)),
+        'startedAt — валидный ISO рана'
+      );
       // мета сессии тоже создана (это и было второе следствие бага)
       const metaPath = join(billingRoot, '.vibelog', 'agent-sessions', 'agent-close-243.meta.json');
       assert.ok(existsSync(metaPath), 'close-ран пишет мету сессии');
       const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
       assert.equal(meta.taskId, 'VL-91');
       assert.equal(meta.phase, 'close');
+      // VL-259: история ранов в мете (qwen-путь finish())
+      const deadlineRuns = Date.now() + 3000;
+      let runs = meta.runs;
+      while (!runs && Date.now() < deadlineRuns) {
+        await new Promise((r) => setTimeout(r, 25));
+        try {
+          runs = JSON.parse(readFileSync(metaPath, 'utf-8')).runs;
+        } catch {
+          runs = undefined;
+        }
+      }
+      assert.equal(runs?.length, 1, 'ран попал в историю меты');
+      assert.equal(runs[0].phase, 'close');
+      assert.equal(runs[0].startedAt, record.sessions[0].startedAt, 'времена рана в мете и billing совпадают');
+      assert.equal(runs[0].billing, 'run');
     } finally {
       resetStubEnv();
       rmSync(billingRoot, { recursive: true, force: true });

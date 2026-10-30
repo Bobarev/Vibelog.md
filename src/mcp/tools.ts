@@ -1552,7 +1552,10 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
   try {
     const phaseName = (typeof args.phase === 'string' && args.phase)
       ? args.phase
-      : process.env.VIBELOG_PHASE_NAME;
+      : process.env.VIBELOG_RUN_PHASE
+        ?? (process.env.VIBELOG_PHASE_NAME && process.env.VIBELOG_PHASE_NAME !== 'prompt'
+          ? process.env.VIBELOG_PHASE_NAME
+          : undefined);
     let usage: TokenUsage | null = null;
     let usageSource = 'args';
     // VL-251: tokenUsage с нулями = отсутствующий параметр. Нулевой usage
