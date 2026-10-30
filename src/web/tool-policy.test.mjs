@@ -57,6 +57,7 @@ describe('VL-219 — isWriteOperation (по природе операции)', (
       'milestone_list', 'document_list', 'document_view', 'document_search',
       'reference_list', 'reference_view', 'reference_search',
       'lesson_list', 'lesson_view', 'lesson_search_lessons',
+      'project_map', // VL-235: карта проекта — read-only
     ]) {
       assert.equal(isWriteOperation(name), false, `${name} должен быть read`);
     }

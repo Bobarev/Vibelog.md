@@ -47,6 +47,8 @@ import {
 } from '../core/lesson.js';
 import type { UpdateLessonInput } from '../core/lesson.js';
 import { findBacklogDir } from '../core/paths.js';
+import { buildProjectMap } from '../core/project-map.js';
+import { truncateToolOutput } from '../agent/tools.js';
 import type { Task, TaskComment, ChecklistItem } from '../core/task.js';
 import { addTaskTokenUsage } from '../core/store.js';
 import { hasUsageDelta, usageDelta } from '../core/analytics.js';
@@ -605,6 +607,27 @@ export function listTools(): ToolDefinition[] {
         required: ['oldId', 'newId'],
       },
     },
+    {
+      name: 'project_map',
+      description:
+        'Карта проекта: модули каталога src/ — путь + назначение (первая строка шапки модуля) + экспорты. ' +
+        'Read-only, читает файлы на момент вызова. Начинай ориентацию в проекте с этого инструмента — ' +
+        'вместо серии read_file. Для вопроса «где реализован X» вызывай с query: узкая выборка с полными ' +
+        'описаниями и всеми экспортами. Аргументы: query?, exports?, dir?, limit?.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Подстрока по пути/описанию/экспортам; включает полные описания и все экспорты (напр. "htmlToMarkdown")',
+          },
+          exports: { type: 'boolean', description: 'Показывать экспорты (по умолчанию да, в бюджете)' },
+          dir: { type: 'string', description: 'Каталог карты относительно корня проекта (по умолчанию "src"; "" — весь проект)' },
+          limit: { type: 'number', description: 'Максимум модулей (по умолчанию 150)' },
+        },
+        required: [],
+      },
+    },
   ];
 }
 
@@ -703,6 +726,8 @@ export async function handleToolCall(
       return toolLessonLink(args, cwd);
     case 'lesson_supersede':
       return toolLessonSupersede(args, cwd);
+    case 'project_map':
+      return toolProjectMap(args, cwd);
     default:
       throw new Error(`Неизвестный инструмент: ${name}`);
   }
@@ -1922,4 +1947,38 @@ function toolLessonLink(args: ToolArgs, cwd: string): string {
 function toolLessonSupersede(args: ToolArgs, cwd: string): string {
   supersedeLesson(cwd, args.oldId as string, args.newId as string);
   return `Lesson ${args.newId} заменяет ${args.oldId} (${args.oldId} → superseded, ${args.newId} → active).`;
+}
+
+/**
+ * Карта проекта (VL-235): обёртка над buildProjectMap.
+ *
+ * Валидация аргументов — на границе слоя (lesson-34): не-строки в query/dir
+ * превращаются в явную ошибку-текст, а не TypeError из ядра; `limit` не-число
+ * игнорируется (дефолт ядра). Вывод капится truncateToolOutput — единая точка
+ * ограничения размера tool-вывода (lesson-30).
+ */
+function toolProjectMap(args: ToolArgs, cwd: string): string {
+  const query = args.query;
+  const dir = args.dir;
+  const exportsFlag = args.exports;
+  const limit = args.limit;
+  if (query !== undefined && typeof query !== 'string') {
+    return 'Ошибка: поле "query" должно быть строкой (подстрока по пути/описанию/экспортам).';
+  }
+  if (dir !== undefined && typeof dir !== 'string') {
+    return 'Ошибка: поле "dir" должно быть строкой (каталог карты, например "src").';
+  }
+  if (exportsFlag !== undefined && typeof exportsFlag !== 'boolean') {
+    return 'Ошибка: поле "exports" должно быть boolean.';
+  }
+  if (limit !== undefined && typeof limit !== 'number') {
+    return 'Ошибка: поле "limit" должно быть числом (максимум модулей).';
+  }
+  const result = buildProjectMap(cwd, {
+    ...(typeof query === 'string' ? { query } : {}),
+    ...(typeof dir === 'string' ? { dir } : {}),
+    ...(typeof exportsFlag === 'boolean' ? { exports: exportsFlag } : {}),
+    ...(typeof limit === 'number' ? { limit } : {}),
+  });
+  return truncateToolOutput(result.text);
 }
