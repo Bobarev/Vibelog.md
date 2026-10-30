@@ -1,8 +1,18 @@
 /**
  * Поиск задач Vibelog.md: текстовый запрос + фильтры полей.
  *
- * Текстовый substring-поиск (id/title/description/labels) и фильтры
- * точного совпадения (status/type/priority/project) — case-insensitive,
+ * Текстовый поиск (VL-237): запрос токенизируется по пробелам/пунктуации
+ * (нижний регистр), требуется вхождение ВСЕХ токенов (И-логика) хотя бы
+ * в одном поле задачи, а результат ранжируется по релевантности:
+ * id (точное) » id (подстрока) » title » labels » description.
+ * Одно попадание в 8-килобайтный description больше не весит столько же,
+ * сколько точное совпадение в title (причина инцидента «модель»/«зависимости»).
+ *
+ * Минимальная морфология: для токенов длиной ≥ 6 сравнивается основа —
+ * первые PREFIX_LEN символов («модель»/«моделями» → «модел»); полноценный
+ * стеммер не нужен, цена — ложные совпадения на коротких основах.
+ *
+ * Фильтры точного совпадения (status/type/priority/project) — case-insensitive,
  * как в оригинале Backlog.md (task_search).
  *
  * Здесь же — globalSearch (VL-185): единый поиск по 4 типам сущностей
@@ -30,16 +40,120 @@ export interface SearchFilters {
 }
 
 /**
- * Ищет задачи по запросу и фильтрам.
+ * Веса полей при ранжировании (VL-237). Точное совпадение id ищется
+ * отдельно и весит больше подстроки; labels/description — слабые сигналы.
+ */
+const FIELD_WEIGHTS = {
+  idExact: 1000,
+  idPartial: 500,
+  title: 100,
+  labels: 50,
+  description: 10,
+} as const;
+
+/** Длина основы для усечения токена (минимальная морфология, VL-237). */
+const PREFIX_LEN = 5;
+
+/** Токен короче этого порога не усекается — иначе «тест» станет «тест» же. */
+const STEM_MIN_LEN = PREFIX_LEN + 1;
+
+/**
+ * Разбивает запрос на токены: нижний регистр, разделители — всё, кроме
+ * букв/цифр/дефиса/подчёркивания. Дефис и подчёркивание сохраняем,
+ * иначе `VL-237` и `modified_files` распались бы на бессмысленные куски.
  *
- * Фильтры комбинируются по AND. Все поля необязательны (как required: []
- * в оригинальной схеме task_search): вызов без query, только с фильтрами, валиден.
+ * @param query — исходный поисковый запрос
+ */
+export function tokenizeQuery(query: string): string[] {
+  return query
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}\-_]+/u)
+    .filter(t => t.length > 0);
+}
+
+/**
+ * Усекает токен до основы (первые PREFIX_LEN символов) для длинных слов.
+ * «модель» и «моделями» дают «модел» → находят друг друга.
+ *
+ * @param token — токен в нижнем регистре
+ */
+export function stemToken(token: string): string {
+  return token.length >= STEM_MIN_LEN ? token.slice(0, PREFIX_LEN) : token;
+}
+
+/**
+ * Считает релевантность задачи запросу.
+ *
+ * И-логика: каждый токен обязан найтись хотя бы в одном поле, иначе
+ * задача отбрасывается (возврат -1). Иначе — сумма весов полей; за токен
+ * каждое поле даёт вес не более одного раза (повтор слова в description
+ * не накачивает score).
+ *
+ * @param task — проверяемая задача
+ * @param tokens — токены запроса (уже в нижнем регистре, до усечения)
+ * @returns score >= 0 или -1, если задача не прошла И-фильтр
+ */
+function scoreTask(task: Task, tokens: string[]): number {
+  const id = (task.id ?? '').toLowerCase();
+  const title = (task.title ?? '').toLowerCase();
+  const description = String(task.description ?? '').toLowerCase();
+  const labels = Array.isArray(task.labels)
+    ? task.labels.map(l => String(l).toLowerCase())
+    : [];
+
+  let score = 0;
+  for (const token of tokens) {
+    // Токены с дефисом (VL-237, findme-desc) сравниваем целиком: усечение
+    // основы сделало бы «findme-desc» → «findm» и цепляло соседние метки.
+    const needle = token.includes('-') ? token : stemToken(token);
+    let matched = false;
+
+    // id: точное совпадение весит максимально — агент ищет «VL-209»
+    if (id && id === token) {
+      score += FIELD_WEIGHTS.idExact;
+      matched = true;
+    } else if (id && id.includes(needle)) {
+      score += FIELD_WEIGHTS.idPartial;
+      matched = true;
+    }
+    if (title && title.includes(needle)) {
+      score += FIELD_WEIGHTS.title;
+      matched = true;
+    }
+    if (labels.some(l => l.includes(needle))) {
+      score += FIELD_WEIGHTS.labels;
+      matched = true;
+    }
+    if (description && description.includes(needle)) {
+      score += FIELD_WEIGHTS.description;
+      matched = true;
+    }
+
+    if (!matched) return -1;
+  }
+  return score;
+}
+
+/** Задача со посчитанным score — внутренний тип ранжирования. */
+interface ScoredTask {
+  task: Task;
+  score: number;
+}
+
+/**
+ * Ищет задачи по запросу и фильтрам, сообщая полное число совпадений.
+ *
+ * Единственная реализация поиска: `searchTasks` — тонкая обёртка над ней
+ * (MCP нужен `found` при усечении по limit, CLI/globalSearch — только задачи).
  *
  * @param cwd — текущая рабочая директория
  * @param filters — {query, status, type, priority, project, modifiedFiles, limit}
- *   или строка (= query, обратная совместимость со старой сигнатурой)
+ * @returns { tasks, found } — tasks уже усечены по limit, found — до усечения
  */
-export function searchTasks(cwd: string, filters: SearchFilters | string = {}): Task[] {
+export function searchTasksRanked(
+  cwd: string,
+  filters: SearchFilters | string = {}
+): { tasks: Task[]; found: number } {
   // Обратная совместимость: строковый второй аргумент — это query
   // (CLI search.mjs передаёт строку)
   let f: SearchFilters;
@@ -52,16 +166,26 @@ export function searchTasks(cwd: string, filters: SearchFilters | string = {}): 
   const { query, status, type, priority, project, modifiedFiles, hasLessons, limit } = f;
   let tasks = listTasks(cwd);
 
-  // Текстовый запрос: substring по id/title/description/labels
+  // Текстовый запрос: токенизация + И-логика + ранжирование (VL-237)
   if (query && query.trim() !== '') {
-    const q = query.toLowerCase().trim();
-    tasks = tasks.filter(task => {
-      if (task.id && task.id.toLowerCase().includes(q)) return true;
-      if (task.title && task.title.toLowerCase().includes(q)) return true;
-      if (task.description && task.description.toLowerCase().includes(q)) return true;
-      if (task.labels && task.labels.some(l => l.toLowerCase().includes(q))) return true;
-      return false;
-    });
+    const tokens = tokenizeQuery(query);
+    if (tokens.length > 0) {
+      const scored: ScoredTask[] = [];
+      for (const task of tasks) {
+        const score = scoreTask(task, tokens);
+        if (score >= 0) scored.push({ task, score });
+      }
+      // Детерминированный порядок: score desc → created_date desc → id asc.
+      // Без второго и третьего ключа порядок зависел бы от чтения каталога.
+      scored.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        const ad = String(a.task.created_date ?? '');
+        const bd = String(b.task.created_date ?? '');
+        if (ad !== bd) return ad < bd ? 1 : -1;
+        return String(a.task.id ?? '').localeCompare(String(b.task.id ?? ''));
+      });
+      tasks = scored.map(s => s.task);
+    }
   }
 
   // Фильтры точного совпадения (AND, case-insensitive)
@@ -99,11 +223,28 @@ export function searchTasks(cwd: string, filters: SearchFilters | string = {}): 
     tasks = tasks.filter(t => !Array.isArray(t.lessons) || t.lessons.length === 0);
   }
 
+  // found считаем ДО усечения по limit — это «сколько реально совпало»
+  const found = tasks.length;
   if (limit && limit > 0) {
     tasks = tasks.slice(0, limit);
   }
 
-  return tasks;
+  return { tasks, found };
+}
+
+/**
+ * Ищет задачи по запросу и фильтрам (без информации о полноте выдачи).
+ *
+ * Фильтры комбинируются по AND. Все поля необязательны (как required: []
+ * в оригинальной схеме task_search): вызов без query, только с фильтрами, валиден.
+ * Выдача — по релевантности (VL-237), см. searchTasksRanked.
+ *
+ * @param cwd — текущая рабочая директория
+ * @param filters — {query, status, type, priority, project, modifiedFiles, limit}
+ *   или строка (= query, обратная совместимость со старой сигнатурой)
+ */
+export function searchTasks(cwd: string, filters: SearchFilters | string = {}): Task[] {
+  return searchTasksRanked(cwd, filters).tasks;
 }
 
 /** Лимит результатов на один тип сущности в глобальном поиске (VL-185). */

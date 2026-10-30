@@ -129,29 +129,40 @@ describe('VL-8 — backlog_search (MCP)', () => {
   it('вызов без query — только фильтры (как в оригинале)', async () => {
     const res = await handleToolCall('backlog_search', { status: 'Done' }, testDir);
     const data = JSON.parse(res);
-    assert.equal(data.length, 1);
-    assert.equal(data[0].title, 'Доки API');
+    assert.equal(data.tasks.length, 1);
+    assert.equal(data.found, 1);
+    assert.equal(data.tasks[0].title, 'Доки API');
   });
 
   it('query по-прежнему работает', async () => {
     const res = await handleToolCall('backlog_search', { query: 'фича' }, testDir);
     const data = JSON.parse(res);
-    assert.equal(data.length, 1);
-    assert.equal(data[0].title, 'Фича поиска');
+    assert.equal(data.tasks.length, 1);
+    assert.equal(data.found, 1);
+    assert.equal(data.tasks[0].title, 'Фича поиска');
   });
 
   it('вывод содержит type/project/labels/milestone', async () => {
     const res = await handleToolCall('backlog_search', { query: 'поиска' }, testDir);
     const data = JSON.parse(res);
-    assert.equal(data[0].type, 'feature');
-    assert.equal(data[0].project, 'core');
-    assert.deepEqual(data[0].labels, []);
-    assert.equal(data[0].milestone, '');
+    assert.equal(data.tasks[0].type, 'feature');
+    assert.equal(data.tasks[0].project, 'core');
+    assert.deepEqual(data.tasks[0].labels, []);
+    assert.equal(data.tasks[0].milestone, '');
   });
 
   it('лимит и фильтры через MCP', async () => {
     const res = await handleToolCall('backlog_search', { status: 'To Do', limit: 1 }, testDir);
     const data = JSON.parse(res);
-    assert.equal(data.length, 1);
+    assert.equal(data.tasks.length, 1);
+  });
+
+  it('found — полное число совпадений до усечения по limit (VL-237)', async () => {
+    const res = await handleToolCall('backlog_search', { status: 'To Do', limit: 1 }, testDir);
+    const data = JSON.parse(res);
+    // в наборе две «To Do» задачи — найдено 2, отдано 1
+    assert.equal(data.found, 2);
+    assert.equal(data.returned, 1);
+    assert.equal(data.tasks.length, 1);
   });
 });

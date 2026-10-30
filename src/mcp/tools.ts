@@ -19,7 +19,7 @@ import {
   listTasks, getTask, createTaskFile,
   updateTaskFile, completeTaskFile,
 } from '../core/store.js';
-import { searchTasks } from '../core/search.js';
+import { searchTasksRanked } from '../core/search.js';
 import { isReady, validateDeps } from '../core/deps.js';
 import { loadConfig, normalizeTaskType } from '../core/config.js';
 import {
@@ -236,18 +236,18 @@ export function listTools(): ToolDefinition[] {
     },
     {
       name: 'backlog_search',
-      description: 'Поиск задач с фильтрами (query, status, type, project, priority, modifiedFiles, limit)',
+      description: 'Поиск задач с фильтрами (query, status, type, project, priority, modifiedFiles, limit). Запрос трактуется как набор токенов (разделители — пробелы/пунктуация), нужны ВСЕ токены (И-логика); учитывается усечение основы слова. Выдача — по релевантности: id > title > labels > description. Возвращает {found, returned, tasks}: found — сколько всего совпало, tasks усечены по limit.',
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', maxLength: 200, description: 'Поисковый запрос (substring по id/title/description/labels)' },
+          query: { type: 'string', maxLength: 200, description: 'Поисковый запрос: токены через пробел, требуются все (И); поля id/title/labels/description с ранжированием' },
           status: { type: 'string', description: 'Фильтр по статусу' },
           type: { type: 'string', description: 'Фильтр по типу (bug, feature, ...)' },
           project: { type: 'string', description: 'Фильтр по проекту' },
           priority: { type: 'string', description: 'Фильтр по приоритету' },
           modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Фильтр по подстроке в modified_files задачи' },
           hasLessons: { type: 'boolean', description: 'Фильтр по наличию lessons у задачи (true — есть, false — нет)' },
-          limit: { type: 'number', minimum: 1, maximum: 100, description: 'Максимум результатов' },
+          limit: { type: 'number', minimum: 1, maximum: 100, description: 'Максимум результатов; полное число совпадений — в found' },
         },
       },
     },
@@ -1541,9 +1541,13 @@ function toolUpdateDependencies(args: ToolArgs, cwd: string): string {
 
 /**
  * Ищет задачи по запросу.
+ *
+ * Ответ — объект { found, returned, tasks } (VL-237): при усечении по limit
+ * агенту нужно знать, сколько совпадений всего, иначе он не может понять,
+ * что выдача неполная и запрос надо сузить.
  */
 function toolSearch(args: ToolArgs, cwd: string): string {
-  const tasks = searchTasks(cwd, {
+  const { tasks, found } = searchTasksRanked(cwd, {
     query: args.query as string,
     status: args.status as string,
     type: args.type as string,
@@ -1563,7 +1567,7 @@ function toolSearch(args: ToolArgs, cwd: string): string {
     labels: t.labels,
     milestone: t.milestone,
   }));
-  return JSON.stringify(simplified, null, 2);
+  return JSON.stringify({ found, returned: simplified.length, tasks: simplified }, null, 2);
 }
 
 /**

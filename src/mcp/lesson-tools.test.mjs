@@ -157,11 +157,11 @@ describe('VL-153 — backlog_search hasLessons', () => {
     const withoutL = tasks.find(t => t.title === 'Без lessons').id;
     await handleToolCall('backlog_update_task', { id: withL, lessons: ['lesson-1'] }, testRoot);
 
-    const withResult = JSON.parse(await handleToolCall('backlog_search', { hasLessons: true }, testRoot));
+    const withResult = JSON.parse(await handleToolCall('backlog_search', { hasLessons: true }, testRoot)).tasks;
     assert.ok(withResult.every(t => t.id !== withoutL), 'hasLessons=true не содержит задачу без lessons');
     assert.ok(withResult.some(t => t.id === withL), 'hasLessons=true содержит задачу с lessons');
 
-    const withoutResult = JSON.parse(await handleToolCall('backlog_search', { hasLessons: false }, testRoot));
+    const withoutResult = JSON.parse(await handleToolCall('backlog_search', { hasLessons: false }, testRoot)).tasks;
     assert.ok(withoutResult.some(t => t.id === withoutL), 'hasLessons=false содержит задачу без lessons');
     assert.ok(withoutResult.every(t => t.id !== withL), 'hasLessons=false не содержит задачу с lessons');
   });
