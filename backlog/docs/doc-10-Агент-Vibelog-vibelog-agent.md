@@ -172,6 +172,16 @@ vb agent VL-123
 VIBELOG_LLM_DEBUG_USAGE=1 node bin/vibelog-agent.mjs "промпт" --no-mcp --headless
 ```
 
+## 3.3. Учёт токенов и billing (VL-198, уточнён VL-243)
+
+Usage каждого рана пишется в три уровня: мета сессии `.vibelog/agent-sessions/<sessionId>.meta.json` (`usage`, `startedAt/finishedAt/durationMs`, `model`, `agent`), frontmatter задачи `token_usage` (суммы + `by_phase`, кумулятив по фазе сессии) и append-only журнал `.vibelog/billing/<taskId>.json` (одна запись на ран — источник правды).
+
+**`phase` в billing — фаза РАНА, не фазы сессии (VL-243).** У resume-рана (например `code` в сессии `plan` при `code_same_session`, VL-147) в записи стоит `code`, а исходная фаза сессии уходит в необязательное поле `sessionPhase`. Раньше обе точки учёта брали фазу из меты (`existing.phase`/`metaNow.phase`), и code-ран маскировался под `plan` с тем же `sessionId` — при сверке журнала фаза выглядела «потерянной». Frontmatter `by_phase` осознанно остаётся на фазе сессии (там кумулятив; правило lesson-40 «resume-ран не перезаписывает мету» сохраняется).
+
+**Инвариант «каждый ран оставил запись».** CLI-пост-ран ставит в мету маркер `billing_recorded {sessionId, finishedAt}`; `finish()` оркестратора для vb-ранов без маркера дописывает запись сам с `fallback: true` (случай «ран убит сигналом/упал до учёта»). Двойного учёта нет — маркер живой, а fallback-запись видна в журнале. SIGINT у агента не вызывает немедленный `process.exit(130)`: цикл прерывается, MCP закрывается, `process.exitCode = 130` выставляется, и основной поток успевает выполнить пост-ран (страховочный таймер 5 с от зависания).
+
+**Фаза Close учитывается как любая другая.** Раньше `phaseTaskId` в `spawnQwenRun` исключал close, поэтому close-ран не получал `VIBELOG_PHASE_TASK_ID/NAME`, `finish()` пропускал мету/frontmatter/billing, а CLI-пост-ран не резолвил `taskId`. Историческая причина исключения — VL-112: закрытие с merge ветки и `docs(task)`-коммитом выполняется **только в главном репо**, «Продолжи» на close-сообщении не должно уводить в worktree. Это ограничение теперь выражено явно параметром `noWorktree` (включается в `startResume` при `meta.phase === 'close'`) и гардом `meta.phase !== 'close'`; учёт общий для всех фаз.
+
 ## 4. Интеграция с оркестратором
 
 Оркестратор (`src/web/orchestrator.ts`) берёт бинарь из переменной `VIBELOG_QWEN_BIN` (дефолт — `qwen` в PATH). Значение по умолчанию не менялось — qwen-фолбэк сохранён (decision-5).
