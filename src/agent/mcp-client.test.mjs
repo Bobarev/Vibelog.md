@@ -89,10 +89,11 @@ describe('MCP-клиент: handshake и tools/list (VL-84)', () => {
     assert.equal(typeof view.description, 'string');
     assert.equal(typeof view.inputSchema, 'object', 'схема нормализована к inputSchema');
 
-    // VL-138: finish_phase — обязательное поле только id (все остальные опциональны)
+    // VL-138/VL-253: finish_phase — обязательны id и comment (comment
+    // объявлен в required, иначе tool-calling его не генерирует вовсе)
     const finish = defs.find((d) => d.name === 'backlog_finish_phase');
     assert.ok(finish, `нет backlog_finish_phase: ${names.join(', ')}`);
-    assert.deepEqual(finish.inputSchema.required, ['id'], 'required — только id');
+    assert.deepEqual(finish.inputSchema.required, ['id', 'comment'], 'required — id и comment');
   });
 });
 

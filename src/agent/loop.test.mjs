@@ -389,6 +389,56 @@ describe('runLoop loop detection (VL-83)', () => {
     assert.equal(res.blocked_signatures, undefined);
   });
 
+  it('VL-253 (AC4): повторная блокировка той же сигнатуры → fail сразу', async () => {
+    const { spec, state: toolState } = countingTool('t');
+    // Ходы: 1-2 исполняются, 3-й блокируется директивой, 4-й — та же сигнатура
+    // (повторная блокировка) → немедленный fail без исполнения.
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c4', name: 't', arguments: { x: 1 } }] },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, true, 'повторная блокировка обязана прерывать фазу');
+    assert.match(res.result, /Loop detection/);
+    assert.equal(toolState.calls, 2, 'заблокированные вызовы не выполняются');
+  });
+
+  it('VL-253 (AC4): сигнатура из blockedSignatures, повторённая дважды → fail', async () => {
+    const { spec, state: toolState } = countingTool('t');
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 't', arguments: { x: 1 } }] },
+    ]);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [spec],
+      limits: { blockedSignatures: ['t|{"x":1}'] },
+    });
+    assert.equal(toolState.calls, 0, 'заблокированная сигнатура не исполняется');
+    assert.equal(res.is_error, true, 'второй повтор блокированной сигнатуры → fail');
+    assert.match(res.result, /Loop detection/);
+  });
+
+  it('VL-253 (AC4): кап заблокированных вызовов за ран', async () => {
+    // 18 ходов: 6 групп по 3 одинаковых вызова разных аргументов. В каждой
+    // группе третий вызов блокируется → 6 разных блоков, серия «подряд»
+    // сбрасывается, но общий кап (5) обязан прервать ран.
+    const script = [];
+    for (let g = 0; g < 6; g++) {
+      for (let k = 0; k < 3; k++) {
+        script.push({ text: '', toolCalls: [{ id: `c${g}${k}`, name: 't', arguments: { g } }] });
+      }
+    }
+    const { spec } = countingTool('t');
+    const { llm } = fakeLlm(script);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, true, 'кап блоков обязан прерывать ран');
+    assert.match(res.result, /Loop detection/);
+  });
+
   it('разные аргументы — не loop detection', async () => {
     const { spec, state: toolState } = countingTool('t');
     const { llm } = fakeLlm([

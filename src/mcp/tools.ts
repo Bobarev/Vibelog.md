@@ -385,13 +385,13 @@ export function listTools(): ToolDefinition[] {
     // === Завершение фазы (VL-138) ===
     {
       name: 'backlog_finish_phase',
-      description: 'Завершение фазы одним вызовом: статус + отчётный комментарий + modifiedFiles + батч-отметки AC/DoD. Обязательные поля: id и comment (отчёт о фазе) — вызов без отчёта возвращает ошибку. Повторный вызов со статусом, равным текущему (already_finished), тоже возвращает ошибку с датой и источником существующего отчёта: не повторяй такой вызов, а заверши фазу финальным текстом. Невалидные значения полей (статус вне конфига, битый индекс AC/DoD) пропускаются с сообщением в сводке — частичное применение. Пример сводки: «Статус: Review; отчёт добавлен; отмечено AC: 2, DoD: 1; файлов: 3».',
+      description: 'Завершение фазы одним вызовом: статус + отчётный комментарий + modifiedFiles + батч-отметки AC/DoD. `comment` объявлен в required — заполняй его отчётом о фазе. Если comment всё же не передан (VL-253), сервер собирает отчёт автоматически из статуса, отметок AC/DoD, modified_files и фрагмента плана и завершает фазу без ошибки. Повторный вызов со статусом, равным текущему (already_finished), возвращает ошибку с датой и источником существующего отчёта: не повторяй такой вызов, а заверши фазу финальным текстом. Невалидные значения полей (статус вне конфига, битый индекс AC/DoD) пропускаются с сообщением в сводке — частичное применение. Пример сводки: «Статус: Review; отчёт добавлен; отмечено AC: 2, DoD: 1; файлов: 3».',
       inputSchema: {
         type: 'object',
         properties: {
           id: { type: 'string', description: 'ID задачи' },
           status: { type: 'string', description: 'Новый статус (валидируется по конфигу; невалидный — пропускается с ошибкой в сводке)' },
-          comment: { type: 'string', description: 'Отчётный комментарий (author фиксирован @agent). ОБЯЗАТЕЛЕН: вызов без непустого comment возвращает ошибку «не передан report».' },
+          comment: { type: 'string', description: 'Отчётный комментарий (author фиксирован @agent). Обязательное поле схемы; если всё равно не передан — сервер собирает отчёт автоматически (VL-253).' },
           modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Изменённые файлы (полная замена modified_files)' },
           acChecks: { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] }, description: 'Индексы AC для отметки (с 1; батч-отметка, как в manage_ac)' },
           dodChecks: { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] }, description: 'Индексы DoD для отметки (с 1; батч-отметка, как в manage_dod)' },
@@ -409,7 +409,9 @@ export function listTools(): ToolDefinition[] {
           },
           phase: { type: 'string', description: 'Фаза для by_phase (редкий override; по умолчанию env VIBELOG_PHASE_NAME → мета сессии)' },
         },
-        required: ['id'],
+        // VL-253: comment в required — tool-calling генерирует только объявленные
+        // обязательные поля; требование в description не влияет на аргументы.
+        required: ['id', 'comment'],
       },
     },
     // === References — метаданные о внешних источниках (VL-152) ===
@@ -1196,6 +1198,43 @@ function toolAddComment(args: ToolArgs, cwd: string): string {
 }
 
 /**
+ * Авто-отчёт фазы (VL-253): собирается сервером, когда модель не передала
+ * `comment`. Причина: `description` схемы не влияет на генерацию аргументов
+ * tool-calling — если поля нет в `required`, модель может его не прислать
+ * никогда (инцидент VL-250/VL-252: 10+ вызовов без comment → луп).
+ * Фаза не должна падать из-за дисциплины модели в необязательном по факту поле.
+ *
+ * @param task — задача до применения правок (источник плана/резюме/файлов)
+ * @param ctx — уже вычисленные части сводки (статус, счётчики, файлы)
+ */
+function buildAutoReport(
+  task: Task,
+  ctx: { status: string; acChecked: number; acTotal: number; dodChecked: number; dodTotal: number; files: string[] },
+): string {
+  const oneLine = (s: string, limit: number): string => {
+    const flat = String(s).replace(/\s+/g, ' ').trim();
+    return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
+  };
+  const planFragment = task.implementationPlan
+    ? `Фрагмент плана: ${oneLine(task.implementationPlan, 300)}`
+    : task.finalSummary
+      ? `Фрагмент резюме: ${oneLine(task.finalSummary, 300)}`
+      : 'Фрагмент плана/резюме: план и резюме отсутствуют.';
+  const files = ctx.files.length > 0
+    ? `Файлы (${ctx.files.length}): ${ctx.files.slice(0, 10).join(', ')}${ctx.files.length > 10 ? ', …' : ''}`
+    : 'Файлы: не менялись';
+  return [
+    'Фаза: авто-отчёт (comment не передан моделью)',
+    `Статус: ${ctx.status}`,
+    `AC отмечено: ${ctx.acChecked} из ${ctx.acTotal}`,
+    `DoD отмечено: ${ctx.dodChecked} из ${ctx.dodTotal}`,
+    files,
+    planFragment,
+    'Отчёт собран сервером автоматически (VL-253): модель не передала comment.',
+  ].join('\n');
+}
+
+/**
  * Завершение фазы одним вызовом (VL-138).
  *
  * Схлопывает «бумажную» цепочку фазы (add_comment → update_status →
@@ -1214,12 +1253,15 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
   if (!task) throw new Error(`Задача ${id} не найдена.`);
 
   // ── Жёсткая валидация (VL-251) ────────────────────────────────────────
-  // Отличие от мягкого частичного применения: no-op статус и отсутствие
-  // отчёта — НЕ «мелкие ошибки поля», а признак неполного/бесполезного
-  // вызова. Раньше такой вызов отвечал нейтрально-успешно («отчёт: нет»),
-  // и модель в цикле повторяла его байт-в-байт (инцидент VL-234).
+  // Отличие от мягкого частичного применения: no-op статус — не «мелкая
+  // ошибка поля», а признак бесполезного вызова: раньше он отвечал
+  // нейтрально-успешно, и модель повторяла его байт-в-байт (VL-234).
   // Ошибка бросается ДО любых записей: файл задачи и usage не трогаются,
   // повтор безопасен и не плодит дубли комментариев/токенов.
+  //
+  // VL-253: жёсткой ошибки на отсутствие `comment` больше НЕТ — вместо неё
+  // авто-отчёт (buildAutoReport). Требование в тексте ошибки модель
+  // выполнить не может, если поля нет в required схемы, — это давало луп.
   const hardErrors: string[] = [];
   const norm = (s: string): string => s.trim().toLowerCase();
   if (typeof args.status === 'string' && norm(args.status) === norm(task.status)) {
@@ -1234,13 +1276,6 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
     hardErrors.push(
       `Фаза уже завершена: статус «${task.status}» совпадает с текущим. ${reportRef} ` +
         'Не повторяй этот вызов: статус уже целевой. Если нужен отчёт или отметки — backlog_add_comment / backlog_manage_ac / backlog_manage_dod; если фаза завершена — верни финальный текст.',
-    );
-  }
-  if (typeof args.comment !== 'string' || args.comment.trim() === '') {
-    const missing = args.comment === undefined ? 'comment (report) не передан' : 'comment (report) пуст';
-    hardErrors.push(
-      `Неполный вызов: ${missing}. Обязательные поля: comment — отчёт о фазе («Фаза N (<Фаза>) выполнена. …»). ` +
-        'Вызов без отчёта не засчитывается — добавь comment и повтори.',
     );
   }
   if (hardErrors.length > 0) throw new Error(hardErrors.join('\n'));
@@ -1308,14 +1343,29 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
   }
 
   // Отчётный комментарий: author фиксирован @agent (поле author в схему не входит).
-  // VL-251: comment обязателен — его наличие проверено hard-валидацией выше,
-  // поэтому здесь ветки «отчёт: нет» больше нет.
+  // VL-253: comment из схемы обязателен, но модель может его не прислать
+  // (description схемы не влияет на генерацию аргументов) — тогда собираем
+  // отчёт автоматически, вместо ошибки: фаза не должна падать из-за поля,
+  // которого модель физически не передаёт (инцидент VL-250/VL-252).
+  const explicitComment = typeof args.comment === 'string' && args.comment.trim() !== ''
+    ? args.comment
+    : undefined;
+  const acList = (task.acceptanceCriteria || []) as ChecklistItem[];
+  const dodList = (task.definitionOfDone || []) as ChecklistItem[];
+  const reportText = explicitComment ?? buildAutoReport(task, {
+    status: typeof args.status === 'string' ? args.status : task.status,
+    acChecked: acList.filter((c) => c.checked).length,
+    acTotal: acList.length,
+    dodChecked: dodList.filter((c) => c.checked).length,
+    dodTotal: dodList.length,
+    files: Array.isArray(args.modifiedFiles) ? (args.modifiedFiles as string[]) : (task.modified_files || []),
+  });
   updates.comments = [...(task.comments || []), {
     author: '@agent',
     created: formatNow(),
-    text: args.comment as string,
+    text: reportText,
   }];
-  commentPart = 'отчёт добавлен';
+  commentPart = explicitComment ? 'отчёт добавлен' : 'отчёт добавлен (авто)';
 
   // Единственная запись: все валидные обновления применяются одним вызовом
   if (Object.keys(updates).length > 0) {
@@ -1352,10 +1402,22 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
     const explicitAllZero = rawExplicit
       ? explicitKeys.every((k) => rawExplicit[k] === undefined || rawExplicit[k] === 0)
       : false;
+    // VL-253: явный tokenUsage из упавшей фазы — не «успешный» usage.
+    // Модель подставляет в следующий вызов числа из сводки предыдущего
+    // (упавшего) рана (VL-250/VL-252) — такие значения нельзя записывать в
+    // frontmatter как usage этой фазы. Источник правды о последнем ране —
+    // мета сессии (`last_run.is_error`, пишут CLI и оркестратор).
+    const sessionIdForLastRun = process.env.VIBELOG_SESSION_ID;
+    const lastRunMeta = sessionIdForLastRun
+      ? loadSessionMetaSync(agentSessionsDir(process.env.VIBELOG_CWD ?? cwd), sessionIdForLastRun)
+      : null;
+    const lastRunFailed = lastRunMeta?.last_run?.is_error === true;
     if (explicitAllZero) {
       tokenFallbackNote = 'tokenUsage: нули игнорированы (как отсутствующий параметр)';
+    } else if (lastRunFailed && rawExplicit !== undefined) {
+      tokenFallbackNote = 'tokenUsage: проигнорирован (значения получены после упавшей фазы)';
     }
-    if (rawExplicit !== undefined && !explicitAllZero) {
+    if (rawExplicit !== undefined && !explicitAllZero && !lastRunFailed) {
       // Явный аргумент: валидация на границе (lesson-34) — объект с
       // finite-числами ≥0, без лишних ключей (additionalProperties: false)
       const raw = rawExplicit;

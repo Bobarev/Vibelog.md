@@ -212,6 +212,13 @@ export interface RunLoopOptions {
 const MAX_TOOL_CALLS_DEFAULT = 100;
 const MAX_WALL_TIME_MS_DEFAULT = 900_000;
 const LOOP_DETECTION_REPEAT_DEFAULT = 3;
+// VL-253: жёсткий кап заблокированных вызовов за ран. Второй блок той же
+// сигнатуры — уже фазовый отказ (модель проигнорировала директиву), но
+// разные сигнатуры могли бы копиться до лимита tool-calls, раздувая контекст
+// (VL-250/VL-252: payload рос на бесполезных вызовах). Счётчик живёт в
+// памяти рана: мета хранит только сигнатуры для resume-защиты, кап — про
+// текущий ран (resume обнуляет, как и прочие счётчики).
+const MAX_BLOCKED_CALLS_PER_RUN = 5;
 // Фантомные tool_calls (пустые name/id, VL-215): сколько ходов ПОДРЯД модель
 // может отдавать фантомы до fail(). 3 — по образцу loop detection VL-83:
 // фантомный ход тратит LLM-запрос, но единичный случай модель исправляет
@@ -318,6 +325,11 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // Серия подряд идущих заблокированных вызовов: 2-й подряд — фазовый отказ
   // (модель проигнорировала директиву в tool-результате).
   let blockedStreak = 0;
+  // VL-253: счётчики блоков по сигнатуре и суммарно за ран — повторная
+  // блокировка ТОЙ ЖЕ сигнатуры означает, что директива не сработала, и
+  // фазу надо завершать сразу, а не ждать второго круга повторов.
+  const blockCounts = new Map<string, number>();
+  let blockedTotal = 0;
   // Лимит guard'а зацикливания намерений (VL-119): N ходов подряд с одним
   // промежуточным текстом → fail штатным путём (контракт resume VL-103).
   const intentRepeatLimit = options.limits?.intentLoopRepeat ?? INTENT_LOOP_REPEAT_DEFAULT;
@@ -684,9 +696,13 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       const signature = `${call.name}|${JSON.stringify(call.arguments ?? {})}`;
       // Фатальный отказ нужен, если модель игнорирует директиву в tool-результате:
       // 2 заблокированных вызова ПОДРЯД — фаза прерывается штатным fail().
+      // VL-253: плюс per-signature счётчик и общий кап рана — иначе при
+      // чередовании сигнатур серия «подряд» сбрасывалась и луп шёл кругами.
       const blockAndPush = async (): Promise<void> => {
         blockedStreak++;
         blocked.add(signature);
+        blockCounts.set(signature, (blockCounts.get(signature) ?? 0) + 1);
+        blockedTotal++;
         // Директива — tool-результатом (AC4): привязка tool_call_id
         // сохраняет паринг assistant↔tool, провайдер payload принимает.
         await pushMessage({
@@ -699,9 +715,12 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       };
 
       if (blocked.has(signature)) {
-        // AC5: сигнатура отклонена в прошлом ране (resume) — не исполняем
+        // AC5: сигнатура отклонена в прошлом ране (resume) — не исполняем.
+        // VL-253: первая такая блокировка в ране отдаёт директиву (модель
+        // может сменить подход — тест VL-251 AC5), повторная — фазовый отказ.
+        const repeatsBefore = blockCounts.get(signature) ?? 0;
         await blockAndPush();
-        if (blockedStreak >= 2) {
+        if (repeatsBefore >= 1 || blockedTotal >= 2) {
           return fail(
             `Loop detection: инструмент ${call.name} вызван ${repeatLimit} раза подряд с одинаковыми аргументами — вызов повторно заблокирован (та же сигнатура уже отклонялась в этой сессии), фаза прервана. ${NEXT_STEP_HINT}`,
           );
@@ -715,13 +734,21 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         streak = 1;
         prevSignature = signature;
         // Серия прервалась: другой вызов — сбрасываем счётчик подряд идущих блоков
+        // (per-signature счётчики и общий кап VL-253 при этом НЕ сбрасываются)
         blockedStreak = 0;
       }
       if (streak >= repeatLimit) {
         await blockAndPush();
-        if (blockedStreak >= 2) {
+        // VL-253: повторная блокировка той же сигнатуры — немедленный fail,
+        // без второго-третьего круга повторов (модель проигнорировала директиву)
+        if (blockedStreak >= 2 || (blockCounts.get(signature) ?? 0) >= 2) {
           return fail(
             `Loop detection: инструмент ${call.name} вызван ${repeatLimit} раза подряд с одинаковыми аргументами — вызов заблокирован, фаза прервана (модель повторила заблокированный вызов). ${NEXT_STEP_HINT}`,
+          );
+        }
+        if (blockedTotal >= MAX_BLOCKED_CALLS_PER_RUN) {
+          return fail(
+            `Loop detection: превышен кап заблокированных вызовов за ран (${MAX_BLOCKED_CALLS_PER_RUN}) — фаза прервана, модель не реагирует на директивы. ${NEXT_STEP_HINT}`,
           );
         }
         continue;
