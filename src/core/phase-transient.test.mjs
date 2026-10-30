@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import {
   isTransientEligible,
   markPhaseStarted,
+  markPhaseAborted,
   finalizePhaseStatus,
   recoverStalePhaseStatuses,
   phaseTransientCachePath,
@@ -46,6 +47,8 @@ describe('phase-transient (VL-196)', () => {
   createTaskFile(root, { id: 'VL-904', title: 'Транзиент: recovery, мёртвый pid', status: 'Spec' });
   createTaskFile(root, { id: 'VL-905', title: 'Транзиент: recovery, живой pid', status: 'Spec' });
   createTaskFile(root, { id: 'VL-906', title: 'Транзиент: финальный статус', status: 'Done' });
+  createTaskFile(root, { id: 'VL-907', title: 'Транзиент: aborted при exit 0', status: 'Spec' });
+  createTaskFile(root, { id: 'VL-908', title: 'Транзиент: aborted без записи кэша', status: 'Spec' });
 
   afterAll(() => {
     rmSync(root, { recursive: true, force: true });
@@ -79,6 +82,34 @@ describe('phase-transient (VL-196)', () => {
     assert.equal(getTask(root, 'VL-901').status, 'Planned', 'produces_status от исходного Spec');
     assert.equal('VL-901' in readCache(), false, 'запись удалена');
     assert.equal(getTask(root, 'VL-901').comments.length, 0, 'успех без комментария');
+  });
+
+  // VL-244 (AC1/AC2): aborted отменяет produces_status даже при exitCode 0 —
+  // аварийная ветка шаблона иначе получала бы Done незавершённой задаче
+  it('aborted: exitCode 0 + флаг → откат к prevStatus + комментарий-причина', () => {
+    rmSync(cacheFile, { force: true });
+    markPhaseStarted(root, 'VL-907', 'plan', 424247);
+    assert.equal(getTask(root, 'VL-907').status, 'In Progress');
+    // Ключ в нижнем регистре — проверяем канонизацию в markPhaseAborted
+    assert.equal(markPhaseAborted(root, 'vl-907', 'merge не завершён'), true, 'флаг записан');
+    assert.equal(readCache()['VL-907'].aborted, true, 'флаг виден в кэше');
+    assert.equal(readCache()['VL-907'].abortedReason, 'merge не завершён');
+    finalizePhaseStatus(root, 'VL-907', 'plan', { exitCode: 0, result: { type: 'result' } });
+    const task = getTask(root, 'VL-907');
+    assert.equal(task.status, 'Spec', 'aborted отменил produces_status (не Planned)');
+    assert.equal(task.comments.length, 1, 'ровно один комментарий-причина');
+    assert.equal(task.comments[0].author, '@agent');
+    assert.match(task.comments[0].text, /Фаза plan прервана агентом \(aborted\)/);
+    assert.match(task.comments[0].text, /merge не завершён/, 'причина из отчёта агента');
+    assert.match(task.comments[0].text, /возвращён к Spec/);
+    assert.equal('VL-907' in readCache(), false, 'запись кэша удалена');
+  });
+
+  it('markPhaseAborted без записи кэша — no-op, false, не бросает', () => {
+    rmSync(cacheFile, { force: true });
+    assert.equal(markPhaseAborted(root, 'VL-908', 'нет транзиента'), false);
+    assert.equal(existsSync(cacheFile), false, 'кэш не создавался');
+    assert.equal(getTask(root, 'VL-908').status, 'Spec', 'статус не тронут');
   });
 
   it('finalize провал: откат к Spec + комментарий-причина (@agent, код выхода)', () => {
