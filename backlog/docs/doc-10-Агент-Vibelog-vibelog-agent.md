@@ -182,6 +182,32 @@ Usage каждого рана пишется в три уровня: мета с
 
 **Фаза Close учитывается как любая другая.** Раньше `phaseTaskId` в `spawnQwenRun` исключал close, поэтому close-ран не получал `VIBELOG_PHASE_TASK_ID/NAME`, `finish()` пропускал мету/frontmatter/billing, а CLI-пост-ран не резолвил `taskId`. Историческая причина исключения — VL-112: закрытие с merge ветки и `docs(task)`-коммитом выполняется **только в главном репо**, «Продолжи» на close-сообщении не должно уводить в worktree. Это ограничение теперь выражено явно параметром `noWorktree` (включается в `startResume` при `meta.phase === 'close'`) и гардом `meta.phase !== 'close'`; учёт общий для всех фаз.
 
+## 3.4. Сводка сессии (VL-261)
+
+Разбор сессии раньше начинался с ручного чтения JSONL: 237 строк по 8 КБ, руками считались «сколько было `run_shell_command`», границы ранов, payload по ранам — и цифры регулярно получались неверными (в VL-254 из-за ручного счёта в описание попала неверная фаза и неверные границы ранов). Теперь есть одна команда:
+
+```bash
+vibelog session summary <sessionId> [--json]     # или алиас agent-session
+vibelog agent-session summary agent-1793328615846
+vb session summary --task VL-235 [--json]        # последняя сессия задачи из *.meta.json
+```
+
+Ядро подсчётов — чистый модуль `src/agent/session-summary.ts` (`buildSessionSummary`/`formatSessionSummary`, без fs — тестируется на массиве сообщений); чтение файлов — тонкая обёртка `src/cli/commands/session.ts` (sync-парсеры `session.ts`, битые строки jsonl пропускаются). Одна реализация используется и CLI, и будущим `/analyze` — никакого дублирования логики в промптах.
+
+**Раны.** Границы определяются по user-сообщениям: маркер промпта фазы `/^Ты — /` (все `templates/phases/*.md` начинаются с «Ты — автоматический …») и маркер resume-рана `/^Продолжи/` (кнопка «▶ Продолжить» VL-212, авто-повтор VL-178). Прочие user-сообщения внутри рана (guard повтора VL-229, «Ошибка ответа модели» и «Замечание: проигнорировано … tool_call» VL-215) границей НЕ являются; system-строки ран не создают.
+
+**Фаза рана** (приоритет): запись billing задачи, отфильтрованная по `sessionId` и упорядоченная по `finishedAt` (поле `phase`, fallback `sessionPhase` — VL-243) → разбор текста маркера (11 фаз + `prompt`) → `meta.phase`. Расхождение числа записей billing и ранов печатается предупреждением (`⚠️ billing`), а не ошибкой: billing пишется только для задачных ранов.
+
+**Что печатается:**
+
+- Строк, ранов, LLM-запросов, tool-calls, токены (input/output/cache/reasoning/total) — по сессии и по каждому рану.
+- По рану: фаза, диапазон строк jsonl, начало/конец из billing, длительность, `max payload_bytes`, `tool -> count`, правки файлов.
+- Агрегаты: `tool -> count` по сессии, топ-5 скелетов `run_shell_command` (флаги сохраняются, аргументы отбрасываются: `node -e …` → `node -e`, `git status --porcelain` → `git status`), топ-5 путей чтения, топ-5 правленых файлов раздельно `edits` (`edit`) и `writes` (`write_file`), `repeatStats` — готовый `analyzeToolRepeats(messages)` из `repeat-tracker`.
+
+**`--json`** — стабильная схема (`schemaVersion: 1`, `kind: 'session-summary'`): `meta`, `lines`, `runs[]`, `totals{runs, requests, toolCalls, токены, tools, shellTop, topReadPaths, editedFiles, repeatStats}`. Порядок ключей фиксирован, все числа — числа, отсутствующие данные — `null`/`0`/`[]`; содержимое сообщений в вывод не попадает (инвариант экономии контекста VL-178).
+
+**Каталоги.** jsonl и мета — `.vibelog/agent-sessions/` (в claw/branch-режиме — `VIBELOG_CWD ?? cwd`); billing ищется в кандидатах `[cwd, meta.cwd]` — в worktree-ране журнал живёт в главном репозитории, отсутствие файла не ошибка (`billingSessions: []`).
+
 ## 4. Интеграция с оркестратором
 
 Оркестратор (`src/web/orchestrator.ts`) берёт бинарь из переменной `VIBELOG_QWEN_BIN` (дефолт — `qwen` в PATH). Значение по умолчанию не менялось — qwen-фолбэк сохранён (decision-5).
