@@ -1,8 +1,8 @@
 /**
  * Локальные инструменты агента (VL-83, компонент 2 эпика VL-75).
  *
- * Шесть инструментов для tool calling: read_file, write_file, edit,
- * run_shell_command, grep_search, glob. Без внешних зависимостей: валидация —
+ * Семь инструментов для tool calling: read_file, write_file, edit,
+ * run_shell_command, grep_search, glob, search_files, agent_session_outline. Без внешних зависимостей: валидация —
  * plain TS; shell — только execFile('/bin/bash', ['-lc', command]) без
  * shell:true на уровне Node; пути резолвятся от cwd и отклоняются, если
  * вышли за пределы проекта — как аргументы-пути, так и строки shell-команд
@@ -23,6 +23,12 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { searchProjectFiles, walkFiles } from './search-files.js';
+import type { ChatMessage } from './llm.js';
+import {
+  OUTLINE_MAX_FILE_BYTES,
+  buildSessionOutline,
+  formatSessionOutline,
+} from './session-outline.js';
 
 /** Опции выполнения handler'а инструмента (прокидка отмены из loop). */
 export interface ToolHandlerContext {
@@ -708,6 +714,106 @@ function makeReadFile(cwd: string): ToolSpec {
   };
 }
 
+/**
+ * Инструмент agent_session_outline (VL-258): обзор JSONL-транскрипта сессии.
+ *
+ * Зачем отдельный инструмент, а не `mode` у read_file: read_file — общий
+ * файловый читатель (агент + веб-чат), его контракт не должен знать про
+ * формат сессий (lesson-37). Транскрипт из 200–300 строк с отдельными
+ * строками по 22 КБ читается обзором за один вызов, после чего целевые
+ * строки берутся обычным `read_file "<файл>:N-M"`.
+ *
+ * Ограничения: файл больше OUTLINE_MAX_FILE_BYTES не читается целиком —
+ * модель получает отказ с подсказкой про offset/limit (память процесса).
+ */
+function makeSessionOutline(cwd: string): ToolSpec {
+  return {
+    name: 'agent_session_outline',
+    description:
+      'Обзор JSONL-транскрипта сессии агента (.vibelog/agent-sessions/*.jsonl): по строке — ' +
+      'индекс, роль, размер в байтах, число и имена tool_calls, маркер рана/фазы, первые 80 символов. ' +
+      'Плюс секция «Раны» (фаза → строка). Один вызов вместо чтения килобайтов: обзор укладывается ' +
+      'в лимит вывода, после него целевые строки читай read_file с диапазоном "файл:N-M". ' +
+      'offset — 0-based строка начала, limit — число строк в окне.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Путь к jsonl-транскрипту внутри проекта' },
+        offset: { type: 'number', description: '0-based номер строки начала' },
+        limit: { type: 'number', description: 'Максимум строк в окне' },
+      },
+      required: ['path'],
+    },
+    handler: async (args) => {
+      const target = resolveInProject(cwd, args.path as string, { allowRoot: true });
+      if (!target.ok) return target.error;
+      if (!existsSync(target.path)) {
+        const hint = formatMissingPathHint(cwd, args.path as string);
+        const base = `Файл не найден: ${target.path}`;
+        return truncateToolOutput(hint === null ? base : `${base}\n\n${hint}`);
+      }
+      let size: number;
+      try {
+        size = statSync(target.path).size;
+      } catch (err) {
+        return `Не удалось прочитать файл: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      if (size > OUTLINE_MAX_FILE_BYTES) {
+        return (
+          `Файл слишком большой для обзора: ${size} байт (лимит ${OUTLINE_MAX_FILE_BYTES}). ` +
+          'Сузь диапазон: сначала возьми offset/limit по меньшему окну либо читай конкретные строки ' +
+          'через read_file с диапазоном "файл:N-M".'
+        );
+      }
+      const parsed = parseJsonlWithBytes(target.path);
+      if (!parsed.ok) return parsed.error;
+      // sessionId из имени файла — шапка обзора должна называть сессию
+      const rel = relative(cwd, target.path).split(sep).join('/');
+      const sessionId = basename(target.path).replace(/\.jsonl$/, '');
+      const outline = buildSessionOutline({
+        messages: parsed.messages,
+        sessionId,
+        path: rel,
+        lineBytes: parsed.lineBytes,
+        offset: typeof args.offset === 'number' ? args.offset : undefined,
+        limit: typeof args.limit === 'number' ? args.limit : undefined,
+      });
+      return truncateToolOutput(formatSessionOutline(outline));
+    },
+  };
+}
+
+/**
+ * Читает JSONL построчно, сохраняя байты каждой строки (VL-258): размер
+ * строки — ключевая метрика обзора (по нему видно дублирование промпта).
+ * Битые строки пропускаются, как в sumUsageFromJsonlSync: обзор не должен
+ * падать на оборванном транскрипте.
+ */
+export function parseJsonlWithBytes(
+  absPath: string,
+): { ok: true; messages: ChatMessage[]; lineBytes: number[] } | { ok: false; error: string } {
+  let raw: string;
+  try {
+    raw = readFileSync(absPath, 'utf8');
+  } catch (err) {
+    return { ok: false, error: `Не удалось прочитать файл: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const messages: ChatMessage[] = [];
+  const lineBytes: number[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    let message: ChatMessage;
+    try {
+      message = JSON.parse(line) as ChatMessage;
+    } catch {
+      continue; // битая строка — пропуск (обзор остальных сообщений полезен)
+    }
+    messages.push(message);
+    lineBytes.push(Buffer.byteLength(line, 'utf8'));
+  }
+  return { ok: true, messages, lineBytes };
+}
+
 /** Инструмент write_file: mkdir -p родительской директории + запись utf-8. */
 function makeWriteFile(cwd: string): ToolSpec {
   return {
@@ -1261,5 +1367,6 @@ export function listLocalTools(cwd: string): ToolSpec[] {
     makeGrepSearch(root),
     makeGlob(root),
     makeSearchFiles(root),
+    makeSessionOutline(root),
   ];
 }

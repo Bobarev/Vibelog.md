@@ -484,6 +484,106 @@ describe('vibelog-agent CLI (VL-85)', () => {
     assert.match(stderr, /только с готовым промптом/);
   });
 
+  // ── VL-258: неизменный блок задачи в resume-промпте не дублируется ──
+
+  /** Промпт с блоком задачи (форма templates/phases/*.md). */
+  const phaseLikePrompt = (description) =>
+    [
+      'Ты — автоматический исполнитель Vibelog (Фаза 3: Code) для задачи VL-1.',
+      '',
+      'Задача (подставлена автоматически):',
+      'ID: VL-1; тип: task; статус: Planned',
+      `Описание: ${description}`,
+      '',
+      '## Шаги',
+      '',
+      '1. Реализуй план.',
+    ].join('\n');
+
+  it('resume: неизменный блок задачи заменён ссылкой (VL-258)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl258-'));
+    try {
+      const sessDir = join(projDir, '.vibelog', 'agent-sessions');
+      mkdirSync(sessDir, { recursive: true });
+      const description = `длинное описание ${'данных '.repeat(200)}`;
+      const transcript = [
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: phaseLikePrompt(description) },
+        { role: 'assistant', content: 'Продолжаю' },
+      ];
+      const sessionId = 'agent-vl258-dedup';
+      writeFileSync(
+        join(sessDir, `${sessionId}.jsonl`),
+        transcript.map((m) => JSON.stringify(m)).join('\n') + '\n',
+        'utf-8'
+      );
+      writeFileSync(
+        join(sessDir, `${sessionId}.meta.json`),
+        JSON.stringify({ sessionId, phase: 'prompt', cwd: projDir }),
+        'utf-8'
+      );
+      llmRequests.length = 0;
+      const { code, stderr } = await runCli(
+        [phaseLikePrompt(description), '--resume', sessionId, '--no-mcp'],
+        llmEnv(),
+        projDir
+      );
+      assert.equal(code, 0, stderr);
+      assert.match(stderr, /блок задачи без изменений \(хэш [0-9a-f]{8}, строка 2\)/);
+      const last = llmRequests[0].messages[llmRequests[0].messages.length - 1];
+      assert.equal(last.role, 'user');
+      assert.match(last.content, /Задача \(подставлена автоматически\): без изменений с рана 1/);
+      assert.ok(!last.content.includes('данных данных данных'), 'тело блока не продублировано');
+      assert.match(last.content, /## Шаги/, 'остальной промпт сохранён');
+      // В jsonl дописана именно сокращённая строка (транскрипт читаем)
+      const lines = readFileSync(join(sessDir, `${sessionId}.jsonl`), 'utf-8')
+        .split('\n')
+        .filter((l) => l.trim());
+      const appended = JSON.parse(lines[lines.length - 1]);
+      assert.ok(!appended.content.includes('данных данных данных'));
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
+  it('resume: изменённый блок задачи остаётся полным (VL-258)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl258b-'));
+    try {
+      const sessDir = join(projDir, '.vibelog', 'agent-sessions');
+      mkdirSync(sessDir, { recursive: true });
+      const sessionId = 'agent-vl258-full';
+      writeFileSync(
+        join(sessDir, `${sessionId}.jsonl`),
+        [
+          { role: 'system', content: 'sys' },
+          { role: 'user', content: phaseLikePrompt('старое описание') },
+          { role: 'assistant', content: 'Продолжаю' },
+        ]
+          .map((m) => JSON.stringify(m))
+          .join('\n') + '\n',
+        'utf-8'
+      );
+      writeFileSync(
+        join(sessDir, `${sessionId}.meta.json`),
+        JSON.stringify({ sessionId, phase: 'prompt', cwd: projDir }),
+        'utf-8'
+      );
+      llmRequests.length = 0;
+      const { code, stderr } = await runCli(
+        [phaseLikePrompt('новое описание после plan'), '--resume', sessionId, '--no-mcp'],
+        llmEnv(),
+        projDir
+      );
+      assert.equal(code, 0, stderr);
+      assert.match(stderr, /блок задачи изменён/);
+      const last = llmRequests[0].messages[llmRequests[0].messages.length - 1];
+      assert.match(last.content, /Описание: новое описание после plan/);
+      assert.ok(!last.content.includes('без изменений с рана'));
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
   // ── VL-96: системный промпт и AGENTS.md ──
 
   it('первое сообщение к LLM — role=system с базовым промптом (VL-96)', async () => {

@@ -31,6 +31,7 @@ import { taskWorktreeDir } from '../core/worktree.js';
 import { taskIdPattern } from '../core/config.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { listLocalTools } from './tools.js';
+import { dedupeResumePrompt } from './prompt-dedup.js';
 import type { ToolSpec } from './tools.js';
 import { McpClient, toolsAsSpecs } from './mcp-client.js';
 import { closeExternalMcpClients, connectExternalMcpServers } from './external-mcp.js';
@@ -554,11 +555,28 @@ export async function main(argv: string[]): Promise<void> {
   );
   const history =
     resumedMessages[0]?.role === 'system' ? resumedMessages.slice(1) : resumedMessages;
+  // VL-258: неизменный блок задачи в промпте resume-рана не дублируем —
+  // заменяем ссылкой на строку транскрипта, где он уже есть. Сравнение идёт
+  // по хэшу блока против user-сообщений истории; блок изменился (например,
+  // план записан в фазе Plan) — промпт остаётся полным. Fail-open: любая
+  // проблема (нет блока, нет истории) → исходный текст.
+  let promptForRun = prompt;
+  if ((opts.resume !== undefined || opts.continue) && resumedMessages.length > 0) {
+    const dedup = dedupeResumePrompt(prompt, resumedMessages);
+    promptForRun = dedup.text;
+    if (dedup.hash !== null) {
+      log(
+        dedup.deduped
+          ? `Промпт resume-рана: блок задачи без изменений (хэш ${dedup.hash}, строка ${dedup.fromLine}) — заменён ссылкой`
+          : `Промпт resume-рана: блок задачи изменён (хэш ${dedup.hash}) — включён полностью`,
+      );
+    }
+  }
   // При resume в диалог вливается сохранённая история перед новым промптом
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt.content },
     ...history,
-    { role: 'user', content: prompt },
+    { role: 'user', content: promptForRun },
   ];
   // Инкрементальная запись jsonl (VL-103): файл сессии создаётся ДО запуска
   // loop — стартовый набор (system + история + новый промпт) уходит в файл
@@ -595,7 +613,7 @@ export async function main(argv: string[]): Promise<void> {
   }
   try {
     const startup: ChatMessage[] = wasResumed
-      ? [{ role: 'user', content: prompt }]
+      ? [{ role: 'user', content: promptForRun }]
       : messages;
     for (const m of startup) {
       await appendQueued(m);

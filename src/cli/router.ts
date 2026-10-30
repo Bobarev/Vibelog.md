@@ -143,7 +143,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('browser', colors.cyan)} [--port N] [--no-open]      Веб-интерфейс
   ${colorize('bot', colors.cyan)}                             Telegram-бот (grammy)
   ${colorize('agent', colors.cyan)} [task-id]               Чат с LLM-агентом (TUI); analyze <ref> [комментарий] — анализ сессии
-  ${colorize('session', colors.cyan)} summary <id> [--task VL-N] [--json]  Сводка сессии: раны, tool-calls, payload, правки
+  ${colorize('session', colors.cyan)} summary|outline <id> [--task VL-N] [--json]  Сводка/обзор транскрипта сессии
   ${colorize('qwen-debug', colors.cyan)}                  Дебаг-прогон qwen (ping, stream-json)
   ${colorize('search', colors.cyan)} "query" [--status ...]      Поиск задач с фильтрами
   ${colorize('map', colors.cyan)} [query] [--dir src] [--limit N]  Карта проекта: модули + назначение + экспорты
@@ -365,6 +365,13 @@ vibelog session summary <sessionId|--task VL-N> [--json]
 промптов, тайминги (мета/billing), LLM-запросы, input/output/cache/reasoning,
 max payload_bytes, инструменты, правки; агрегаты: tool→count, топ-5 скелетов
 run_shell_command, топ чтений и правок (edit / write_file раздельно).
+
+Обзор транскрипта (VL-258) — вместо чтения килобайтов jsonl:
+vibelog session outline <sessionId|--task VL-N> [--offset N] [--limit N] [--json]
+  по каждой строке — индекс, роль, байты, tool_calls, маркер рана/фазы,
+  первые 80 символов; плюс секция «Раны» (фаза → строка). Строка с максимальным
+  размером — индикатор дублирования промпта. Целевые строки читаются
+  обычным read_file с диапазоном "файл:N-M".
 
 Алиас: vibelog agent-session summary ...`,
 
