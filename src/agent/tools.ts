@@ -6,7 +6,11 @@
  * plain TS; shell — только execFile('/bin/bash', ['-lc', command]) без
  * shell:true на уровне Node; пути резолвятся от cwd и отклоняются, если
  * вышли за пределы проекта — как аргументы-пути, так и строки shell-команд
- * (checkShellCommandInProject, VL-99). Ошибки — текстом модели (не
+ * (checkShellCommandInProject, VL-99). Отдельный guard (VL-249) отклоняет
+ * удаление собственного рабочего каталога агента — `rm -rf .`,
+ * `rmSync(process.cwd())`, `git worktree remove` своего worktree изнутри него
+ * (инцидент VL-219: `fatal: Unable to read current working directory`).
+ * Ошибки — текстом модели (не
  * исключениями): loop дописывает их в messages и продолжает.
  */
 
@@ -949,6 +953,18 @@ function isRegexPatternToken(token: string): boolean {
 }
 
 /**
+ * Токенизатор shell-команды (VL-99), общий для обоих guard'ов (VL-249).
+ *
+ * Разделители `;|&()<>` — отдельные токены: позиционный анализ guard'а
+ * (VL-201/lesson-54) должен видеть границу команды (`git log | grep "/auto"`
+ * — паттерн относится к grep, а не к git). Кавычечные альтернативы стоят
+ * первыми, чтобы `|` внутри кавычек и `\|` внутри escape-ветки токен не
+ * разбивали (VL-179). Вынесено в константу, чтобы guard собственного cwd
+ * (VL-249) не дублировал регулярку — один парсер на модуль (lesson-37).
+ */
+const SHELL_TOKEN_RE = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:\\[^\s]|[^\s;|&()<>])+|[;|&()<>]/g;
+
+/**
  * Лексическая проверка shell-команды на обращения за пределы проекта (VL-99).
  *
  * Правило «работай только внутри cwd» в system-prompt — инструкция для модели,
@@ -997,10 +1013,7 @@ export function checkShellCommandInProject(command: string, cwd: string): Valida
   // `|`/`&&`/`;`/`(` распознавалась как новая (грань нужна позиционному
   // анализу паттерна). Кавычечные альтернативы стоят первыми — `|` внутри
   // кавычек и `\|` внутри escape-ветки токен не разбивают.
-  const tokens =
-    command.match(
-      /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:\\[^\s]|[^\s;|&()<>])+|[;|&()<>]/g,
-    ) ?? [];
+  const tokens = command.match(SHELL_TOKEN_RE) ?? [];
   // VL-201: состояние позиционного анализа — живёт в пределах одного сегмента
   // команды (между разделителями).
   let commandName: string | null = null; // командное слово текущего сегмента
@@ -1110,10 +1123,125 @@ export function checkShellCommandInProject(command: string, cwd: string): Valida
 }
 
 /**
+ * Проверка: не удаляет ли команда каталог, в котором сама выполняется (VL-249).
+ *
+ * Инцидент VL-219 (фаза Comment): агент выполнил `node -e rmSync` по своему
+ * рабочему каталогу `.vibelog/worktrees/vl-219` — bash получил
+ * `fatal: Unable to read current working directory`, транскрипт сессии
+ * отравился, а пустой каталог worktree остался мусором в `.vibelog/worktrees`.
+ * Работа из главного каталога решает проблему штатно: worktree — отдельный
+ * путь, его удаление не рушит cwd процесса.
+ *
+ * Три правила (лексические, как VL-99/104/179/201 — динамическое построение
+ * путей не закрываем, остаточный риск компенсируется правилом промпта):
+ *   1. `rm`/`rmdir`/`unlink`/`shred`, а также `find … -delete`/`-exec rm`:
+ *      не-флаговый аргумент-путь резолвится в workDir или его предка → отказ;
+ *   2. `git worktree remove|move`: путь-аргумент резолвится в workDir или
+ *      предка → отказ (`git worktree remove <свой worktree>` изнутри него);
+ *   3. `node` с eval-флагом (`-e`/`--eval`/`--input-type`/`-p`) и телом,
+ *      содержащим удаляющую функцию: кандидаты путей — `process.cwd()`,
+ *      `.`/`./`/`..` и строковые литералы тела; любой кандидат в workDir
+ *      или предке → отказ.
+ *
+ * @param command — строка shell-команды (до execFile)
+ * @param workDir — абсолютный cwd, в котором команда будет исполнена
+ * @returns null — команда безопасна; иначе текст отказа для модели
+ */
+export function checkSelfCwdDestruction(command: string, workDir: string): ValidateResult {
+  const root = resolve(workDir);
+  // reject с единым русским текстом: путь + правильный способ (из главного cwd).
+  const reject = (what: string): string =>
+    `Команда отклонена: удаление собственного рабочего каталога агента (${what}). ` +
+    `Не удаляй каталог, в котором выполняется фаза: после этого bash теряет рабочий каталог. ` +
+    `Запусти команду из главного ` +
+    `каталога проекта — уборка worktree делается оттуда: ` +
+    `git worktree remove .vibelog/worktrees/<id>, затем git worktree prune`;
+  // Путь удаляет корень (или его предка) — то есть сам cwd или каталог выше.
+  const destroysCwd = (rawPath: string): boolean => {
+    if (rawPath === '') return false;
+    const abs = resolve(root, rawPath);
+    if (abs === root) return true;
+    // Предок cwd: удаляя его, удаляем и cwd.
+    return root.startsWith(abs.endsWith(sep) ? abs : abs + sep);
+  };
+
+  const tokens = (command.match(SHELL_TOKEN_RE) ?? []).map((t) =>
+    t.replace(/^["']|["']$/g, ''),
+  );
+  // Сегменты команды (между разделителями) — позиционный анализ, как VL-201.
+  const segments: string[][] = [[]];
+  for (const token of tokens) {
+    if (/^[;|&()<>]$/.test(token)) segments.push([]);
+    else segments[segments.length - 1].push(token);
+  }
+
+  for (const segment of segments) {
+    if (segment.length === 0) continue;
+    const name = segment[0];
+    const args = segment.slice(1);
+    const plain = args.filter((a) => !a.startsWith('-'));
+    // Правило 1: удаляющие файловые команды. Флаги (-rf, --recursive) пропускаем,
+    // но сами пути проверяем — `rm -rf .` даёт аргумент ".".
+    if (name === 'rm' || name === 'rmdir' || name === 'unlink' || name === 'shred') {
+      for (const p of plain) if (destroysCwd(p)) return reject(p);
+      continue;
+    }
+    // Правило 1b: find с -delete / -exec rm — пути идут до предиката.
+    if (name === 'find') {
+      const hasDelete =
+        args.includes('-delete') ||
+        args.some((a, i) => a === '-exec' && (args[i + 1] === 'rm' || args[i + 1] === 'rmdir'));
+      if (hasDelete) {
+        for (const p of plain) if (destroysCwd(p)) return reject(p);
+      }
+      continue;
+    }
+    // Правило 2: git worktree remove|move — путь после подкоманд.
+    if (name === 'git') {
+      const wIdx = args.indexOf('worktree');
+      if (wIdx !== -1) {
+        const sub = args[wIdx + 1];
+        if (sub === 'remove' || sub === 'move') {
+          for (const p of args.slice(wIdx + 2).filter((a) => !a.startsWith('-'))) {
+            if (destroysCwd(p)) return reject(p);
+          }
+        }
+      }
+      continue;
+    }
+    // Правило 3: node с eval-телом, содержащим удаляющую функцию.
+    if (name === 'node') {
+      const evalIdx = args.findIndex(
+        (a) => a === '-e' || a === '--eval' || a === '-p' || a === '--print' || a === '--input-type',
+      );
+      if (evalIdx === -1) continue;
+      // --input-type принимает значение (module/commonjs), тело — следующий -e;
+      // собираем весь хвост после первого eval-флага как возможное тело.
+      const body = args.slice(evalIdx + 1).join(' ');
+      if (!/\b(?:rmSync|rmdirSync|rimraf|unlinkSync|promises\.rm|promises\.rmdir)\b|\bfs\.rm(?:dir)?\b/.test(body)) {
+        continue;
+      }
+      // Кандидаты путей: обращения к cwd, литеральные '.'/'..' и строковые литералы.
+      const candidates: string[] = [];
+      if (/process\.cwd\s*\(\s*\)/.test(body)) candidates.push('.');
+      for (const m of body.matchAll(/(?:'([^']*)'|"([^"]*)"|`([^`]*)`)/g)) {
+        candidates.push(m[1] ?? m[2] ?? m[3] ?? '');
+      }
+      for (const c of candidates) {
+        if (destroysCwd(c)) return reject(c);
+      }
+      continue;
+    }
+  }
+  return null;
+}
+
+/**
  * Инструмент run_shell_command: bash -lc с аргументами массивом (без
  * shell:true — интерполирует только bash, Node не парсит команду второй
  * раз). Таймаут по умолчанию 120с с SIGKILL; abort-сигнал тоже убивает
- * процесс. Обрезка вывода до 64КБ на поток.
+ * процесс. Обрезка вывода до 64КБ на поток. Перед запуском — два guard'а:
+ * путей вне проекта (VL-99) и удаления собственного cwd (VL-249).
  */
 function makeRunShellCommand(cwd: string): ToolSpec {
   return {
@@ -1151,6 +1279,14 @@ function makeRunShellCommand(cwd: string): ToolSpec {
         const commandError = checkShellCommandInProject(command, cwd);
         if (commandError !== null) {
           resolvePromise(commandError);
+          return;
+        }
+        // VL-249: команда не должна удалять собственный рабочий каталог —
+        // отказ до execFile, чтобы bash не получил «Unable to read current
+        // working directory» (инцидент VL-219).
+        const selfCwdError = checkSelfCwdDestruction(command, workDir);
+        if (selfCwdError !== null) {
+          resolvePromise(selfCwdError);
           return;
         }
         if (ctx?.signal?.aborted) {

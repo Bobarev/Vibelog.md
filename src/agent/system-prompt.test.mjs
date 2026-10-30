@@ -103,4 +103,16 @@ describe('buildSystemPrompt (VL-96)', () => {
       assert.ok(!/VL-\d+/.test(content), 'базовая часть промпта не должна содержать ID задач Vibelog');
     });
   });
+
+  // VL-249: правило «не удаляй собственный рабочий каталог» проверяем по
+  // техническим токенам (командам), а не по формулировке — правка прозы
+  // шаблона тест не должна ломать (принцип VL-130).
+  it('VL-249: базовая часть запрещает удаление собственного cwd и указывает уборку worktree из главного каталога', () => {
+    withTmpCwd((dir) => {
+      const { content } = buildSystemPrompt(dir);
+      assert.match(content, /worktree remove/);
+      assert.match(content, /worktree prune/);
+      assert.match(content, /rmSync\(process\.cwd\(\)\)|rm -rf \./);
+    });
+  });
 });
