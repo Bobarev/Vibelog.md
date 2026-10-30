@@ -9,9 +9,12 @@
  * не должна ломать тесты. Исключение — точечные инварианты VL-142 (правила
  * phase-2 «только целевой код» и «отчёт/статус после записи плана»):
  * добавлены осознанно по AC, не удалять при рефакторинге. Так же осознанно
- * добавлены инварианты VL-202 (пакетное чтение), VL-222 (один поисковый проход)
- * и VL-227 (отчёт об исключённых тест-файлах при --exclude/--skip: правило
- * живёт в templates/phases/phase-code.md и AGENTS.md — менять их надо синхронно).
+ * добавлены инварианты VL-202 (пакетное чтение), VL-222 (один поисковый проход),
+ * VL-227 (отчёт об исключённых тест-файлах при --exclude/--skip: правило
+ * живёт в templates/phases/phase-code.md и AGENTS.md — менять их надо синхронно)
+ * и VL-242 (полный прогон в фазе Close: обязательный, но один — после раннего
+ * точечного фильтра и с классификацией падений; правило в обоих close-шаблонах
+ * и AGENTS.md).
  */
 
 import { describe, it } from 'vitest';
@@ -458,6 +461,81 @@ describe('VL-227 — отчёт об исключённых тест-файла�
       'AGENTS.md: явное упоминание частичного прогона с --exclude/--skip');
     assert.ok(text.includes('Тесты проходят'),
       'AGENTS.md: правило привязано к DoD «Тесты проходят»');
+  });
+});
+
+// Точечные инварианты VL-242 (паттерн VL-227): в фазе Close полный прогон
+// тестов остаётся обязательным, но он один — перед ним ранний точечный фильтр,
+// а повтор допускается только после классификации падений. Правило живёт в
+// двух шаблонах Close (обычный и worktree — реальный Close идёт по worktree)
+// и в AGENTS.md; при правке текста менять всё синхронно.
+describe('VL-242 — полный прогон в фазе Close: один, после раннего фильтра', () => {
+  const closeText = readFileSync(join(templatesDir, 'phase-close.md'), 'utf-8');
+  const wtText = readFileSync(join(templatesDir, 'phase-close-worktree.md'), 'utf-8');
+
+  it('phase-close.md: обязательный полный прогон + ранний точечный фильтр', () => {
+    assert.ok(closeText.includes('Полный прогон тестов обязателен'),
+      'phase-close.md: полный прогон остаётся обязательным');
+    assert.ok(closeText.includes('точечный'),
+      'phase-close.md: ранний точечный фильтр перед полным прогоном');
+    assert.ok(closeText.includes('*.test.mjs'),
+      'phase-close.md: мэппинг модуль → соседний *.test.mjs');
+    assert.ok(closeText.includes('весь каталог модуля'),
+      'phase-close.md: фолбэк на весь каталог при отсутствии теста');
+  });
+
+  it('phase-close.md: запрет повторных полных прогонов с классификацией падений', () => {
+    assert.ok(/повторн[а-яё]* полн[а-яё]* прогон[а-яё]* запрещен/i.test(closeText),
+      'phase-close.md: явный запрет повторных полных прогонов');
+    assert.ok(closeText.includes('классификация'),
+      'phase-close.md: порядок диагностики при падении — сначала классификация');
+    assert.ok(closeText.includes('HEAD^1'),
+      'phase-close.md: сравнение с родительским коммитом');
+    assert.ok(closeText.includes('vitest'),
+      'phase-close.md: проверка параллельного vitest в другом worktree');
+  });
+
+  it('phase-close.md: оговорка про интеграционные и инвариант-тесты', () => {
+    assert.ok(closeText.includes('интеграционные'),
+      'phase-close.md: оговорка про интеграционные наборы');
+    assert.ok(closeText.includes('phase-prompt'),
+      'phase-close.md: упомянуты инвариант-тесты, читающие templates/AGENTS.md');
+  });
+
+  it('phase-close.md: исключение из полного прогона для чистых docs/backlog-правок', () => {
+    assert.ok(closeText.includes('vitest.config.mts'),
+      'phase-close.md: перечислены критичные пути в условии пропуска');
+    assert.ok(closeText.includes('templates/'),
+      'phase-close.md: templates/ входит в условие пропуска');
+    assert.ok(closeText.includes('пропуск'),
+      'phase-close.md: пропуск полного прогона фиксируется с причиной');
+  });
+
+  it('phase-close.md: правило отражено в «Экономия ходов» (без pnpm — инвариант VL-105)', () => {
+    assert.ok(closeText.includes('Полный прогон тестов — один раз'),
+      'phase-close.md: буллет в «Экономия ходов»');
+    assert.ok(!/pnpm/i.test(closeText),
+      'phase-close.md: pnpm-команды не дублируются (VL-105)');
+  });
+
+  it('phase-close-worktree.md: то же правило в шаге 5 и «Правилах»', () => {
+    assert.ok(wtText.includes('Полный прогон тестов обязателен'),
+      'phase-close-worktree.md: полный прогон обязателен');
+    assert.ok(wtText.includes('точечный'),
+      'phase-close-worktree.md: ранний точечный фильтр');
+    assert.ok(/повторн[а-яё]* полн[а-яё]* прогон[а-яё]* запрещен/i.test(wtText),
+      'phase-close-worktree.md: запрет повторных полных прогонов');
+    assert.ok(wtText.includes('классификация'),
+      'phase-close-worktree.md: порядок диагностики при падении');
+  });
+
+  it('AGENTS.md: требование VL-227 относится к Code и не отменяется в Close', () => {
+    const agentsPath = fileURLToPath(new URL('../../AGENTS.md', import.meta.url));
+    const text = readFileSync(agentsPath, 'utf-8');
+    assert.ok(text.includes('не отменяется') && text.includes('в фазе Close'),
+      'AGENTS.md: полнота прогона не отменяется в Close');
+    assert.ok(text.includes('HEAD^1'),
+      'AGENTS.md: классификация падений через родительский коммит');
   });
 });
 
