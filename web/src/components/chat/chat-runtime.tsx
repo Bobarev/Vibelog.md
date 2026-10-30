@@ -45,11 +45,19 @@ type Part = Parts[number]
 type ChatEvent =
   | { type: "thread"; threadId: string }
   | { type: "text"; delta: string }
-  | { type: "tool_start"; id: string; name: string; args: Record<string, unknown> }
+  /** auto (VL-264) — write-вызов прошёл по allow-list треда («Always allow»). */
+  | { type: "tool_start"; id: string; name: string; args: Record<string, unknown>; auto?: boolean }
   | { type: "tool_end"; id: string; result: string; isError?: boolean }
   | { type: "approval"; toolCallId: string; name: string; args: Record<string, unknown> }
   | { type: "done" }
   | { type: "error"; message: string }
+
+/**
+ * Имя data-части ошибки стрима (VL-264, AC9). Раньше ошибка дописывалась
+ * text-частью посреди ответа; теперь это отдельная data-часть, которую
+ * thread.tsx рендерит единой плашкой ChatErrorState.
+ */
+export const CHAT_ERROR_PART = "chat-error"
 
 /**
  * Текущий threadId (VL-207: id приходит из hash при восстановлении,
@@ -58,6 +66,40 @@ type ChatEvent =
  * смене треда (useEffect — до первого действия пользователя).
  */
 let activeThreadId: string | undefined
+
+/**
+ * Allow-list активного треда (VL-264): инструменты, разрешённые «Always
+ * allow». Заполняется при восстановлении истории (data.allowList) и при
+ * нажатии кнопки в карточке — карточки/строки помечаются «разрешено заранее»
+ * без лишних запросов к серверу. Сбрасывается при смене треда.
+ */
+const alwaysAllowed = new Set<string>()
+
+/** Активный threadId (для «Always allow»: разрешение пишется в его allow-list). */
+export function getActiveThreadId(): string | undefined {
+  return activeThreadId
+}
+
+/** Разрешён ли инструмент в активном треде заранее. */
+export function isToolAlwaysAllowed(tool: string): boolean {
+  return alwaysAllowed.has(tool)
+}
+
+/** Локальная пометка «разрешено всегда» (после успешного POST /allow). */
+export function addAlwaysAllowed(tool: string): void {
+  alwaysAllowed.add(tool)
+}
+
+/** Снятие локальной пометки (после DELETE /allow). */
+export function removeAlwaysAllowed(tool: string): void {
+  alwaysAllowed.delete(tool)
+}
+
+/** Замена allow-list при загрузке треда с сервера. */
+export function setAlwaysAllowed(tools: readonly string[] | undefined): void {
+  alwaysAllowed.clear()
+  for (const tool of tools ?? []) alwaysAllowed.add(tool)
+}
 
 /**
  * Текущая модель чата (VL-209): id из models.available, выбранный
@@ -124,6 +166,18 @@ function pendingApprovalDecisions(
   return out
 }
 
+/**
+ * data-часть ошибки стрима (VL-264, AC9): единый рендер с ошибками
+ * инструментов — плашка ChatErrorState, а не текст посреди ответа.
+ */
+function errorPart(message: string): Part {
+  return {
+    type: "data",
+    name: CHAT_ERROR_PART,
+    data: { message, retryable: true },
+  } as Part
+}
+
 /** Разбор одной data-строки SSE. */
 function parseEvent(line: string): ChatEvent | null {
   if (!line.startsWith("data:")) return null
@@ -164,6 +218,12 @@ function applyEvent(parts: Part[], ev: ChatEvent): boolean {
         // пересборка через JSON нужна типу ReadonlyJSONObject
         args: JSON.parse(JSON.stringify(ev.args)),
         argsText: JSON.stringify(ev.args),
+        // VL-264: write-вызов, разрешённый allow-list'ом треда, приходит с
+        // auto:true. Поле не входит в ToolCallMessagePart, поэтому едет в
+        // providerMetadata (свободный слот) и читается в PartView.
+        ...(ev.auto
+          ? { providerMetadata: { vibelog: { auto: true } } }
+          : {}),
       })
       return false
     case "tool_end": {
@@ -204,7 +264,14 @@ function applyEvent(parts: Part[], ev: ChatEvent): boolean {
       return true
     }
     case "error":
-      parts.push({ type: "text", text: `Ошибка чата: ${ev.message}` })
+      // VL-264 (AC9): ошибка стрима — отдельная data-часть, а не текст
+      // посреди ответа. Её рендерит ChatErrorState (единый вид с ошибками
+      // инструментов). retryable — ошибка соединения/сервера, а не отказ.
+      parts.push({
+        type: "data",
+        name: CHAT_ERROR_PART,
+        data: { message: ev.message, retryable: true },
+      })
       return false
     case "done":
       return false
@@ -258,13 +325,13 @@ const chatAdapter: ChatModelAdapter = {
     } catch (err) {
       if (options.abortSignal.aborted) return // отмена пользователем
       const message = err instanceof Error ? err.message : String(err)
-      yield { content: [...parts, { type: "text", text: `Ошибка чата: ${message}` }] as Parts }
+      parts.push(errorPart(message))
+      yield { content: [...parts] as Parts }
       return
     }
     if (!res.ok || !res.body) {
-      yield {
-        content: [...parts, { type: "text", text: `Ошибка чата: сервер ответил ${res.status}` }] as Parts,
-      }
+      parts.push(errorPart(`сервер ответил ${res.status}`))
+      yield { content: [...parts] as Parts }
       return
     }
 
@@ -302,7 +369,7 @@ const chatAdapter: ChatModelAdapter = {
     } catch (err) {
       if (options.abortSignal.aborted) return // отмена пользователем
       const message = err instanceof Error ? err.message : String(err)
-      parts.push({ type: "text", text: `Ошибка чата: ${message}` })
+      parts.push(errorPart(message))
     }
 
     if (pausedOnApproval) {
@@ -324,6 +391,7 @@ const chatAdapter: ChatModelAdapter = {
 export function ChatRuntimeProvider({
   threadId,
   initialMessages,
+  allowList,
   onThreadCreated,
   children,
 }: {
@@ -331,6 +399,8 @@ export function ChatRuntimeProvider({
   threadId?: string
   /** Восстановленная история (initialMessages для useLocalRuntime). */
   initialMessages?: import("@assistant-ui/react").ThreadMessageLike[]
+  /** Allow-list треда (VL-264): инструменты, разрешённые «Always allow». */
+  allowList?: readonly string[] | undefined
   /** Новый тред создан сервером → обновить hash на #/chat/<id>. */
   onThreadCreated?: (id: string) => void
   children: React.ReactNode
@@ -346,11 +416,14 @@ export function ChatRuntimeProvider({
   React.useEffect(() => {
     activeThreadId = threadId
     sentApprovals.clear()
+    // VL-264: allow-list — свойство треда, при смене сбрасываем (иначе
+    // «разрешено всегда» из другого треда дало бы ложную пометку)
+    setAlwaysAllowed(allowList)
     notifyThreadCreated = id => createdRef.current?.(id)
     return () => {
       notifyThreadCreated = null
     }
-  }, [threadId])
+  }, [threadId, allowList])
 
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
 }

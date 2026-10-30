@@ -13,13 +13,17 @@
  * - сервер создал тред (thread-событие) → hash переводится на #/chat/<id>
  *   без пересоздания рантайма (сравнение с loadedRef).
  *
- * Рендер частей (MessagePrimitive.Parts, children API):
- * - text → MarkdownView (списки/код в ответах LLM);
- * - tool-call write-операции (create/update/write_file/…) → карточка с
- *   Allow/Deny (approval-gate: part.respondToApproval, local-runtime.mdx
- *   §Approval gates) до решения, статус «подтверждено/отклонено» после;
- * - tool-call read-операции (search/view/read_file/…) → компактная строка
- *   с результатом.
+ * Рендер частей (MessagePrimitive.GroupedParts, VL-264 — как ref-22):
+ * - text → MarkdownView (список/код в ответах LLM);
+ * - tool-call write-операции (isWriteOperation: create/update/write_file/…)
+ *   → ApprovalCard (порт elements/approval-card.tsx): Deny / Always allow /
+ *   Allow once, затем receipt-статус (approval-gate: part.respondToApproval);
+ * - tool-call read-операции → ToolCall (порт elements/tool-call.tsx):
+ *   свёрнутая строка, разворот с Request/Result;
+ * - подряд идущие tool-call части схлопываются в ToolGroup (аккордеон) —
+ *   groupPartByType + MessagePrimitive.GroupedParts (AC7). Write-вызовы в
+ *   группу не попадают: активная карточка подтверждения не должна прятаться.
+ * - data-часть chat-error (ошибка стрима) → ChatErrorState (AC9).
  */
 
 import * as React from "react"
@@ -30,12 +34,14 @@ import {
   ComposerPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
+  groupPartByType,
   useAui,
   useAuiState,
   type EnrichedPartState,
   type ThreadMessageLike,
 } from "@assistant-ui/react"
 import {
+  ArrowRight,
   ArrowUp,
   Bot,
   Check,
@@ -43,161 +49,108 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
-  ListChecks,
-  MessageSquare,
   Pencil,
-  PlusCircle,
   RefreshCw,
-  Search,
   Square,
-  X,
 } from "lucide-react"
 
 import { MarkdownView } from "@/lib/markdown"
 import { Button } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
 import { historyToMessages } from "@/lib/chat-threads"
 import { useChatThreadId } from "@/lib/use-hash-route"
-import { ChatRuntimeProvider } from "./chat-runtime"
+import { ApprovalCard } from "./approval-card"
+import { CHAT_ERROR_PART, ChatRuntimeProvider } from "./chat-runtime"
+import { ChatErrorState } from "./error-state"
+import { StoppedRun } from "./stopped-run"
+import { ToolCall, ToolGroup, type ToolPart } from "./tool-call"
+import { isWriteTool } from "./tool-meta"
 import { ThreadSidebar, type ThreadSummary } from "./thread-sidebar"
 
-/** Утилита: тип tool-call part из children-рендера. */
-type ToolPart = Extract<EnrichedPartState, { type: "tool-call" }>
-
-/** Ответ GET /api/chat/threads/:id. */
+/** Ответ GET /api/chat/threads/:id (VL-264: + allowList треда). */
 interface ThreadHistoryResponse {
   threadId: string
   messages: Parameters<typeof historyToMessages>[0]
+  allowList?: string[]
 }
 
-/** Название инструмента для карточки (для незнакомых — само имя). */
-const TOOL_LABELS: Record<string, string> = {
-  backlog_create_task: "Создание задачи",
-  backlog_search: "Поиск",
-  backlog_view_task: "Просмотр задачи",
-  read_file: "Чтение файла",
-  write_file: "Запись файла",
-  backlog_update_task: "Редактирование задачи",
+/**
+ * Флаг «вызов разрешён allow-list'ом треда» (VL-264).
+ *
+ * Поле `auto` не входит в ToolCallMessagePart, поэтому едет в
+ * `providerMetadata.vibelog.auto` — свободный слот протокола: клиент
+ * (chat-runtime при tool_start{auto}, historyToMessages при восстановлении)
+ * помечает так разрешённые заранее вызовы.
+ */
+function isAutoAllowed(part: ToolPart): boolean {
+  const meta = part.providerMetadata as { vibelog?: { auto?: unknown } } | undefined
+  return meta?.vibelog?.auto === true
 }
 
-const TOOL_ICONS: Record<string, typeof Search> = {
-  backlog_create_task: PlusCircle,
-  backlog_search: Search,
-  backlog_view_task: MessageSquare,
-}
+/**
+ * Группировка tool-call частей (VL-264, AC7): подряд идущие read-вызовы
+ * схлопываются в один аккордеон `group-tools` через
+ * `MessagePrimitive.GroupedParts` + `groupPartByType`.
+ *
+ * Write-вызовы (approval-gate либо разрешённые allow-list'ом) остаются
+ * отдельными карточками: прятать активное подтверждение в раскрытие —
+ * прямой путь к потерянному решению (и AC5 требует видимую карточку).
+ */
+const baseGroupBy = groupPartByType({ "tool-call": ["group-tools"] })
 
-/** Карточка tool-call: approval-gate для write-операций, статус для остальных. */
-function ToolCallCard({ part }: { part: ToolPart }) {
-  const Icon = TOOL_ICONS[part.toolName] ?? ListChecks
-  const label = TOOL_LABELS[part.toolName] ?? part.toolName
-  const args = part.args as Record<string, unknown>
-  const pending = part.approval !== undefined && part.approval.approved === undefined
-
-  // Основная строка: title/query задачи или инструмента
-  const detail =
-    typeof args.title === "string"
-      ? args.title
-      : typeof args.query === "string"
-        ? args.query
-        : typeof args.id === "string"
-          ? args.id
-          : ""
-
-  // Результат: созданная задача (JSON с id), отказ, вывод поиска/просмотра
-  let statusLine: string | null = null
-  if (part.result !== undefined) {
-    if (part.isError) {
-      statusLine = typeof part.result === "object" && part.result && "error" in part.result
-        ? String((part.result as { error: unknown }).error)
-        : "Ошибка"
-    } else if (part.toolName === "backlog_create_task") {
-      const id =
-        typeof part.result === "object" && part.result && "id" in part.result
-          ? String((part.result as { id: unknown }).id)
-          : null
-      statusLine = id ? `Задача создана: ${id}` : "Задача создана"
-    } else if (typeof part.result === "string") {
-      statusLine = part.result
-    } else {
-      statusLine = JSON.stringify(part.result, null, 2)
-    }
+const groupBy: Parameters<typeof MessagePrimitive.GroupedParts>[0]["groupBy"] = (part, context) => {
+  if (part.type === "tool-call") {
+    const meta = part.providerMetadata as { vibelog?: { auto?: unknown } } | undefined
+    if (part.approval !== undefined || meta?.vibelog?.auto === true) return null
+    if (isWriteTool(part.toolName)) return null
   }
-
-  return (
-    <div className="my-1.5 rounded-md border bg-muted/40 text-sm">
-      <div className="flex items-center gap-2 px-3 py-2">
-        <Icon className="size-4 shrink-0 text-muted-foreground" />
-        <span className="font-medium">{label}</span>
-        {detail && <span className="min-w-0 truncate text-muted-foreground">{detail}</span>}
-        {!pending && part.result === undefined && part.approval?.approved === undefined && (
-          <span className="ml-auto text-xs text-muted-foreground">выполняется…</span>
-        )}
-        {part.approval?.approved === true && part.result === undefined && (
-          <span className="ml-auto flex items-center gap-1 text-xs text-emerald-600">
-            <Check className="size-3.5" /> подтверждено
-          </span>
-        )}
-        {part.approval?.approved === false && (
-          <span className="ml-auto flex items-center gap-1 text-xs text-destructive">
-            <X className="size-3.5" /> отклонено
-          </span>
-        )}
-      </div>
-
-      {/* Human-in-the-loop: Allow/Deny до решения (AC VL-204) */}
-      {pending && (
-        <div className="flex items-center justify-between gap-3 border-t px-3 py-2">
-          <span className="text-xs text-muted-foreground">
-            {typeof args.description === "string" && args.description
-              ? args.description.slice(0, 160)
-              : "Выполнить операцию?"}
-          </span>
-          <div className="flex shrink-0 gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => void part.respondToApproval({ approved: false, reason: "Отклонено в чате" })}
-            >
-              <X className="size-3.5" /> Отклонить
-            </Button>
-            <Button size="sm" onClick={() => void part.respondToApproval({ approved: true })}>
-              <Check className="size-3.5" /> Разрешить
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Результат после завершения */}
-      {!pending && statusLine !== null && (
-        <div className="border-t px-3 py-2">
-          <pre
-            className={cn(
-              "max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-xs",
-              part.isError ? "text-destructive" : "text-muted-foreground",
-            )}
-          >
-            {statusLine}
-          </pre>
-        </div>
-      )}
-    </div>
-  )
+  return baseGroupBy(part, context)
 }
 
-/** Одна часть сообщения (children API MessagePrimitive.Parts). */
-function PartView({ part }: { part: EnrichedPartState }) {
+/**
+ * Роутер одной части сообщения: text → markdown, tool-call → карточка
+ * (write) или строка (read), data chat-error → плашка ошибки.
+ *
+ * Признак write берём у СЕРВЕРА (`part.approval` есть — значит гейт
+ * запрашивался; `auto` — разрешено allow-list'ом). `isWriteTool` — только
+ * fallback для старых jsonl без флага (риск R3 плана).
+ */
+/**
+ * Часть, приходящая в children-рендер GroupedParts: реальная часть
+ * сообщения, синтетический indicator (стриминг) или узел группы.
+ * Ветки группы рендерит AssistantMessage, остальное — PartView.
+ */
+type GroupedPartLike =
+  | EnrichedPartState
+  | { readonly type: "indicator" }
+  | { readonly type: `group-${string}`; readonly indices: readonly number[] }
+
+function PartView({ part }: { part: GroupedPartLike }) {
   if (part.type === "text") {
     // синтетический пустой text-part во время старта run не рендерим
     if (!part.text) return null
     return <MarkdownView>{part.text}</MarkdownView>
   }
-  if (part.type === "tool-call") return <ToolCallCard part={part} />
+  if (part.type === "tool-call") {
+    const auto = isAutoAllowed(part)
+    const isWrite = part.approval !== undefined || auto || isWriteTool(part.toolName)
+    return isWrite ? <ApprovalCard part={part} auto={auto} /> : <ToolCall part={part} auto={auto} />
+  }
+  // узел группы рендерит AssistantMessage (case "group-tools"), indicator — пусто
+  if (part.type === "indicator" || part.type.startsWith("group-")) return null
+  if (part.type === "data" && part.name === CHAT_ERROR_PART) {
+    const payload = part.data as { message?: unknown; retryable?: unknown } | undefined
+    return <ChatErrorState message={typeof payload?.message === "string" ? payload.message : "Неизвестная ошибка"} />
+  }
   return null
 }
 
-/** Иконка маленькой кнопки action bar (ref-22: ховер-появление). */
+/**
+ * Кнопка action bar сообщения (VL-264, ref perplexity.tsx
+ * `messageActionClassName`): призрак `size-8 rounded-full`, приглушённый
+ * цвет → `hover:bg-accent`. Появляется на hover сообщения (в контейнере).
+ */
 const ACTION_CLASS =
-  "flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+  "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
 
 /** Кнопка копирования текста сообщения. */
 function CopyAction() {
@@ -296,8 +249,9 @@ function useCtrlEnterNewline() {
 function EditComposer() {
   const { textareaRef, onKeyDown } = useCtrlEnterNewline()
   return (
-    <MessagePrimitive.Root className="flex justify-end">
-      <ComposerPrimitive.Root className="w-full max-w-[85%] rounded-2xl border bg-background p-2 shadow-sm">
+    <MessagePrimitive.Root className="mx-auto flex w-full max-w-(--thread-max-width) justify-end">
+      {/* Пузырь редактора повторяет форму user-пузыря (VL-264: rounded-3xl) */}
+      <ComposerPrimitive.Root className="w-full max-w-[85%] rounded-3xl rounded-tr-md border bg-background p-2 shadow-sm">
         <ComposerPrimitive.Input
           ref={textareaRef}
           onKeyDown={onKeyDown}
@@ -319,18 +273,21 @@ function EditComposer() {
   )
 }
 
-/** Пузырь пользовательского сообщения + Copy/Edit и ветка. */
+/**
+ * Сообщение пользователя (VL-264, ref perplexity.tsx:296-325): пузырь
+ * `rounded-3xl rounded-tr-md` с border (НЕ bg-primary), `max-w-[85%]`,
+ * выравнивание вправо; action bar Copy/Edit — СЛЕВА от пузыря, появляется
+ * на hover/focus сообщения; BranchPicker ниже.
+ */
 function UserMessage() {
   return (
-    <MessagePrimitive.Root className="group/message flex justify-end">
-      <div className="flex max-w-[85%] flex-col items-end gap-1">
-        <div className="rounded-2xl bg-primary px-4 py-2.5 text-sm text-primary-foreground">
-          <MessagePrimitive.Parts>
-            {({ part }) => (part.type === "text" ? part.text : null)}
-          </MessagePrimitive.Parts>
-        </div>
-        <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-focus-within/message:opacity-100 group-hover/message:opacity-100">
-          <ActionBarPrimitive.Root hideWhenRunning className="flex items-center gap-0.5">
+    <MessagePrimitive.Root className="group/message mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-2 py-2">
+      <div className="flex flex-col items-end gap-2">
+        <div className="flex items-start gap-2">
+          <ActionBarPrimitive.Root
+            hideWhenRunning
+            className="mt-1 flex items-center gap-0.5 opacity-0 transition-opacity group-focus-within/message:opacity-100 group-hover/message:opacity-100"
+          >
             <CopyAction />
             <ActionBarPrimitive.Edit asChild>
               <button type="button" className={ACTION_CLASS} aria-label="Редактировать">
@@ -338,6 +295,14 @@ function UserMessage() {
               </button>
             </ActionBarPrimitive.Edit>
           </ActionBarPrimitive.Root>
+
+          <div className="max-w-[85%] rounded-3xl rounded-tr-md border bg-[#fcfbf8] px-4 py-3 text-sm break-words dark:bg-[#23211f]">
+            <MessagePrimitive.Parts>
+              {({ part }) => (part.type === "text" ? part.text : null)}
+            </MessagePrimitive.Parts>
+          </div>
+        </div>
+        <div className="mr-3 flex items-center gap-0.5">
           <BranchPicker />
         </div>
       </div>
@@ -345,21 +310,94 @@ function UserMessage() {
   )
 }
 
-/** Сообщение ассистента: markdown + tool-карточки + Reload/Copy. */
+/**
+ * Причина обрыва текущего сообщения (VL-264, AC8): статус incomplete от
+ * рантайма → текст mono-чипа. null — сообщение не оборвано.
+ */
+function useStoppedReason(): string | null {
+  return useAuiState(s => {
+    const status = s.message.status
+    if (status?.type !== "incomplete") return null
+    switch (status.reason) {
+      case "cancelled":
+        return "Остановлено"
+      case "length":
+        return "Достигнут лимит длины"
+      case "content-filter":
+        return "Ответ отфильтрован"
+      case "tool-calls":
+        return "Ожидает инструмент"
+      case "error":
+        return "Прервано ошибкой"
+      default:
+        return "Прервано"
+    }
+  })
+}
+
+/**
+ * Плашка прерванного прогона под ответом (AC8): вместо голого текста
+ * ошибки — причина + кнопка «Продолжить» (Reload повторяет run).
+ */
+function StoppedRunForMessage() {
+  const reason = useStoppedReason()
+  if (reason === null) return null
+  return (
+    <StoppedRun
+      reason={reason}
+      retry={
+        <ActionBarPrimitive.Reload asChild>
+          <button
+            type="button"
+            className="flex h-7 items-center gap-1 rounded-full px-2.5 text-xs font-medium text-foreground/70 transition-[background-color,color,scale] duration-150 hover:bg-foreground/[0.06] hover:text-foreground/95 active:scale-[0.96]"
+          >
+            Продолжить
+            <ArrowRight className="size-3" />
+          </button>
+        </ActionBarPrimitive.Reload>
+      }
+    />
+  )
+}
+
+/**
+ * Сообщение ассистента (VL-264, ref perplexity.tsx:327-352): без пузыря,
+ * аватар-кружок `size-8` с border, текст прямо в ленте, ширина ограничена
+ * `--thread-max-width` (40rem); action bar Reload/Copy + BranchPicker на hover.
+ *
+ * Части рендерит `MessagePrimitive.GroupedParts`: серии подряд идущих
+ * tool-call частей схлопываются в один аккордеон ToolGroup (AC7).
+ * Write-вызовы (approval или auto) в группу не собираем — активная карточка
+ * подтверждения должна быть видна сразу, а не спрятана в раскрытии.
+ */
 function AssistantMessage() {
   return (
-    <MessagePrimitive.Root className="group/message flex justify-start">
-      <div className="flex max-w-[92%] gap-2">
-        <div className="mt-1 flex size-7 shrink-0 items-center justify-center rounded-full bg-muted">
-          <Bot className="size-4 text-muted-foreground" />
+    <MessagePrimitive.Root className="group/message mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-2 py-2">
+      <div className="flex items-start gap-3">
+        <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-full border bg-background text-muted-foreground">
+          <Bot className="size-4" />
         </div>
-        <div className="min-w-0">
-          <div className="rounded-2xl bg-muted px-4 py-2.5 text-sm">
-            <MessagePrimitive.Parts>{({ part }) => <PartView part={part} />}</MessagePrimitive.Parts>
+
+        <div className="min-w-0 flex-1">
+          <div className="text-sm leading-6 break-words">
+            <MessagePrimitive.GroupedParts groupBy={groupBy}>
+              {({ part, children }) => {
+                if (part.type === "group-tools") {
+                  return <ToolGroup count={part.indices.length}>{children}</ToolGroup>
+                }
+                return <PartView part={part} />
+              }}
+            </MessagePrimitive.GroupedParts>
           </div>
-          <div className="mt-1 flex items-center gap-0.5 opacity-0 transition-opacity group-focus-within/message:opacity-100 group-hover/message:opacity-100">
+
+          <StoppedRunForMessage />
+
+          <div className="mt-2 flex items-center gap-2">
             <BranchPicker />
-            <ActionBarPrimitive.Root hideWhenRunning className="flex items-center gap-0.5">
+            <ActionBarPrimitive.Root
+              hideWhenRunning
+              className="flex items-center gap-0.5 opacity-0 transition-opacity group-focus-within/message:opacity-100 group-hover/message:opacity-100"
+            >
               <ActionBarPrimitive.Reload asChild>
                 <button type="button" className={ACTION_CLASS} aria-label="Повторить ответ">
                   <RefreshCw className="size-4" />
@@ -426,16 +464,24 @@ function EmptyState() {
   )
 }
 
-/** Тред: сообщения + композер. Высота — h-full (скролл внутри viewport). */
+/**
+ * Тред: сообщения + композер. Высота — h-full (скролл внутри viewport).
+ *
+ * `--thread-max-width: 40rem` (VL-264, ref perplexity.tsx): ширина ленты, к
+ * которой прижаты и сообщения, и композер — как в референсе.
+ */
 function ChatThread() {
   return (
-    <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col">
+    <ThreadPrimitive.Root
+      className="flex h-full min-h-0 flex-col"
+      style={{ ["--thread-max-width" as string]: "40rem" }}
+    >
       <ThreadPrimitive.If empty>
         <EmptyState />
       </ThreadPrimitive.If>
       <ThreadPrimitive.If empty={false}>
         <ThreadPrimitive.Viewport
-          className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4"
+          className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-4 pt-6"
           // автоскролл вниз при новом контенте и при восстановлении истории
           autoScroll
           scrollToBottomOnInitialize
@@ -448,7 +494,7 @@ function ChatThread() {
               return <AssistantMessage />
             }}
           </ThreadPrimitive.Messages>
-          <ThreadPrimitive.ViewportFooter className="sticky bottom-0 pt-2">
+          <ThreadPrimitive.ViewportFooter className="sticky bottom-0 mt-auto w-full max-w-(--thread-max-width) self-center bg-linear-to-b from-transparent via-background/85 to-background pt-4 pb-4">
             <div className="relative">
               <ThreadPrimitive.ScrollToBottom asChild>
                 <Button
@@ -509,6 +555,8 @@ interface ChatLoadState {
    * нужно в рендере (пропс провайдера), читать ref в рендере нельзя.
    */
   runtimeThreadId?: string
+  /** Allow-list треда (VL-264): инструменты, разрешённые «Always allow». */
+  allowList?: string[]
 }
 
 /**
@@ -600,7 +648,12 @@ export function ChatPage() {
         const data = (await res.json()) as ThreadHistoryResponse
         if (cancelled) return
         loadedRef.current = id
-        setLoad({ status: "ready", messages: historyToMessages(data.messages), runtimeThreadId: id })
+        setLoad({
+          status: "ready",
+          messages: historyToMessages(data.messages, { allowList: data.allowList }),
+          runtimeThreadId: id,
+          allowList: data.allowList ?? [],
+        })
         setRuntimeKey(k => k + 1)
       } catch (err) {
         failWith(`Не удалось загрузить тред: ${err instanceof Error ? err.message : String(err)}`)
@@ -637,6 +690,7 @@ export function ChatPage() {
             key={runtimeKey}
             threadId={load.runtimeThreadId}
             initialMessages={load.messages}
+            allowList={load.allowList}
             onThreadCreated={handleThreadCreated}
           >
             <ChatThread />

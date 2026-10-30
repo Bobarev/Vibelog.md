@@ -24,7 +24,7 @@
  * resume-запроса).
  */
 
-import { mkdirSync, appendFileSync, readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { mkdirSync, appendFileSync, readFileSync, existsSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ChatMessage, LlmClient, ToolCall } from '../agent/llm.js';
 import { createLlmClient } from '../agent/llm.js';
@@ -41,7 +41,7 @@ import type { ChatLocalTool } from './tool-policy.js';
 export type ChatEvent =
   | { type: 'thread'; threadId: string }
   | { type: 'text'; delta: string }
-  | { type: 'tool_start'; id: string; name: string; args: Record<string, unknown> }
+  | { type: 'tool_start'; id: string; name: string; args: Record<string, unknown>; auto?: boolean }
   | { type: 'tool_end'; id: string; result: string; isError?: boolean }
   | { type: 'approval'; toolCallId: string; name: string; args: Record<string, unknown> }
   | { type: 'done' }
@@ -54,7 +54,11 @@ export interface ChatRequestBody {
   threadId?: unknown;
   /** Переопределение модели чата (id из models.available, VL-209). */
   model?: unknown;
-  approval?: { toolCallId?: unknown; approved?: unknown; reason?: unknown };
+  /**
+   * Решение по approval-gate. `always` (VL-264) — «Always allow»: инструмент
+   * добавляется в allow-list треда, последующие вызовы идут без паузы.
+   */
+  approval?: { toolCallId?: unknown; approved?: unknown; reason?: unknown; always?: unknown };
 }
 
 /** Зависимости для тестов: подменный LLM-клиент (паттерн runLoopOptions.llm). */
@@ -126,6 +130,8 @@ export function recordApprovalLog(
     tool: string;
     turn: number;
     approved?: boolean;
+    /** VL-264: решение «Always allow» — инструмент добавлен в allow-list треда. */
+    always?: boolean;
   },
 ): void {
   if (!THREAD_ID_RE.test(threadId)) return;
@@ -147,6 +153,8 @@ export interface ApprovalLogEntry {
   tool: string;
   turn: number;
   approved?: boolean;
+  /** VL-264: «Always allow» — разрешение сохранено в allow-list треда. */
+  always?: boolean;
 }
 
 /** Чтение лога подтверждений треда; битые строки пропускаем (паттерн истории). */
@@ -164,6 +172,79 @@ export function loadApprovalLog(cwd: string, threadId: string): ApprovalLogEntry
     }
   }
   return out;
+}
+
+/**
+ * Allow-list треда (VL-264, кнопка «Always allow» в approval-карточке).
+ *
+ * Разрешение «этот инструмент в этом треде больше не спрашивать» хранится
+ * рядом с историей — `.vibelog/chat-sessions/<threadId>.allow.json`
+ * (JSON-массив имён инструментов). Имя содержит точку, поэтому
+ * `listChatThreads` (фильтр `.jsonl`) файл не видит — треды не задваиваются.
+ *
+ * Область действия — ТОЛЬКО тред: разрешение не переносится на другие треды
+ * (защита от «разрешил один раз — открыл запись везде»). Отзыв — DELETE
+ * /api/chat/threads/:id/allow?tool=<name> (кнопка в карточке).
+ *
+ * Все операции тихие при ошибках файловой системы: сбой allow-list не
+ * должен рвать диалог (паттерн recordApprovalLog).
+ */
+
+/** Файл allow-list треда (вызывается только с валидным threadId). */
+function allowListFile(cwd: string, threadId: string): string {
+  return join(chatSessionsDir(cwd), `${threadId}.allow.json`);
+}
+
+/**
+ * Список разрешённых в треде инструментов. Невалидный threadId или битый
+ * JSON → пустой массив (fail-closed: без разрешения гейт спрашивает).
+ */
+export function loadThreadAllowList(cwd: string, threadId: string): string[] {
+  if (!THREAD_ID_RE.test(threadId)) return [];
+  const file = allowListFile(cwd, threadId);
+  if (!existsSync(file)) return [];
+  try {
+    const raw: unknown = JSON.parse(readFileSync(file, 'utf8'));
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((t): t is string => typeof t === 'string' && t.length > 0);
+  } catch {
+    // битый файл — разрешений нет (лучше переспросить, чем записать молча)
+    return [];
+  }
+}
+
+/** Запись allow-list целиком (идемпотентно: массив без дублей, сортировка). */
+function saveThreadAllowList(cwd: string, threadId: string, tools: readonly string[]): void {
+  if (!THREAD_ID_RE.test(threadId)) return;
+  try {
+    const dir = chatSessionsDir(cwd);
+    mkdirSync(dir, { recursive: true });
+    const unique = [...new Set(tools)].sort();
+    writeFileSync(allowListFile(cwd, threadId), JSON.stringify(unique, null, 2) + '\n', 'utf8');
+  } catch {
+    // сбой записи разрешения не должен рвать текущий ход
+  }
+}
+
+/** Добавить инструмент в allow-list треда; возвращает итоговый список. */
+export function addThreadAllow(cwd: string, threadId: string, tool: string): string[] {
+  const current = loadThreadAllowList(cwd, threadId);
+  if (current.includes(tool)) return current;
+  const next = [...current, tool];
+  saveThreadAllowList(cwd, threadId, next);
+  return [...new Set(next)].sort();
+}
+
+/** Убрать инструмент из allow-list треда; возвращает итоговый список. */
+export function removeThreadAllow(cwd: string, threadId: string, tool: string): string[] {
+  const next = loadThreadAllowList(cwd, threadId).filter(t => t !== tool);
+  saveThreadAllowList(cwd, threadId, next);
+  return next;
+}
+
+/** Разрешён ли инструмент в треде заранее (без паузы на approval). */
+export function isToolAllowed(cwd: string, threadId: string, tool: string): boolean {
+  return loadThreadAllowList(cwd, threadId).includes(tool);
 }
 
 /** Элемент списка тредов для сайдбара (VL-207): метаданные без тел сообщений. */
@@ -508,6 +589,10 @@ async function produce(
       return;
     }
     const approved = body.approval!.approved as boolean;
+    // VL-264 «Always allow»: разрешение сохраняется в allow-list треда —
+    // последующие вызовы этого инструмента в треде идут без паузы.
+    const always = approved && body.approval!.always === true;
+    if (always) addThreadAllow(cwd, threadId, target.name);
     // VL-256: решение получено — фиксируем в логе (requested без decided = потеря)
     recordApprovalLog(cwd, threadId, {
       event: 'decided',
@@ -515,6 +600,7 @@ async function produce(
       tool: target.name,
       turn: currentTurn(),
       approved,
+      ...(always ? { always: true } : {}),
     });
     let content: string;
     if (approved) {
@@ -542,7 +628,7 @@ async function produce(
     // VL-256: остальные неотвеченные вызовы хода. Read-only исполняем сразу,
     // а следующий write НЕ отменяем молча — показываем для него свой
     // Allow/Deny (последовательные гейты вместо синтетического not_confirmed).
-    const next = await advanceToNextApproval(history, cwd, threadId, queue, target.id);
+    const next = await advanceToNextApproval(history, cwd, threadId, queue, target.id, executeTool);
     if (next !== null) {
       recordApprovalLog(cwd, threadId, {
         event: 'requested',
@@ -620,9 +706,12 @@ async function produce(
     appendChatMessages(cwd, threadId, [assistantMsg]);
 
     // Исполняем по порядку; первый write — пауза (approval-gate по природе
-    // операции, VL-219: не по списку имён — isWriteOperation).
+    // операции, VL-219: не по списку имён — isWriteOperation). VL-264:
+    // инструмент из allow-list треда проходит без паузы (auto: true —
+    // клиент помечает вызов как разрешённый заранее).
     for (const tc of resp.toolCalls) {
-      if (isWriteOperation(tc.name)) {
+      const autoAllowed = isWriteOperation(tc.name) && isToolAllowed(cwd, threadId, tc.name);
+      if (isWriteOperation(tc.name) && !autoAllowed) {
         recordApprovalLog(cwd, threadId, {
           event: 'requested',
           toolCallId: tc.id,
@@ -632,7 +721,13 @@ async function produce(
         queue.push({ type: 'approval', toolCallId: tc.id, name: tc.name, args: tc.arguments });
         return; // состояние уже в jsonl; ждём resume с решением
       }
-      queue.push({ type: 'tool_start', id: tc.id, name: tc.name, args: tc.arguments });
+      queue.push({
+        type: 'tool_start',
+        id: tc.id,
+        name: tc.name,
+        args: tc.arguments,
+        ...(autoAllowed ? { auto: true } : {}),
+      });
       let result: string;
       let isError = false;
       try {
@@ -670,7 +765,13 @@ function hasApprovalOf(body: ChatRequestBody): boolean {
  * отдельный Allow/Deny (последовательные гейты, ref-22 local-runtime.mdx
  * §Approval gates: adapter вызывается заново на каждое решение).
  *
+ * VL-264: write-инструмент, уже разрешённый в треде (allow-list, «Always
+ * allow»), проходит здесь без паузы — иначе повторный вызов того же
+ * инструмента снова показал бы диалог.
+ *
  * @param skipId — id только что обработанного вызова (его результат уже в истории)
+ * @param execute — исполнитель инструмента (учитывает локальные handler'ы:
+ *   read_file/write_file не живут в MCP-реестре)
  * @returns следующий write-вызов, ожидающий подтверждения, либо null
  */
 async function advanceToNextApproval(
@@ -679,15 +780,23 @@ async function advanceToNextApproval(
   threadId: string,
   queue: EventQueue,
   skipId: string,
+  execute: (name: string, args: Record<string, unknown>) => Promise<string>,
 ): Promise<ToolCall | null> {
   for (const tc of pendingToolCalls(history)) {
     if (tc.id === skipId) continue;
-    if (isWriteOperation(tc.name)) return tc;
-    queue.push({ type: 'tool_start', id: tc.id, name: tc.name, args: tc.arguments });
+    const autoAllowed = isWriteOperation(tc.name) && isToolAllowed(cwd, threadId, tc.name);
+    if (isWriteOperation(tc.name) && !autoAllowed) return tc;
+    queue.push({
+      type: 'tool_start',
+      id: tc.id,
+      name: tc.name,
+      args: tc.arguments,
+      ...(autoAllowed ? { auto: true } : {}),
+    });
     let result: string;
     let isError = false;
     try {
-      result = truncateToolOutput(await handleToolCall(tc.name, tc.arguments, cwd, { defaultStatus: 'Spec' }));
+      result = await execute(tc.name, tc.arguments);
     } catch (err) {
       result = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
       isError = true;
