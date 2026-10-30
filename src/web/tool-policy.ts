@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ToolDef } from '../agent/llm.js';
-import { resolveInProject, truncateToolOutput, formatDirListing } from '../agent/tools.js';
+import { resolveInProject, truncateToolOutput, formatDirListing, formatFileSlice } from '../agent/tools.js';
 import { listTools } from '../mcp/tools.js';
 
 /** Локальный инструмент чата: ToolDef + handler (ToolDef из llm.ts без handler — wire-описание). */
@@ -112,6 +112,8 @@ export function makeReadFileTool(cwd: string): ChatLocalTool {
       'Читает текстовый файл проекта БЕЗ подтверждения пользователя. ' +
       'offset — 0-based номер строки начала, limit — максимум строк. ' +
       'Если path — каталог, возвращает отсортированный листинг (каталоги с "/", лимит 200 записей). ' +
+      'Файлы с очень длинными строками (JSONL) читаются по диапазонам: offset/limit применяются ' +
+      'до обрезки лимита 8 КБ, слишком длинная строка усекается с подсказкой следующего offset. ' +
       'Доступ только в пределах директории проекта.',
     inputSchema: {
       type: 'object',
@@ -144,14 +146,8 @@ export function makeReadFileTool(cwd: string): ChatLocalTool {
       } catch (err) {
         return `Не удалось прочитать файл: ${err instanceof Error ? err.message : String(err)}`;
       }
-      const lines = content.split('\n');
-      const offset =
-        typeof args.offset === 'number' && args.offset >= 0 ? Math.floor(args.offset) : 0;
-      const limit =
-        typeof args.limit === 'number' && args.limit > 0
-          ? Math.floor(args.limit)
-          : lines.length;
-      return truncateToolOutput(lines.slice(offset, offset + limit).join('\n'));
+      // formatFileSlice: offset/limit применяются до обрезки бюджета (VL-250).
+      return formatFileSlice(content, args.offset, args.limit);
     },
   };
 }
