@@ -30,6 +30,8 @@ import {
   ComposerPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
+  useAui,
+  useAuiState,
   type EnrichedPartState,
   type ThreadMessageLike,
 } from "@assistant-ui/react"
@@ -238,12 +240,67 @@ function BranchPicker() {
   )
 }
 
+/**
+ * Ctrl/Cmd+Enter вставляет перенос строки вместо отправки (VL-263).
+ *
+ * В @assistant-ui/react (0.15.31) нет нужного режима: `submitMode`
+ * поддерживает "enter" (Ctrl+Enter отправляет), "ctrlEnter" (plain Enter
+ * переносит) и "none". Поэтому перехватываем сочетание своим onKeyDown:
+ * либа собирает обработчики через composeEventHandlers(onKeyDown, свой),
+ * наш выполняется первым, а preventDefault гасит её requestSubmit.
+ *
+ * Текст композера контролируемый (value из s.composer.text), поэтому
+ * вставляем перенос через aui.composer.setText, а каретку ставим после
+ * перерендера в useLayoutEffect — иначе она уедет в конец строки.
+ */
+function useCtrlEnterNewline() {
+  const aui = useAui()
+  const text = useAuiState((s) => s.composer.text)
+  const caretRef = React.useRef<number | null>(null)
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null)
+
+  React.useLayoutEffect(() => {
+    const caret = caretRef.current
+    if (caret === null) return
+    caretRef.current = null
+    const el = textareaRef.current
+    if (!el) return
+    el.setSelectionRange(caret, caret)
+  }, [text])
+
+  const onKeyDown = React.useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // Shift+Ctrl/Cmd+Enter — «steer» либы, не перехватываем;
+      // IME-композиция — тоже не наш случай
+      if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return
+      if ((e.nativeEvent as { isComposing?: boolean }).isComposing === true) return
+
+      const el = e.currentTarget
+      e.preventDefault()
+
+      const start = el.selectionStart ?? el.value.length
+      const end = el.selectionEnd ?? start
+      caretRef.current = start + 1
+      aui.composer.setText(
+        el.value.slice(0, start) + "\n" + el.value.slice(end),
+        { origin: "user" },
+      )
+    },
+    [aui],
+  )
+
+  return { textareaRef, onKeyDown }
+}
+
 /** Inline-редактор сообщения (ref-22 chatgpt.tsx: composer в режиме edit). */
 function EditComposer() {
+  const { textareaRef, onKeyDown } = useCtrlEnterNewline()
   return (
     <MessagePrimitive.Root className="flex justify-end">
       <ComposerPrimitive.Root className="w-full max-w-[85%] rounded-2xl border bg-background p-2 shadow-sm">
         <ComposerPrimitive.Input
+          ref={textareaRef}
+          onKeyDown={onKeyDown}
           rows={2}
           className="min-h-9 w-full resize-none bg-transparent px-2 py-1.5 text-sm focus:outline-none"
         />
@@ -319,9 +376,12 @@ function AssistantMessage() {
 
 /** Композер: Send, либо Cancel во время стриминга (ref-22: ComposerPrimaryAction). */
 function Composer({ placeholder }: { placeholder: string }) {
+  const { textareaRef, onKeyDown } = useCtrlEnterNewline()
   return (
     <ComposerPrimitive.Root className="flex w-full items-end gap-2 rounded-2xl border bg-background p-2 shadow-sm focus-within:border-border/80">
       <ComposerPrimitive.Input
+        ref={textareaRef}
+        onKeyDown={onKeyDown}
         rows={1}
         name="chat-message"
         placeholder={placeholder}
@@ -360,7 +420,7 @@ function EmptyState() {
           Спросите про задачи, планы и документы. Создание задачи ассистент подтвердит
           у вас перед записью в backlog.
         </p>
-        <Composer placeholder="Спросите по проекту… (Enter — отправить)" />
+        <Composer placeholder="Спросите по проекту… (Enter — отправить, Ctrl+Enter — перенос строки)" />
       </div>
     </div>
   )
@@ -400,7 +460,7 @@ function ChatThread() {
                   <ChevronDown className="size-4" />
                 </Button>
               </ThreadPrimitive.ScrollToBottom>
-              <Composer placeholder="Спросите по проекту… (Enter — отправить)" />
+              <Composer placeholder="Спросите по проекту… (Enter — отправить, Ctrl+Enter — перенос строки)" />
             </div>
           </ThreadPrimitive.ViewportFooter>
         </ThreadPrimitive.Viewport>
