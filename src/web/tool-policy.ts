@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ToolDef } from '../agent/llm.js';
-import { resolveInProject, truncateToolOutput, formatDirListing, formatFileSlice, parseReadPath } from '../agent/tools.js';
+import { resolveInProject, truncateToolOutput, formatDirListing, formatFileSlice, parseReadPath, formatMissingPathHint } from '../agent/tools.js';
 import { searchProjectFiles } from '../agent/search-files.js';
 import { listTools } from '../mcp/tools.js';
 
@@ -152,11 +152,18 @@ export function makeReadFileTool(cwd: string): ChatLocalTool {
           return truncateToolOutput(listing.ok ? listing.text : listing.error);
         }
       } catch (err) {
+        // VL-257: отсутствующий путь приходит сюда (statSync бросает ENOENT) —
+        // отдаём подсказку с листингом и похожими путями, ту же, что у агента.
+        if (!existsSync(target.path)) {
+          const hint = formatMissingPathHint(cwd, parsed.path);
+          return truncateToolOutput(
+            hint === null ? `Файл не найден: ${target.path}` : `Файл не найден: ${target.path}\n\n${hint}`,
+          );
+        }
         return `Не удалось прочитать файл: ${err instanceof Error ? err.message : String(err)}`;
       }
       let content: string;
       try {
-        if (!existsSync(target.path)) return `Файл не найден: ${target.path}`;
         content = readFileSync(target.path, 'utf8');
       } catch (err) {
         return `Не удалось прочитать файл: ${err instanceof Error ? err.message : String(err)}`;

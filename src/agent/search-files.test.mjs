@@ -133,6 +133,15 @@ describe('search_files: границы и обход (VL-234)', () => {
   it('path вне проекта → отказ', async () => {
     const out = await searchProjectFiles(TMP, { pattern: 'x', path: '../outside' });
     assert.match(out, /Путь выходит за пределы проекта/);
+    // VL-257: структура проекта наружу не раскрывается.
+    assert.ok(!out.includes('Ближайший существующий каталог'));
+  });
+
+  it('VL-257: отсутствующий path → подсказка с листингом ближайшего каталога', async () => {
+    const out = await searchProjectFiles(TMP, { pattern: 'x', path: 'src/nope' });
+    assert.match(out, /Путь не найден: src\/nope/);
+    assert.match(out, /Ближайший существующий каталог: src\//);
+    assert.ok(out.includes('a.ts'), out);
   });
 
   it('walkFiles пропускает служебные каталоги', () => {

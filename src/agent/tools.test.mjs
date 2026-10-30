@@ -12,7 +12,7 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync, mkdtempSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { listLocalTools, validateArgs, miniGlobToRegex, checkShellCommandInProject, truncateToolOutput, maskSecrets, formatFileSlice, TOOL_OUTPUT_MAX_CHARS } from '../../dist/agent/tools.js';
+import { listLocalTools, validateArgs, miniGlobToRegex, checkShellCommandInProject, truncateToolOutput, maskSecrets, formatFileSlice, TOOL_OUTPUT_MAX_CHARS, formatMissingPathHint, PATH_HINT_MAX_LINES } from '../../dist/agent/tools.js';
 
 const TMP = mkdtempSync(join(tmpdir(), 'vibelog-agent-tools-'));
 let tools;
@@ -543,6 +543,72 @@ describe('VL-233 — листинг каталога в read_file', () => {
   it('AC3: пустой путь → «Путь не задан»', async () => {
     const out = await byName.get('read_file').handler({ path: '' });
     assert.equal(out, 'Путь не задан');
+  });
+});
+
+describe('VL-257 — подсказка при отсутствующем пути', () => {
+  it('AC1: файла нет в существующем каталоге → листинг ближайшего каталога', async () => {
+    const out = await byName.get('read_file').handler({ path: 'sub/nope.ts' });
+    // Маркер прежней ошибки остаётся первой строкой (lesson-76).
+    assert.match(out.split('\n')[0], /Файл не найден/);
+    assert.match(out, /Ближайший существующий каталог: sub\//);
+    assert.ok(out.includes('b.ts'));
+    assert.ok(out.includes('c.md'));
+  });
+
+  it('AC1: несуществующий каталог → листинг ближайшего существующего предка', async () => {
+    const out = await byName.get('read_file').handler({ path: 'no-such-dir/inner/f.txt' });
+    assert.match(out.split('\n')[0], /Файл не найден/);
+    assert.match(out, /Ближайший существующий каталог: \.\//);
+    assert.ok(out.includes('sub/'));
+  });
+
+  it('AC3: fuzzy по имени без расширения → «Возможно, вы имели в виду»', async () => {
+    // На macOS ФС регистронезависима, поэтому fuzzy проверяем через другое
+    // расширение (stem совпадает), а не через регистр.
+    const out = await byName.get('read_file').handler({ path: 'sub/c.mdx' });
+    assert.match(out, /Возможно, вы имели в виду:/);
+    assert.ok(out.includes('sub/c.md'), out);
+  });
+
+  it('AC2: путь похож на ID задачи → кандидат из backlog/tasks и подсказка backlog_view_task', async () => {
+    mkdirSync(join(TMP, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(TMP, 'backlog', 'tasks', 'VL-254 - Тестовая задача.md'), '# x\n');
+    const out = await byName.get('read_file').handler({ path: 'backlog/active/VL-254.md' });
+    assert.match(out, /Ближайший существующий каталог: backlog\//);
+    assert.match(out, /Возможно, вы имели в виду:/);
+    assert.ok(out.includes('backlog/tasks/VL-254 - Тестовая задача.md'), out);
+    assert.match(out, /backlog_view_task \{"id":"VL-254"\}/);
+  });
+
+  it('AC5: путь вне проекта → прежняя ошибка без листинга', async () => {
+    const out = await byName.get('read_file').handler({ path: '../outside.txt' });
+    assert.match(out, /выходит за пределы проекта/);
+    assert.ok(!out.includes('Ближайший существующий каталог'));
+  });
+
+  it('AC4: подсказка ограничена по объёму и входит в лимит tool-вывода', async () => {
+    const big = join(TMP, 'hint-cap');
+    mkdirSync(big, { recursive: true });
+    for (let i = 0; i < 500; i += 1) writeFileSync(join(big, `n${i}.txt`), 'x\n');
+    const out = await byName.get('read_file').handler({ path: 'hint-cap/none.txt' });
+    assert.ok(out.length <= TOOL_OUTPUT_MAX_CHARS, `длина ${out.length}`);
+    assert.match(out, /подсказка усечена: показано 30 из/);
+    const hint = formatMissingPathHint(TMP, 'hint-cap/none.txt');
+    const entries = hint.split('\n').filter((l) => /^(n\d+\.txt|…\[)/.test(l));
+    assert.ok(entries.length <= PATH_HINT_MAX_LINES + 1, `строк листинга ${entries.length}`);
+  });
+
+  it('AC6: та же подсказка у search_files и grep_search при отсутствующем path', async () => {
+    const searchOut = await byName.get('search_files').handler({ pattern: 'alpha', path: 'sub/nope' });
+    assert.match(searchOut, /Путь не найден: sub\/nope/);
+    assert.match(searchOut, /Ближайший существующий каталог: sub\//);
+    const grepOut = await byName.get('grep_search').handler({ pattern: 'alpha', path: 'sub/nope' });
+    assert.match(grepOut, /Путь не найден: sub\/nope/);
+    assert.match(grepOut, /Ближайший существующий каталог: sub\//);
+    // Вне проекта — по-прежнему без листинга.
+    const outside = await byName.get('search_files').handler({ pattern: 'alpha', path: '../outside' });
+    assert.ok(!outside.includes('Ближайший существующий каталог'));
   });
 });
 
