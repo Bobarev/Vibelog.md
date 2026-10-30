@@ -16,6 +16,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   writeFileSync,
   statSync,
 } from 'node:fs';
@@ -136,35 +137,146 @@ export function resolveInProject(
   return { ok: true, path: abs };
 }
 
+/**
+ * Лимит записей в листинге каталога (VL-233): защита от раздувания вывода —
+ * каталог вида node_modules содержит десятки тысяч записей, они залили бы
+ * контекст модели (тот же класс проблемы, что TOOL_OUTPUT_MAX_CHARS, VL-110).
+ */
+export const DIR_LISTING_MAX = 200;
+
+/**
+ * Служебные каталоги (VL-233): в листинге родителя видны как записи с `/`,
+ * но сами не разворачиваются — внутри них агент не ориентируется по именам
+ * файлов, а вывод огромен (node_modules/dist) либо запрещён к разбору (.git).
+ * Это НЕ SKIP_DIRS из walkFiles: поведение glob/grep_search не меняем.
+ */
+const SERVICE_DIRS = new Set(['node_modules', '.git', 'dist']);
+
+/**
+ * Листинг каталога для read_file (VL-233): отсортированные записи одного
+ * уровня, каталоги — с суффиксом `/`. Заменяет прежнюю ошибку «Это
+ * директория, не файл»: агент без glob/списка не мог узнать структуру
+ * проекта и угадывал пути (инцидент обсуждения VL-232 — 6+ холостых
+ * read_file по несуществующим путям).
+ *
+ * Границы: путь уже проверен resolveInProject; дополнительно realpath
+ * отсекает симлинк наружу проекта (сравнение с realpath самого cwd —
+ * на macOS /tmp → /private/tmp, иначе любой тест в mkdtemp ложно отклонялся).
+ * Пути внутри служебных каталогов отклоняются до readdirSync.
+ *
+ * @param cwd — корень проекта (границы доступа)
+ * @param absDir — абсолютный путь каталога (уже внутри cwd)
+ */
+export function formatDirListing(
+  cwd: string,
+  absDir: string,
+): { ok: true; text: string } | { ok: false; error: string } {
+  const relDir = relative(cwd, absDir).split(sep).join('/');
+  // Служебные каталоги не разворачиваем: путь или любой его сегмент.
+  const segments = relDir.split('/');
+  for (const segment of segments) {
+    if (SERVICE_DIRS.has(segment)) {
+      return {
+        ok: false,
+        error: `Служебный каталог (${segment}) не разворачивается: ${absDir}`,
+      };
+    }
+  }
+  // Симлинк наружу проекта: чтение файла такое поведение сохраняет (AC4),
+  // а листинг — расширяет видимость структуры, поэтому границу проверяем.
+  let real: string;
+  try {
+    real = realpathSync(absDir);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Не удалось прочитать каталог: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  let cwdReal: string;
+  try {
+    cwdReal = realpathSync(cwd);
+  } catch {
+    cwdReal = cwd;
+  }
+  const relReal = relative(cwdReal, real);
+  if (relReal === '..' || relReal.startsWith(`..${sep}`) || isAbsolute(relReal)) {
+    return {
+      ok: false,
+      error: `Путь выходит за пределы проекта (симлинк): ${absDir}`,
+    };
+  }
+  let dirents;
+  try {
+    dirents = readdirSync(absDir, { withFileTypes: true });
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Не удалось прочитать каталог: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  const label = relDir === '' ? './' : `${relDir}/`;
+  if (dirents.length === 0) return { ok: true, text: `Каталог пуст: ${label}` };
+  // Сортировка: каталоги первыми, внутри группы — по имени. localeCompare с
+  // 'en' — детерминизм независимо от локали машины (тесты не зависят от LANG).
+  const dirs: string[] = [];
+  const files: string[] = [];
+  for (const entry of dirents) {
+    if (entry.isDirectory()) dirs.push(`${entry.name}/`);
+    else files.push(entry.name);
+  }
+  dirs.sort((a, b) => a.localeCompare(b, 'en'));
+  files.sort((a, b) => a.localeCompare(b, 'en'));
+  const all = [...dirs, ...files];
+  const shown = all.slice(0, DIR_LISTING_MAX);
+  const header = `Листинг каталога ${label} (${all.length} записей, показано ${shown.length})`;
+  const suffix =
+    all.length > shown.length
+      ? `\n…[листинг усечён: показано ${shown.length} из ${all.length} записей; сузь путь]`
+      : '';
+  return { ok: true, text: header + '\n' + shown.join('\n') + suffix };
+}
+
 /** Читает файл как utf-8 текстом модели (ошибки — текстом, не исключением). */
 function readTextFile(abs: string): { ok: true; content: string } | { ok: false; error: string } {
   try {
     if (!existsSync(abs)) return { ok: false, error: `Файл не найден: ${abs}` };
-    if (statSync(abs).isDirectory()) return { ok: false, error: `Это директория, не файл: ${abs}` };
     return { ok: true, content: readFileSync(abs, 'utf8') };
   } catch (err) {
     return { ok: false, error: `Не удалось прочитать файл: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
-/** Инструмент read_file: строки с offset (0-based) и limit сверху. */
+/**
+ * Инструмент read_file: строки файла (offset 0-based, limit сверху) либо
+ * листинг каталога (VL-233). Путь резолвится с allowRoot — `path: '.']`
+ * даёт листинг корня проекта, а не отказ «Путь должен указывать на файл».
+ */
 function makeReadFile(cwd: string): ToolSpec {
   return {
     name: 'read_file',
     description:
-      'Читает текстовый файл проекта. offset — 0-based номер строки начала, limit — максимум строк.',
+      'Читает текстовый файл проекта (offset — 0-based номер строки начала, limit — максимум строк). ' +
+      'Если path — каталог, возвращает отсортированный листинг (каталоги с "/", лимит 200 записей; ' +
+      'offset/limit игнорируются; node_modules/.git/dist не разворачиваются).',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Путь к файлу относительно корня проекта' },
+        path: { type: 'string', description: 'Путь к файлу или каталогу относительно корня проекта' },
         offset: { type: 'number', description: '0-based номер строки начала' },
         limit: { type: 'number', description: 'Максимум возвращаемых строк' },
       },
       required: ['path'],
     },
     handler: async (args) => {
-      const target = resolveInProject(cwd, args.path as string);
+      const rawPath = args.path;
+      if (typeof rawPath !== 'string' || rawPath === '') return 'Путь не задан';
+      const target = resolveInProject(cwd, rawPath, { allowRoot: true });
       if (!target.ok) return target.error;
+      if (existsSync(target.path) && statSync(target.path).isDirectory()) {
+        const listing = formatDirListing(cwd, target.path);
+        return listing.ok ? truncateToolOutput(listing.text) : listing.error;
+      }
       const read = readTextFile(target.path);
       if (!read.ok) return read.error;
       const lines = read.content.split('\n');

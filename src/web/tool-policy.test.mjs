@@ -98,6 +98,21 @@ describe('VL-219 — chatToolDefs', () => {
     assert.equal(isWriteOperation('read_file'), false);
     assert.equal(isWriteOperation('write_file'), true);
   });
+
+  // VL-233: листинг каталога отдаётся и через веб-путь чата (общий хелпер).
+  it('VL-233: makeReadFileTool на каталоге → листинг с «/», а не ошибка', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'vl233-read-'));
+    tmpDirs.push(cwd);
+    mkdirSync(join(cwd, 'src', 'agent'), { recursive: true });
+    writeFileSync(join(cwd, 'src', 'a.txt'), 'x\n', 'utf8');
+    const tool = chatToolDefs(cwd).find(d => d.name === 'read_file');
+    const out = await tool.handler({ path: 'src' });
+    assert.match(out, /Листинг каталога src\//);
+    assert.ok(out.includes('agent/'), 'подкаталог с суффиксом /');
+    assert.ok(out.includes('a.txt'));
+    const root = await tool.handler({ path: '.' });
+    assert.match(root, /Листинг каталога \.\//);
+  });
 });
 
 describe('VL-219 — loadChatSystemTemplate', () => {

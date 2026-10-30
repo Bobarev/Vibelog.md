@@ -8,7 +8,7 @@
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, rmSync, symlinkSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -451,5 +451,90 @@ describe('maskSecrets — маскировка секретов в shell-выв�
     });
     assert.ok(out.includes('VIBELOG_LLM_API_KEY=***'), out);
     assert.ok(!out.includes('sk-real-999'), 'реальное значение не должно попадать в вывод');
+  });
+});
+
+describe('VL-233 — листинг каталога в read_file', () => {
+  const LST = join(TMP, 'lst');
+
+  beforeAll(() => {
+    rmSync(LST, { recursive: true, force: true });
+    mkdirSync(join(LST, 'b'), { recursive: true });
+    mkdirSync(join(LST, 'a-dir'), { recursive: true });
+    writeFileSync(join(LST, 'a.txt'), 'a\n');
+    writeFileSync(join(LST, 'z.txt'), 'z\n');
+  });
+
+  it('AC1: каталог → отсортированный листинг, каталоги с «/» первыми', async () => {
+    const out = await byName.get('read_file').handler({ path: 'lst' });
+    assert.match(out, /Листинг каталога lst\//);
+    const lines = out.split('\n');
+    assert.deepEqual(lines.slice(1, 5), ['a-dir/', 'b/', 'a.txt', 'z.txt']);
+  });
+
+  it('AC1: path "." → листинг корня проекта', async () => {
+    const out = await byName.get('read_file').handler({ path: '.' });
+    assert.match(out, /Листинг каталога \.\//);
+    assert.ok(out.includes('lst/'), 'подкаталог lst/ в листинге корня');
+  });
+
+  it('AC1: пустой каталог → «Каталог пуст»', async () => {
+    mkdirSync(join(TMP, 'empty-dir'), { recursive: true });
+    const out = await byName.get('read_file').handler({ path: 'empty-dir' });
+    assert.equal(out, 'Каталог пуст: empty-dir/');
+  });
+
+  it('AC2: усечение по лимиту 200 записей с пометкой', async () => {
+    const BIG = join(TMP, 'big-dir');
+    rmSync(BIG, { recursive: true, force: true });
+    mkdirSync(BIG, { recursive: true });
+    for (let i = 0; i < 205; i++) {
+      writeFileSync(join(BIG, `f${String(i).padStart(3, '0')}.txt`), '');
+    }
+    const out = await byName.get('read_file').handler({ path: 'big-dir' });
+    const lines = out.split('\n');
+    assert.match(lines[0], /205 записей, показано 200/);
+    assert.equal(lines.length, 1 + 200 + 1, 'шапка + 200 записей + маркер усечения');
+    assert.match(out, /листинг усечён: показано 200 из 205/);
+  });
+
+  it('AC2: служебные каталоги не разворачиваются', async () => {
+    for (const name of ['node_modules', '.git', 'dist']) {
+      mkdirSync(join(TMP, name, 'sub'), { recursive: true });
+      const out = await byName.get('read_file').handler({ path: name });
+      assert.match(out, /Служебный каталог \((node_modules|\.git|dist)\) не разворачивается/);
+      const nested = await byName.get('read_file').handler({ path: `${name}/sub` });
+      assert.match(nested, /не разворачивается/);
+    }
+  });
+
+  it('AC3: путь наружу ../ → отказ (прежний текст)', async () => {
+    const out = await byName.get('read_file').handler({ path: '../secrets' });
+    assert.match(out, /выходит за пределы проекта/);
+  });
+
+  it('AC3: симлинк каталога наружу проекта → отказ', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'vibelog-agent-tools-outside-'));
+    const link = join(TMP, 'link-outside');
+    rmSync(link, { force: true });
+    symlinkSync(outside, link);
+    const out = await byName.get('read_file').handler({ path: 'link-outside' });
+    assert.match(out, /выходит за пределы проекта \(симлинк\)/);
+    rmSync(link, { force: true });
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  it('AC4: обычный файл читается как раньше (offset/limit, «не найден»)', async () => {
+    const full = await byName.get('read_file').handler({ path: 'grep/f1.txt' });
+    assert.equal(full, 'alpha\nbeta\nalpha\n');
+    const slice = await byName.get('read_file').handler({ path: 'grep/f1.txt', offset: 1, limit: 1 });
+    assert.equal(slice, 'beta');
+    const missing = await byName.get('read_file').handler({ path: 'нет-такого.txt' });
+    assert.match(missing, /Файл не найден/);
+  });
+
+  it('AC3: пустой путь → «Путь не задан»', async () => {
+    const out = await byName.get('read_file').handler({ path: '' });
+    assert.equal(out, 'Путь не задан');
   });
 });
