@@ -51,7 +51,7 @@ export function App() {
   }
 
   return (
-    <SidebarProvider>
+    <SidebarProvider className="h-svh min-h-0 overflow-hidden">
       {/* variant/collapsible из PreferencesProvider (VL-166): spread {...props}
           в AppSidebar переопределяет дефолт collapsible="icon" */}
       <AppSidebar
@@ -59,7 +59,11 @@ export function App() {
         collapsible={values.sidebar_collapsible}
         onQuickCreate={handleQuickCreate}
       />
-      <SidebarInset className="min-w-0 overflow-x-clip">
+      {/* Фиксированный каркас (VL-263): SidebarInset получает реальную высоту
+          (h-full + min-h-0 + overflow-hidden), поэтому скроллится не body, а
+          внутренняя область. md:...h-[calc(100%-1rem)] компенсирует m-2 у
+          variant=inset/floating, иначе низ уезжает за вьюпорт */}
+      <SidebarInset className="h-full min-h-0 min-w-0 overflow-hidden overflow-x-clip md:peer-data-[variant=inset]:h-[calc(100%-1rem)]">
         <AppHeader />
         {/* main — scroll-контейнер (flex-1), header всегда виден (VL-166).
             Чат (VL-204) — overflow-hidden: скроллится viewport внутри

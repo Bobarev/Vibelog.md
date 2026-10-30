@@ -23,12 +23,19 @@ export type SidebarCollapsible = "offcanvas" | "icon" | "none";
 export interface LayoutPreferences {
   sidebar_variant: SidebarVariant;
   sidebar_collapsible: SidebarCollapsible;
+  /**
+   * Свёрнут ли сайдбар тредов на странице чата (VL-263): состояние живёт
+   * здесь, а не в ThreadSidebar, чтобы переживать переходы между страницами
+   * (сайдбар размонтируется при уходе с #/chat).
+   */
+  chat_threads_collapsed: boolean;
 }
 
 /** Дефолты: variant=sidebar, collapsible=icon — текущее поведение AppSidebar (VL-165). */
 const DEFAULT_PREFERENCES: LayoutPreferences = {
   sidebar_variant: "sidebar",
   sidebar_collapsible: "icon",
+  chat_threads_collapsed: false,
 };
 
 const STORAGE_KEY = "vibelog-layout-prefs";
@@ -72,6 +79,11 @@ function loadPreferences(): LayoutPreferences {
       sidebar_collapsible: isSidebarCollapsible(record.sidebar_collapsible)
         ? record.sidebar_collapsible
         : DEFAULT_PREFERENCES.sidebar_collapsible,
+      // Старые записи (до VL-263) поля не имеют — дефолт «развёрнут»
+      chat_threads_collapsed:
+        typeof record.chat_threads_collapsed === "boolean"
+          ? record.chat_threads_collapsed
+          : DEFAULT_PREFERENCES.chat_threads_collapsed,
     };
   } catch {
     // localStorage может бросить (приватный режим, quota) — не роняем UI
