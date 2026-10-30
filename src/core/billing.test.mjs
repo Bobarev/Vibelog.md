@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { appendBilling, readBilling, billingPath } from '../core/billing.js';
+import { appendBilling, readBilling, billingPath, billingRunStart } from '../core/billing.js';
 
 describe('billing (VL-198)', () => {
   let dir;
@@ -66,8 +66,66 @@ describe('billing (VL-198)', () => {
     expect(record.sessions[1].fallback).toBeUndefined();
   });
 
-  it('битый JSON → throw (не перезаписываем источник правды молча)', () => {
-    const path = billingPath(dir, 'VL-1');
+  // ── VL-259: startedAt — фактическое начало рана ──
+
+  it('startedAtKind=run сохраняется, resume-записи различимы по startedAt', () => {
+    appendBilling(dir, 'VL-259', session({ startedAt: '2026-10-30T03:00:00.000Z', startedAtKind: 'run' }));
+    appendBilling(dir, 'VL-259', session({ startedAt: '2026-10-30T04:00:00.000Z', startedAtKind: 'run' }));
+    const record = readBilling(dir, 'VL-259');
+    expect(record.sessions.map((s) => s.startedAtKind)).toEqual(['run', 'run']);
+    expect(new Set(record.sessions.map((s) => s.startedAt)).size).toBe(2);
+  });
+
+  it('billingRunStart: достоверный startedAt для новых записей', () => {
+    expect(
+      billingRunStart({
+        sessionId: 'a',
+        startedAt: '2026-10-30T03:00:00.000Z',
+        startedAtKind: 'run',
+        finishedAt: '2026-10-30T03:10:00.000Z',
+        durationMs: 600000,
+        usage: { input: 0, output: 0, cache: 0, total: 0, requests: 0 },
+      })
+    ).toBe('2026-10-30T03:00:00.000Z');
+  });
+
+  it('billingRunStart: старые записи без startedAtKind → finishedAt − durationMs', () => {
+    // Запись формата VL-198…VL-243: startedAt = время создания сессии (у всех
+    // resume-ранов одинаковое и ненадёжное), durationMs — фактическая длина рана
+    const restored = billingRunStart({
+      sessionId: 'a',
+      startedAt: '2026-10-30T03:00:00.000Z',
+      finishedAt: '2026-10-30T05:00:00.000Z',
+      durationMs: 3600000,
+      usage: { input: 0, output: 0, cache: 0, total: 0, requests: 0 },
+    });
+    expect(restored).toBe('2026-10-30T04:00:00.000Z');
+  });
+
+  it('billingRunStart: без durationMs → finishedAt, пустая запись → undefined (не падает)', () => {
+    expect(
+      billingRunStart({
+        sessionId: 'a',
+        finishedAt: '2026-10-30T05:00:00.000Z',
+        usage: { input: 0, output: 0, cache: 0, total: 0, requests: 0 },
+      })
+    ).toBe('2026-10-30T05:00:00.000Z');
+    expect(
+      billingRunStart({ sessionId: 'a', usage: { input: 0, output: 0, cache: 0, total: 0, requests: 0 } })
+    ).toBeUndefined();
+    // битые даты не бросают
+    expect(
+      billingRunStart({
+        sessionId: 'a',
+        startedAt: 'не дата',
+        finishedAt: 'тоже не дата',
+        durationMs: 1000,
+        usage: { input: 0, output: 0, cache: 0, total: 0, requests: 0 },
+      })
+    ).toBe('не дата');
+  });
+
+  it('битый JSON → throw (не перезаписываем источник правды молча)', () => {    const path = billingPath(dir, 'VL-1');
     mkdirSync(join(dir, '.vibelog', 'billing'), { recursive: true });
     writeFileSync(path, '{бито', 'utf-8');
     expect(() => appendBilling(dir, 'VL-1', session())).toThrow();

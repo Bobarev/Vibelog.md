@@ -25,7 +25,7 @@ import type { ApiMode, ChatMessage } from './llm.js';
 import { ensureLlmEnv, loadApiMode, activeModelLogLine } from './llm-env.js';
 import { loadProjectEnv } from '../bot/env.js';
 import { runLoop } from './loop.js';
-import { agentSessionsDir, appendSessionMessage, countToolCallsInMessages, createSessionId, latestSession, loadSession, loadSessionMetaSync, saveSession, saveSessionMeta, sumUsageFromMessages, updateSessionMeta } from './session.js';
+import { agentSessionsDir, appendSessionMessage, appendSessionRun, countToolCallsInMessages, createSessionId, latestSession, loadSession, loadSessionMetaSync, saveSession, saveSessionMeta, sumUsageFromMessages, updateSessionMeta } from './session.js';
 import { analyzeToolRepeats } from './repeat-tracker.js';
 import { taskWorktreeDir } from '../core/worktree.js';
 import { taskIdPattern } from '../core/config.js';
@@ -292,6 +292,11 @@ export async function main(argv: string[]): Promise<void> {
   log(`фаза=${phase ?? '(готовый промпт)'} задача=${isPhaseMode ? positionals[1] : '-'} headless=${headless}`);
 
   const cwd = process.cwd();
+  // VL-259: фактическое начало ЭТОГО рана. Оркестратор передаёт момент спавна
+  // в VIBELOG_RUN_STARTED_AT (иначе у всех resume-ранов сессии в billing
+  // оказывался один и тот же startedAt — начало сессии, журнал VL-235);
+  // при прямом запуске CLI — старт процесса.
+  const runStartedAt = process.env.VIBELOG_RUN_STARTED_AT ?? new Date().toISOString();
   // VL-209: settings.json (секции models/providers) в ГЛАВНОМ репо — в
   // branch-mode агент работает в worktree (паттерн строки loadApiMode)
   const settingsCwd = process.env.VIBELOG_CWD ?? cwd;
@@ -697,10 +702,17 @@ export async function main(argv: string[]): Promise<void> {
     // VL-243: phaseName — фаза СЕССИИ (её знает мета, lesson-40), runPhase —
     // фаза ЭТОГО рана. В billing пишется фаза рана: у resume-рана
     // (code_same_session) запись раньше помечалась 'plan' и code-запись
-    // «исчезала» из журнала VL-227. Frontmatter (by_phase) оставляем на
-    // фазе сессии — там кумулятив и lesson-40 сохраняются.
+    // «исчезала» из журнала VL-227.
+    // VL-259: приоритет фазы рана — явная phase (CLI-режим <фаза> <taskId>) →
+    // VIBELOG_RUN_PHASE (оркестратор знает фактическую фазу resume-рана) →
+    // VIBELOG_PHASE_NAME (кроме служебного 'prompt') → фаза сессии.
+    // by_phase задачи теперь тоже пишется фазой РАНА (AC3): 'prompt' туда
+    // не попадает — служебная фаза не должна маскировать реальную работу.
     const phaseName = existing?.phase ?? (isPhaseMode ? phase : process.env.VIBELOG_PHASE_NAME);
-    const runPhase = phase ?? (isPhaseMode ? positionals[0] : process.env.VIBELOG_PHASE_NAME) ?? phaseName;
+    const envPhaseName = process.env.VIBELOG_PHASE_NAME;
+    const envRunPhase =
+      process.env.VIBELOG_RUN_PHASE ?? (envPhaseName && envPhaseName !== 'prompt' ? envPhaseName : undefined);
+    const runPhase = phase ?? envRunPhase ?? phaseName;
     // env-taskId фильтруем по префиксу конфига (VL-118, как при создании меты):
     // чужой id не должен получить ни frontmatter, ни меты пост-фактум
     const envTaskId = process.env.VIBELOG_PHASE_TASK_ID;
@@ -725,7 +737,9 @@ export async function main(argv: string[]): Promise<void> {
       try {
         const delta = usageDelta(existing?.usage_recorded ?? {}, sessionUsage);
         if (hasUsageDelta(delta)) {
-          addTaskTokenUsage(taskCwd, taskId, phaseName, delta, loopResult.duration_ms);
+          // VL-259: by_phase — по фазе РАНА (раньше писали фазу сессии, и у
+          // VL-235 в by_phase был только plan, хотя жгли Code-раны)
+          addTaskTokenUsage(taskCwd, taskId, runPhase, delta, loopResult.duration_ms);
           updateSessionMeta(sessionsDir, sessionId, { cwd, usage_recorded: sessionUsage });
         } else if (existing && !existing.usage_recorded) {
           // дельта 0 (старый jsonl без usage в сообщениях) — отметку всё равно
@@ -756,7 +770,10 @@ export async function main(argv: string[]): Promise<void> {
           phase: runPhase,
           // VL-243: фаза сессии — только если отличается от фазы рана
           ...(phaseName && phaseName !== runPhase ? { sessionPhase: phaseName } : {}),
-          startedAt: existing?.startedAt,
+          // VL-259: startedAt — фактическое начало рана (не время создания
+          // сессии: иначе resume-раны неразличимы по журналу)
+          startedAt: runStartedAt,
+          startedAtKind: 'run',
           finishedAt,
           durationMs: loopResult.duration_ms,
           usage: runUsage,
@@ -805,6 +822,23 @@ export async function main(argv: string[]): Promise<void> {
           // после упавшей фазы (значения из сводки упавшего рана)
           last_run: { is_error: loopResult.is_error, finishedAt: new Date().toISOString() },
         });
+        // VL-259: история ранов меты — аддитивно (phase/taskId не трогаются,
+        // lesson-40/VL-147). По ней разбор восстанавливает число ранов, фазу
+        // каждого и фактические времена (раньше видна была только фаза
+        // создания сессии — отсюда неточность в разборе VL-254).
+        if (runPhase) {
+          appendSessionRun(sessionsDir, sessionId, {
+            sessionId,
+            phase: runPhase,
+            ...(phaseName && phaseName !== runPhase ? { sessionPhase: phaseName } : {}),
+            startedAt: runStartedAt,
+            finishedAt: new Date().toISOString(),
+            durationMs: loopResult.duration_ms,
+            usage: sessionUsage,
+            agent: 'vb',
+            billing: 'run',
+          });
+        }
       } catch (err) {
         console.error(`Предупреждение: мета сессии ${sessionId} не дополнена — ${(err as Error).message}`);
       }

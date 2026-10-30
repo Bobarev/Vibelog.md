@@ -78,6 +78,9 @@ function llmEnv() {
   delete env.VIBELOG_CWD;
   delete env.VIBELOG_PHASE_TASK_ID;
   delete env.VIBELOG_PHASE_NAME;
+  // VL-259: учёт фазы/времени рана не наследуем из родительской фазы
+  delete env.VIBELOG_RUN_PHASE;
+  delete env.VIBELOG_RUN_STARTED_AT;
   return env;
 }
 
@@ -971,6 +974,65 @@ describe('vibelog-agent CLI (VL-85)', () => {
       // Ключевое: code-ран больше не «маскируется» под plan
       assert.equal(bill.sessions[1].phase, 'code', 'фаза рана = code');
       assert.equal(bill.sessions[1].sessionPhase, 'plan', 'фаза сессии — в sessionPhase');
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
+  // ── VL-259: история ранов в мете + startedAt = начало рана + by_phase по фазе рана ──
+
+  it('инвариант 3 ранов (plan → code → code): runs[], разные startedAt, by_phase plan+code (VL-259)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-runs258-'));
+    try {
+      mkdirSync(join(projDir, 'backlog', 'tasks'), { recursive: true });
+      writeFileSync(join(projDir, 'backlog', 'config.yml'), 'project_name: Runs Invariant\n', 'utf-8');
+      createTaskFile(projDir, { id: 'VL-90', title: 'Задача истории ранов' });
+      // Ран 1 — plan (новая сессия)
+      const planEnv = { ...llmEnv(), VIBELOG_PHASE_TASK_ID: 'VL-90', VIBELOG_PHASE_NAME: 'plan' };
+      const first = await runCli(['Просто запрос', '--no-mcp'], planEnv, projDir);
+      assert.equal(first.code, 0, first.stdout);
+      const sid = JSON.parse(first.stdout.trim()).session_id;
+      // Раны 2–3 — code через resume (code_same_session-аналог). Разные
+      // startedAt имитируем через VIBELOG_RUN_STARTED_AT (env оркестратора).
+      const codeEnv = (iso) => ({
+        ...llmEnv(),
+        VIBELOG_PHASE_TASK_ID: 'VL-90',
+        VIBELOG_PHASE_NAME: 'code',
+        VIBELOG_RUN_PHASE: 'code',
+        VIBELOG_RUN_STARTED_AT: iso,
+      });
+      const second = await runCli(['Продолжи', '--resume', sid, '--no-mcp'], codeEnv('2026-10-30T10:00:00.000Z'), projDir);
+      assert.equal(second.code, 0, second.stdout);
+      const third = await runCli(['Продолжи', '--resume', sid, '--no-mcp'], codeEnv('2026-10-30T11:00:00.000Z'), projDir);
+      assert.equal(third.code, 0, third.stdout);
+
+      // 1) Мета: три записи истории, фаза создания сессии не перезаписана
+      const meta = JSON.parse(
+        readFileSync(join(projDir, '.vibelog', 'agent-sessions', `${sid}.meta.json`), 'utf-8')
+      );
+      assert.equal(meta.runs?.length, 3, 'три рана — три записи истории');
+      assert.deepEqual(meta.runs.map((r) => r.phase), ['plan', 'code', 'code']);
+      assert.equal(meta.runs[1].sessionPhase, 'plan', 'resume-ран помнит фазу сессии');
+      assert.equal(meta.lastRunPhase, 'code');
+      assert.equal(meta.phase, 'plan', 'phase — фаза создания сессии (инвариант VL-147)');
+      assert.equal(meta.runs[1].startedAt, '2026-10-30T10:00:00.000Z');
+      assert.equal(meta.runs[2].startedAt, '2026-10-30T11:00:00.000Z');
+
+      // 2) Billing: три записи с РАЗНЫМИ startedAt, ни один не равен startedAt сессии
+      const bill = JSON.parse(readFileSync(join(projDir, '.vibelog', 'billing', 'VL-90.json'), 'utf-8'));
+      assert.equal(bill.sessions.length, 3);
+      assert.deepEqual(bill.sessions.map((s) => s.phase), ['plan', 'code', 'code']);
+      const starts = bill.sessions.map((s) => s.startedAt);
+      assert.equal(new Set(starts).size, 3, 'startedAt ранов различимы');
+      assert.ok(!starts.includes(meta.startedAt), 'startedAt рана ≠ время создания сессии');
+      assert.deepEqual(bill.sessions.map((s) => s.startedAtKind), ['run', 'run', 'run']);
+
+      // 3) by_phase задачи содержит и plan, и code
+      const { getTask } = await import('../../dist/core/store.js');
+      const task = getTask(projDir, 'VL-90');
+      const byPhase = task.token_usage?.by_phase ?? {};
+      assert.ok(byPhase.plan, 'by_phase содержит plan');
+      assert.ok(byPhase.code, 'by_phase содержит code (раньше всё схлопывалось в plan)');
     } finally {
       rmSync(projDir, { recursive: true, force: true });
     }

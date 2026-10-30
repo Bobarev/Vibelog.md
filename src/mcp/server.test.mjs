@@ -50,6 +50,9 @@ function startServer() {
   delete env.VIBELOG_CWD;
   delete env.VIBELOG_PHASE_TASK_ID;
   delete env.VIBELOG_PHASE_NAME;
+  // VL-259: учёт фазы/времени рана тоже не наследуем из родительской фазы
+  delete env.VIBELOG_RUN_PHASE;
+  delete env.VIBELOG_RUN_STARTED_AT;
   // VL-198: сессия тестового окружения не должна утекать в fallback
   // finish_phase (иначе мета/jsonl реального репо попадут в фикстуры)
   delete env.VIBELOG_SESSION_ID;
@@ -131,7 +134,10 @@ describe('MCP-сервер', () => {
     const env = { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true', ...extraEnv };
     delete env.VIBELOG_CWD;
     delete env.VIBELOG_PHASE_TASK_ID;
-    delete env.VIBELOG_PHASE_NAME;
+    if (!('VIBELOG_PHASE_NAME' in extraEnv)) delete env.VIBELOG_PHASE_NAME;
+    // VL-259: фаза/время рана — явно переданные сохраняются, унаследованные срезаются
+    if (!('VIBELOG_RUN_PHASE' in extraEnv)) delete env.VIBELOG_RUN_PHASE;
+    if (!('VIBELOG_RUN_STARTED_AT' in extraEnv)) delete env.VIBELOG_RUN_STARTED_AT;
     if (!('VIBELOG_SESSION_ID' in extraEnv)) delete env.VIBELOG_SESSION_ID;
     const child = spawn('node', [cliPath, 'mcp', 'start'], {
       cwd: testDir,
@@ -569,6 +575,44 @@ describe('MCP-сервер', () => {
       const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
       const input = data.token_usage?.input ?? 0;
       assert.ok(input < 174247, `usage упавшего рана не должен записываться: ${input}`);
+    });
+
+    it('VL-259: by_phase пишется фазой РАНА (VIBELOG_RUN_PHASE), а не фазы сессии/prompt', async () => {
+      const sessionId = 'agent-vl259-runphase';
+      const sessionsDir = agentSessionsDir(testDir);
+      mkdirSync(sessionsDir, { recursive: true });
+      writeFileSync(join(sessionsDir, `${sessionId}.jsonl`), [
+        JSON.stringify({ role: 'user', content: 'Продолжи' }),
+        JSON.stringify({ role: 'assistant', content: 'ок', usage: { input_tokens: 70, output_tokens: 30, cache_read_input_tokens: 0, total_tokens: 100 } }),
+        '',
+      ].join('\n'), 'utf-8');
+      // Мета принадлежит план-сессии, ран — code (resume при code_same_session)
+      writeFileSync(join(sessionsDir, `${sessionId}.meta.json`), JSON.stringify({
+        sessionId, cwd: testDir, phase: 'plan',
+      }), 'utf-8');
+
+      const id = await createTask('Tokens: run phase');
+      const responses = await callMcpWithEnv([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: {
+          id, comment: 'Фаза code в план-сессии',
+        } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
+      ], {
+        VIBELOG_SESSION_ID: sessionId,
+        VIBELOG_RUN_PHASE: 'code',
+        // env фазы сессии служебная — не должна попасть в by_phase
+        VIBELOG_PHASE_NAME: 'prompt',
+      });
+
+      const fin = responses.find(r => r.id === 2);
+      assert.ok(!fin.result.isError, `не должен падать: ${fin.result.content[0].text}`);
+      const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
+      const byPhase = data.token_usage?.by_phase ?? {};
+      assert.ok(byPhase.code, `by_phase.code должен появиться: ${JSON.stringify(byPhase)}`);
+      assert.equal(byPhase.code.input, 70);
+      assert.equal(byPhase.prompt, undefined, 'служебная фаза prompt не попадает в by_phase');
+      assert.equal(byPhase.plan, undefined, 'фаза сессии не подменяет фазу рана');
     });
 
     it('VL-251: no-op статус (равен текущему) → isError already_finished с датой отчёта', async () => {
