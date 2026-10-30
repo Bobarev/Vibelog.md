@@ -71,7 +71,7 @@ const WRITE_MARKERS = [
  * если в имени оба (теоретически), write приоритетнее (безопаснее).
  */
 const READ_MARKERS = [
-  'list', 'view', 'search', 'get', 'read', 'ready', 'glob', 'grep', 'help',
+  'list', 'view', 'search', 'get', 'read', 'ready', 'glob', 'grep', 'help', 'map',
 ] as const;
 
 /** Токенизует имя инструмента: lowercase + split по не-буквенно-цифровым. */

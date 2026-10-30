@@ -23,6 +23,7 @@ import { runInit } from './commands/init.js';
 import { runTask } from './commands/task.js';
 import { runBoard } from './commands/board.js';
 import { runSearch } from './commands/search.js';
+import { runMap } from './commands/map.js';
 import { runInstructions } from './commands/instructions.js';
 import { runMcp } from './commands/mcp.js';
 import { runBrowser } from './commands/browser.js';
@@ -77,6 +78,9 @@ export async function route(args: string[]): Promise<void> {
       // search без подкоманд: первое слово запроса попадает в subcommand,
       // остальные — в positional; значения флагов в запрос не идут
       return runSearch([subcommand, ...positional].filter(Boolean), flags, cwd);
+    case 'map':
+      // VL-235: первый аргумент запроса попадает в subcommand (как у search)
+      return runMap([subcommand, ...positional].filter(Boolean), flags, cwd);
     case 'instructions':
       return runInstructions(positional, flags, cwd);
     case 'mcp':
@@ -135,6 +139,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('agent', colors.cyan)} [task-id]               Чат с LLM-агентом (TUI); analyze <ref> [комментарий] — анализ сессии
   ${colorize('qwen-debug', colors.cyan)}                  Дебаг-прогон qwen (ping, stream-json)
   ${colorize('search', colors.cyan)} "query" [--status ...]      Поиск задач с фильтрами
+  ${colorize('map', colors.cyan)} [query] [--dir src] [--limit N]  Карта проекта: модули + назначение + экспорты
   ${colorize('instructions', colors.cyan)} [topic]               Инструкции для агентов
   ${colorize('mcp', colors.cyan)} start                        MCP-сервер (JSON-RPC)
   ${colorize('milestone', colors.cyan)} add|list|rename|...      Управление вехами
@@ -212,6 +217,19 @@ vibelog search "query" [--status S] [--type T] [--priority P] [--limit N] [--jso
   --type     — фильтр по типу (bug, feature, ...)
   --priority — фильтр по приоритету
   --limit    — максимум результатов`,
+
+    map: `
+vibelog map [query] [--dir PATH] [--limit N] [--no-exports] [--json]
+
+Карта проекта (VL-235): модули каталога src/ — путь, назначение (первая строка
+шапки модуля) и экспорты. Read-only, читает файлы на момент вызова.
+  query      — подстрока по пути/описанию/экспортам; выборка с полными описаниями
+  --dir      — каталог карты (по умолчанию src; "" — весь проект)
+  --limit    — максимум модулей (по умолчанию 150)
+  --no-exports — без списков экспортов
+  --json     — машиночитаемый вывод ({schemaVersion, kind:'map', data})
+
+Пример: vibelog map htmlToMarkdown`,
 
     instructions: `
 vibelog instructions [topic]
