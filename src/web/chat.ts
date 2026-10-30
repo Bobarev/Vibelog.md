@@ -33,6 +33,7 @@ import { loadModels, resolveModelById, validateModelsConfig } from '../core/mode
 import { globalSearch } from '../core/search.js';
 import { truncateToolOutput } from '../agent/tools.js';
 import { handleToolCall } from '../mcp/tools.js';
+import { ackDenied } from '../mcp/tool-result.js';
 import { chatToolDefs, isWriteOperation, loadChatSystemTemplate } from './tool-policy.js';
 import type { ChatLocalTool } from './tool-policy.js';
 
@@ -181,7 +182,9 @@ function closePendingToolCalls(history: ChatMessage[]): number {
     history.push({
       role: 'tool',
       tool_call_id: tc.id,
-      content: JSON.stringify({ error: 'Отменено пользователем' }),
+      // VL-262: машиночитаемая причина отказа (denied) + перечень неприменённых полей.
+      // Прежняя подстрока «Отменено пользователем» живёт в message (тесты/промпты).
+      content: ackDenied('denied', { tool: tc.name, fields: Object.keys(tc.arguments ?? {}) }),
     });
     inserted++;
   }
@@ -416,6 +419,10 @@ async function produce(
    * Исполняет инструмент: локальный (read_file/write_file) — его handler,
    * остальные — MCP-реестр handleToolCall. Единая точка капа вывода
    * (lesson-30): truncateToolOutput после handler'а для обоих путей.
+   *
+   * VL-262: write-инструменты отвечают JSON-контрактом (ackOk: applied/skipped),
+   * отказы подтверждения — ackDenied('denied' | 'not_confirmed'). Модель видит
+   * снимок фактически применённого и причину отказа в машиночитаемом виде.
    */
   const executeTool = async (name: string, args: Record<string, unknown>): Promise<string> => {
     const local = localHandlers.get(name);
@@ -442,9 +449,15 @@ async function produce(
         content = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
       }
     } else {
-      content = JSON.stringify({
-        error: (typeof body.approval!.reason === 'string' && body.approval!.reason) ||
-          'Пользователь отклонил операцию',
+      // VL-262: причина отказа кодируется (denied) — applied пуст, skipped
+      // перечисляет переданные поля, чтобы модель знала, что именно НЕ записалось
+      content = ackDenied('denied', {
+        tool: target.name,
+        fields: Object.keys(target.arguments ?? {}),
+        // Пользовательский текст причины (если UI его прислал) сохраняем
+        ...(typeof body.approval!.reason === 'string' && body.approval!.reason.trim()
+          ? { message: body.approval!.reason }
+          : {}),
       });
     }
     history.push({ role: 'tool', tool_call_id: target.id, content });
@@ -567,7 +580,13 @@ async function closeRemainingPending(
   for (const tc of pendingToolCalls(history)) {
     if (tc.id === skipId) continue;
     if (isWriteOperation(tc.name)) {
-      const content = JSON.stringify({ error: 'Отменено: не было подтверждения пользователя' });
+      // VL-262: write без подтверждения — reason 'not_confirmed' (не отказ
+      // пользователя): повтор с тем же idempotencyKey безопасен. Раньше текст
+      // «Отменено: не было подтверждения» был неотличим от явного Deny.
+      const content = ackDenied('not_confirmed', {
+        tool: tc.name,
+        fields: Object.keys(tc.arguments ?? {}),
+      });
       history.push({ role: 'tool', tool_call_id: tc.id, content });
       appendChatMessages(cwd, threadId, [{ role: 'tool', tool_call_id: tc.id, content }]);
       continue;

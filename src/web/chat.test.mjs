@@ -362,6 +362,95 @@ describe('chat: VL-219 read_file/write_file и Spec-статус', () => {
     assert.ok(toolMsg.content.includes('не найдена'), `понятная ошибка: ${toolMsg.content}`);
   });
 
+  it('Deny на update_task с 3 полями → ни одно поле не изменено, reason=denied, skipped=3 (VL-262)', async () => {
+    const t = createTaskFile(cwd, { title: 'Исходная 262', priority: 'Low', labels: ['было'] });
+    const { llm } = fakeLlm([
+      {
+        toolCalls: [{
+          id: 'tc-262-deny',
+          name: 'backlog_update_task',
+          arguments: { id: t.id, title: 'Не должно примениться', priority: 'High', labels: ['новое'] },
+        }],
+      },
+      { text: 'Отменил.' },
+    ]);
+    await collect({ message: 'обнови три поля', threadId: 't-262-deny' }, { llm });
+    const events2 = await collectWithThread(
+      { approval: { toolCallId: 'tc-262-deny', approved: false } }, { llm }, 't-262-deny',
+    );
+    assert.equal(events2.at(-1).type, 'done');
+
+    const stored = listTasks(cwd, {}).find(x => x.id === t.id);
+    assert.equal(stored.title, 'Исходная 262', 'title не изменён');
+    assert.equal(stored.priority, 'Low', 'priority не изменён');
+    assert.deepEqual(stored.labels, ['было'], 'labels не изменены');
+
+    const toolMsg = loadChatHistory(cwd, 't-262-deny').find(m => m.role === 'tool');
+    const ack = JSON.parse(toolMsg.content);
+    assert.equal(ack.denied, true);
+    assert.equal(ack.reason, 'denied');
+    assert.deepEqual(ack.applied, {}, 'applied пуст при отказе');
+    assert.deepEqual(
+      ack.skipped.map(s => s.field).sort(),
+      ['id', 'labels', 'priority', 'title'],
+      `skipped перечисляет переданные поля: ${toolMsg.content}`,
+    );
+  });
+
+  it('второй write того же хода без подтверждения → reason=not_confirmed (а не denied) (VL-262)', async () => {
+    const t1 = createTaskFile(cwd, { title: 'Первая 262' });
+    const t2 = createTaskFile(cwd, { title: 'Вторая 262' });
+    const { llm } = fakeLlm([
+      {
+        toolCalls: [
+          { id: 'tc-262-w1', name: 'backlog_update_task', arguments: { id: t1.id, title: 'Первый обновлён' } },
+          { id: 'tc-262-w2', name: 'backlog_update_task', arguments: { id: t2.id, title: 'Второй обновлён' } },
+        ],
+      },
+      { text: 'Готово.' },
+    ]);
+    await collect({ message: 'обнови две задачи', threadId: 't-262-two' }, { llm });
+    // Подтверждаем только первый write; второй закрывается синтетическим отказом
+    await collectWithThread(
+      { approval: { toolCallId: 'tc-262-w1', approved: true } }, { llm }, 't-262-two',
+    );
+    const toolMsgs = loadChatHistory(cwd, 't-262-two').filter(m => m.role === 'tool');
+    const second = toolMsgs.find(m => m.tool_call_id === 'tc-262-w2');
+    assert.ok(second, 'результат второго write есть в истории');
+    const ack = JSON.parse(second.content);
+    assert.equal(ack.reason, 'not_confirmed', `причина отказа второго write: ${second.content}`);
+    assert.equal(ack.denied, true);
+    assert.ok(ack.hint.includes('idempotencyKey'), 'подсказка про безопасный повтор');
+    // Первый применился, второй — нет
+    assert.equal(listTasks(cwd, {}).find(x => x.id === t1.id).title, 'Первый обновлён');
+    assert.equal(listTasks(cwd, {}).find(x => x.id === t2.id).title, 'Вторая 262', 'второй не применён');
+  });
+
+  it('повтор create с тем же idempotencyKey после not_confirmed → одна задача (VL-262)', async () => {
+    const args = { title: 'Единственная 262', idempotencyKey: 'chat-idem-262' };
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-262-c1', name: 'backlog_create_task', arguments: args }] },
+      { text: 'Создал.' },
+    ]);
+    await collect({ message: 'создай задачу', threadId: 't-262-idem' }, { llm });
+    // Первый Allow — создаёт
+    await collectWithThread({ approval: { toolCallId: 'tc-262-c1', approved: true } }, { llm }, 't-262-idem');
+    assert.equal(listTasks(cwd, {}).filter(t => t.title === 'Единственная 262').length, 1);
+
+    // Модель повторяет тот же вызов с тем же ключом — дубля быть не должно
+    const { llm: llm2 } = fakeLlm([
+      { toolCalls: [{ id: 'tc-262-c2', name: 'backlog_create_task', arguments: args }] },
+      { text: 'Уже создана.' },
+    ]);
+    await collectWithThread({ message: 'повтори создание', threadId: 't-262-idem' }, { llm: llm2 }, 't-262-idem');
+    await collectWithThread({ approval: { toolCallId: 'tc-262-c2', approved: true } }, { llm: llm2 }, 't-262-idem');
+    const found = listTasks(cwd, {}).filter(t => t.title === 'Единственная 262');
+    assert.equal(found.length, 1, 'повтор с тем же ключом не создал дубль');
+    const toolMsgs = loadChatHistory(cwd, 't-262-idem').filter(m => m.role === 'tool');
+    const replay = toolMsgs.map(m => JSON.parse(m.content)).find(a => a.idempotentReplay === true);
+    assert.ok(replay, 'второй ответ помечен idempotentReplay');
+  });
+
   it('backlog_create_task без status → задача со статусом Spec (дополнение §1)', async () => {
     const { llm } = fakeLlm([
       { toolCalls: [{ id: 'tc-sp', name: 'backlog_create_task', arguments: { title: 'Spec-задача VL-219' } }] },
@@ -424,7 +513,10 @@ describe('chat: guard сирот и ошибки', () => {
     const idxTool = history.findIndex(m => m.role === 'tool');
     const idxUser2 = history.map(m => m.role).lastIndexOf('user');
     assert.ok(idxTool > 0 && idxTool < idxUser2, 'synthetic result между assistant и user');
-    assert.ok(history[idxTool].content.includes('Отменено'));
+    const synthetic = JSON.parse(history[idxTool].content);
+    assert.equal(synthetic.denied, true, 'синтетический отказ помечен denied');
+    assert.equal(synthetic.reason, 'denied');
+    assert.ok(synthetic.message.includes('отклонил') || synthetic.message.includes('Отменено'), `текст отказа: ${synthetic.message}`);
     assert.equal(history.at(-1).role, 'assistant');
   });
 
