@@ -765,6 +765,9 @@ export async function main(argv: string[]): Promise<void> {
           blocked_signatures: [
             ...new Set([...(existing?.blocked_signatures ?? []), ...(loopResult.blocked_signatures ?? [])]),
           ].slice(-20),
+          // VL-253: исход рана — finish_phase не доверяет явному tokenUsage
+          // после упавшей фазы (значения из сводки упавшего рана)
+          last_run: { is_error: loopResult.is_error, finishedAt: new Date().toISOString() },
         });
       } catch (err) {
         console.error(`Предупреждение: мета сессии ${sessionId} не дополнена — ${(err as Error).message}`);

@@ -728,6 +728,10 @@ describe('vibelog-agent CLI (VL-85)', () => {
       assert.equal(meta.phase, 'comment');
       // realpathSync: macOS /var — симлинк на /private/var, process.cwd() физический
       assert.equal(meta.cwd, realpathSync(projDir));
+      // VL-253: исход рана в мете — finish_phase не доверяет явному tokenUsage,
+      // если предыдущий ран упал. Успешный ран → is_error=false.
+      assert.equal(meta.last_run?.is_error, false, 'last_run.is_error записывается в мету');
+      assert.equal(typeof meta.last_run?.finishedAt, 'string', 'last_run.finishedAt записывается');
     } finally {
       rmSync(projDir, { recursive: true, force: true });
     }

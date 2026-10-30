@@ -175,6 +175,13 @@ export interface SessionMeta {
    * после «Продолжить» луп повторялся с нуля (инцидент VL-234).
    */
   blocked_signatures?: string[];
+  /**
+   * VL-253: исход последнего рана сессии. `finish_phase` не доверяет
+   * явному `tokenUsage`, если предыдущий ран упал: модель подставляет туда
+   * числа из сводки упавшей фазы (VL-250/VL-252), и они попадали бы в
+   * frontmatter как «успешный» usage.
+   */
+  last_run?: { is_error?: boolean; finishedAt?: string };
 }
 
 /**

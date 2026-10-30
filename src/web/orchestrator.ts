@@ -1061,6 +1061,9 @@ function spawnQwenRun(
               usage,
               usage_recorded: usage,
               agent: 'qwen',
+              // VL-253: исход рана — finish_phase не доверяет явному tokenUsage
+              // после упавшей фазы (паритет с CLI-путём)
+              last_run: { is_error: result.is_error === true, finishedAt: new Date().toISOString() },
             });
           })
           .catch((err) => {

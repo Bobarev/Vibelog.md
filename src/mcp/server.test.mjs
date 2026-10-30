@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { stringifyYaml } from '../../dist/core/yaml.js';
+import { agentSessionsDir } from '../../dist/agent/session.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const testDir = mkdtempSync(join(tmpdir(), 'vibelog-mcp-server-'));
@@ -120,6 +121,51 @@ describe('MCP-сервер', () => {
     cleanup();
   });
 
+  /**
+   * Батч JSON-RPC в ОТДЕЛЬНОМ MCP-сервере с дополнительным env (VL-253).
+   * Нужен для кейсов, где поведение зависит от env сервера (VIBELOG_SESSION_ID):
+   * env задаётся только при спавне, поэтому основной `proc` не подходит.
+   * Сервер одноразовый: гасим по stdin.end() либо kill по таймауту.
+   */
+  async function callMcpWithEnv(messages, extraEnv) {
+    const env = { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true', ...extraEnv };
+    delete env.VIBELOG_CWD;
+    delete env.VIBELOG_PHASE_TASK_ID;
+    delete env.VIBELOG_PHASE_NAME;
+    if (!('VIBELOG_SESSION_ID' in extraEnv)) delete env.VIBELOG_SESSION_ID;
+    const child = spawn('node', [cliPath, 'mcp', 'start'], {
+      cwd: testDir,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const got = [];
+    let buf = '';
+    child.stdout.on('data', (chunk) => {
+      buf += chunk.toString();
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (line.trim()) {
+          try { got.push(JSON.parse(line)); } catch { /* ignore */ }
+        }
+      }
+    });
+    child.stderr.on('data', () => {});
+    for (const msg of messages) child.stdin.write(JSON.stringify(msg) + '\n');
+    const wanted = new Set(messages.map((m) => m.id));
+    const deadline = Date.now() + 5000;
+    try {
+      while (Date.now() < deadline) {
+        if ([...wanted].every((id) => got.some((r) => r.id === id))) return got;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      throw new Error(`MCP(env): нет ответа за 5 с для ids: ${[...wanted].join(', ')}`);
+    } finally {
+      child.stdin.end();
+      setTimeout(() => child.kill(), 1000);
+    }
+  }
+
   it('initialize — возвращает capabilities', async () => {
     const responses = await callMcp([
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
@@ -154,6 +200,15 @@ describe('MCP-сервер', () => {
     assert.ok(names.includes('backlog_update_dependencies'));
     // VL-138
     assert.ok(names.includes('backlog_finish_phase'));
+    // VL-253 (AC2): comment объявлен в required схемы, а не только в описании —
+    // именно это ломало tool-calling (модель не генерировала поле → луп).
+    const finishDef = listResp.result.tools.find((t) => t.name === 'backlog_finish_phase');
+    assert.ok(finishDef, 'backlog_finish_phase должна быть в tools/list');
+    assert.ok(
+      Array.isArray(finishDef.inputSchema.required) && finishDef.inputSchema.required.includes('comment'),
+      `comment должен быть в required схемы: ${JSON.stringify(finishDef.inputSchema.required)}`,
+    );
+    assert.equal(finishDef.inputSchema.properties.comment.type, 'string', 'comment объявлен в properties как string');
   });
 
   it('tools/call — backlog_create_task создаёт задачу', async () => {
@@ -414,23 +469,98 @@ describe('MCP-сервер', () => {
       assert.ok(data.comments[0].text.includes('Отчёт несмотря на ошибку'));
     });
 
-    it('VL-251: вызов без report → isError с перечнем недостающих полей', async () => {
+    it('VL-253: вызов без report → авто-отчёт, фаза завершается без ошибки', async () => {
       const id = await createTask('Finish: только id');
+      // Подготовка: статус, AC и файлы, чтобы авто-отчёт было из чего собирать
+      await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_manage_ac', arguments: { id, action: 'add', text: 'Критерий А' } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_manage_dod', arguments: { id, action: 'add', text: 'Пункт DoD' } } },
+      ]);
       const responses = await callMcp([
         { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
-        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id } } },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: {
+          id, status: 'In Progress', acChecks: [1], dodChecks: [1], modifiedFiles: ['src/a.ts', 'src/b.ts'],
+        } } },
         { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
       ]);
       const fin = responses.find(r => r.id === 2);
-      assert.ok(fin.result.isError, `вызов без отчёта должен падать: ${fin.result.content[0].text}`);
+      assert.ok(!fin.result.isError, `вызов без отчёта НЕ должен падать (VL-253): ${fin.result.content[0].text}`);
       const text = fin.result.content[0].text;
-      assert.ok(text.includes('Неполный вызов'), `нет пометки о неполном вызове: ${text}`);
-      assert.ok(text.includes('comment'), `нет перечня недостающих полей: ${text}`);
-      assert.ok(!text.includes('отчёт: нет'), `строка «отчёт: нет» не должна появляться: ${text}`);
+      assert.ok(text.includes('отчёт добавлен (авто)'), `нет пометки об авто-отчёте: ${text}`);
+      assert.ok(text.includes('Статус: In Progress'), `статус не применён: ${text}`);
+      assert.ok(!text.includes('Неполный вызов'), `жёсткой ошибки больше нет: ${text}`);
 
-      // Файл задачи не тронут: ни комментария, ни статуса
       const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
-      assert.equal(data.comments.length, 0, 'отклонённый вызов не должен писать комментарий');
+      assert.equal(data.status, 'In Progress', 'статус записывается');
+      assert.equal(data.comments.length, 1, 'авто-отчёт записывается комментарием');
+      assert.equal(data.comments[0].author, '@agent');
+      const report = data.comments[0].text;
+      // AC3: авто-отчёт содержит статус, AC/DoD, modified_files
+      assert.ok(report.includes('авто-отчёт'), `нет маркера авто-отчёта: ${report}`);
+      assert.ok(report.includes('VL-253'), `нет ссылки на VL-253: ${report}`);
+      assert.ok(report.includes('Статус: In Progress'), `нет статуса: ${report}`);
+      assert.ok(report.includes('AC отмечено: 1 из 1'), `нет счётчика AC: ${report}`);
+      assert.ok(report.includes('DoD отмечено: 1 из 1'), `нет счётчика DoD: ${report}`);
+      assert.ok(report.includes('src/a.ts'), `нет modified_files: ${report}`);
+      assert.ok(/план|резюме/i.test(report), `нет фрагмента плана/резюме: ${report}`);
+      assert.deepEqual(data.modified_files, ['src/a.ts', 'src/b.ts']);
+    });
+
+    it('VL-253: авто-отчёт берёт фрагмент Implementation Plan, если он есть', async () => {
+      const id = await createTask('Finish: авто-отчёт с планом');
+      await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_update_task', arguments: { id, plan: 'Шаг 1: починить схему. Шаг 2: добавить fallback.' } } },
+      ]);
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id, status: 'In Progress' } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      assert.ok(!fin.result.isError, `авто-отчёт не должен падать: ${fin.result.content[0].text}`);
+      const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
+      assert.ok(
+        data.comments[0].text.includes('Фрагмент плана: Шаг 1: починить схему'),
+        `фрагмент плана должен попасть в отчёт: ${data.comments[0].text}`,
+      );
+    });
+
+    it('VL-253: явный tokenUsage после упавшего рана → игнорируется', async () => {
+      const id = await createTask('Finish: usage после падения');
+      const sessionId = 'vl253-failed-run';
+      const sessionsDir = agentSessionsDir(testDir);
+      mkdirSync(sessionsDir, { recursive: true });
+      writeFileSync(join(sessionsDir, `${sessionId}.meta.json`), JSON.stringify({
+        sessionId,
+        cwd: testDir,
+        taskId: id,
+        phase: 'plan',
+        last_run: { is_error: true, finishedAt: new Date().toISOString() },
+      }), 'utf-8');
+
+      // env VIBELOG_SESSION_ID для MCP-сервера задаётся через tools/call
+      // невозможно — сервер спавнится в beforeAll без env; поэтому прогоняем
+      // отдельный сервер с env (см. spawnServerWithEnv ниже)
+      const responses = await callMcpWithEnv([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: {
+          id, status: 'In Progress', comment: 'Фаза (usage после падения)', phase: 'plan',
+          tokenUsage: { input: 174247, output: 3200, total: 177447 },
+        } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
+      ], { VIBELOG_SESSION_ID: sessionId });
+
+      const fin = responses.find(r => r.id === 2);
+      const text = fin.result.content[0].text;
+      assert.ok(
+        text.includes('проигнорирован (значения получены после упавшей фазы)'),
+        `нет пометки об игноре tokenUsage: ${text}`,
+      );
+      const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
+      const input = data.token_usage?.input ?? 0;
+      assert.ok(input < 174247, `usage упавшего рана не должен записываться: ${input}`);
     });
 
     it('VL-251: no-op статус (равен текущему) → isError already_finished с датой отчёта', async () => {
