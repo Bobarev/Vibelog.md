@@ -57,6 +57,7 @@ vibelog browser
 | [Супервизор](backlog/docs/doc-19-Роль-Супервизор-автозапуск-и-лечение-фаз-из-чата-спецификация.md) | Роль «Супервизор»: тик-цикл, лечение фаз, grant на прогон, шаблоны лечения, планировщик |
 | [Best practices](backlog/docs/doc-9-Best-practices-и-производительность-Vibelogmd.md) | Workflow с Qwen Code, dogfooding, производительность |
 | [Поддержка lessons](backlog/docs/doc-20-Lessons-как-поддерживать-корпус-в-актуальном-состоянии-аудит-supersede-outdated-workaround.md) | Аудит корпуса, `needs-review`, `supersede`/`outdated`, техдолг из workaround'ов |
+| [Эксперименты (A/B)](backlog/docs/doc-21-Эксперименты-AB-generic-спецификация-и-границы-версий-фичи.md) | Спецификация: `backlog/experiments/`, датасеты, `record`/`report`, judge, границы MVP/v2 |
 | [MCP-подключение](MCP-SETUP.md) | Подключение Vibelog MCP к Qwen Code |
 
 ## Contributing
