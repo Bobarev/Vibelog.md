@@ -205,6 +205,23 @@ describe('VL-219 — loadChatSystemTemplate', () => {
     // Текст запрета destructive-операций (вариант (c))
     assert.ok(text.includes('Запрещены в чате'), 'текст запрета CHAT_DISALLOWED_TOOLS');
   });
+
+  // VL-238: поведенческие правила чата проверяем по коротким устойчивым
+  // токенам и лимиту строк, а не по дословной формулировке (принцип VL-130).
+  it('VL-238: chat-system.md содержит блок «ответ раньше полноты / тайм-бокс / «Продолжи» = результат»', () => {
+    const text = readFileSync(bundledPath, 'utf8');
+    assert.match(text, /Режим ответа/, 'заголовок блока правил чата');
+    assert.match(text, /Продолжи/, 'правило про «Продолжи» как запрос результата');
+    assert.match(text, /не проверено/, 'пометка непроверенного при исчерпании тайм-бокса');
+    assert.match(text, /8–10 вызовов/, 'ориентир тайм-бокса');
+    // Блок ограничен по размеру: от заголовка до раздела «Инструменты:» ≤ 10 непустых строк
+    const lines = text.split('\n');
+    const start = lines.findIndex(l => /Режим ответа/.test(l));
+    const end = lines.findIndex((l, i) => i > start && /^Инструменты:$/.test(l));
+    assert.ok(start >= 0 && end > start, 'блок правил должен идти перед разделом «Инструменты:»');
+    const blockLines = lines.slice(start, end).filter(l => l.trim().length > 0);
+    assert.ok(blockLines.length <= 11, `блок правил чата должен быть компактным (${blockLines.length} строк)`);
+  });
 });
 
 describe('VL-250 — read_file веб-чата на JSONL с длинными строками', () => {

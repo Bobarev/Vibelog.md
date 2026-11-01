@@ -14,15 +14,18 @@
 
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { buildSystemPrompt, AGENTS_MD_MAX_CHARS } from '../../dist/agent/system-prompt.js';
+import { buildSystemPrompt, loadAgentChatRules, AGENTS_MD_MAX_CHARS } from '../../dist/agent/system-prompt.js';
 
 /** Путь к шаблону базовой части (тот же, что в system-prompt.ts). */
 const agentPromptPath = fileURLToPath(new URL('../../templates/agent-prompt.md', import.meta.url));
+
+/** Путь к встроенному шаблону блока чат-режима (VL-238). */
+const agentChatPromptPath = fileURLToPath(new URL('../../templates/agent-prompt-chat.md', import.meta.url));
 
 /** Базовая часть промпта как её читает buildSystemPrompt: шаблон без хвостовых пробелов. */
 function basePrompt() {
@@ -114,5 +117,77 @@ describe('buildSystemPrompt (VL-96)', () => {
       assert.match(content, /worktree prune/);
       assert.match(content, /rmSync\(process\.cwd\(\)\)|rm -rf \./);
     });
+  });
+});
+
+// VL-238: правила чат-режима — opt-in, проверяем по устойчивым токенам
+// (не по дословной формулировке, принцип VL-130).
+describe('buildSystemPrompt — блок чат-режима (VL-238)', () => {
+  it('AC2: opts.chat=true подключает блок правил, дефолт — нет (фазы не затронуты)', () => {
+    withTmpCwd((dir) => {
+      const chat = buildSystemPrompt(dir, { chat: true }).content;
+      const phase = buildSystemPrompt(dir).content;
+      assert.match(chat, /Продолжи/, 'правило «Продолжи» = запрос результата');
+      assert.match(chat, /не проверено/, 'пометка непроверенного при исчерпании тайм-бокса');
+      assert.match(chat, /8–10 вызовов/, 'ориентир тайм-бокса');
+      // Инвариант «правила чата не протекают в headless-фазы». Токен «Продолжи»
+      // для этого не годится: он уже есть в базовой части (resume-фаза), поэтому
+      // проверяем уникальные маркеры самого блока.
+      assert.doesNotMatch(phase, /Режим ответа/, 'без opts.chat блок не подключается');
+      assert.doesNotMatch(phase, /не проверено/);
+      assert.doesNotMatch(phase, /8–10 вызовов/);
+      // Базовая часть сохранена как префикс
+      assert.ok(chat.startsWith(basePrompt()), 'базовая часть должна оставаться префиксом');
+    });
+  });
+
+  it('AC2: порядок сборки — база → чат-блок → AGENTS.md проекта', () => {
+    withTmpCwd((dir) => {
+      writeFileSync(join(dir, 'AGENTS.md'), '# Правила\nНе ломай сборку.', 'utf-8');
+      const { content } = buildSystemPrompt(dir, { chat: true });
+      const baseIdx = content.indexOf(basePrompt());
+      const chatIdx = content.indexOf('Режим ответа');
+      const agentsIdx = content.indexOf('# AGENTS.md проекта');
+      assert.ok(baseIdx === 0, 'базовая часть идёт первой');
+      assert.ok(chatIdx > baseIdx, 'чат-блок после базовой части');
+      assert.ok(agentsIdx > chatIdx, 'AGENTS.md — последним');
+    });
+  });
+
+  it('AC3: проектное переопределение .vibelog/prompts/agent-prompt-chat.md приоритетнее встроенного', () => {
+    withTmpCwd((dir) => {
+      mkdirSync(join(dir, '.vibelog', 'prompts'), { recursive: true });
+      writeFileSync(
+        join(dir, '.vibelog', 'prompts', 'agent-prompt-chat.md'),
+        'ПРОЕКТНЫЕ ПРАВИЛА ЧАТА',
+        'utf-8',
+      );
+      assert.equal(loadAgentChatRules(dir), 'ПРОЕКТНЫЕ ПРАВИЛА ЧАТА');
+      const { content } = buildSystemPrompt(dir, { chat: true });
+      assert.ok(content.includes('ПРОЕКТНЫЕ ПРАВИЛА ЧАТА'), 'проектный блок подставлен');
+      assert.ok(!content.includes('8–10 вызовов'), 'встроенный блок заменён проектным');
+    });
+  });
+
+  it('AC3: оба шаблона отсутствуют → fail-closed с понятной ошибкой', () => {
+    withTmpCwd((dir) => {
+      const backup = `${agentChatPromptPath}.vl238-backup`;
+      renameSync(agentChatPromptPath, backup);
+      try {
+        assert.throws(
+          () => loadAgentChatRules(dir),
+          /Шаблон промпта чат-режима не найден/,
+          'fail-closed ошибка при отсутствии обоих файлов',
+        );
+      } finally {
+        renameSync(backup, agentChatPromptPath);
+      }
+    });
+  });
+
+  it('AC1: встроенный шаблон чат-режима компактен (≤10 непустых строк)', () => {
+    const text = readFileSync(agentChatPromptPath, 'utf-8');
+    const lines = text.split('\n').filter((l) => l.trim().length > 0);
+    assert.ok(lines.length <= 10, `блок чат-режима должен быть компактным (${lines.length} строк)`);
   });
 });

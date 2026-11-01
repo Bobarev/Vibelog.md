@@ -14,6 +14,11 @@
  * предупреждение в stderr, промпт собирается без AGENTS.md. Отсутствие
  * самого шаблона agent-prompt.md — ошибка установки: throw, как renderPrompt
  * при отсутствии шаблона фазы.
+ *
+ * VL-238: правила «ответ раньше полноты / тайм-бокс / «Продолжи» = результат»
+ * подключаются отдельным шаблоном (templates/agent-prompt-chat.md) и только
+ * при opts.chat — так их получает интерактивный чат агента (interactive.ts),
+ * а headless-фазы (cli.ts) ту же базовую часть используют без них.
  */
 
 import { readFileSync } from 'node:fs';
@@ -32,6 +37,21 @@ const agentPromptPath = fileURLToPath(new URL('../../templates/agent-prompt.md',
 
 /** Подкаталог переопределения шаблонов проектом (VL-188), относительно cwd. */
 export const PROJECT_AGENT_PROMPT_PATH = join('.vibelog', 'prompts', 'agent-prompt.md');
+
+/**
+ * Подкаталог переопределения шаблона чат-режима проектом (VL-238),
+ * относительно cwd. Отдельный файл, а не часть agent-prompt.md: правила
+ * «ответ раньше полноты/тайм-бокс/«Продолжи» = результат» нужны только
+ * интерактивному чату, а headless-фазы используют ту же базовую часть —
+ * вливать их в agent-prompt.md значит протечь в фазы (риск из VL-238).
+ */
+export const PROJECT_AGENT_CHAT_PROMPT_PATH = join('.vibelog', 'prompts', 'agent-prompt-chat.md');
+
+/**
+ * Путь к встроенному шаблону блока чат-режима (VL-238). Та же глубина
+ * вычисления, что у agentPromptPath: dist/agent/system-prompt.js → ../../templates/.
+ */
+const agentChatPromptPath = fileURLToPath(new URL('../../templates/agent-prompt-chat.md', import.meta.url));
 
 /**
  * Читает базовую часть системного промпта с переопределением проектом
@@ -57,6 +77,33 @@ export function loadAgentPrompt(cwd: string): string {
   }
 }
 
+/**
+ * Читает блок правил чат-режима (VL-238) с переопределением проектом:
+ * сначала .vibelog/prompts/agent-prompt-chat.md рабочей директории, затем
+ * встроенный templates/agent-prompt-chat.md; оба отсутствуют — throw
+ * (ошибка установки, зеркало loadAgentPrompt). Вызывается ТОЛЬКО при
+ * buildSystemPrompt(cwd, { chat: true }) — из интерактивного чата агента;
+ * headless-фазы остаются без блока.
+ *
+ * @param cwd — рабочая директория проекта (переопределение)
+ * @throws Error при отсутствии шаблона в обоих каталогах
+ */
+export function loadAgentChatRules(cwd: string): string {
+  const projectPath = join(cwd, PROJECT_AGENT_CHAT_PROMPT_PATH);
+  try {
+    return readFileSync(projectPath, 'utf-8').trimEnd();
+  } catch {
+    // Нет переопределения — падаем на встроенный шаблон
+  }
+  try {
+    return readFileSync(agentChatPromptPath, 'utf-8').trimEnd();
+  } catch {
+    throw new Error(
+      `Шаблон промпта чат-режима не найден: ${PROJECT_AGENT_CHAT_PROMPT_PATH} (проект) и ${agentChatPromptPath} (пакет)`,
+    );
+  }
+}
+
 /** Результат сборки системного промпта. */
 export interface SystemPromptResult {
   /** Полный текст system-сообщения. */
@@ -67,14 +114,24 @@ export interface SystemPromptResult {
 
 /**
  * Собирает системный промпт: базовая часть (templates/agent-prompt.md) +
- * AGENTS.md проекта из cwd. Отсутствие AGENTS.md — норма (только базовая
- * часть); ошибка чтения — предупреждение в stderr, фаза продолжается без
- * AGENTS.md. Отсутствие шаблона agent-prompt.md — throw (ошибка установки).
+ * блок правил чат-режима (VL-238, только при opts.chat) + AGENTS.md проекта
+ * из cwd. Отсутствие AGENTS.md — норма (только базовая часть); ошибка
+ * чтения — предупреждение в stderr, фаза продолжается без AGENTS.md.
+ * Отсутствие шаблона agent-prompt.md — throw (ошибка установки).
+ *
+ * @param cwd — рабочая директория проекта
+ * @param opts — chat: true подключает блок правил чат-режима (ответ раньше
+ *   полноты, тайм-бокс, «Продолжи» = результат); дефолт (фазы, headless)
+ *   промпт не меняет
  */
-export function buildSystemPrompt(cwd: string): SystemPromptResult {
+export function buildSystemPrompt(cwd: string, opts?: { chat?: boolean }): SystemPromptResult {
   // Базовая часть — стабильный префикс запроса каждой итерации loop;
   // VL-188: переопределение проектом .vibelog/prompts/agent-prompt.md
   const base = loadAgentPrompt(cwd);
+  // VL-238: правила чат-режима — отдельным блоком между базой и AGENTS.md;
+  // opt-in, чтобы не протечь в headless-фазы (they вызывают без opts)
+  const chatRules = opts?.chat ? loadAgentChatRules(cwd) : '';
+  const head = chatRules ? `${base}\n\n${chatRules}` : base;
   let agentsMd = '';
   let hasAgentsMd = false;
   try {
@@ -94,6 +151,6 @@ export function buildSystemPrompt(cwd: string): SystemPromptResult {
       );
     }
   }
-  const content = hasAgentsMd ? `${base}\n\n# AGENTS.md проекта\n\n${agentsMd}` : base;
+  const content = hasAgentsMd ? `${head}\n\n# AGENTS.md проекта\n\n${agentsMd}` : head;
   return { content, hasAgentsMd };
 }
