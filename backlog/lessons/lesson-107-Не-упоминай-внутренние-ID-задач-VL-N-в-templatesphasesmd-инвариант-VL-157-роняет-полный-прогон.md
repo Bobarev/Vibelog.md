@@ -10,8 +10,9 @@ source_tasks:
   - VL-244
 linked_tasks:
   - VL-244
+  - VL-247
 created_date: 2026-10-30
-updated_date: 2026-10-30
+updated_date: 2026-11-01
 supersedes: ''
 ---
 ## Проблема
