@@ -32,7 +32,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createTaskFile, getTask, listTasks } from '../core/store.js';
 import type { Task } from '../core/task.js';
-import { blockedBy } from '../core/deps.js';
+import { blockedBy, isReady } from '../core/deps.js';
 import { loadSettings } from '../core/settings.js';
 import { getNextPhase, getStatusAfterPhase, getWorkflowForTask, SERVICE_PHASES } from '../core/workflow.js';
 import {
@@ -137,6 +137,11 @@ export interface TickResult {
   healed: { taskId: string; ruleId: string; action: HealAction }[];
   bugs: { taskId: string; bugId: string }[];
   stopped: string[];
+  /**
+   * Задачи, пропущенные из-за незакрытых зависимостей (VL-275): в тике они не
+   * запускаются и не лечатся (причина внешняя — перезапуск фазы её не устранит).
+   */
+  blocked: { taskId: string; blockers: string[] }[];
   errors: string[];
   statePath: string;
   heartbeatPath: string;
@@ -892,6 +897,8 @@ export function buildTickPrompt(
         ? 'каждую группу ОБЯЗАТЕЛЬНО обоснуй в rationale (разные компонентные метки) — без обоснования фазы пойдут последовательно.'
         : 'обоснование группы не требуется.'),
     '- задачи с зависимостями (dependencies/blocks) параллельно не запускаются никогда — не предлагай.',
+    '- задачи с незакрытыми зависимостями («Заблокированы зависимостями» в heartbeat, в списке готовых их нет) не ' +
+      'предлагай ни к запуску, ни к retry: причина внешняя, перезапуск фазы её не устранит.',
     '- фазы в решении не указывай: их определяет workflow; analyze для лечения не используется.',
     '- запрещено править max_parallel_phases, heal_attempts, allow_self_tuning, parallel_mode — это страховочные поля пользователя.',
     '- запрещено подделывать прогресс: не отмечай фазы выполненными, не меняй статусы (backlog_finish_phase тебе недоступен).',
@@ -959,6 +966,7 @@ export async function runSupervisorTick(cwd: string, deps: TickDeps = {}): Promi
     healed: [],
     bugs: [],
     stopped: [],
+    blocked: [],
     errors: [],
     statePath: statePath(cwd),
     heartbeatPath: heartbeatPath(cwd),
@@ -1090,6 +1098,38 @@ export async function runSupervisorTick(cwd: string, deps: TickDeps = {}): Promi
     }
 
     state.tasks[key] = entry;
+
+    // ── Незакрытые зависимости (VL-275) ──────────────────────────────────────
+    // Планировщик прогона и автоочередь фильтруют задачи по isReady, а тик —
+    // нет: он пушил в candidates ВСЕ не-терминальные задачи. Из-за этого фазы
+    // задачи с незакрытой зависимостью (VL-239 при незакрытой VL-209, которой
+    // в прогоне не было) запускались, не могли дать прогресс и сжигали
+    // heal_attempts на правило no-progress — лечилось следствие, а не причина.
+    // Живую фазу не трогаем: остановка работающего процесса — не наша задача.
+    if (!entry.frozen && entry.status !== 'running') {
+      const blockers = blockedBy(cwd, task)
+        .filter(d => d.status !== 'Done' && d.status !== 'Completed' && d.status !== 'Rejected')
+        .map(d => canonicalTaskId(d.id));
+      const terminal = ['done', 'completed', 'rejected'].includes(obs.status.toLowerCase());
+      // Гейт — isReady (единая точка правды, что и в планировщике/автоочереди),
+      // список ниже — для человекочитаемого текста «ждёт VL-X». Rejected-блокер
+      // в список не попадает (isReady его «готовым» не считает, но ждать
+      // отклонённую зависимость вечно нельзя) — задача остаётся доступной.
+      if (!isReady(cwd, task) && blockers.length > 0 && !terminal) {
+        entry.blockedBy = blockers;
+        // pending, а не failed: задача не запускалась и не «упала» — она ждёт,
+        // и попытки лечения тут не расходуются (AC3).
+        entry.status = 'pending';
+        entry.phase = obs.nextPhase ?? entry.phase;
+        entry.nextPhase = obs.nextPhase;
+        entry.pid = undefined;
+        entry.phaseRunId = undefined;
+        result.blocked.push({ taskId: key, blockers });
+        continue; // ни в l2Tasks (лечение), ни в candidates (запуск)
+      }
+      delete entry.blockedBy; // зависимости закрылись — задача снова доступна
+    }
+
     if (entry.status === 'failed' && !entry.frozen) {
       l2Tasks.push({ taskId: key, obs, state: entry });
     }
@@ -1236,6 +1276,12 @@ export async function runSupervisorTick(cwd: string, deps: TickDeps = {}): Promi
       if (startedCount >= allowed) break;
       const entry = state.tasks[id];
       if (!entry || entry.frozen) continue;
+      // Заблокированную задачу не запускаем даже по решению модели (VL-275):
+      // прогресса она не даст, а попытки лечения сгорят на no-progress.
+      if ((entry.blockedBy?.length ?? 0) > 0) {
+        result.blocked.push({ taskId: id, blockers: entry.blockedBy! });
+        continue;
+      }
       const phase = entry.nextPhase ?? entry.phase;
       if (phase === '') continue;
       const res = startPhaseImpl(cwd, id, phase, {});
@@ -1471,6 +1517,14 @@ function applyHealAction(
   }
   if (action === 'retry_once_then_bug' && entry.healAttempts >= runtime.healAttempts) {
     return doBug(obs?.lastRunError ?? entry.lastError ?? 'причина не зафиксирована');
+  }
+  // Защита-в-глубину (VL-275): задача ждёт зависимость — перезапуск фазы и
+  // директиву не выполняем. Причина внешняя, прогресса не будет, а heal-бюджет
+  // сгорит на no-progress (именно так сгорел прогон VL-239). Обычный путь до
+  // сюда не доходит: заблокированные задачи не попадают в l2Tasks.
+  if ((entry.blockedBy?.length ?? 0) > 0) {
+    entry.lastError = `перезапуск отменён: задача ждёт зависимости ${entry.blockedBy!.join(', ')}`;
+    return {};
   }
 
   const failReason = obs?.lastRunError ?? entry.lastError ?? '';

@@ -371,6 +371,70 @@ describe('рестарт процесса и живость (AC5, AC19)', () => 
   });
 });
 
+describe('незакрытые зависимости (VL-275)', () => {
+  it('заблокированная задача не запускается: фаза не стартует, статус pending, healAttempts не растёт', async () => {
+    // Блокер ВНЕ прогона (как VL-209 для VL-239): в grant его нет вообще,
+    // значит внутри прогона он не закроется никогда — лечить retry бессмысленно.
+    const blocker = createTaskFile(cwd, { title: 'Блокер', status: 'In Progress' });
+    const blocked = createTaskFile(cwd, { title: 'Ждущая', status: 'Spec', dependencies: [blocker.id] });
+    grantFor([blocked.id]);
+
+    const llm = makeLlm('{"action":"run"}');
+    setTickLlmForTests(llm);
+    const stub = makeStartPhaseStub();
+    setTickStartPhaseForTests(stub.fn);
+    setTickActiveCountForTests(() => 0);
+
+    const res = await runSupervisorTick(cwd, { llm });
+    assert.equal(stub.started.length, 0, 'фаза заблокированной задачи не должна запускаться');
+    assert.ok(res.blocked.some(b => b.taskId === blocked.id.toUpperCase()), JSON.stringify(res.blocked));
+    assert.deepEqual(res.healed, [], 'блокировка — не повод для лечения');
+    assert.equal(llm.calls.length, 0, 'кандидатов нет → модель не вызывается');
+
+    const entry = loadState(cwd).tasks[blocked.id.toUpperCase()];
+    assert.deepEqual(entry.blockedBy, [blocker.id.toUpperCase()]);
+    assert.equal(entry.status, 'pending');
+    assert.equal(entry.healAttempts, 0);
+    assert.equal(entry.phase, 'plan');
+  });
+
+  it('после закрытия блокера задача снова становится кандидатом и запускается', async () => {
+    const blocker = createTaskFile(cwd, { title: 'Блокер', status: 'In Progress' });
+    const blocked = createTaskFile(cwd, { title: 'Ждущая', status: 'Spec', dependencies: [blocker.id] });
+    grantFor([blocked.id]);
+    const llm = makeLlm(JSON.stringify({ action: 'run', groups: [[blocked.id]], rationale: { [blocked.id]: 'одна задача' } }));
+    setTickLlmForTests(llm);
+    const stub = makeStartPhaseStub();
+    setTickStartPhaseForTests(stub.fn);
+    setTickActiveCountForTests(() => 0);
+
+    await runSupervisorTick(cwd, { llm });
+    assert.equal(stub.started.length, 0);
+
+    // Блокер закрыт (Done) → следующий тик обязан разбудить задачу и запустить фазу
+    updateTaskFile(cwd, blocker.id, { status: 'Done' });
+    const res2 = await runSupervisorTick(cwd, { llm });
+    assert.equal(res2.skipped, undefined, 'снятие блокировки меняет snapshotKey — тик не «спит»');
+    assert.ok(stub.started.some(s => s.taskId === blocked.id && s.phase === 'plan'), JSON.stringify(stub.started));
+    const entry = loadState(cwd).tasks[blocked.id.toUpperCase()];
+    assert.equal(entry.blockedBy, undefined, 'поле блокировки очищается');
+  });
+
+  it('задача без зависимостей запускается как раньше (регрессия)', async () => {
+    const task = createTaskFile(cwd, { title: 'Свободная', status: 'Spec' });
+    grantFor([task.id]);
+    const llm = makeLlm(JSON.stringify({ action: 'run', groups: [[task.id]], rationale: { [task.id]: 'одна задача' } }));
+    setTickLlmForTests(llm);
+    const stub = makeStartPhaseStub();
+    setTickStartPhaseForTests(stub.fn);
+    setTickActiveCountForTests(() => 0);
+
+    const res = await runSupervisorTick(cwd, { llm });
+    assert.deepEqual(res.blocked, []);
+    assert.ok(stub.started.some(s => s.taskId === task.id && s.phase === 'plan'), JSON.stringify(stub.started));
+  });
+});
+
 describe('промпт тика (AC3)', () => {
   it('содержит heartbeat, правила, grant, прошлое решение и контракт ответа', () => {
     const task = createTaskFile(cwd, { title: 'Промпт', status: 'Spec', labels: ['web'] });
