@@ -1,11 +1,11 @@
 ---
 id: VL-289
 title: 'Супервизор: довести до него результат фазы (aborted + комментарий), а не только "нет прогресса"'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-01 23:18'
-updated_date: '2026-11-02 00:10'
+updated_date: '2026-11-02 00:16'
 due_date: ''
 labels: []
 dependencies: []
@@ -33,15 +33,17 @@ modified_files:
   - templates/phases/phase-do.md
   - templates/phases/phase-close.md
   - templates/phases/phase-close-worktree.md
-lessons: []
+lessons:
+  - lesson-158
+  - lesson-159
 token_usage:
-  input: 26706992
-  output: 71528
-  cache: 26285056
-  total: 26778520
-  requests: 249
-  duration_ms: 794857
-  reasoning: 20144
+  input: 29980420
+  output: 90582
+  cache: 29491712
+  total: 30071002
+  requests: 310
+  duration_ms: 1088453
+  reasoning: 26271
   by_phase:
     code:
       input: 26258098
@@ -49,10 +51,10 @@ token_usage:
       cache: 25855488
       requests: 237
     close:
-      input: 448894
-      output: 5569
-      cache: 429568
-      requests: 12
+      input: 3722322
+      output: 24623
+      cache: 3636224
+      requests: 73
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -96,13 +98,13 @@ token_usage:
 - [x] #4 Описание авто-бага содержит дословную причину и требуемое действие из комментария фазы (aborted); при aborted пустой лог не является единственным содержимым описания
 - [x] #5 Промпт тика содержит блок с результатом фазы (aborted + текст комментария), чтобы L2-разбор не был догадкой
 - [x] #6 Тесты: инцидент VL-285 воспроизведён как кейс (close с aborted при merge-конфликте → retry не выполняется, создаётся баг с причиной из комментария); регрессия: обычное падение без aborted по-прежнему лечится no-progress
-- [ ] #7 Документация: doc-19 (тик/лечение) описывает канал «результат фазы → супервизор», если нужно — правило в шаблонах фаз о том, что aborted обязан указывать требуемое действие
+- [x] #7 Документация: doc-19 (тик/лечение) описывает канал «результат фазы → супервизор», если нужно — правило в шаблонах фаз о том, что aborted обязан указывать требуемое действие
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -266,5 +268,23 @@ created: 2026-11-02 00:10
 - Перед merge пришлось снять с учёта симлинк `node_modules`, случайно закоммиченный в `wip(VL-289)` (master его не отслеживает, из-за этого `git merge` падал с «Updating the following directories would lose untracked files in them: node_modules» ещё до конфликта). Коммит `975aad9`.
 - Состав ветки: `975aad9`, `4dff850 feat: VL-289 — довести результат фазы (aborted + отчёт) до супервизора`, `e934d29 wip(VL-289)`.
 Шаги 6–10 не выполнялись: worktree `.vibelog/worktrees/vl-289` оставлена, ветка `vb/vl-289` не удалена, статус не менялся, DoD не отмечался, документация (doc-19, CHANGELOG) не обновлялась.
+---
+author: @agent
+created: 2026-11-02 00:10
+---
+Фаза close прервана агентом (aborted): Фаза Close прервана: конфликт слияния vb/vl-289 → master (файлы: `UU templates/phases/phase-close.md`). Разреши конфликт вручную и повтори Фазу Close.
+Детали для ручного разбора:
+- Конфликтная зона — `templates/phases/phase-close.md`, строки 99-102: master (HEAD) содержит блок правил VL-285 («README — витрина, не справочник» + «Аварийный итог фазы»), ветка VL-289 добавила в тот же блок требование «в `comment` при `aborted: true` укажи, ЧТО и КЕМ должно быть сделано». Нужно объединить оба блока, — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-02 00:16
+---
+Фаза Close выполнена. Ветка `vb/vl-289` слита в `master` (merge-коммит `96c2dc1`; коммитов в ветке: `975aad9`, `4dff850`, `e934d29`), worktree `.vibelog/worktrees/vl-289` удалена, ветка `vb/vl-289` удалена (`-d`, was 975aad9).
+**Разрешение конфликта (по указанию пользователя).** Первый прогон Close прервался на `UU templates/phases/phase-close.md`. Конфликт разрешён объединением по смыслу, а не выбором стороны: сохранены оба правила из master (VL-285 — «README — витрина, не справочник» с указанием `backlog/docs/doc-*` и «Аварийный итог фазы») и требование ветки VL-289 («в `comment` при `aborted: true` укажи, ЧТО и КЕМ должно быть сделано для повтора — по этому тексту супервизор заводит баг вместо слепого перезапуска»), вклеенное в тот же пункт про аварийный итог. Маркеров конфликта не осталось ни в одном шаблоне.
+**Попутно до merge:** снят с учёта симлинк `node_modules`, случайно закоммиченный в `wip(VL-289)` (master его не отслеживает — `git merge` падал с «would lose untracked files in them: node_modules» ещё до конфликта). Коммит `975aad9` в ветке.
+**Проверки после merge (главный cwd):** `pnpm build` — чисто. Ранний точечный фильтр — 7 файлов (`phase-transient`, `supervisor-config`, `supervisor-state`, `orchestrator`, `supervisor-healing`, `supervisor-tick`, `phase-prompt`), 269 тестов passed. Полный `pnpm test` — **2424 passed, 4 skipped**, один прогон, повторов не было (скипы — always-skip из `frontmatter.test.mjs`).
+**Документация (AC7, DoD 2):** doc-19 — правило `aborted-requires-human` первым в списке `heal_rules` с обоснованием (инцидент VL-285), ключ `aborted` в перечне `when`, новый раздел §12 «Канал „результат фазы → супервизор“» (таблица трёх звеньев: `readPhaseTransient` → `PhaseRun.aborted` → `TaskObservation.aborted`/`lastComment` + fallback по маркеру комментария, контракт шаблонов фаз, запрет retry для aborted), §13 — секция aborted в описании авто-бага и заголовок «фаза прервана — …», шапка — строка VL-289. CHANGELOG.md — запись в Unreleased/Исправлено. Коммит `b64c838 docs: VL-289 — документация и CHANGELOG`.
+**Lessons:** созданы lesson-158 (wip-коммит в worktree не должен захватывать симлинк `node_modules` — merge падает до конфликтов; лечение `git rm --cached`) и lesson-159 (конфликты в `templates/phases/*.md` сливать по смыслу и перечитывать диапазон после правки — `edit` по многострочному конфликт-блоку обрывает хвост абзаца; проверять `grep -c '<<<<<<<'` → 0). Обе связаны с VL-289, закоммичены в `2147be6 docs(task): VL-289 — refs и lessons`.
+**DoD:** 1 — выполнено, 2 — выполнено (doc-19 + CHANGELOG), 3 — выполнено (полный прогон зелёный). AC7 отмечен вместе с DoD 2.
 ---
 <!-- COMMENTS:END -->
