@@ -14,7 +14,7 @@
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, writeFileSync, rmSync, mkdtempSync, chmodSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, rmSync, mkdtempSync, chmodSync, readFileSync, realpathSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -1277,6 +1277,59 @@ describe('orchestrator (VL-28)', () => {
     } finally {
       resetStubEnv();
       rmSync(billingRoot, { recursive: true, force: true });
+    }
+  });
+
+  // ── VL-277: qwen-путь close коммитит файл задачи после записи usage ──
+
+  it('startPhase close (qwen): файл задачи закоммичен после записи token_usage (VL-277, AC1)', async () => {
+    const commitRoot = mkTestRoot('vibelog-orch-commit-');
+    const git = (args) => spawnSync('git', ['-C', commitRoot, ...args], { encoding: 'utf-8' });
+    git(['init', '-q']);
+    mkdirSync(join(commitRoot, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(commitRoot, 'backlog', 'config.yml'), 'project_name: Commit Close\n', 'utf-8');
+    createTaskFile(commitRoot, { id: 'VL-93', title: 'Задача автокоммита close' });
+    const taskFile = readdirSync(join(commitRoot, 'backlog', 'tasks')).find((f) => f.startsWith('VL-93') && f.endsWith('.md'));
+    const relPath = `backlog/tasks/${taskFile}`;
+    git(['add', '.']);
+    git(['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init']);
+    setStubEnv({
+      VIBELOG_QWEN_BIN: stubBin,
+      VL28_STUB_MARKER: join(commitRoot, 'marker-commit.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RESULT: JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        duration_ms: 900,
+        num_turns: 1,
+        result: 'закрыто',
+        usage: { input_tokens: 4, output_tokens: 2, cache_read_input_tokens: 0, total_tokens: 6 },
+        session_id: 'agent-commit-277',
+      }),
+    });
+    try {
+      const res = startPhase(commitRoot, 'VL-93', 'close');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-93', 6000);
+      assert.equal(run.exitCode, 0);
+      // учёт и коммит — fire-and-forget в finish(): ждём чистого файла задачи
+      const deadline = Date.now() + 4000;
+      let status = 'x';
+      while (Date.now() < deadline) {
+        status = spawnSync('/usr/bin/git', ['-C', commitRoot, 'status', '--porcelain', '--', relPath], { encoding: 'utf-8' }).stdout.trim();
+        if (status === '') break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      assert.equal(status, '', 'файл задачи закоммичен (token_usage не остался грязным)');
+      const log = spawnSync('/usr/bin/git', ['-C', commitRoot, 'log', '--pretty=%s'], { encoding: 'utf-8' }).stdout;
+      assert.match(log, /docs\(task\): VL-93/);
+      const shown = spawnSync('/usr/bin/git', ['-C', commitRoot, 'show', '--format=', 'HEAD', '--', relPath], { encoding: 'utf-8' }).stdout;
+      assert.match(shown, /token_usage/, 'в коммите правка token_usage рана');
+    } finally {
+      resetStubEnv();
+      rmSync(commitRoot, { recursive: true, force: true });
     }
   });
 

@@ -586,6 +586,51 @@ describe('VL-247 — явный сигнал провала в аварийны�
   });
 });
 
+// ── VL-277: файл задачи коммитит framework после записи token_usage ──
+// Инвариант по templates/: пока фаза close коммитила файл задачи сама,
+// token_usage (пишется пост-раном) оставался единственной грязной правкой
+// после каждого закрытия. Правило живёт в ДВУХ шаблонах close — удаление
+// запрета или возврат `git commit` файла {{taskId}} в шаг коммита роняет тест.
+describe('VL-277 — файл задачи коммитит framework после записи token_usage', () => {
+  const closeText = readFileSync(join(templatesDir, 'phase-close.md'), 'utf-8');
+  const wtText = readFileSync(join(templatesDir, 'phase-close-worktree.md'), 'utf-8');
+
+  it('оба close-шаблона: файл задачи {{taskId}} не коммитится агентом', () => {
+    for (const [file, text] of [['phase-close.md', closeText], ['phase-close-worktree.md', wtText]]) {
+      assert.ok(text.includes('его коммитит framework'),
+        `${file}: явное указание, что файл задачи коммитит framework`);
+      assert.ok(text.includes('token_usage'),
+        `${file}: причина — token_usage пишется пост-раном`);
+      // Старый шаг «git add <файл задачи> + git commit docs(task) — закрытие задачи» удалён
+      assert.ok(!text.includes('git add backlog/tasks/{{taskId}}*.md'),
+        `${file}: git add файла задачи агентом удалён`);
+      assert.ok(!text.includes('git commit -m "docs(task): {{taskId}} — закрытие задачи (Done)"'),
+        `${file}: агент больше не создаёт docs(task)-коммит файла задачи`);
+    }
+  });
+
+  it('phase-close.md: шаг 6 коммитит только подзадачи, шаг 6.6 не трогает файл задачи', () => {
+    assert.ok(closeText.includes('Файл ОСНОВНОЙ задачи {{taskId}} здесь НЕ коммить'),
+      'phase-close.md: шаг 6 явно исключает файл основной задачи');
+    assert.ok(!closeText.includes('ls backlog/tasks/{{taskId}}*'),
+      'phase-close.md: ls файла основной задачи для git add больше не нужен');
+    assert.ok(closeText.includes('ls backlog/tasks/<ID-дочерней-задачи>*'),
+      'phase-close.md: подзадачи по-прежнему коммитятся по явному пути');
+    assert.ok(closeText.includes('файл задачи (его `lessons`, статус, комментарий) в этот коммит НЕ добавляй')
+      || closeText.includes('его коммитит framework после записи token_usage'),
+      'phase-close.md: шаг 6.6 не добавляет файл задачи в коммит refs/lessons');
+  });
+
+  it('phase-close-worktree.md: шаг 10 не коммитит файл задачи в главном репо', () => {
+    assert.ok(wtText.includes('Файл задачи {{taskId}} в главном репо здесь НЕ коммить'),
+      'phase-close-worktree.md: шаг 10 исключает файл задачи');
+    assert.ok(!wtText.includes('Коммит вида: docs(task): {{taskId}} — закрытие задачи (Done)'),
+      'phase-close-worktree.md: старый коммит файла задачи удалён');
+    assert.ok(wtText.includes('файлы ПОДЗАДАЧ'),
+      'phase-close-worktree.md: остаётся коммит файлов подзадач');
+  });
+});
+
 // ── VL-141: фаза analyze — headless-разбор сессии агента без задачи ──
 
 describe('VL-141 — фаза analyze', () => {

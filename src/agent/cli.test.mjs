@@ -11,7 +11,7 @@
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1060,6 +1060,61 @@ describe('vibelog-agent CLI (VL-85)', () => {
       assert.equal(meta.billing_recorded?.sessionId, sid, 'маркер записи в billing');
     } finally {
       rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
+  // ── VL-277: файл задачи коммитится после записи token_usage (только close) ──
+
+  /** git-проект с backlog и закоммиченным файлом задачи; отдаёт путь и relPath. */
+  const makeGitProject = (prefix, id, title) => {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    mkdirSync(join(dir, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(dir, 'backlog', 'config.yml'), 'project_name: Task Commit CLI\n', 'utf-8');
+    createTaskFile(dir, { id, title });
+    const taskFile = readdirSync(join(dir, 'backlog', 'tasks')).find((f) => f.startsWith(id) && f.endsWith('.md'));
+    execFileSync('/usr/bin/git', ['init', '-q'], { cwd: dir });
+    execFileSync('/usr/bin/git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+    execFileSync('/usr/bin/git', ['config', 'user.name', 'Test'], { cwd: dir });
+    execFileSync('/usr/bin/git', ['add', '.'], { cwd: dir });
+    execFileSync('/usr/bin/git', ['commit', '-q', '-m', 'init'], { cwd: dir });
+    return { dir, taskFile: `backlog/tasks/${taskFile}` };
+  };
+
+  /** `git status --porcelain` по явному пути (пустая строка = файл чист). */
+  const porcelain = (dir, path) =>
+    execFileSync('/usr/bin/git', ['status', '--porcelain', '--', path], { cwd: dir, encoding: 'utf8' }).trim();
+
+  it('пост-ран close коммитит файл задачи (VL-277, AC1)', async () => {
+    const { dir, taskFile } = makeGitProject('vibelog-agent-commitclose-', 'VL-97', 'Задача автокоммита close');
+    try {
+      const env = { ...llmEnv(), VIBELOG_PHASE_TASK_ID: 'VL-97', VIBELOG_PHASE_NAME: 'close' };
+      const { code, stdout } = await runCli(['Просто запрос', '--no-mcp'], env, dir);
+      assert.equal(code, 0, stdout);
+      assert.equal(porcelain(dir, taskFile), '', 'после close файл задачи закоммичен (token_usage не остаётся грязным)');
+      const subjects = execFileSync('/usr/bin/git', ['log', '--pretty=%s'], { cwd: dir, encoding: 'utf8' });
+      assert.match(subjects, /docs\(task\): VL-97/, 'коммит с темой docs(task) этой задачи');
+      const content = execFileSync('/usr/bin/git', ['show', '--format=', 'HEAD', '--', taskFile], {
+        cwd: dir,
+        encoding: 'utf8',
+      });
+      assert.match(content, /token_usage/, 'в коммите попала правка token_usage рана');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('пост-ран code файл задачи НЕ коммитит (VL-277, AC7)', async () => {
+    const { dir, taskFile } = makeGitProject('vibelog-agent-commitcode-', 'VL-98', 'Задача без автокоммита');
+    try {
+      const before = execFileSync('/usr/bin/git', ['rev-list', '--count', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+      const env = { ...llmEnv(), VIBELOG_PHASE_TASK_ID: 'VL-98', VIBELOG_PHASE_NAME: 'code' };
+      const { code, stdout } = await runCli(['Просто запрос', '--no-mcp'], env, dir);
+      assert.equal(code, 0, stdout);
+      assert.notEqual(porcelain(dir, taskFile), '', 'вне close файл задачи остаётся грязным (поведение не изменилось)');
+      const after = execFileSync('/usr/bin/git', ['rev-list', '--count', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+      assert.equal(after, before, 'новых коммитов нет');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

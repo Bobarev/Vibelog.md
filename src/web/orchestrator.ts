@@ -19,6 +19,8 @@ import { fileURLToPath } from 'node:url';
 import { renderPrompt, PHASES, taskBlockText, taskExtraVars } from './phase-prompt.js';
 import type { Phase } from './phase-prompt.js';
 import { addComment, addTaskTokenUsage, getTask, rejectTaskFile, wasInCode } from '../core/store.js';
+// VL-277: файл задачи коммитится после записи token_usage рана (qwen — основной путь close)
+import { commitTaskFile, isTaskCommitPhase } from '../agent/task-commit.js';
 import type { Task } from '../core/task.js';
 import { ensureTaskWorktree, taskBranchName, taskWorktreeDir } from '../core/worktree.js';
 import { explainQwenParse, parseQwenResult } from './qwen-result.js';
@@ -1186,6 +1188,15 @@ function spawnQwenRun(
               agent: 'qwen',
               billing: 'run',
             });
+            // VL-277: файл задачи коммитится ПОСЛЕ записи usage (в т.ч. после
+            // маркера billing_recorded выше) — иначе token_usage оставался
+            // единственной незакоммиченной правкой после close. В branch-mode
+            // cwd — главный репо (файлы задач живут там, VL-112: close идёт
+            // без worktree). Гейт по фазе + внутренний try/catch хелпера:
+            // git не может отменить уже записанный учёт (риск R4).
+            if (isTaskCommitPhase(byPhaseKey)) {
+              commitTaskFile(cwd, phaseTaskId, byPhaseKey);
+            }
           })
           .catch((err) => {
             console.log(`[phase ${key}] ${ts()} учёт токенов не записан: ${(err as Error).message}`);

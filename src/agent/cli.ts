@@ -29,6 +29,8 @@ import type { LoopResult } from './loop.js';
 import { agentSessionsDir, appendSessionMessage, appendSessionRun, countToolCallsInMessages, createSessionId, latestSession, loadSession, loadSessionMetaSync, saveSession, saveSessionMeta, sumUsageFromMessages, updateSessionMeta } from './session.js';
 import { analyzeToolRepeats } from './repeat-tracker.js';
 import { appendCommitToProgress, commitProgressChanges } from './run-progress.js';
+// VL-277: файл задачи коммитится после записи token_usage рана (перенос из шаблона close)
+import { commitTaskFile, isTaskCommitPhase } from './task-commit.js';
 import { taskWorktreeDir } from '../core/worktree.js';
 import { taskIdPattern } from '../core/config.js';
 import { buildSystemPrompt } from './system-prompt.js';
@@ -859,6 +861,17 @@ export async function main(argv: string[]): Promise<void> {
         }
       } catch (err) {
         console.error(`Предупреждение: token_usage задачи ${taskId} не обновлён — ${(err as Error).message}`);
+      }
+      // 1.5) VL-277: файл задачи коммитится ПОСЛЕ записи usage — иначе
+      // token_usage оставался единственной незакоммиченной правкой после
+      // close (шаг 6 шаблона коммитил файл раньше, чем usage был известен).
+      // Гейт по фазе: только close; git-ошибки глушит сам хелпер (риск R4).
+      try {
+        if (isTaskCommitPhase(runPhase)) {
+          commitTaskFile(taskCwd, taskId, runPhase as string);
+        }
+      } catch (err) {
+        console.error(`Предупреждение: коммит файла задачи ${taskId} не выполнен — ${(err as Error).message}`);
       }
       // 2) Billing — append-only источник правды (каждый ран = запись).
       // usage записи — ЗА РАН (loopResult.usage накапливает только ответы
