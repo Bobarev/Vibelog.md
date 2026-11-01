@@ -390,6 +390,11 @@ Heartbeat перезаписывается **каждый тик**, в том ч
 {
   "heal_rules": [
     {
+      "id": "repeat-loop-stuck",
+      "when": { "repeat_share_min": 0.3, "repeat_calls_min": 15 },
+      "action": "bug"
+    },
+    {
       "id": "repeat-loop",
       "when": { "repeat_share_min": 0.25, "repeat_calls_min": 8 },
       "action": "comment_and_retry",
@@ -418,6 +423,7 @@ Heartbeat перезаписывается **каждый тик**, в том ч
 Свойства:
 
 - правила **упорядочены**, выигрывает первое совпавшее; `id` сработавшего правила попадает в `state.json` и в отчёт;
+- `repeat-loop-stuck` (VL-284) стоит **раньше** `repeat-loop` намеренно: 30%+ повторов при 15+ повторных вызовах — это ран, который предупреждением уже не лечится, перезапуск воспроизведёт тот же payload-лимит (инцидент close VL-280: 5 попыток, 508 КБ payload, 6.2M токенов). Такой ран сразу становится авто-багом; мягкое `repeat-loop` остаётся для умеренных 0.25/8;
 - `action` — закрытый набор: `retry`, `comment_and_retry`, `retry_once_then_bug`, `bug`, `stop`;
 - `when` — хотя бы один известный ключ; `repeat_share_min` (0…1) и `repeat_calls_min` (целое ≥1) должны выполниться **оба** (AND), `fail_reason_contains` — любое из значений (OR) по `lastError` в нижнем регистре, `status_unchanged` — фаза завершилась успешно, но статус задачи не сменился;
 - `comment_template` поддерживает подстановки `{top_repeats}`, `{fail_reason}`, `{task_id}`, `{attempt}` (как в шаблонах фаз); для `comment_and_retry` обязателен;
