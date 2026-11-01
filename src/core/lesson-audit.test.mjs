@@ -136,6 +136,17 @@ describe('VL-279 — статус needs-review (AC7)', () => {
     assert.ok(LESSON_STATUSES.includes('superseded'));
     assert.throws(() => normalizeLessonStatus('banana'), /Недопустимый статус lesson/);
   });
+
+  it('фильтр `lesson list --status needs-review` находит переведённый урок', () => {
+    // CLI list фильтрует по status через listLessons — проверяем то же ядро
+    createLessonFile(testRoot, {
+      id: 'lesson-905', title: 'Ждёт проверки', status: 'needs-review', tags: ['nrfilter'],
+    });
+    const filtered = listLessons(testRoot)
+      .filter(e => e.lesson.status === 'needs-review')
+      .map(e => e.lesson.id);
+    assert.deepEqual(filtered, ['lesson-905']);
+  });
 });
 
 describe('VL-279 — extractLessonPaths', () => {
