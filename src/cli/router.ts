@@ -157,7 +157,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('doc', colors.cyan)} create|list|...          Документы (spec/guide)
   ${colorize('reference', colors.cyan)} list|add|...          Референсы (repo/url/file/doc/spec/experiment)
   ${colorize('lesson', colors.cyan)} list|create|...         Уроки из задач (lessons learned)
-  ${colorize('experiment', colors.cyan)} create|list            Эксперименты (A/B): карточки backlog/experiments/
+  ${colorize('experiment', colors.cyan)} create|list|dataset      Эксперименты (A/B): карточки и датасеты
   ${colorize('config', colors.cyan)} get|set|list             Конфиг проекта
   ${colorize('model', colors.cyan)} list|use|current          LLM-модели: список, переключение
   ${colorize('provider', colors.cyan)} list                   LLM-провайдеры (base_url, ключ)

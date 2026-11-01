@@ -1,19 +1,25 @@
 /**
  * Команда `vibelog experiment` — эксперименты (A/B) проекта (VL-294).
  *
- * MVP-шаг 1: только каркас — `create` и `list`. Логика прогонов
- * (record/report/judge) появится в VL-296…VL-298, поэтому команда
- * намеренно не принимает флаги раннера.
+ * MVP-шаг 1 (VL-294): каркас — `create` и `list`.
+ * MVP-шаг 2 (VL-295): датасеты — `dataset create|list|view` и
+ * `experiment dataset <exp-id>` (показ резолва «частный → общий»).
+ * Логика прогонов (run/record/report/judge) появится в VL-296…VL-298.
  *
  * Подкоманды:
  * - create <title> [--dataset D] [--runner manual] [--status draft]
  *                  [--variant A:builtin:spec ...] [--notes ТЕКСТ]
  * - list [--status S]
+ * - dataset create <name> [--from-completed] [--limit N] [--force]
+ * - dataset list [--exp <exp-id>]
+ * - dataset view <name> [--exp <exp-id>] [--dataset-path <p>]
+ * - dataset <exp-id> [--dataset-path <p>]   (резолв для эксперимента)
  *
- * Файлы: backlog/experiments/exp-<id>.md (YAML-фронтматтер + описание).
+ * Файлы: backlog/experiments/exp-<id>.md (YAML-фронтматтер + описание),
+ *        backlog/experiments/datasets/<name>.jsonl (общие датасеты).
  */
 
-import { getFlag, getFlagArray } from '../args.js';
+import { getFlag, getFlagArray, hasFlag } from '../args.js';
 import type { FlagValues } from '../args.js';
 import { printSuccess, printError, printInfo } from '../ui.js';
 import { findBacklogDir } from '../../core/paths.js';
@@ -21,6 +27,12 @@ import {
   listExperiments, writeExperiment, EXPERIMENT_STATUSES,
 } from '../../core/experiment.js';
 import type { VariantConfig } from '../../core/experiment.js';
+import {
+  readDatasetFile, resolveDataset, datasetFromCompleted,
+  listDatasets, writeSharedDataset, DATASET_ROW_TEMPLATE, DEFAULT_COMPLETED_LIMIT,
+} from '../../core/dataset.js';
+import type { ParsedDataset, DatasetRow } from '../../core/dataset.js';
+import { join, relative } from 'node:path';
 
 /**
  * Разбирает значение `--variant`.
@@ -76,9 +88,42 @@ export async function runExperiment(
       return experimentCreate(positional, flags, backlogDir);
     case 'list':
       return experimentList(flags, backlogDir);
+    case 'dataset':
+      return experimentDataset(positional, flags, backlogDir);
     default:
+      // `experiment dataset <exp-id>`: router отдаёт exp-id в subcommand (VL-295)
+      if (/^exp-/i.test(subcommand)) {
+        return experimentDatasetResolve([subcommand, ...positional], flags, backlogDir);
+      }
       printError(`Неизвестная подкоманда: ${subcommand}`);
-      printInfo('Доступные: create, list');
+      printInfo('Доступные: create, list, dataset');
+  }
+}
+
+/**
+ * Маршрутизирует `experiment dataset ...` (VL-295).
+ *
+ * Третье слово после `dataset` — либо глагол (create/list/view), либо id
+ * эксперимента: doc-21 §10 фиксирует форму `experiment dataset <exp-id>`
+ * для показа резолва, поэтому её нельзя терять.
+ */
+function experimentDataset(positional: string[], flags: FlagValues, backlogDir: string): void {
+  const [first, ...rest] = positional;
+  if (!first) {
+    printError('Укажите действие: vibelog experiment dataset create|list|view <name> | <exp-id>');
+    process.exitCode = 1;
+    return;
+  }
+  switch (first) {
+    case 'create':
+      return datasetCreate(rest, flags, backlogDir);
+    case 'list':
+      return datasetList(flags, backlogDir);
+    case 'view':
+      return datasetView(rest, flags, backlogDir);
+    default:
+      // Всё остальное считаем id эксперимента (doc-21 §10)
+      return experimentDatasetResolve([first, ...rest], flags, backlogDir);
   }
 }
 
@@ -140,4 +185,181 @@ function experimentList(flags: FlagValues, backlogDir: string): void {
   }
   console.log(`\n  экспериментов: ${entries.length}`);
   printInfo(`Статусы: ${EXPERIMENT_STATUSES.join(' | ')}`);
+}
+
+// ── Dataset (VL-295) ──
+
+/**
+ * Создаёт общий датасет `backlog/experiments/datasets/<name>.jsonl`.
+ *
+ * Без `--from-completed` создаётся пустой файл и печатается шаблон строки:
+ * manual runner-у нужен вход, который человек заполнит руками. С
+ * `--from-completed` строки собираются из завершённых задач проекта,
+ * `--limit N` ограничивает выборку (по умолчанию 20).
+ */
+function datasetCreate(positional: string[], flags: FlagValues, backlogDir: string): void {
+  const name = positional.join(' ').trim();
+  if (!name) {
+    printError('Укажите имя датасета: vibelog experiment dataset create <name> [--from-completed] [--limit N]');
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    let rows: DatasetRow[] = [];
+    if (hasFlag(flags, 'from-completed')) {
+      const limitRaw = getFlag(flags, 'limit', String(DEFAULT_COMPLETED_LIMIT));
+      const limit = Number.parseInt(limitRaw, 10);
+      if (!Number.isFinite(limit) || limit <= 0) {
+        printError(`Неверное значение --limit: "${limitRaw}". Ожидается положительное число`);
+        process.exitCode = 1;
+        return;
+      }
+      const collected = datasetFromCompleted(backlogDir, { limit });
+      rows = collected.rows;
+      if (rows.length === 0) {
+        printError('Завершённых задач (status: Done) не найдено — нечего собрать в датасет');
+        process.exitCode = 1;
+        return;
+      }
+      printInfo(`Собрано строк из завершённых задач: ${rows.length} из ${collected.total} (--limit ${limit})`);
+    }
+    const written = writeSharedDataset(backlogDir, name, rows, { force: hasFlag(flags, 'force') });
+    printSuccess(`Датасет создан: ${relative(join(backlogDir, '..'), written.path)} (строк: ${rows.length})`);
+    if (!hasFlag(flags, 'from-completed')) {
+      printInfo('Шаблон строки (JSONL, по одной на задачу):');
+      console.log(`  ${DATASET_ROW_TEMPLATE}`);
+      printInfo('Обязательное поле — task_id; expected_ac/input/payload/custom/meta опциональны');
+    }
+  } catch (err) {
+    printError((err as Error).message);
+    process.exitCode = 1;
+  }
+}
+
+/** Печатает список общих и частных датасетов с пометкой происхождения. */
+function datasetList(flags: FlagValues, backlogDir: string): void {
+  const expFilter = getFlag(flags, 'exp', '');
+  const items = listDatasets(backlogDir, expFilter || undefined);
+  if (items.length === 0) {
+    printInfo('Датасетов нет. Создайте: vibelog experiment dataset create <name> [--from-completed]');
+    return;
+  }
+  console.log('');
+  for (const item of items) {
+    const origin = item.origin === 'shared' ? 'общий' : `частный ${item.expId}`;
+    const counts = item.rows === null
+      ? 'не читается'
+      : `строк: ${item.rows}${item.errors > 0 ? `, ошибок: ${item.errors}` : ''}`;
+    console.log(`  ${item.name}  [${origin}]  ${counts}  ${item.relativePath}`);
+  }
+  const shared = items.filter(i => i.origin === 'shared').length;
+  console.log(`\n  датасетов: ${items.length} (общих: ${shared}, частных: ${items.length - shared})`);
+}
+
+/**
+ * Ищет файл датасета для просмотра: при `--exp` — по правилу резолва,
+ * без него — общий файл, иначе единственный частный с таким именем.
+ */
+function findDatasetForView(backlogDir: string, name: string, flags: FlagValues): string {
+  const explicit = getFlag(flags, 'dataset-path', '');
+  if (explicit) {
+    const resolved = resolveDataset(backlogDir, getFlag(flags, 'exp', 'exp-none'), name, { explicitPath: explicit });
+    return resolved.absolutePath;
+  }
+  const expId = getFlag(flags, 'exp', '');
+  if (expId) {
+    return resolveDataset(backlogDir, expId, name).absolutePath;
+  }
+  const items = listDatasets(backlogDir).filter(i => i.name === name);
+  if (items.length === 0) {
+    throw new Error(`Датасет "${name}" не найден ни в общих, ни в частных`);
+  }
+  const shared = items.find(i => i.origin === 'shared');
+  if (shared) return join(backlogDir, shared.relativePath);
+  if (items.length > 1) {
+    throw new Error(`Датасет "${name}" есть у нескольких экспериментов (${items.map(i => i.expId).join(', ')}) — укажите --exp`);
+  }
+  return join(backlogDir, items[0].relativePath);
+}
+
+/** Печатает результат разбора датасета: строки, ошибки, предупреждения. */
+function printParsedDataset(parsed: ParsedDataset, label: string): void {
+  console.log(`  ${label}: валидных строк ${parsed.rows.length}, ошибок ${parsed.errors.length}`);
+  if (parsed.rows.length > 0) {
+    printInfo(`task_id: ${parsed.rows.map(r => r.task_id).join(', ')}`);
+  }
+  for (const e of parsed.errors) console.error(`  ошибка: ${e.message}`);
+  for (const w of parsed.warnings) console.error(`  предупреждение: ${w.message}`);
+}
+
+/** Показывает содержимое датасета с валидацией (число валидных/битых строк, task_id). */
+function datasetView(positional: string[], flags: FlagValues, backlogDir: string): void {
+  const name = positional.join(' ').trim();
+  if (!name) {
+    printError('Укажите имя датасета: vibelog experiment dataset view <name> [--exp <exp-id>]');
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    const path = findDatasetForView(backlogDir, name, flags);
+    const parsed = readDatasetFile(path);
+    printInfo(`Датасет: ${relative(join(backlogDir, '..'), path)}`);
+    printParsedDataset(parsed, 'разбор');
+    if (parsed.errors.length > 0) process.exitCode = 1;
+  } catch (err) {
+    printError((err as Error).message);
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * Показывает резолв датасета для эксперимента (doc-21 §10: `dataset <exp-id>`).
+ *
+ * Порядок: `--dataset-path` → известный `--dataset` эксперимента из карточки →
+ * имя из аргумента. Warning о затенённом общем файле уходит в stderr:
+ * молчаливый резолв скрывает причину расхождения прогонов.
+ */
+function experimentDatasetResolve(positional: string[], flags: FlagValues, backlogDir: string): void {
+  const expId = positional[0];
+  const explicitName = positional[1] || '';
+  if (!expId) {
+    printError('Укажите id эксперимента: vibelog experiment dataset <exp-id> [--dataset-path <p>]');
+    process.exitCode = 1;
+    return;
+  }
+  const explicitPath = getFlag(flags, 'dataset-path', '');
+  try {
+    // Имя датасета берём из карточки эксперимента, если оно там записано
+    let name = explicitName;
+    if (!name) {
+      const entry = listExperiments(backlogDir).find(e => e.experiment.id === expId);
+      if (!entry) {
+        printError(`Эксперимент не найден: ${expId}`);
+        process.exitCode = 1;
+        return;
+      }
+      name = entry.experiment.dataset;
+      if (!name) {
+        printError(`У эксперимента ${expId} не указан dataset — создайте с --dataset или передайте имя: experiment dataset ${expId} <name>`);
+        process.exitCode = 1;
+        return;
+      }
+    }
+    const resolved = resolveDataset(backlogDir, expId, name, { explicitPath });
+    console.log('');
+    console.log(`  эксперимент: ${expId}`);
+    console.log(`  датасет: ${name}`);
+    console.log(`  выбран: ${resolved.resolution.chosen} — ${resolved.resolution.path}`);
+    if (resolved.resolution.shadowed) {
+      console.log(`  затенён: ${resolved.resolution.shadowed}`);
+    }
+    const parsed = readDatasetFile(resolved.absolutePath);
+    printParsedDataset(parsed, 'разбор');
+    // Структура резолва — то, что побежит в meta.json рана (VL-296)
+    printInfo(`resolution: ${JSON.stringify({ dataset: resolved.resolution })}`);
+    if (parsed.errors.length > 0) process.exitCode = 1;
+  } catch (err) {
+    printError((err as Error).message);
+    process.exitCode = 1;
+  }
 }
