@@ -501,6 +501,10 @@ describe('chat: VL-219 read_file/write_file и Spec-статус', () => {
     assert.ok(system.content.includes('write_file'), 'описание write_file в системном промпте');
     assert.ok(system.content.includes('backlog_update_task'), 'описание backlog_update_task');
     assert.ok(system.content.includes('подтверждени'), 'правило read/write по природе операции');
+    // VL-238: правила чат-режима приезжают шаблоном chat-system.md — проверяем
+    // их наличие в собранном system-сообщении (end-to-end через src/web/chat.ts)
+    assert.ok(system.content.includes('Продолжи'), 'правило «Продолжи» = запрос результата в промпте');
+    assert.ok(system.content.includes('не проверено'), 'пометка непроверенного при исчерпании тайм-бокса');
   });
 });
 

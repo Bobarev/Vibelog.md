@@ -155,7 +155,9 @@ export async function runInteractiveAgent(
     );
   }
 
-  const systemPrompt = buildSystemPrompt(cwd);
+  // VL-238: чат-режим — блок правил «ответ раньше полноты/тайм-бокс/
+  // «Продолжи» = результат» (opts.chat); фазы (cli.ts) его не получают
+  const systemPrompt = buildSystemPrompt(cwd, { chat: true });
   // Контекст задачи (VL-158): vibelog agent <task-id> — карточка задачи
   // в system prompt, чат стартует с задачей в контексте
   if (options.taskRef) {
