@@ -61,19 +61,21 @@ import { historyToMessages } from "@/lib/chat-threads"
 import { useChatThreadId } from "@/lib/use-hash-route"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { ApprovalCard } from "./approval-card"
-import { CHAT_ERROR_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider } from "./chat-runtime"
+import { CHAT_ERROR_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider, getActivePersonaId } from "./chat-runtime"
 import { ChatErrorState } from "./error-state"
-import { ModelPicker, PersonaPicker } from "./pickers"
+import { ModelPicker, PersonaBadge, PersonaPicker } from "./pickers"
 import { StoppedRun } from "./stopped-run"
 import { ToolCall, ToolGroup, type ToolPart } from "./tool-call"
 import { isWriteTool } from "./tool-meta"
 import { ThreadSidebar, ThreadSidebarSheet, type ThreadSummary } from "./thread-sidebar"
 
-/** Ответ GET /api/chat/threads/:id (VL-264: + allowList треда). */
+/** Ответ GET /api/chat/threads/:id (VL-264: + allowList, VL-283: + persona). */
 interface ThreadHistoryResponse {
   threadId: string
   messages: Parameters<typeof historyToMessages>[0]
   allowList?: string[]
+  /** Роль, зафиксированная за тредом (null — тред ещё пуст). */
+  persona?: string | null
 }
 
 /**
@@ -438,7 +440,14 @@ function AssistantMessage() {
 }
 
 /** Композер: Send, либо Cancel во время стриминга (ref-22: ComposerPrimaryAction). */
-function Composer({ placeholder }: { placeholder: string }) {
+function Composer({
+  placeholder,
+  personaId,
+}: {
+  placeholder: string
+  /** id роли, зафиксированной за тредом (VL-283); null/undefined — новый тред. */
+  personaId?: string | null
+}) {
   const { textareaRef, onKeyDown } = useCtrlEnterNewline()
   return (
     // VL-265: две строки — ввод сверху, нижняя строка с пикерами роли (слева)
@@ -454,7 +463,10 @@ function Composer({ placeholder }: { placeholder: string }) {
         className="max-h-40 min-h-9 w-full flex-1 resize-none bg-transparent px-2 py-1.5 text-sm focus:outline-none"
       />
       <div className="flex items-center justify-between gap-1">
-        <PersonaPicker />
+        {/* VL-283: роль фиксируется за тредом — в начатом чате вместо
+            переключателя неинтерактивный бейдж, выбор доступен только для
+            нового треда (пустое состояние) */}
+        {personaId ? <PersonaBadge personaId={personaId} /> : <PersonaPicker />}
         <div className="flex items-center gap-1">
           <ModelPicker />
           <div className="relative size-8 shrink-0">
@@ -504,7 +516,13 @@ function EmptyState() {
  * `--thread-max-width: 40rem` (VL-264, ref perplexity.tsx): ширина ленты, к
  * которой прижаты и сообщения, и композер — как в референсе.
  */
-function ChatThread() {
+/**
+ * VL-283: `threadPersona` — роль, зафиксированная за тредом (с сервера).
+ * Для треда, начатого прямо сейчас (сервер уже создал id, но страница
+ * историю не перезагружала), клиент показывает роль первого хода из
+ * module-state — она и есть зафиксированная сервером.
+ */
+function ChatThread({ threadPersona }: { threadPersona: string | null }) {
   return (
     <ThreadPrimitive.Root
       className="flex h-full min-h-0 flex-col"
@@ -540,7 +558,10 @@ function ChatThread() {
                   <ChevronDown className="size-4" />
                 </Button>
               </ThreadPrimitive.ScrollToBottom>
-              <Composer placeholder="Спросите по проекту… (Enter — отправить, Ctrl+Enter — перенос строки)" />
+              <Composer
+                placeholder="Спросите по проекту… (Enter — отправить, Ctrl+Enter — перенос строки)"
+                personaId={threadPersona ?? getActivePersonaId()}
+              />
             </div>
           </ThreadPrimitive.ViewportFooter>
         </ThreadPrimitive.Viewport>
@@ -591,6 +612,11 @@ interface ChatLoadState {
   runtimeThreadId?: string
   /** Allow-list треда (VL-264): инструменты, разрешённые «Always allow». */
   allowList?: string[]
+  /**
+   * Роль, зафиксированная за тредом (VL-283), из `GET /api/chat/threads/:id`.
+   * null — тред новый/пустой (клиент показывает пикер роли).
+   */
+  persona?: string | null
 }
 
 /**
@@ -667,7 +693,12 @@ export function ChatPage() {
 
     // Существующий тред: подгрузить историю (AC1/AC4)
     const id = hashThreadId
-    setLoad(prev => ({ status: "loading", messages: [], runtimeThreadId: prev.runtimeThreadId }))
+    setLoad(prev => ({
+      status: "loading",
+      messages: [],
+      runtimeThreadId: prev.runtimeThreadId,
+      persona: null,
+    }))
     void (async () => {
       try {
         const res = await fetch(`/api/chat/threads/${encodeURIComponent(id)}`)
@@ -687,6 +718,8 @@ export function ChatPage() {
           messages: historyToMessages(data.messages, { allowList: data.allowList }),
           runtimeThreadId: id,
           allowList: data.allowList ?? [],
+          // VL-283: роль, зафиксированная за тредом (null — тред без ходов)
+          persona: data.persona ?? null,
         })
         setRuntimeKey(k => k + 1)
       } catch (err) {
@@ -767,7 +800,7 @@ export function ChatPage() {
               allowList={load.allowList}
               onThreadCreated={handleThreadCreated}
             >
-              <ChatThread />
+              <ChatThread threadPersona={load.persona ?? null} />
             </ChatRuntimeProvider>
           )}
         </div>

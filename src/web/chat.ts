@@ -90,8 +90,11 @@ export interface ChatRequestBody {
   model?: unknown;
   /**
    * Роль ассистента (id из реестра chat_personas, VL-265): задаёт блок
-   * системного промпта и дефолтный статус создаваемой задачи. Отсутствие
-   * поля — роль helper; неизвестный id — error-событие без начала хода.
+   * системного промпта и дефолтный статус создаваемой задачи. Применяется
+   * только к ПЕРВОМУ ходу треда — сервер фиксирует её в
+   * `<threadId>.persona.json` (VL-283), дальше роль берётся из этого файла.
+   * Отсутствие поля — роль helper; неизвестный id на первом ходе —
+   * error-событие без начала хода.
    */
   persona?: unknown;
   /**
@@ -355,6 +358,80 @@ export function isToolAllowed(cwd: string, threadId: string, tool: string): bool
   return loadThreadAllowList(cwd, threadId).includes(tool);
 }
 
+/**
+ * Роль, зафиксированная за тредом (VL-283).
+ *
+ * Пользователь выбрал роль при создании треда — дальше она НЕ меняется
+ * (переключатель в начатом чате бессмысленен: system-промпт сменился бы
+ * «на ходу»). Роль хранится рядом с историей —
+ * `.vibelog/chat-sessions/<threadId>.persona.json` (паттерн `.allow.json`
+ * VL-264: имя с точкой, `listChatThreads` его не видит, формат jsonl не
+ * ломается). Содержимое: `{ persona: "<id>", fixedAt: "<ISO>" }`.
+ */
+function personaFile(cwd: string, threadId: string): string {
+  return join(chatSessionsDir(cwd), `${threadId}.persona.json`);
+}
+
+/**
+ * id роли, зафиксированной за тредом. Невалидный threadId, отсутствующий
+ * файл или битый JSON → null (роль ещё не зафиксирована).
+ */
+export function readThreadPersona(cwd: string, threadId: string): string | null {
+  if (!THREAD_ID_RE.test(threadId)) return null;
+  const file = personaFile(cwd, threadId);
+  if (!existsSync(file)) return null;
+  try {
+    const raw: unknown = JSON.parse(readFileSync(file, 'utf8'));
+    const id = (raw as { persona?: unknown } | null)?.persona;
+    return typeof id === 'string' && id.length > 0 ? id : null;
+  } catch {
+    // битый файл — считаем роль незафиксированной (тред продолжит работать)
+    return null;
+  }
+}
+
+/**
+ * Зафиксировать роль за тредом; возвращает фактическую роль треда.
+ *
+ * Идемпотентно: если sidecar уже есть, сохранённый id возвращается, а файл
+ * НЕ перезаписывается — гонка двух параллельных ходов не перетрёт первый
+ * выбор (и удалённая из реестра роль не превратится в helper навсегда).
+ * Сбой файловой системы не рвёт диалог (паттерн saveThreadAllowList).
+ */
+export function fixThreadPersona(cwd: string, threadId: string, personaId: string): string {
+  const stored = readThreadPersona(cwd, threadId);
+  if (stored !== null) return stored;
+  if (!THREAD_ID_RE.test(threadId)) return personaId;
+  try {
+    mkdirSync(chatSessionsDir(cwd), { recursive: true });
+    writeFileSync(
+      personaFile(cwd, threadId),
+      JSON.stringify({ persona: personaId, fixedAt: new Date().toISOString() }, null, 2) + '\n',
+      'utf8',
+    );
+  } catch {
+    // сбой записи роли не должен рвать текущий ход
+  }
+  return personaId;
+}
+
+/**
+ * Роль треда для отображения (GET /api/chat/threads/:id).
+ *
+ * sidecar есть → его id. sidecar нет, но в треде уже есть ходы → `helper`
+ * (старые треды до VL-283 фактически работали помощником: это был дефолт
+ * module-state, поведение не меняется). Совсем новый тред (нет ни sidecar,
+ * ни user-сообщений) → null: клиент покажет пикер выбора роли.
+ */
+export function effectiveThreadPersona(cwd: string, threadId: string): string | null {
+  const stored = readThreadPersona(cwd, threadId);
+  if (stored !== null) return stored;
+  if (!THREAD_ID_RE.test(threadId)) return null;
+  if (!existsSync(sessionFile(cwd, threadId))) return null;
+  const started = loadChatHistory(cwd, threadId).some(m => m.role === 'user');
+  return started ? DEFAULT_PERSONA_ID : null;
+}
+
 /** Элемент списка тредов для сайдбара (VL-207): метаданные без тел сообщений. */
 export interface ChatThreadSummary {
   threadId: string;
@@ -599,12 +676,46 @@ async function produce(
   deps: ChatDeps,
   queue: EventQueue,
 ): Promise<void> {
-  // --- роль (VL-265) --------------------------------------------------------
-  // Валидация ДО чтения истории: неизвестный id — ход не начинается, jsonl
-  // треда не меняется. Отсутствие поля — роль helper. Роль НЕ влияет на
-  // модель: body.model и body.persona разбираются независимо.
+  // --- роль (VL-283: фиксируется за тредом) ---------------------------------
+  // Роль — свойство ТРЕДА, а не хода: первый ход фиксирует её в
+  // <threadId>.persona.json, а последующие ходы body.persona игнорируют —
+  // иначе system-промпт менялся бы «на ходу» и поведение ассистента
+  // переключалось посреди диалога.
+  // Валидация по-прежнему ДО чтения истории: неизвестный id на ПЕРВОМ ходе —
+  // ход не начинается, sidecar не пишется (ошибка не портит тред).
+  // Роль НЕ влияет на модель: body.model и body.persona разбираются независимо.
+  const sidecarPersonaId = readThreadPersona(cwd, threadId);
+  // sidecar нет у старых тредов (до VL-283): там роль фактически была helper
+  const storedPersonaId = sidecarPersonaId ?? effectiveThreadPersona(cwd, threadId);
   let pickedPersona: PersonaConfig | null;
-  if (body.persona === undefined || body.persona === null || body.persona === '') {
+  if (storedPersonaId !== null) {
+    // Роль уже за тредом: чужой body.persona не применяем (только лог)
+    if (sidecarPersonaId === null) {
+      console.warn(
+        `[chat] тред ${threadId} создан до фиксации роли — зафиксирована роль ${storedPersonaId}`,
+      );
+    } else if (
+      typeof body.persona === 'string' &&
+      body.persona !== '' &&
+      body.persona !== storedPersonaId
+    ) {
+      console.warn(
+        `[chat] роль треда ${threadId} уже зафиксирована: ${storedPersonaId}, ` +
+          `body.persona=${body.persona} игнорируется`,
+      );
+    }
+    pickedPersona = resolvePersona(cwd, storedPersonaId);
+    if (pickedPersona === null) {
+      // Роль удалена из реестра (VL-273) — тред не должен стать неработающим.
+      // Откат на helper без перезаписи sidecar: вернётся id в реестр — вернётся
+      // и роль треда.
+      console.warn(
+        `[chat] роль треда ${threadId} "${storedPersonaId}" отсутствует в реестре — ` +
+          `ход выполняется как ${DEFAULT_PERSONA_ID}`,
+      );
+      pickedPersona = resolvePersona(cwd, DEFAULT_PERSONA_ID);
+    }
+  } else if (body.persona === undefined || body.persona === null || body.persona === '') {
     pickedPersona = resolvePersona(cwd, DEFAULT_PERSONA_ID);
   } else if (typeof body.persona !== 'string') {
     queue.push({
@@ -629,6 +740,9 @@ async function produce(
   }
   // const — чтобы сужение типа жило в замыканиях executeTool и LLM-цикла
   const activePersona: PersonaConfig = pickedPersona;
+  // Фиксация — строго ПОСЛЕ валидации и ДО LLM-цикла (VL-283): роль треда
+  // известна даже если ход потом упадёт. Идемпотентно — не перетирает sidecar.
+  if (sidecarPersonaId === null) fixThreadPersona(cwd, threadId, activePersona.id);
 
   // --- лимиты хода (VL-269) -------------------------------------------------
   // Читаются на КАЖДЫЙ ход, а не на старте процесса: правка settings.json

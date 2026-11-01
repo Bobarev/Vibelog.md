@@ -66,7 +66,14 @@ import { loadConfig, saveConfig, defaultConfig } from '../core/config.js';
 import { getAvailablePhases, getWorkflowForTask, canMoveTo, loadWorkflows } from '../core/workflow.js';
 import { loadPhaseStyles } from '../core/phase-styles.js';
 import { globalSearch } from '../core/search.js';
-import { listChatThreads, getChatThread, loadThreadAllowList, addThreadAllow, removeThreadAllow } from './chat.js';
+import {
+  listChatThreads,
+  getChatThread,
+  loadThreadAllowList,
+  addThreadAllow,
+  removeThreadAllow,
+  effectiveThreadPersona,
+} from './chat.js';
 import { GRANTABLE_TOOLS, findActiveGrant, isValidRunId, latestGrantDraft, saveGrantDraft } from './supervisor-grant.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadSettings, saveSettingsPatch } from '../core/settings.js';
@@ -215,6 +222,9 @@ export function handleApi(
           threadId: chatThreadMatch[1],
           messages,
           allowList: loadThreadAllowList(cwd, chatThreadMatch[1]),
+          // VL-283: роль, зафиксированная за тредом (null — тред ещё пуст).
+          // Клиент по ней показывает бейдж вместо пикера роли.
+          persona: effectiveThreadPersona(cwd, chatThreadMatch[1]),
         },
       };
     }

@@ -865,12 +865,14 @@ describe('chat: роль ассистента (VL-265)', () => {
     assert.match(err.message, /Некорректная роль/);
   });
 
-  it('смена роли посреди треда применяется к следующему ходу, история не переписывается', async () => {
+  it('смена роли посреди треда не применяется: роль зафиксирована первым ходом (VL-283)', async () => {
     const { llm, state } = fakeLlm([{ text: 'Ок.' }]);
     await collectP({ message: 'первый', threadId: 'p-switch' }, { llm });
     const historyAfterFirst = loadChatHistory(pcwd, 'p-switch');
     await collectP({ message: 'второй', threadId: 'p-switch', persona: 'architect' }, { llm });
-    assert.ok(state.messages[1][0].content.includes('## Текущая роль: Архитектор'));
+    // VL-283: роль треда — helper (первый ход без persona), чужой body.persona игнорируется
+    assert.ok(state.messages[1][0].content.includes('## Текущая роль: Помощник'));
+    assert.ok(!state.messages[1][0].content.includes('## Текущая роль: Архитектор'));
     const history = loadChatHistory(pcwd, 'p-switch');
     assert.equal(history[0].content, historyAfterFirst[0].content, 'история не переписана');
     assert.equal(history[1].content, historyAfterFirst[1].content);
