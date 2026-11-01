@@ -11,7 +11,8 @@ tags: []
 
 - **VL-268** — MCP-инструменты и grant-механизм;
 - **VL-269** — лимиты чата в конфиг (общий механизм, от которого зависит супервизор);
-- **VL-270** — тик, healing, планировщик параллельности, промпт роли.
+- **VL-270** — тик, healing, планировщик параллельности, промпт роли;
+- **VL-274** — idle-watchdog фаз (§8).
 
 ---
 
@@ -98,7 +99,7 @@ tags: []
 | `notepad` — durable KV, 16 КБ на значение / 64 КБ на job | `cron/notepad.py` | курсоры и watermark'и в `state.json` |
 | `_parse_wake_gate` — `{"wakeAgent": false}` → модель не вызывается | `cron/scheduler_prompt.py` | пустой тик бесплатен: ничего не изменилось — модель не зовём |
 | `workdir` — загрузка `AGENTS.md` из каталога | `cron/jobs.py` | контекст проекта в промпте тика |
-| inactivity watchdog — таймаут по простою, не по wall-clock | `cron/AGENTS.md` | см. §8 |
+| inactivity watchdog — таймаут по простою, не по wall-clock | `cron/AGENTS.md` | см. §8 (реализовано в VL-274) |
 
 **Итоговая схема работы:**
 
@@ -195,6 +196,26 @@ tags: []
 Решение из hermes: таймаут считается по **простою** — если N секунд не было активности (нет новых токенов, нет tool-вызовов), сессия считается зависшей и прерывается; длинная-но-активная не обрывается никогда.
 
 Требование к реализации: для фаз агента ввести `idle_timeout_seconds` (дефолт 600, `0` — выключено) наряду с существующим wall-time. Wall-time остаётся жёстким потолком безопасности, но перестаёт быть первым, что срабатывает.
+
+### Реализация (VL-274)
+
+Реализовано отдельной задачей **VL-274** (в VL-270 было вне скоупа). Ключевые решения:
+
+| Решение | Где |
+|---|---|
+| Модуль `createIdleGuard({ timeoutMs, now?, externalSignal? })` — чистый, без fs/LLM: `signal`, `noteActivity()`, `pause()`, `resume()`, `timedOut()`, `idleMs()`, `dispose()` | `src/agent/idle-guard.ts` |
+| **Комбинированный сигнал** (внешний `options.signal` ИЛИ idle-abort) — свой `AbortController` + `addEventListener('abort')`, без `AbortSignal.any` (требует Node 20.3+, в `engines` заявлен `>=20`) | там же |
+| Активность: каждый токен стрима (обёртка `onToken` → `noteActivity()`) и каждый завершённый tool-вызов (`resume()` после хендлера) | `src/agent/loop.ts` |
+| **Таймер снимается на время tool-вызова** (`pause()` перед `spec.handler`, `resume()` после) — осознанное отклонение от «голого» hermes-watchdog: он сторожит тишину LLM-стрима, а не длительность инструмента (`pnpm test` на Catalina идёт 20+ минут молча). Зависший инструмент ловят его собственные таймауты (`bashTimeoutMs` + `remainingWallTimeMs` у `run_shell_command`, таймаут запроса у MCP-клиента) и жёсткий wall-time | `src/agent/loop.ts` |
+| Две точки детекта: реальный таймер (абортит `streamChat` и не оставляет висящий HTTP-запрос) и проверка в начале итерации рядом с wall-time (`timedOut() \|\| idleMs() > timeout`) — вторая делает тесты детерминированными через инъекцию `now` | `src/agent/loop.ts` |
+| Отдельный `reason: 'idle'` в `RunProgressReason` (не путается с `wall-time`/`max-requests`), подпись «по idle-таймауту (простой без активности)» | `src/agent/run-progress.ts` |
+| Флаг `--idle-timeout <сек>` (неотрицательное целое, `0` допустим); оркестратор прокидывает его только агенту `vb` рядом с `--max-wall-time`/`--max-requests` | `src/agent/cli.ts`, `src/web/orchestrator.ts` |
+| CLI-флаг, `/set idle-timeout <сек>`, секция `idle_timeout_seconds` в `.vibelog/settings.json` (отсутствие ключа → дефолт агента 600; явный `0` → выключено; битое значение → предупреждение `[vibelog-settings]` и откат к дефолту) | `src/bot/settings.ts`, `src/bot/commands.ts`, `src/web/api.ts` |
+| Fail-текст: `Превышен idle-таймаут (N секунд без активности) — фаза прервана.` | `idleTimeoutText` (`src/agent/loop.ts`) |
+
+**Семантика `0` отличается от прочих числовых настроек:** у `max-wall-time`/`max-requests` значение `0` в `/set` — сброс к дефолту, у `idle-timeout` `0` = **выключить watchdog** (как `HERMES_CRON_TIMEOUT=0` в референсе); сброс к дефолту — удалением ключа (в веб-API `null`). Задокументировано в README и в подсказке `/set`.
+
+**Тесты:** `src/agent/idle-guard.test.mjs` (перевзвод на `noteActivity`, срабатывание по тишине, `pause()`/`resume()`, `timeoutMs=0`, внешний сигнал, `dispose()`), `src/agent/loop.test.mjs` (обрыв по простою с `reason='idle'`, реальный abort стрима через `signal`, выключение при `idleTimeoutMs: 0`, приоритет idle над wall-time, AC7-сценарий VL-254: 35 виртуальных минут с активностью каждые 5 минут завершаются нормально, долгий tool на паузе не ловится), `src/web/orchestrator.test.mjs` (флаг только для `vb`), `src/agent/cli.test.mjs`, `src/bot/settings.test.mjs`, `src/bot/commands.test.mjs`, `src/agent/run-progress.test.mjs`.
 
 ---
 
@@ -629,4 +650,4 @@ isPhaseAllowed(...)            → проверка перед запуском
 7. **Таймер тика включается только при активном grant'е** и глушится `VIBELOG_SUPERVISOR_TICK=off` — и продовая логика (нет прогона — нечего наблюдать), и защита тестов от лишних LLM-вызовов.
 8. **Парсинг решения терпимый**, при неудаче — детерминированный фолбэк «последовательный запуск готовых задач по приоритету» с записью `decision: fallback` в heartbeat; тик не падает из-за ответа модели.
 9. **`quick`/лимит промпта** — бюджет `MAX_TICK_PROMPT_CHARS` (~24 КБ) с приоритетом «heartbeat без сырых логов», фрагменты `logTail` ≤40 строк суммарно, repeat-топ-3 вместо полной метрики.
-10. **Не реализовано в VL-270** (вне скоупа): idle-watchdog фаз (§8) — требует правок `src/agent/loop.ts`, отдельная задача; уведомления в мессенджеры.
+10. **Idle-watchdog фаз** (§8) — был вне скоупа VL-270, реализован в **VL-274**: `idle_timeout_seconds` (дефолт 600, `0` — выключено), флаг `--idle-timeout`, отдельный `reason: 'idle'`; таймер снимается на время tool-вызова. По-прежнему не реализованы уведомления в мессенджеры.
