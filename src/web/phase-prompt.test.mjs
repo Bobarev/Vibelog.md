@@ -14,7 +14,10 @@
  * живёт в templates/phases/phase-code.md и AGENTS.md — менять их надо синхронно)
  * и VL-242 (полный прогон в фазе Close: обязательный, но один — после раннего
  * точечного фильтра и с классификацией падений; правило в обоих close-шаблонах
- * и AGENTS.md).
+ * и AGENTS.md), VL-247 (аварийные ветки close-шаблонов оформляют провал явным
+ * сигналом `aborted: true` + «не завершай цикл как успех» и запрещают продолжать
+ * прерванную фазу по пользовательскому сообщению без нового рана; правило в
+ * обоих close-шаблонах).
  */
 
 import { describe, it } from 'vitest';
@@ -536,6 +539,50 @@ describe('VL-242 — полный прогон в фазе Close: один, по
       'AGENTS.md: полнота прогона не отменяется в Close');
     assert.ok(text.includes('HEAD^1'),
       'AGENTS.md: классификация падений через родительский коммит');
+  });
+});
+
+// ── VL-247: аварийные ветки close — явный сигнал провала ──
+// Точечные инварианты VL-247 (паттерн VL-242/VL-227, по AC задачи): аварийные
+// ветки обоих close-шаблонов оформляют провал фазы единым явным сигналом
+// `backlog_finish_phase {id, comment, aborted: true}` (механизм VL-244,
+// описан в doc-18). Удаление сигнала или формулировок «не завершай цикл как
+// успех» / «без нового рана» из любого из шаблонов должно ронять тест.
+describe('VL-247 — явный сигнал провала в аварийных ветках close', () => {
+  const files = ['phase-close.md', 'phase-close-worktree.md'];
+
+  it('оба close-шаблона: сигнал `aborted: true`, «не завершай цикл как успех» и запрет без нового рана', () => {
+    for (const file of files) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      assert.ok(text.includes('"aborted": true'),
+        `${file}: явный сигнал провала backlog_finish_phase aborted: true`);
+      assert.ok(text.includes('не завершай цикл как успех'),
+        `${file}: отказ считать аварийный итог успехом`);
+      assert.ok(text.includes('без нового рана'),
+        `${file}: запрет продолжать прерванную фазу по сообщению пользователя`);
+    }
+  });
+
+  it('phase-close-worktree.md: сигнал есть в обеих аварийных ветках (конфликт merge и сборка/тесты)', () => {
+    const text = readFileSync(join(templatesDir, 'phase-close-worktree.md'), 'utf-8');
+    const signalCount = (text.match(/"aborted": true/g) ?? []).length;
+    assert.ok(signalCount >= 2,
+      'phase-close-worktree.md: aborted: true и в шаге 4 (конфликт merge), и в шаге 5 (сборка/тесты)');
+  });
+
+  it('phase-close.md: сигнал есть и в шаге проверки кода, и в шаге отчёта', () => {
+    const text = readFileSync(join(templatesDir, 'phase-close.md'), 'utf-8');
+    const signalCount = (text.match(/"aborted": true/g) ?? []).length;
+    assert.ok(signalCount >= 2,
+      'phase-close.md: aborted: true и в шаге 3.5 (сборка/тесты), и в шаге 5 (отчёт)');
+  });
+
+  it('формулировка о прерванной фазе согласована между шаблонами', () => {
+    const [a, b] = files.map((file) => readFileSync(join(templatesDir, file), 'utf-8'));
+    const lineOf = (text) => text.split('\n').find((l) => l.includes('Не завершай цикл как успех'));
+    assert.ok(lineOf(a) && lineOf(b), 'оба шаблона: буллет «Аварийный итог» с формулой');
+    assert.equal(lineOf(a), lineOf(b),
+      'phase-close.md и phase-close-worktree.md: текст формулы аварийного итога дословно совпадает');
   });
 });
 
