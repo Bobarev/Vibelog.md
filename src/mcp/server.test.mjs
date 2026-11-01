@@ -899,4 +899,152 @@ describe('MCP-сервер', () => {
     assert.ok(pong);
     assert.deepStrictEqual(pong.result, {});
   });
+
+  // ============================================================
+  // VL-245 — backlog_finish_phase: смена статуса только фазой workflow
+  // ============================================================
+  // Инцидент VL-219/VL-231: служебная фаза comment выставила Done
+  // незавершённой задаче — toolFinishPhase валидировал статус только по
+  // config.statuses, а инварианты workflow (SERVICE_PHASES, getStatusAfterPhase)
+  // проверял только оркестратор. Ниже — граница MCP: фаза вызывающего берётся
+  // из env (VIBELOG_RUN_PHASE/VIBELOG_PHASE_NAME) или меты сессии.
+  //
+  // describe объявлен ПОСЛЕДНИМ: его beforeAll расширяет statuses фикстуры
+  // (Spec/Planned/Review нужны для DEFAULT_WORKFLOW), чтобы не задеть
+  // остальные кейсы файла, где набор ['To Do','In Progress','Done'].
+  describe('tools/call — защита перехода по фазе workflow (VL-245)', () => {
+    beforeAll(() => {
+      // Расширенный набор статусов — только на время этого describe
+      // (он последний в файле, дальше statuses не используются)
+      writeFileSync(join(backlogDir, 'config.yml'), stringifyYaml({
+        project_name: 'MCP Test',
+        task_prefix: 'mcp',
+        default_status: 'To Do',
+        statuses: ['To Do', 'In Progress', 'Spec', 'Planned', 'Review', 'Done'],
+        definition_of_done: [],
+      }), 'utf-8');
+    });
+
+    /** Создаёт задачу (To Do) и, если задан status, переводит её туда. */
+    async function taskWithStatus(title, status) {
+      const created = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_create_task', arguments: { title } } },
+      ]);
+      const id = created.find(r => r.id === 2).result.content[0].text.match(/mcp-\d+/)[0];
+      if (status && status !== 'To Do') {
+        await callMcp([
+          { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+          { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_update_status', arguments: { id, status } } },
+        ]);
+      }
+      return id;
+    }
+
+    /** Завершает фазу одним вызовом + читает задачу (без env — fail-open путь). */
+    async function finishAndView(id, args, extraEnv) {
+      const [init, call, view] = [
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: args } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
+      ];
+      const responses = extraEnv ? await callMcpWithEnv([init, call, view], extraEnv) : await callMcp([init, call, view]);
+      const fin = responses.find(r => r.id === 2);
+      return {
+        text: fin.result.content[0].text,
+        isError: fin.result.isError === true,
+        data: JSON.parse(responses.find(r => r.id === 3).result.content[0].text),
+      };
+    }
+
+    it('служебная фаза comment + Done → переход запрещён, статус не меняется (AC1)', async () => {
+      const id = await taskWithStatus('VL-245: comment не ставит Done', 'To Do');
+      const { text, isError, data } = await finishAndView(
+        id,
+        { id, status: 'Done', comment: 'Фаза Comment: отчёт' },
+        { VIBELOG_PHASE_NAME: 'comment' },
+      );
+      // Паттерн частичного применения (как у невалидного статуса): не isError,
+      // ошибка — строкой в сводке (isError дал бы луп, lesson-92)
+      assert.ok(!isError, `отказ не должен ронять вызов: ${text}`);
+      assert.ok(text.includes('Ошибки') && text.includes('служебная'), `нет запрета служебной фазы: ${text}`);
+      assert.ok(text.includes('Статус: не менялся'), `статус не должен применяться: ${text}`);
+      // Запись выполнена частично: отчёт записан, статус — нет
+      assert.equal(data.status, 'To Do', 'статус задачи не меняется');
+      assert.equal(data.comments.length, 1, 'отчёт фазы применяется (частичное применение)');
+      assert.ok(data.comments[0].text.includes('Фаза Comment: отчёт'));
+    });
+
+    it('фаза не из того статуса: close при To Do + Done → запрещено (AC3)', async () => {
+      const id = await taskWithStatus('VL-245: close из To Do', 'To Do');
+      const { text, isError, data } = await finishAndView(
+        id,
+        { id, status: 'Done', comment: 'Фаза Close: отчёт' },
+        { VIBELOG_RUN_PHASE: 'close' },
+      );
+      assert.ok(!isError, `отказ не должен ронять вызов: ${text}`);
+      assert.ok(text.includes('не даёт переход'), `нет сообщения о запрещённом переходе: ${text}`);
+      assert.ok(text.includes('workflow нет'), `нет пояснения об отсутствии перехода: ${text}`);
+      assert.equal(data.status, 'To Do');
+    });
+
+    it('штатный переход Review + close → Done работает как раньше (AC2, AC3)', async () => {
+      const id = await taskWithStatus('VL-245: Review → close → Done', 'Review');
+      const { text, isError, data } = await finishAndView(
+        id,
+        { id, status: 'Done', comment: 'Фаза Close выполнена' },
+        { VIBELOG_RUN_PHASE: 'close' },
+      );
+      assert.ok(!isError, `штатный переход не должен падать: ${text}`);
+      // Прочие ошибки сводки (напр. резолв token_usage без сессии) к VL-245
+      // не относятся — проверяем отсутствие именно ошибки перехода
+      assert.ok(!text.includes('не даёт переход') && !text.includes('служебная'), `нет ошибки перехода: ${text}`);
+      assert.ok(text.includes('Статус: Done'), `статус должен примениться: ${text}`);
+      assert.equal(data.status, 'Done');
+    });
+
+    it('транзиент In Progress: база проверки — статус до фазы (prevStatus)', async () => {
+      // Инцидент-защита: во время рана задача в In Progress (VL-196), а агент
+      // передаёт produces_status от исходного статуса. Без чтения кэша
+      // «In Progress + close → Done» был бы отклонён.
+      const id = await taskWithStatus('VL-245: транзиент', 'In Progress');
+      mkdirSync(join(testDir, '.vibelog'), { recursive: true });
+      writeFileSync(join(testDir, '.vibelog', 'phase-in-progress.json'), JSON.stringify({
+        [id.toUpperCase()]: { prevStatus: 'Review', phase: 'close', startedAt: new Date().toISOString() },
+      }), 'utf-8');
+      const { text, isError, data } = await finishAndView(
+        id,
+        { id, status: 'Done', comment: 'Фаза Close (транзиент)' },
+        { VIBELOG_RUN_PHASE: 'close' },
+      );
+      assert.ok(!isError, `транзиент не должен ломать штатный рана: ${text}`);
+      assert.equal(data.status, 'Done', 'prevStatus Review + close → Done разрешён');
+    });
+
+    it('фаза не резолвится (нет env/меты) → fail-open: статус по конфигу применяется', async () => {
+      // Ручной вызов MCP из чужого клиента: фазы нет, guard не применяется
+      const id = await taskWithStatus('VL-245: fail-open', 'To Do');
+      const { text, data } = await finishAndView(id, { id, status: 'Done', comment: 'Ручное завершение' });
+      assert.ok(text.includes('Статус: Done'), `fail-open: статус применяется: ${text}`);
+      assert.equal(data.status, 'Done');
+    });
+
+    it('фаза из меты сессии (VIBELOG_SESSION_ID) тоже участвует в проверке', async () => {
+      const id = await taskWithStatus('VL-245: фаза из меты', 'To Do');
+      const sessionId = 'vl245-guard-meta';
+      const sessionsDir = agentSessionsDir(testDir);
+      mkdirSync(sessionsDir, { recursive: true });
+      writeFileSync(join(sessionsDir, `${sessionId}.meta.json`), JSON.stringify({
+        sessionId, cwd: testDir, taskId: id, phase: 'comment',
+      }), 'utf-8');
+      const { text, isError, data } = await finishAndView(
+        id,
+        { id, status: 'Done', comment: 'Фаза из меты' },
+        { VIBELOG_SESSION_ID: sessionId },
+      );
+      assert.ok(!isError, `не должен ронять вызов: ${text}`);
+      assert.ok(text.includes('служебная'), `фаза из меты не проверена: ${text}`);
+      assert.equal(data.status, 'To Do');
+    });
+  });
 });

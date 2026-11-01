@@ -24,6 +24,7 @@ import {
   finalizePhaseStatus,
   recoverStalePhaseStatuses,
   phaseTransientCachePath,
+  getPhaseTransientStatus,
 } from '../../dist/core/phase-transient.js';
 import { createTaskFile, getTask, updateTaskFile } from '../../dist/core/store.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
@@ -49,6 +50,7 @@ describe('phase-transient (VL-196)', () => {
   createTaskFile(root, { id: 'VL-906', title: 'Транзиент: финальный статус', status: 'Done' });
   createTaskFile(root, { id: 'VL-907', title: 'Транзиент: aborted при exit 0', status: 'Spec' });
   createTaskFile(root, { id: 'VL-908', title: 'Транзиент: aborted без записи кэша', status: 'Spec' });
+  createTaskFile(root, { id: 'VL-911', title: 'Транзиент: статус до фазы (VL-245)', status: 'Spec' });
 
   afterAll(() => {
     rmSync(root, { recursive: true, force: true });
@@ -171,6 +173,29 @@ describe('phase-transient (VL-196)', () => {
     markPhaseStarted(root, 'VL-906', 'close', 424245);
     assert.equal(getTask(root, 'VL-906').status, 'Done');
     assert.equal(existsSync(cacheFile), false, 'кэш не создавался');
+  });
+
+  // ── VL-245: статус ДО фазы из кэша (база проверки перехода на границе MCP) ──
+
+  it('getPhaseTransientStatus: своя фаза → prevStatus, чужая фаза → null', () => {
+    rmSync(cacheFile, { force: true });
+    markPhaseStarted(root, 'VL-911', 'plan', 424247);
+    // Запись принадлежит plan: для plan база = Spec, для чужой фазы — null
+    assert.equal(getPhaseTransientStatus(root, 'VL-911', 'plan'), 'Spec');
+    assert.equal(getPhaseTransientStatus(root, 'VL-911', 'close'), null, 'чужая фаза не подменяет базу');
+    // Регистр ключа не важен: в кэше ключи канонические (UPPER)
+    assert.equal(getPhaseTransientStatus(root, 'vl-911', 'plan'), 'Spec');
+    finalizePhaseStatus(root, 'VL-911', 'plan', { exitCode: 0 });
+  });
+
+  it('getPhaseTransientStatus: нет записи/нет кэша/битый кэш → null (fail-open)', () => {
+    rmSync(cacheFile, { force: true });
+    assert.equal(getPhaseTransientStatus(root, 'VL-911', 'plan'), null, 'кэша нет');
+    // Битый файл кэша — readCache fail-open, функция не бросает
+    mkdirSync(join(root, '.vibelog'), { recursive: true });
+    writeFileSync(cacheFile, '{ не json', 'utf-8');
+    assert.equal(getPhaseTransientStatus(root, 'VL-911', 'plan'), null);
+    rmSync(cacheFile, { force: true });
   });
 
   it('fail-open: .vibelog как файл — mark не бросает, статус не меняется', () => {

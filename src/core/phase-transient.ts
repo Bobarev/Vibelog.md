@@ -233,6 +233,38 @@ export function markPhaseAborted(cwd: string, taskKey: string, reason?: string):
 }
 
 /**
+ * Статус задачи ДО текущей фазы из транзиент-кэша (VL-245).
+ *
+ * Нужен границе MCP: во время рана задача временно в In Progress (VL-196),
+ * а агент передаёт статус, посчитанный от ИСХОДНОГО статуса (шаблон
+ * подставляет {{producesStatus}} до спавна). Без чтения кэша валидатор
+ * перехода «текущий статус + фаза → запрошенный статус» видел бы
+ * «In Progress + plan → Planned» и отклонял штатные раны.
+ *
+ * Возврат: prevStatus ТОЛЬКО если запись принадлежит этой же фазе — чужая
+ * запись (другая фаза) не должна подменять базу проверки. Все сбои чтения
+ * глотаются (readCache fail-open) → null: вызывающий проверит от
+ * физического статуса задачи.
+ *
+ * @param cwd — директория проекта (главный репо: в worktree backlog там же)
+ * @param taskKey — ID задачи в любом регистре (ключи кэша канонические UPPER)
+ * @param phase — фаза вызывающего
+ * @returns статус до фазы либо null, если записи нет/фаза не совпала
+ */
+export function getPhaseTransientStatus(cwd: string, taskKey: string, phase: string): string | null {
+  try {
+    const entry = readCache(cwd)[taskKey.toUpperCase()];
+    if (!entry || entry.phase !== phase || typeof entry.prevStatus !== 'string') return null;
+    return entry.prevStatus;
+  } catch (err) {
+    // Fail-open: кэш — вспомогательный источник, его сбой не должен менять
+    // поведение инструмента (проверка продолжится от статуса задачи)
+    console.log(`[phase-transient] getPhaseTransientStatus(${taskKey}) не удался: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+/**
  * Финализирует транзиентный статус ЗАВЕРШИВШЕЙСЯ фазы.
  *
  * Вызывается в finish() spawnQwenRun строго ДО onExit: авто-очередь
