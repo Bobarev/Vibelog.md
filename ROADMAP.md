@@ -66,7 +66,8 @@
 - **Проблема:** `reference` типа `url`/`doc` — только ссылка. Plan каждый раз
   делает web_fetch.
 - **Что:** `reference add --cache` — скачать, очистить (script/style/nav/footer),
-  конвертировать в markdown (Turndown). Кэш в `backlog/references/cache/<slug>.md`.
+  конвертировать в markdown (собственный конвертер `src/core/html-to-markdown.ts`).
+  Кэш в `backlog/references/cache/<slug>.md`.
   `reference_view` возвращает кэш. `reference sync` — обновить кэш.
 - **Уверенность:** High
 - **Статус:** planned

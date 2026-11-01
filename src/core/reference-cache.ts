@@ -8,8 +8,9 @@
  * markdown из reference_view.
  *
  * Конвейер: download → очистка HTML (script/style/nav/footer/header/head) →
- * Turndown (+GFM-таблицы, ref-17) → запись cache/<ref-id>.md + поля
- * cached_path/cached_at/source_hash в frontmatter метаданных.
+ * собственный конвертер `./html-to-markdown.js` (GFM-таблицы, чеклисты) →
+ * запись cache/<ref-id>.md + поля cached_path/cached_at/source_hash
+ * в frontmatter метаданных.
  *
  * Сеть: fetch инжектируется через deps.fetchFn — юнит-тесты работают без
  * реальной сети (guard VL-132 в src/test-setup.mjs отклоняет не-loopback).
@@ -18,8 +19,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
-import TurndownService from 'turndown';
-import { gfm } from 'turndown-plugin-gfm';
+import { htmlToMarkdown } from './html-to-markdown.js';
 import { findBacklogDir, referencesCacheDir } from './paths.js';
 import {
   listReferences, referenceCachePath, updateReference,
@@ -86,28 +86,10 @@ export async function downloadText(url: string, deps: CacheDeps = {}): Promise<D
   return { text, contentType };
 }
 
-/**
- * HTML → markdown: Turndown + GFM (таблицы/strikethrough/taskList, ref-17).
- *
- * Удаляем «мусор» страниц: скрипты/стили, навигацию, шапку/подвал, формы,
- * iframe/svg и <head> целиком (в нём <title> — турндown иначе вываливает
- * заголовок страницы первым абзацем). Остальное (h1-h6, p, ul/ol, pre/code,
- * table, blockquote, a, img) конвертируют дефолтные правила turndown.
- */
-export function htmlToMarkdown(html: string): string {
-  const service = new TurndownService({
-    headingStyle: 'atx',
-    codeBlockStyle: 'fenced',
-    bulletListMarker: '-',
-  });
-  service.use(gfm);
-  // title — отдельно: remove('head') у turndown не срабатывает (title живёт
-  // в head, но обход — documentElement'ом), remove('title') — работает
-  service.remove(['script', 'style', 'nav', 'footer', 'header', 'aside', 'form', 'button', 'iframe', 'title', 'head']);
-  // svg — не HTML-элемент (нет в HTMLElementTagNameMap) → отдельным фильтром
-  service.remove(node => node.tagName?.toLowerCase() === 'svg');
-  return service.turndown(html).trim() + '\n';
-}
+// htmlToMarkdown живёт в собственном модуле (VL-232, без turndown) и
+// ре-экспортируется здесь: его импортируют тесты и внешние вызывающие
+// (сигнатура и поведение не меняются).
+export { htmlToMarkdown };
 
 /**
  * Проверяет content-type: markdown-ответ сохраняем как есть, остальное
