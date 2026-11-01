@@ -22,6 +22,7 @@ import {
   getStatusAfterPhase,
   isPhaseAllowed,
   canMoveTo,
+  phaseStatusTransitionError,
 } from '../../dist/core/workflow.js';
 import { pickAutoPhase } from '../../dist/bot/auto-runner.js';
 import { settingsPath } from '../../dist/core/settings.js';
@@ -302,5 +303,59 @@ describe('investigation workflow (VL-195)', () => {
       path.push(status);
     }
     assert.deepEqual(path, ['To Do', 'Review', 'Done']);
+  });
+});
+
+// ── VL-245: валидация смены статуса фазой workflow ──
+
+describe('phaseStatusTransitionError (VL-245)', () => {
+  it('служебные фазы статус не меняют — любая смена отклоняется', () => {
+    for (const phase of SERVICE_PHASES) {
+      const err = phaseStatusTransitionError(DEFAULT_WORKFLOW, 'Review', phase, 'Done');
+      assert.ok(err, `служебная фаза ${phase} должна блокировать смену статуса`);
+      assert.ok(err.includes('служебная'), `нет пояснения про служебную фазу: ${err}`);
+      assert.ok(err.includes('Не повторяй'), `нет следующего шага (lesson-92): ${err}`);
+    }
+  });
+
+  it('инцидент VL-231: comment не выставляет Done из To Do', () => {
+    const err = phaseStatusTransitionError(DEFAULT_WORKFLOW, 'To Do', 'comment', 'Done');
+    assert.ok(err, 'comment + Done должен отклоняться');
+    assert.ok(err.includes('Done') && err.includes('comment'), `нет деталей перехода: ${err}`);
+  });
+
+  it('штатный переход Review + close → Done разрешён', () => {
+    assert.equal(phaseStatusTransitionError(DEFAULT_WORKFLOW, 'Review', 'close', 'Done'), null);
+  });
+
+  it('fix-цикл Review + code → Review разрешён, чужой статус — нет', () => {
+    assert.equal(phaseStatusTransitionError(DEFAULT_WORKFLOW, 'Review', 'code', 'Review'), null);
+    const err = phaseStatusTransitionError(DEFAULT_WORKFLOW, 'Review', 'code', 'Done');
+    assert.ok(err, 'code не переводит в Done');
+    assert.ok(err.includes('Review'), `ошибка должна называть фактический produces_status: ${err}`);
+  });
+
+  it('фаза не из того статуса отклоняется (close из To Do)', () => {
+    const err = phaseStatusTransitionError(DEFAULT_WORKFLOW, 'To Do', 'close', 'Done');
+    assert.ok(err, 'close из To Do недопустим');
+    assert.ok(err.includes('workflow нет'), `нет пояснения об отсутствии перехода: ${err}`);
+  });
+
+  it('финальные статусы: любой запрос статуса отклоняется', () => {
+    assert.ok(phaseStatusTransitionError(DEFAULT_WORKFLOW, 'Done', 'close', 'Done'));
+    assert.ok(phaseStatusTransitionError(DEFAULT_WORKFLOW, 'Rejected', 'code', 'Review'));
+  });
+
+  it('кастомный workflow уважается (investigation: To Do + investigate → Review)', () => {
+    const wf = {
+      initial_status: 'To Do',
+      transitions: [
+        { status: 'To Do', phase: 'investigate', produces_status: 'Review' },
+        { status: 'Review', phase: 'materialize', produces_status: 'Done' },
+        { status: 'Done', phase: null, produces_status: null },
+      ],
+    };
+    assert.equal(phaseStatusTransitionError(wf, 'To Do', 'investigate', 'Review'), null);
+    assert.ok(phaseStatusTransitionError(wf, 'To Do', 'investigate', 'Done'));
   });
 });

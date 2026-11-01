@@ -47,7 +47,8 @@ import {
 } from '../core/lesson.js';
 import type { UpdateLessonInput } from '../core/lesson.js';
 import { findBacklogDir } from '../core/paths.js';
-import { markPhaseAborted } from '../core/phase-transient.js';
+import { markPhaseAborted, getPhaseTransientStatus } from '../core/phase-transient.js';
+import { getWorkflowForTask, phaseStatusTransitionError } from '../core/workflow.js';
 import { buildProjectMap } from '../core/project-map.js';
 import { truncateToolOutput } from '../agent/tools.js';
 import { ackOk, unknownFields } from './tool-result.js';
@@ -436,7 +437,7 @@ export function listTools(): ToolDefinition[] {
     // === Завершение фазы (VL-138) ===
     {
       name: 'backlog_finish_phase',
-      description: 'Завершение фазы одним вызовом: статус + отчётный комментарий + modifiedFiles + батч-отметки AC/DoD. `comment` объявлен в required — заполняй его отчётом о фазе. Если comment всё же не передан (VL-253), сервер собирает отчёт автоматически из статуса, отметок AC/DoD, modified_files и фрагмента плана и завершает фазу без ошибки. Повторный вызов со статусом, равным текущему (already_finished), возвращает ошибку с датой и источником существующего отчёта: не повторяй такой вызов, а заверши фазу финальным текстом. Невалидные значения полей (статус вне конфига, битый индекс AC/DoD) пропускаются с сообщением в сводке — частичное применение. Пример сводки: «Статус: Review; отчёт добавлен; отмечено AC: 2, DoD: 1; файлов: 3». Если фаза прервана (не выполнена) — передай `aborted: true` вместе с отчётом-причиной и БЕЗ status: produces_status к такой фазе не применяется (VL-244).',
+      description: 'Завершение фазы одним вызовом: статус + отчётный комментарий + modifiedFiles + батч-отметки AC/DoD. `comment` объявлен в required — заполняй его отчётом о фазе. Если comment всё же не передан (VL-253), сервер собирает отчёт автоматически из статуса, отметок AC/DoD, modified_files и фрагмента плана и завершает фазу без ошибки. Смена статуса разрешена только фазе, у которой в workflow задачи есть переход «текущий статус + фаза → запрошенный статус» (VL-245): служебные фазы (comment/prompt/analyze/resume) статус не меняют, чужая фаза чужой статус — тоже. Передавай ровно тот статус, что дал шаблон ({{producesStatus}}), иначе он не запишется. Повторный вызов со статусом, равным текущему (already_finished), возвращает ошибку с датой и источником существующего отчёта: не повторяй такой вызов, а заверши фазу финальным текстом. Невалидные значения полей (статус вне конфига, запрещённый фазой переход, битый индекс AC/DoD) пропускаются с сообщением в сводке — частичное применение. Пример сводки: «Статус: Review; отчёт добавлен; отмечено AC: 2, DoD: 1; файлов: 3». Если фаза прервана (не выполнена) — передай `aborted: true` вместе с отчётом-причиной и БЕЗ status: produces_status к такой фазе не применяется (VL-244).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1511,6 +1512,38 @@ function buildAutoReport(
 }
 
 /**
+ * Фаза, которой принадлежит текущий вызов MCP-инструмента (VL-245).
+ *
+ * Источники — только доверенные: env рана (оркестратор/CLI) и мета сессии.
+ * `args.phase` НЕ используется: поле в схеме служит для учёта usage
+ * (by_phase, VL-259) и передаётся моделью — если бы guard читал его, модель
+ * выписывала бы себе разрешение на любой переход (phase: "close" → Done).
+ *
+ * Приоритет (как у фазы рана в CLI, VL-259): VIBELOG_RUN_PHASE → фаза сессии
+ * (VIBELOG_PHASE_NAME, кроме служебного prompt) → meta.lastRunPhase → meta.phase.
+ * Мета в branch-mode живёт в главном репо (VIBELOG_CWD, lesson-13).
+ *
+ * @returns имя фазы либо null, если фазу установить не удалось
+ *   (инструмент из чужого клиента/ручной вызов) — тогда проверка перехода
+ *   не применяется (fail-open, прежнее поведение по config.statuses).
+ */
+function resolveGuardPhase(cwd: string): string | null {
+  const envRun = process.env.VIBELOG_RUN_PHASE;
+  if (typeof envRun === 'string' && envRun.trim() !== '') return envRun;
+  const envPhase = process.env.VIBELOG_PHASE_NAME;
+  if (typeof envPhase === 'string' && envPhase.trim() !== '' && envPhase !== 'prompt') return envPhase;
+  const sessionId = process.env.VIBELOG_SESSION_ID;
+  if (!sessionId) return null;
+  try {
+    const meta = loadSessionMetaSync(agentSessionsDir(process.env.VIBELOG_CWD ?? cwd), sessionId);
+    const metaPhase = meta?.lastRunPhase ?? meta?.phase;
+    return typeof metaPhase === 'string' && metaPhase !== '' ? metaPhase : null;
+  } catch {
+    return null; // битая мета — фаза неизвестна, проверка не применяется
+  }
+}
+
+/**
  * Завершение фазы одним вызовом (VL-138).
  *
  * Схлопывает «бумажную» цепочку фазы (add_comment → update_status →
@@ -1587,8 +1620,30 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
     if (typeof args.status !== 'string' || !statuses.includes(args.status)) {
       errors.push(`Невалидный статус ${JSON.stringify(args.status)}. Допустимые: ${statuses.join(', ')}`);
     } else {
-      updates.status = args.status;
-      statusPart = `Статус: ${args.status}`;
+      // ── VL-245: переход должен быть разрешён ФАЗОЙ workflow ─────────────
+      // Статус валиден по конфигу, но менять его вправе только фаза, у которой
+      // в workflow есть переход «текущий статус + фаза → запрошенный». Инцидент
+      // VL-219/VL-231: служебная фаза comment выставила Done незавершённой
+      // задаче, потому что проверялся лишь config.statuses.
+      // Фаза не резолвится (ручной вызов MCP из чужого клиента) → fail-open:
+      // прежние правила, иначе сломались бы все внешние интеграции.
+      const guardPhase = resolveGuardPhase(cwd);
+      const transitionError = guardPhase
+        ? phaseStatusTransitionError(
+            getWorkflowForTask(cwd, task),
+            // В транзиенте задача в In Progress (VL-196) — база проверки это
+            // статус ДО фазы, иначе штатные раны отклонялись бы
+            getPhaseTransientStatus(cwd, id, guardPhase) ?? task.status,
+            guardPhase,
+            args.status,
+          )
+        : null;
+      if (transitionError) {
+        errors.push(transitionError);
+      } else {
+        updates.status = args.status;
+        statusPart = `Статус: ${args.status}`;
+      }
     }
   }
 

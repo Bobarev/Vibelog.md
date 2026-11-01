@@ -221,6 +221,60 @@ export function getStatusAfterPhase(
 }
 
 /**
+ * Проверяет, вправе ли фаза перевести задачу из currentStatus в requestedStatus
+ * (VL-245). Возвращает текст ошибки для сводки MCP-инструмента либо null.
+ *
+ * Зачем отдельная функция: `isPhaseAllowed`/`getStatusAfterPhase` описывают
+ * инварианты workflow, но проверить их можно было только в оркестраторе —
+ * сама запись статуса идёт через `backlog_finish_phase`, и фаза `comment`
+ * (служебная, статус не меняет) выставила Done у VL-219 (инцидент VL-231).
+ * Функция — единая точка правды для границы MCP: её вызывает только
+ * `toolFinishPhase`, а веб/CLI-пути ручных переносов валидируются `canMoveTo`.
+ *
+ * Семантика:
+ * - служебная фаза (SERVICE_PHASES) не двигает статус вообще: для неё любая
+ *   смена статуса — запрет (ручные пути идут мимо MCP, флага-исключения в
+ *   схеме инструмента нет — агент не должен выписывать себе разрешение);
+ * - иначе запрошенный статус обязан совпадать с `produces_status` перехода
+ *   «currentStatus + phase» (ветвление и fix-циклы — обычные переходы);
+ * - переход не найден (фаза недопустима из статуса, фаза не двигает статус,
+ *   `produces_status: null`) → запрет.
+ *
+ * @param workflow — workflow задачи (`getWorkflowForTask`)
+ * @param currentStatus — статус, ИЗ которого фаза считается запущенной
+ *   (в транзиенте — статус до фазы, см. `getPhaseTransientStatus`)
+ * @param phase — фаза вызывающего (env/мета сессии, не аргумент инструмента)
+ * @param requestedStatus — статус, который фаза пытается записать
+ * @returns null, если переход допустим; иначе — текст ошибки на русском
+ */
+export function phaseStatusTransitionError(
+  workflow: Workflow,
+  currentStatus: string,
+  phase: string,
+  requestedStatus: string
+): string | null {
+  if (SERVICE_PHASES.includes(phase)) {
+    return (
+      `Фаза «${phase}» — служебная и не меняет статус задачи: переход «${currentStatus}» → «${requestedStatus}» запрещён. ` +
+      'Статус меняют только workflow-фазы (spec/plan/code/do/close/reject/investigate/materialize); ' +
+      'ручной перевод выполняют CLI (`vibelog task edit --status`) или веб-API (PATCH /api/tasks/:id). ' +
+      `Не повторяй этот вызов со status: заверши фазу без поля status.`
+    );
+  }
+  const produces = getStatusAfterPhase(workflow, currentStatus, phase);
+  if (produces === requestedStatus) return null;
+  const available = getAvailablePhases(workflow, currentStatus);
+  return (
+    `Фаза «${phase}» из статуса «${currentStatus}» не даёт переход в «${requestedStatus}»` +
+    (produces !== null
+      ? `: она переводит задачу в «${produces}»`
+      : `: перехода «${currentStatus}» + «${phase}» в workflow нет`) +
+    (available.length > 0 ? ` (доступные фазы из «${currentStatus}»: ${available.join(', ')})` : '') +
+    '. Не повторяй вызов с этим status.'
+  );
+}
+
+/**
  * Разрешена ли фаза из текущего статуса по workflow.
  *
  * Служебные фазы (comment/prompt/analyze/resume) всегда разрешены —
