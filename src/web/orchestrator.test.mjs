@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { renderPrompt, startAnalyze, startPhase, startPrompt, startResume, startTaskPhase, getRun, setSpawnEnvBaseForTests } from '../../dist/web/orchestrator.js';
+import { renderPrompt, startAnalyze, startPhase, startPrompt, startResume, startTaskPhase, getRun, setSpawnEnvBaseForTests, setRunCloseGraceMsForTests, countActiveRuns } from '../../dist/web/orchestrator.js';
 import { handleApi } from '../../dist/web/api.js';
 import { addComment, createTaskFile, getTask, updateTaskFile } from '../../dist/core/store.js';
 import { ensureTaskWorktree } from '../../dist/core/worktree.js';
@@ -86,6 +86,20 @@ if (process.env.VL28_STUB_RESULT) {
   }
 }
 const sleep = Number(process.env.VL28_STUB_SLEEP || 0);
+// VL-276: симуляция «потомок держит stdio». Стаб спавнит отдельный процесс,
+// который НАСЛЕДУЕТ stdout/stderr стаба (stdio: ['ignore', 1, 2]) и висит 30 с,
+// после чего стаб мгновенно выходит. Для родителя (оркестратора) это значит:
+// событие 'exit' приходит, а 'close' — нет (write-end пайпа удерживает внук).
+// Ровно этот сценарий давал вечный лок «Запуск уже выполняется» (VL-248/276).
+if (process.env.VL28_STUB_HOLD_STDOUT) {
+  const cp = require('node:child_process');
+  const grandchild = cp.spawn(
+    process.execPath,
+    ['-e', 'setTimeout(() => {}, 3000)'],
+    { stdio: ['ignore', 1, 2], detached: true }
+  );
+  grandchild.unref();
+}
 if (sleep > 0) {
   setTimeout(() => process.exit(Number(process.env.VL28_STUB_EXIT || 0)), sleep);
 } else {
@@ -2644,6 +2658,82 @@ describe('transient In Progress (VL-196)', () => {
       assert.equal('VL-904' in cache, false, 'кэш почищен');
     } finally {
       resetStubEnv();
+    }
+  });
+});
+
+// ── VL-276: reap залипшего лока (exit без close) ──────────────────────────
+//
+// Регрессия инцидента VL-248: процесс фазы завершился (событие exit пришло),
+// но stdout-пайп удерживает живой потомок → 'close' не приходит → запись
+// activeRuns живёт вечно и каждая следующая попытка получает «Запуск уже
+// выполняется», а статус задачи при этом не меняется (нет прогресса).
+describe('orchestrator: reap залипшего лока (VL-276)', () => {
+  function makeRoot(prefix) {
+    const root = mkTestRoot(prefix);
+    mkdirSync(join(root, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(root, 'backlog', 'config.yml'), 'project_name: VL-276 Test\n', 'utf-8');
+    // Свой экземпляр стаба: общий stubBin удаляется afterAll первого describe,
+    // и при фильтрованном прогоне (-t) его уже нет
+    const bin = join(root, 'qwen-stub-276.cjs');
+    writeFileSync(bin, STUB, 'utf-8');
+    chmodSync(bin, 0o755);
+    return { root, bin };
+  }
+
+  it('лок снимается по exit, повторный запуск проходит; getRun не врёт про running', async () => {
+    const { root, bin } = makeRoot('vibelog-vl276-reap-');
+    createTaskFile(root, { id: 'VL-1', title: 'Залипший ран (VL-276)', status: 'Spec' });
+    // Короткий grace: тест не должен ждать прод-значение 2 с
+    setRunCloseGraceMsForTests(150);
+    setStubEnv({ VIBELOG_QWEN_BIN: bin, VL28_STUB_HOLD_STDOUT: '1', VL28_STUB_EXIT: '0' });
+    try {
+      const first = startPhase(root, 'VL-1', 'plan');
+      assert.equal(first.started, true, JSON.stringify(first));
+      // Ждём снятия лока: finalize по exit-таймеру кладёт завершённый ран в lastRuns
+      let run = null;
+      for (let i = 0; i < 200; i++) {
+        run = getRun('VL-1');
+        if (run === null || run.running === false) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      assert.ok(run === null || run.running === false, 'мёртвый ран не должен числиться running');
+      // AC2: если запись есть — это завершённый ран (exitCode), а не вечный running
+      if (run !== null) {
+        assert.equal(run.exitCode, 0, `ожидался завершённый ран: ${JSON.stringify(run)}`);
+      }
+      // countActiveRuns не считает мёртвый ран активным
+      assert.equal(countActiveRuns(), 0, 'мёртвый ран не занимает слот параллельности');
+      // AC1: повторный запуск той же задачи НЕ получает «Запуск уже выполняется»
+      setStubEnv({ VL28_STUB_HOLD_STDOUT: undefined, VL28_STUB_EXIT: '0' });
+      const second = startPhase(root, 'VL-1', 'plan');
+      assert.equal('error' in second, false, `повторный запуск отклонён: ${JSON.stringify(second)}`);
+      assert.equal(second.started, true, JSON.stringify(second));
+      await waitDone('VL-1', 6000);
+    } finally {
+      setRunCloseGraceMsForTests(null);
+      setStubEnv({ VIBELOG_QWEN_BIN: undefined, VL28_STUB_HOLD_STDOUT: undefined, VL28_STUB_EXIT: undefined });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('живой ран не снимается reap-ом (регрессия guard-а двойного запуска)', async () => {
+    const { root, bin } = makeRoot('vibelog-vl276-live-');
+    createTaskFile(root, { id: 'VL-2', title: 'Живой ран (VL-276)', status: 'Spec' });
+    setRunCloseGraceMsForTests(150);
+    setStubEnv({ VIBELOG_QWEN_BIN: bin, VL28_STUB_SLEEP: '1500', VL28_STUB_EXIT: '0' });
+    try {
+      const first = startPhase(root, 'VL-2', 'plan');
+      assert.equal(first.started, true, JSON.stringify(first));
+      const run = getRun('VL-2');
+      assert.equal(run.running, true, 'живой процесс числится running');
+      const dup = startPhase(root, 'VL-2', 'plan');
+      assert.ok('error' in dup && /Запуск уже выполняется \(VL-2\)/.test(dup.error), JSON.stringify(dup));
+      await waitDone('VL-2', 8000);
+    } finally {
+      setRunCloseGraceMsForTests(null);
+      setStubEnv({ VIBELOG_QWEN_BIN: undefined, VL28_STUB_SLEEP: undefined, VL28_STUB_EXIT: undefined });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
