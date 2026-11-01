@@ -100,28 +100,33 @@ function referenceList(flags: FlagValues, cwd: string): void {
 function referenceAdd(positional: string[], flags: FlagValues, cwd: string): Promise<void> {
   const title = positional.join(' ');
   if (!title) {
-    printError('Укажите заголовок: vibelog reference add <title> [--type T] [--url ...] [--path ...] [--tags ...] [-d desc] [--no-clone] [--cache]');
+    printError('Укажите заголовок: vibelog reference add <title> [--type T] [--url ...] [--path ...] [--tags ...] [-d desc] [--no-clone] [--cache] (--url можно повторять: ссылки кэшируются в один md-файл)');
     return Promise.resolve();
   }
   try {
+    // VL-291: --url повторяемый — первая ссылка становится url, остальные urls
+    const urls = getFlagArray(flags, 'url').map(u => u.trim()).filter(Boolean);
     const tags = getFlagArray(flags, 'tags')
       .flatMap(t => t.split(',')).map(s => s.trim()).filter(Boolean);
     const ref = writeReference(cwd, {
       title,
       type: getFlag(flags, 'type', 'repo'),
-      url: getFlag(flags, 'url', '') || undefined,
+      url: urls[0],
+      urls,
       path: getFlag(flags, 'path', '') || undefined,
       tags,
       content: getFlag(flags, 'description', '') || '',
     });
-    printSuccess(`Reference ${ref.id} создан: ${ref.title} (${ref.type})`);
+    const linksInfo = urls.length > 1 ? ` (ссылок: ${urls.length})` : '';
+    printSuccess(`Reference ${ref.id} создан: ${ref.title} (${ref.type})${linksInfo}`);
     // Клонирование: default=true для type=repo; --no-clone — только метаданные
     if (ref.type === 'repo' && ref.url && !hasFlag(flags, 'no-clone')) {
       const res = cloneReferenceRepo(cwd, ref);
       if (res.cloned) printSuccess(res.message);
       else printInfo(res.message);
     }
-    // Кэш (VL-194): --cache скачивает и конвертирует url/doc прямо при add
+    // Кэш (VL-194): --cache скачивает и конвертирует url/doc прямо при add;
+    // VL-291: ссылок может быть несколько — кэш склеивается в один файл
     if (hasFlag(flags, 'cache')) {
       if (!ref.url) {
         printError('Для --cache нужен --url (или --type repo клонируется сам).');
@@ -129,8 +134,16 @@ function referenceAdd(positional: string[], flags: FlagValues, cwd: string): Pro
         return Promise.resolve();
       }
       return cacheReference(cwd, ref).then(res => {
-        if (res.cached) printSuccess(res.message);
-        else { printError(res.message); process.exitCode = 1; }
+        if (res.cached && res.partial) {
+          // частичный успех: кэш записан, но часть ссылок не скачалась
+          printError(res.message);
+          process.exitCode = 1;
+        } else if (res.cached) {
+          printSuccess(res.message);
+        } else {
+          printError(res.message);
+          process.exitCode = 1;
+        }
       });
     }
     return Promise.resolve();
@@ -157,6 +170,8 @@ function referenceView(positional: string[], cwd: string): void {
   console.log(`\n${r.id}: ${r.title}`);
   console.log(`  тип: ${r.type} | создан: ${r.created_date}${r.tags.length ? ` | теги: ${r.tags.join(', ')}` : ''}`);
   if (r.url) console.log(`  url: ${r.url}`);
+  // VL-291: дополнительные ссылки печатаем отдельными строками (порядок кэша)
+  (r.urls || []).forEach((u, i) => console.log(`  url[${i + 2}]: ${u}`));
   if (r.path) console.log(`  path: ${r.path}`);
   console.log(`  linked_tasks: ${r.linked_tasks.length ? r.linked_tasks.join(', ') : '(нет)'}`);
   if (r.cached_path) console.log(`  кэш: ${r.cached_path} (${r.cached_at || '?'})`);
@@ -252,10 +267,10 @@ async function referenceSync(positional: string[], flags: FlagValues, cwd: strin
       return;
     }
     const res = await refreshReferenceCache(cwd, entry.reference);
-    if (res.updated) { printSuccess(res.message); cacheResult.updated.push(entry.reference.id); }
-    else if (res.message.includes('без изменений') || res.message.includes('пропуск')) {
-      printInfo(res.message); cacheResult.skipped.push(entry.reference.id);
-    } else { printError(res.message); cacheResult.failed.push({ id: entry.reference.id, error: res.message }); }
+    // VL-291: классификация по явному status, а не по подстрокам сообщения
+    if (res.status === 'updated') { printSuccess(res.message); cacheResult.updated.push(entry.reference.id); }
+    else if (res.status === 'skipped' || res.status === 'none') { printInfo(res.message); cacheResult.skipped.push(entry.reference.id); }
+    else { printError(res.message); cacheResult.failed.push({ id: entry.reference.id, error: res.message }); }
   } else if (wantAll) {
     cacheResult = await syncReferenceCaches(cwd, { all: true });
     for (const cid of cacheResult.updated) printSuccess(`Кэш обновлён: ${cid}`);

@@ -26,11 +26,11 @@ Vibelog.md реализует MCP-сервер поверх stdio (JSON-RPC 2.0)
 | `milestone_remove` | Удалить веху (clear / keep / reassign задач) |
 | `milestone_archive` | Архивировать веху |
 | `reference_list` | Список references (фильтры type/tags) |
-| `reference_add` | Добавить reference; для repo клонирует в backlog/references/data/ |
+| `reference_add` | Добавить reference; для repo клонирует в backlog/references/data/; несколько ссылок — `url` + `urls` (кэш склеивается в один md) |
 | `reference_view` | Показать reference (метаданные, linked_tasks, тело) |
 | `reference_search` | Поиск references по запросу |
 | `reference_remove` | Удалить reference (клон в data/ сохраняется) |
-| `reference_update` | Обновить теги/описание reference (полная замена) |
+| `reference_update` | Обновить теги/описание/набор ссылок reference (полная замена) |
 | `reference_link` | Двусторонняя связь reference ↔ задача (linked_tasks ↔ task.references) |
 | `reference_sync` | Доклонировать отсутствующие репозитории (type=repo) |
 

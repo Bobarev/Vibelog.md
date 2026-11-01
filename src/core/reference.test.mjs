@@ -18,6 +18,7 @@ import {
   listReferences, getReference, writeReference, updateReference,
   removeReference, searchReferences, findByPath, findByTask,
   cloneReferenceRepo, syncReferenceRepos, linkReferenceTask,
+  referenceUrls,
 } from '../../dist/core/reference.js';
 import { parseFrontmatter } from '../../dist/core/frontmatter.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
@@ -288,4 +289,79 @@ describe('VL-152 — cloneReferenceRepo / syncReferenceRepos', () => {
     assert.equal(removeReference(testRoot, 'ref-20'), true);
     assert.ok(existsSync(join(refsDir, 'data', 'local-src', 'README.md')), 'клон сохранён');
   });
+
+// ── VL-291: множественные url (urls) ──
+describe('VL-291 — несколько URL у reference', () => {
+  it('round-trip: url + urls (2 доп. ссылки)', () => {
+    const ref = createReference({
+      id: 'ref-90', title: 'Multi', type: 'url',
+      url: 'https://a.example/1', urls: ['https://b.example/2', 'https://c.example/3'],
+      created_date: '2026-01-01',
+    });
+    assert.deepEqual(ref.urls, ['https://b.example/2', 'https://c.example/3']);
+    const md = referenceToMarkdown(ref, 'тело');
+    const parsed = markdownToReference(md);
+    assert.equal(parsed.reference.url, 'https://a.example/1');
+    assert.deepEqual(parsed.reference.urls, ['https://b.example/2', 'https://c.example/3']);
+    assert.deepEqual(referenceUrls(parsed.reference), [
+      'https://a.example/1', 'https://b.example/2', 'https://c.example/3',
+    ], 'порядок ссылок сохранён');
+  });
+
+  it('одиночный url: frontmatter без ключа urls (обратная совместимость)', () => {
+    const ref = createReference({ id: 'ref-91', title: 'Single', type: 'url', url: 'https://a.example/1' });
+    assert.equal(ref.urls, undefined);
+    const md = referenceToMarkdown(ref, '');
+    assert.ok(!md.includes('urls:'), md);
+    const parsed = markdownToReference(md);
+    assert.equal(parsed.reference.urls, undefined);
+    assert.deepEqual(referenceUrls(parsed.reference), ['https://a.example/1']);
+  });
+
+  it('urls без url: первая ссылка продвигается в url', () => {
+    const ref = createReference({ id: 'ref-92', title: 'Promote', type: 'url', urls: ['https://a/1', 'https://b/2'] });
+    assert.equal(ref.url, 'https://a/1');
+    assert.deepEqual(ref.urls, ['https://b/2']);
+  });
+
+  it('дедуп и trim доп. ссылок, дубль первой отбрасывается', () => {
+    const ref = createReference({
+      id: 'ref-93', title: 'Dedup', type: 'url',
+      url: 'https://a/1',
+      urls: [' https://a/1 ', '', '  ', 'https://b/2', 'https://b/2'],
+    });
+    assert.deepEqual(ref.urls, ['https://b/2']);
+  });
+
+  it('updateReference({title}) НЕ теряет urls (регрессия merge)', () => {
+    const created = writeReference(testRoot, {
+      id: 'ref-94', title: 'Keep', type: 'url',
+      url: 'https://a/1', urls: ['https://b/2', 'https://c/3'],
+    });
+    assert.deepEqual(created.urls, ['https://b/2', 'https://c/3']);
+    const updated = updateReference(testRoot, 'ref-94', { title: 'Keep renamed' });
+    assert.ok(updated);
+    assert.deepEqual(updated.reference.urls, ['https://b/2', 'https://c/3'], 'urls пережили rename');
+    // link/teg-апдейт тоже не должен стирать urls
+    const linked = updateReference(testRoot, 'ref-94', { tags: ['x'] });
+    assert.deepEqual(linked.reference.urls, ['https://b/2', 'https://c/3']);
+    // сохранение на диск + чтение
+    const reread = getReference(testRoot, 'ref-94');
+    assert.deepEqual(reread.reference.urls, ['https://b/2', 'https://c/3']);
+  });
+
+  it('updateReference({urls: []}) очищает доп. ссылки', () => {
+    writeReference(testRoot, { id: 'ref-95', title: 'Clear', type: 'url', url: 'https://a/1', urls: ['https://b/2'] });
+    const cleared = updateReference(testRoot, 'ref-95', { urls: [] });
+    assert.equal(cleared.reference.urls, undefined);
+    const md = readFileSync(getReference(testRoot, 'ref-95').path, 'utf-8');
+    assert.ok(!md.includes('urls:'), md);
+  });
+
+  it('searchReferences находит по дополнительной ссылке', () => {
+    writeReference(testRoot, { id: 'ref-96', title: 'Searchable', type: 'url', url: 'https://a/1', urls: ['https://unique-host-96.example/x'] });
+    const found = searchReferences(testRoot, 'unique-host-96');
+    assert.ok(found.some(e => e.reference.id === 'ref-96'), JSON.stringify(found.map(e => e.reference.id)));
+  });
+});
 });
