@@ -1,11 +1,11 @@
 ---
 id: VL-285
 title: 'docs: снова привести README к Standard Readme и закрепить защиту от раздувания (doc-переносы + гейты в шаблонах фаз + AGENTS.md + тест)'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-01 22:00'
-updated_date: '2026-11-01 22:56'
+updated_date: '2026-11-02 00:05'
 due_date: ''
 labels: []
 dependencies: []
@@ -29,13 +29,13 @@ lessons:
   - lesson-156
   - lesson-50
 token_usage:
-  input: 5506940
-  output: 27339
-  cache: 5220352
-  total: 5534279
-  requests: 90
-  duration_ms: 1405030
-  reasoning: 12922
+  input: 6421720
+  output: 32831
+  cache: 6104064
+  total: 6454551
+  requests: 113
+  duration_ms: 1561133
+  reasoning: 15697
   by_phase:
     code:
       input: 4917006
@@ -48,10 +48,10 @@ token_usage:
       cache: 352256
       requests: 13
     close:
-      input: 207385
-      output: 1209
-      cache: 172032
-      requests: 6
+      input: 1122165
+      output: 6701
+      cache: 1055744
+      requests: 29
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -159,5 +159,18 @@ author: @agent
 created: 2026-11-01 22:56
 ---
 Фаза Close прервана: конфликт слияния vb/vl-285 → master (файлы: UU README.md). Merge остановлен на контентном конфликте README.md (git merge --no-ff vb/vl-285: «Auto-merging README.md / CONFLICT (content)»; AGENTS.md слился автоматически). Конфликт не резолвил и merge --abort не делал — файл оставлен в состоянии UU для ручного разбора. Прочие шаги (тесты, DoD, статус, worktree/branch, docs-коммиты) не выполнялись: worktree .vibelog/worktrees/vl-285 и ветка vb/vl-285 сохранены, задача остаётся в статусе Review. Разреши конфликт README.md вручную (ветка несёт 76-строчный README по Standard Readme, master за это время получил правки README от VL-286 и соседних задач) и повтори Фазу Close.
+---
+author: @agent
+created: 2026-11-01 22:56
+---
+Фаза close прервана агентом (aborted): Фаза Close прервана: конфликт слияния vb/vl-285 → master (файлы: UU README.md). Merge остановлен на контентном конфликте README.md (git merge --no-ff vb/vl-285: «Auto-merging README.md / CONFLICT (content)»; AGENTS.md слился автоматически). Конфликт не резолвил и merge --abort не делал — файл оставлен в состоянии UU для ручного разбора. Прочие шаги (тесты, DoD, статус, worktree/branch, docs-коммиты) не выполнялись: worktree .vibelog/worktrees/vl-285 и ветка vb/vl-285 сохранены, задача остаётся в — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-02 00:05
+---
+Фаза Close выполнена. Ветка vb/vl-285 слита в master (merge-коммит 50461e4 + docs-коммит 79d0fb8 — резолв конфликта README был выполнен до этого рана), worktree .vibelog/worktrees/vl-285 удалена, ветка vb/vl-285 удалена.
+Проверки: сборка `pnpm build` — зелёная; ранний точечный фильтр по diff'у merge (src/web/readme-standard.test.mjs + src/web/phase-prompt.test.mjs, следящий за templates/ и AGENTS.md) — 81 passed; полный `pnpm test` — 129 файлов, 2406 passed, 4 skipped, без падений. Сборка за фазу один раз.
+Коммиты этой фазы: 6775eb4 «docs(task): VL-285 — refs и lessons» (lesson-156, созданный в Code), db5a1cf «docs: VL-285 — документация и CHANGELOG» (запись Unreleased в CHANGELOG.md). README в этой фазе не расширялся: 77 строк, инвариант-тест проходит.
+DoD: все три пункта (тесты проходят, документация обновлена, нет регрессий) выполнены.
 ---
 <!-- COMMENTS:END -->
