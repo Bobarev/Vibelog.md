@@ -830,6 +830,49 @@ describe('VL-157 — переносимость промптов', () => {
   });
 });
 
+// ── VL-292: один write-вызов в Spec (инварианты осознанно, не удалять при рефакторинге) ──
+//
+// Инцидент VL-291: модель дробила backlog_update_task на серию частичных вызовов
+// (type → priority+type → labels+type → type → type…) и попадала под loop detection
+// агента → фаза падала, AC оставались пустыми. Чинится ПРОМПТОМ (не детектором),
+// поэтому инварианты проверяют именно текст шаблона: директива «одно поле — не повод
+// для отдельного вызова», правило чтения `applied`/`skipped` и критерий завершения шага.
+// Формулировки в шаблоне менять можно, но эти подстроки сохранять обязательно.
+
+describe('VL-292 — один write-вызов в Spec', () => {
+  const specText = () => readFileSync(join(templatesDir, 'phase-spec.md'), 'utf-8');
+
+  it('все поля — в одном объекте аргументов одного вызова', () => {
+    const text = specText();
+    assert.ok(text.includes('ОДНОМ объекте аргументов'), 'директива «все поля в одном объекте аргументов»');
+    assert.ok(text.includes('Серия вызовов «по одному полю»'), 'серия частичных вызовов названа запрещённой');
+    for (const field of ['title', 'type', 'priority', 'labels', 'description', 'references', 'acceptanceCriteria']) {
+      assert.ok(text.includes(field), `перечислено поле ${field}`);
+    }
+  });
+
+  it('правило чтения ответа write-инструмента: applied и skipped', () => {
+    const text = specText();
+    assert.ok(text.includes('Критерий завершения шага 5'), 'блок «критерий завершения шага 5»');
+    assert.ok(text.includes('`applied`'), 'поле applied в правиле чтения ответа');
+    assert.ok(text.includes('`skipped`'), 'поле skipped в правиле чтения ответа');
+    assert.ok(text.includes('НЕ передавай его повторно'), 'запрет повторной передачи уже применённого поля');
+  });
+
+  it('различение ok:false по reason (not_confirmed / denied) и idempotentReplay', () => {
+    const text = specText();
+    assert.ok(text.includes('idempotentReplay'), 'разбор idempotentReplay в ответе');
+    assert.ok(text.includes('not_confirmed'), 'reason not_confirmed — допустим один повтор');
+    assert.ok(text.includes('denied'), 'reason denied — повтор запрещён');
+    assert.ok(text.includes('backlog_finish_phase'), 'после ok — переход к шагу отчёта');
+  });
+
+  it('нет директивы «сначала одно поле, затем другое»', () => {
+    const text = specText();
+    assert.ok(!text.includes('затем передай'), 'последовательная передача полей отсутствует');
+  });
+});
+
 // ── VL-188: переименование шаблонов, phase-do, переопределение проектом ──
 
 describe('VL-188 — шаблоны фаз: имена и переопределение', () => {
