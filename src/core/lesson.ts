@@ -53,6 +53,12 @@ export const LESSON_DEFAULTS = {
   staleDays: 180,
   /** Максимум lessons, подставляемых в промпт фазы (loadLessonsForTask). */
   promptLimit: 5,
+  /**
+   * VL-280: максимум задач техдолга за один вызов lesson_classify.
+   * 1 по умолчанию — создание задач подтверждается вручную, и «пачка из
+   * 40 задач» не должна появляться от одной опечатки в аргументах.
+   */
+  techDebtMaxTasks: 1,
 };
 
 /** Настройки аудита/подстановки lessons (секция `lessons` settings.json). */
@@ -60,6 +66,8 @@ export interface LessonSettings {
   duplicateThreshold: number;
   staleDays: number;
   promptLimit: number;
+  /** VL-280: лимит задач техдолга, создаваемых за вызов. */
+  techDebtMaxTasks: number;
 }
 
 /**
@@ -87,10 +95,13 @@ export function readLessonSettings(cwd: string): LessonSettings {
   pick('duplicateThreshold', 'duplicate_threshold');
   pick('staleDays', 'stale_days');
   pick('promptLimit', 'prompt_limit');
+  // VL-280: лимит задач техдолга за вызов (дробное вниз, минимум 1)
+  pick('techDebtMaxTasks', 'tech_debt_max_tasks');
   // Порог — доля [0..1]; после наложения настроек приводим к допустимому диапазону
   if (result.duplicateThreshold > 1) result.duplicateThreshold = LESSON_DEFAULTS.duplicateThreshold;
   result.promptLimit = Math.floor(result.promptLimit);
   result.staleDays = Math.floor(result.staleDays);
+  result.techDebtMaxTasks = Math.max(1, Math.floor(result.techDebtMaxTasks));
   return result;
 }
 

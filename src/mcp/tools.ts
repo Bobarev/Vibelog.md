@@ -49,6 +49,8 @@ import type { UpdateLessonInput } from '../core/lesson.js';
 import {
   auditLessons, applyLessonAudit, formatLessonAuditMarkdown,
 } from '../core/lesson-audit.js';
+import { classifyLessons } from '../core/lesson-classify.js';
+import { createLlmClient } from '../agent/llm.js';
 import { findBacklogDir, lessonsDir } from '../core/paths.js';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -703,6 +705,30 @@ export function listTools(): ToolDefinition[] {
       },
     },
     {
+      name: 'lesson_classify',
+      description:
+        'Классификация уроков (lessons) и генерация задач техдолга из уроков-обходов (VL-280). ' +
+        'LLM-путь, opt-in — НЕ входит ни в один автоматический прогон/CI-аудит. ' +
+        'Вход: ids[] либо фильтр (status, tags, limit). Выход: для каждого урока kind ∈ ' +
+        '{rule, workaround, fact, stale} + обоснование; кластеры workaround и черновики задач техдолга. ' +
+        'По умолчанию НИЧЕГО не пишет: kind во фронтматтер — только apply=true или confirmIds; ' +
+        'задачи техдолга — только createClusters (ID кластеров из ответа), не более N за вызов ' +
+        '(настройка lessons.tech_debt_max_tasks, дефолт 1). Идемпотентно: повтор по тем же урокам не создаёт дубль.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ids: { type: 'array', items: { type: 'string' }, description: 'ID уроков (lesson-N); приоритетнее фильтра' },
+          status: { type: 'string', description: 'Фильтр по статусу (active/needs-review/outdated/superseded)' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Фильтр по меткам (любое пересечение)' },
+          limit: { type: 'number', description: 'Максимум уроков в выборке (по умолчанию 20)' },
+          apply: { type: 'boolean', description: 'Записать kind во фронтматтер всем классифицированным (по умолчанию false)' },
+          confirmIds: { type: 'array', items: { type: 'string' }, description: 'ID уроков, которым kind разрешено записать' },
+          createClusters: { type: 'array', items: { type: 'string' }, description: 'ID кластеров, для которых создавать задачи техдолга (явное подтверждение)' },
+          maxTasks: { type: 'number', description: 'Лимит задач за вызов (по умолчанию из настроек/1)' },
+        },
+      },
+    },
+    {
       name: 'project_map',
       description:
         'Карта проекта: модули каталога src/ — путь + назначение (первая строка шапки модуля) + экспорты. ' +
@@ -827,6 +853,8 @@ export async function handleToolCall(
       return toolLessonSupersede(args, cwd);
     case 'lesson_audit':
       return toolLessonAudit(args, cwd);
+    case 'lesson_classify':
+      return toolLessonClassify(args, cwd);
     case 'project_map':
       return toolProjectMap(args, cwd);
     // VL-268: инструменты супервизора (фазы, очередь, прогон). Идемпотентность
@@ -2461,6 +2489,90 @@ function toolLessonAudit(args: ToolArgs, cwd: string): string {
 
   const full = buildPayload(true);
   return full.length <= 20000 ? full : buildPayload(false);
+}
+
+/**
+ * lesson_classify (VL-280): LLM-классификация уроков + техдолг из workaround'ов.
+ *
+ * Границы слоя (lesson-34): типы аргументов валидируются здесь — не-массив в
+ * ids/tags/confirmIds/createClusters игнорируется с явным текстом ошибки,
+ * не-число в limit/maxTasks не роняет ядро. Ничего не пишется без явного
+ * подтверждения (AC3/AC5): apply/confirmIds — для kind, createClusters — для
+ * задач техдолга. Ошибки LLM по отдельным урокам попадают в отчёт (AC9),
+ * а не бросают исключение наружу.
+ */
+async function toolLessonClassify(args: ToolArgs, cwd: string): Promise<string> {
+  const bad = (msg: string): string => `Ошибка: ${msg}`;
+  const limit = args.limit;
+  if (limit !== undefined && (typeof limit !== 'number' || !(limit > 0))) {
+    return bad('поле "limit" должно быть положительным числом.');
+  }
+  const maxTasks = args.maxTasks;
+  if (maxTasks !== undefined && (typeof maxTasks !== 'number' || !(maxTasks > 0))) {
+    return bad('поле "maxTasks" должно быть положительным числом.');
+  }
+  if (args.status !== undefined && typeof args.status !== 'string') {
+    return bad('поле "status" должно быть строкой.');
+  }
+  if (args.apply !== undefined && typeof args.apply !== 'boolean') {
+    return bad('поле "apply" должно быть boolean.');
+  }
+  const asList = (value: unknown): string[] | null => {
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) return null;
+    return value.map(v => String(v).trim()).filter(Boolean);
+  };
+  const ids = asList(args.ids);
+  const tags = asList(args.tags);
+  const confirmIds = asList(args.confirmIds);
+  const createClusters = asList(args.createClusters);
+  if (ids === null) return bad('поле "ids" должно быть массивом строк.');
+  if (tags === null) return bad('поле "tags" должно быть массивом строк.');
+  if (confirmIds === null) return bad('поле "confirmIds" должно быть массивом строк.');
+  if (createClusters === null) return bad('поле "createClusters" должно быть массивом строк.');
+
+  // Модель: дефолтная из settings (AC «модель для классификации» — дефолт
+  // проекта, отдельная дешёвая модель не вводится: лишняя настройка без
+  // подтверждённой пользы).
+  let client;
+  try {
+    client = createLlmClient({ cwd });
+  } catch (err) {
+    return bad(`LLM-клиент не создан: ${(err as Error).message}`);
+  }
+
+  const report = await classifyLessons(cwd, {
+    ...(ids.length > 0 ? { ids } : {}),
+    ...(typeof args.status === 'string' ? { status: args.status } : {}),
+    ...(tags.length > 0 ? { tags } : {}),
+    ...(typeof limit === 'number' ? { limit } : {}),
+    ...(args.apply === true ? { apply: true } : {}),
+    ...(confirmIds.length > 0 ? { confirmIds } : {}),
+    ...(createClusters.length > 0 ? { createClusters } : {}),
+    ...(typeof maxTasks === 'number' ? { maxTasks } : {}),
+  }, async (prompt) => {
+    const response = await client.streamChat([
+      { role: 'system', content: prompt.system },
+      { role: 'user', content: prompt.user },
+    ], undefined);
+    return response.text;
+  });
+
+  // JSON-кап вывода (lesson-30): тела цитат и полные черновики описаний в
+  // ответ не кладём — только заголовки/ID, чтобы чат не получал мегабайты;
+  // при нехватке места убираем черновики целиком (кластеры их дублируют).
+  const buildPayload = (includeDrafts: boolean): string => JSON.stringify({
+    total: report.total,
+    summary: report.summary,
+    classifications: report.classifications,
+    applied: report.applied,
+    clusters: report.clusters,
+    ...(includeDrafts ? { drafts: report.drafts } : {}),
+    ...(report.creation ? { creation: report.creation } : {}),
+  }, null, 2);
+
+  const full = buildPayload(true);
+  return truncateToolOutput(full.length <= 20000 ? full : buildPayload(false));
 }
 
 /**

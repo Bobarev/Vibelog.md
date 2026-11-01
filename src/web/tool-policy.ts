@@ -79,6 +79,9 @@ const READ_MARKERS = [
   // VL-279: lesson_audit — по умолчанию read-only (записи только при явных
   // verified/needsReview); природа по умолчанию — чтение отчёта
   'audit',
+  // VL-280: lesson_classify — тоже отчёт по умолчанию (kind пишется только
+  // при apply/confirmIds, задачи — только по createClusters)
+  'classify',
 ] as const;
 
 /** Токенизует имя инструмента: lowercase + split по не-буквенно-цифровым. */
