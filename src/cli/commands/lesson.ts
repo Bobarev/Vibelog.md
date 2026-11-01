@@ -8,6 +8,9 @@
  * - search <query> — поиск по lessons
  * - link <lessonId> <taskId> — двусторонняя связь с задачей (--remove — отвязать)
  * - supersede <oldId> <newId> — пометить oldId как заменённый newId
+ * - audit [--write] [--threshold N] [--stale-days N] [--json] — механический
+ *   аудит актуальности уроков (VL-279): битые пути, висячие ссылки, дубли,
+ *   протухание; --verify/--needs-review — явные правки по списку id
  *
  * Файлы: backlog/lessons/lesson-N-<slug>.md (YAML-фронтматтер + markdown).
  */
@@ -15,11 +18,16 @@
 import { getFlag, getFlagArray, hasFlag } from '../args.js';
 import type { FlagValues } from '../args.js';
 import { printSuccess, printError, printInfo } from '../ui.js';
-import { findBacklogDir } from '../../core/paths.js';
+import { findBacklogDir, lessonsDir } from '../../core/paths.js';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   listLessons, getLesson, createLessonFile,
   searchLessons, linkLesson, supersedeLesson,
 } from '../../core/lesson.js';
+import {
+  auditLessons, applyLessonAudit, formatLessonAuditMarkdown,
+} from '../../core/lesson-audit.js';
 
 /**
  * Выполняет команду lesson.
@@ -55,9 +63,11 @@ export async function runLesson(
       return lessonLink(positional, flags, cwd);
     case 'supersede':
       return lessonSupersede(positional, cwd);
+    case 'audit':
+      return lessonAudit(flags, cwd);
     default:
       printError(`Неизвестная подкоманда: ${subcommand}`);
-      printInfo('Доступные: list, create, view, search, link, supersede');
+      printInfo('Доступные: list, create, view, search, link, supersede, audit');
   }
 }
 
@@ -184,6 +194,93 @@ function lessonSupersede(positional: string[], cwd: string): void {
   try {
     supersedeLesson(cwd, oldId, newId);
     printSuccess(`Lesson ${newId} заменяет ${oldId} (${oldId} → superseded, ${newId} → active).`);
+  } catch (err) {
+    printError((err as Error).message);
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * `vibelog lesson audit` — механический аудит актуальности (VL-279).
+ *
+ * Без флагов — только отчёт в stdout (read-only). `--write` дополнительно
+ * пишет backlog/lessons/AUDIT.md. Пороги: `--threshold` (дубли, 0..1) и
+ * `--stale-days` (протухание), по умолчанию — секция `lessons` настроек.
+ * `--json` — машиночитаемый вывод (для CI).
+ */
+function lessonAudit(flags: FlagValues, cwd: string): void {
+  const thresholdRaw = getFlag(flags, 'threshold', '');
+  const staleRaw = getFlag(flags, 'stale-days', '');
+  const threshold = thresholdRaw ? Number(thresholdRaw) : undefined;
+  const staleDays = staleRaw ? Number(staleRaw) : undefined;
+  if (threshold !== undefined && (!Number.isFinite(threshold) || threshold <= 0 || threshold > 1)) {
+    printError('--threshold должен быть числом в диапазоне (0, 1].');
+    process.exitCode = 1;
+    return;
+  }
+  if (staleDays !== undefined && (!Number.isFinite(staleDays) || staleDays <= 0)) {
+    printError('--stale-days должен быть положительным числом.');
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    const report = auditLessons(cwd, {
+      ...(threshold !== undefined ? { duplicateThreshold: threshold } : {}),
+      ...(staleDays !== undefined ? { staleDays } : {}),
+    });
+
+    if (hasFlag(flags, 'write')) {
+      const backlogDir = findBacklogDir(cwd);
+      if (!backlogDir) {
+        printError('Backlog не найден. Выполните: vibelog init');
+        process.exitCode = 1;
+        return;
+      }
+      const target = join(lessonsDir(backlogDir), 'AUDIT.md');
+      writeFileSync(target, formatLessonAuditMarkdown(report), 'utf-8');
+      printSuccess(`Отчёт аудита записан: ${target}`);
+    }
+
+    if (hasFlag(flags, 'json')) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(`\nАудит lessons: проверено ${report.total}, находок ${report.findings.length}`);
+      console.log(`  дубли → порог ${report.config.duplicateThreshold}; протухание → ${report.config.staleDays} дн.\n`);
+      for (const [type, count] of Object.entries(report.summary)) {
+        console.log(`  ${type}: ${count}`);
+      }
+      if (report.byLesson.length > 0) {
+        console.log('');
+        for (const group of report.byLesson) {
+          console.log(`  ${group.id} (${group.status}) — ${group.title}`);
+          for (const f of group.findings) console.log(`    · ${f.type}: ${f.message}`);
+        }
+      }
+      console.log('');
+    }
+
+    // Явные решения по конкретным id — не «массовые правки»: только с флагами
+    const verifyIds = getFlagArray(flags, 'verify')
+      .flatMap(v => v.split(',')).map(s => s.trim()).filter(Boolean);
+    const reviewIds = getFlagArray(flags, 'needs-review')
+      .flatMap(v => v.split(',')).map(s => s.trim()).filter(Boolean);
+    if (verifyIds.length > 0 || reviewIds.length > 0) {
+      const applied = applyLessonAudit(cwd, {
+        ...(verifyIds.length > 0 ? { verified: verifyIds } : {}),
+        ...(reviewIds.length > 0 ? { needsReview: reviewIds } : {}),
+      });
+      if (applied.verified.length > 0) {
+        printSuccess(`Отмечено проверенными (last_verified, verified_by=auto): ${applied.verified.join(', ')}`);
+      }
+      if (applied.needsReview.length > 0) {
+        printSuccess(`Переведено в needs-review: ${applied.needsReview.join(', ')}`);
+      }
+      if (applied.notFound.length > 0) {
+        printError(`Не найдены: ${applied.notFound.join(', ')}`);
+        process.exitCode = 1;
+      }
+    }
   } catch (err) {
     printError((err as Error).message);
     process.exitCode = 1;

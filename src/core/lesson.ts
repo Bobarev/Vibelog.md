@@ -28,9 +28,71 @@ import { join } from 'node:path';
 import { parseFrontmatter, serializeFrontmatter } from './frontmatter.js';
 import { findBacklogDir, lessonsDir } from './paths.js';
 import { getTask, updateTaskFile } from './store.js';
+import { loadSettings } from './settings.js';
 
 /** Допустимые статусы lesson. */
-export const LESSON_STATUSES = ['active', 'outdated', 'superseded'];
+export const LESSON_STATUSES = ['active', 'needs-review', 'outdated', 'superseded'];
+
+/** Допустимые значения поля verified_by (VL-279). */
+export const LESSON_VERIFIERS = ['auto', 'agent', 'human'];
+
+/** Допустимые значения поля kind (VL-279). */
+export const LESSON_KINDS = ['rule', 'workaround', 'fact'];
+
+/**
+ * Значения kind по умолчанию для решения задач аудита (VL-279):
+ * порог схожести дублей, срок актуальности урока и кап подстановки.
+ *
+ * Живут в коде, а не в конфиге, потому что нужны и без .vibelog/settings.json
+ * (чистый клон репозитория, CI). Переопределяются секцией `lessons` настроек.
+ */
+export const LESSON_DEFAULTS = {
+  /** Порог схожести пары lessons (Jaccard по title/tags/body) для duplicate_of. */
+  duplicateThreshold: 0.35,
+  /** Сколько дней урок считается актуальным без last_verified/updated_date. */
+  staleDays: 180,
+  /** Максимум lessons, подставляемых в промпт фазы (loadLessonsForTask). */
+  promptLimit: 5,
+};
+
+/** Настройки аудита/подстановки lessons (секция `lessons` settings.json). */
+export interface LessonSettings {
+  duplicateThreshold: number;
+  staleDays: number;
+  promptLimit: number;
+}
+
+/**
+ * Читает секцию `lessons` настроек и накладывает её на LESSON_DEFAULTS.
+ *
+ * Битые значения (не число, отрицательное, 0) игнорируются — настройка
+ * не должна ломать ни аудит, ни подстановку уроков в промпт: лучше дефолт.
+ *
+ * @param cwd — рабочая директория (корень проекта с .vibelog/settings.json)
+ */
+export function readLessonSettings(cwd: string): LessonSettings {
+  const result: LessonSettings = { ...LESSON_DEFAULTS };
+  let raw: unknown;
+  try {
+    raw = loadSettings(cwd).lessons;
+  } catch {
+    return result;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return result;
+  const section = raw as Record<string, unknown>;
+  const pick = (key: keyof LessonSettings, prop: string): void => {
+    const value = Number(section[prop]);
+    if (Number.isFinite(value) && value > 0) result[key] = value;
+  };
+  pick('duplicateThreshold', 'duplicate_threshold');
+  pick('staleDays', 'stale_days');
+  pick('promptLimit', 'prompt_limit');
+  // Порог — доля [0..1]; после наложения настроек приводим к допустимому диапазону
+  if (result.duplicateThreshold > 1) result.duplicateThreshold = LESSON_DEFAULTS.duplicateThreshold;
+  result.promptLimit = Math.floor(result.promptLimit);
+  result.staleDays = Math.floor(result.staleDays);
+  return result;
+}
 
 /** Объект lesson (метаданные; тело — отдельно в LessonEntry). */
 export interface Lesson {
@@ -44,6 +106,16 @@ export interface Lesson {
   updated_date: string;
   /** id заменённого lesson ('' — не заменяет ничего). */
   supersedes: string;
+  // VL-279: additive-поля аудита. Пустая строка / null — «не задано»:
+  // старые файлы без этих ключей читаются без ошибок.
+  /** Дата последней проверки актуальности (YYYY-MM-DD) или ''. */
+  last_verified: string;
+  /** Кто проверил: auto|agent|human ('' — не задано). */
+  verified_by: string;
+  /** Glob-пути/имена символов, которые валидируются механически. */
+  applies_to: string[];
+  /** Тип урока: rule|workaround|fact (null — не классифицирован). */
+  kind: string | null;
 }
 
 /** Входные данные lesson. */
@@ -57,6 +129,14 @@ export interface LessonInput {
   created_date?: string;
   updated_date?: string;
   supersedes?: string;
+  /** VL-279: дата последней проверки актуальности (YYYY-MM-DD). */
+  last_verified?: string;
+  /** VL-279: кто проверил — auto|agent|human. */
+  verified_by?: string;
+  /** VL-279: glob-пути/имена символов для механической проверки. */
+  applies_to?: string[];
+  /** VL-279: тип урока — rule|workaround|fact (null/'' — не задан). */
+  kind?: string | null;
 }
 
 /** Запись lesson: метаданные + тело + путь к файлу. */
@@ -124,6 +204,10 @@ export function createLesson(input: LessonInput): Lesson {
     created_date: input.created_date || '',
     updated_date: input.updated_date || '',
     supersedes: input.supersedes || '',
+    last_verified: input.last_verified || '',
+    verified_by: input.verified_by || '',
+    applies_to: input.applies_to || [],
+    kind: input.kind || null,
   };
 }
 
@@ -132,6 +216,11 @@ export function createLesson(input: LessonInput): Lesson {
  *
  * supersedes пустой → поле пишется как '' (пустая строка, не null) —
  * парсинг обратно даёт ''.
+ *
+ * VL-279: новые поля (last_verified/verified_by/applies_to/kind) пишутся
+ * всегда — '' / [] / null. Так файл, прошедший через update, сразу получает
+ * явный вид полей (аудит опирается на наличие ключа) и round-trip остаётся
+ * точным: markdownToLesson(lessonToMarkdown(l)) === l.
  */
 export function lessonToMarkdown(lesson: Lesson, body?: string): string {
   const frontmatter: Record<string, unknown> = {
@@ -144,6 +233,10 @@ export function lessonToMarkdown(lesson: Lesson, body?: string): string {
     created_date: lesson.created_date,
     updated_date: lesson.updated_date,
     supersedes: lesson.supersedes || '',
+    last_verified: lesson.last_verified || '',
+    verified_by: lesson.verified_by || '',
+    applies_to: lesson.applies_to || [],
+    kind: lesson.kind || null,
   };
   return serializeFrontmatter(frontmatter, body || '');
 }
@@ -160,6 +253,11 @@ function toArray(value: unknown): string[] {
  */
 export function markdownToLesson(content: string): { lesson: Lesson; body: string } {
   const { data, body } = parseFrontmatter(content);
+  // VL-279: поля добавлены additive — старые файлы без ключей читаются с
+  // дефолтами ('' / [] / null). kind нормализуется в нижний регистр и
+  // отбрасывается, если значение вне LESSON_KINDS (битый фронтматтер не
+  // должен ронять listLessons).
+  const rawKind = data.kind === null || data.kind === undefined ? '' : String(data.kind).toLowerCase();
   return {
     lesson: {
       id: (data.id as string) || '',
@@ -171,6 +269,10 @@ export function markdownToLesson(content: string): { lesson: Lesson; body: strin
       created_date: (data.created_date as string) || '',
       updated_date: (data.updated_date as string) || '',
       supersedes: (data.supersedes as string) || '',
+      last_verified: (data.last_verified as string) || '',
+      verified_by: (data.verified_by as string) || '',
+      applies_to: toArray(data.applies_to),
+      kind: LESSON_KINDS.includes(rawKind) ? rawKind : null,
     },
     body: body || '',
   };
@@ -261,6 +363,11 @@ export interface UpdateLessonInput {
   linked_tasks?: string[];
   supersedes?: string;
   content?: string;
+  // VL-279: поля аудита
+  last_verified?: string;
+  verified_by?: string;
+  applies_to?: string[];
+  kind?: string | null;
 }
 
 /**
@@ -286,6 +393,11 @@ export function updateLesson(
     source_tasks: updates.source_tasks !== undefined ? updates.source_tasks : entry.lesson.source_tasks,
     linked_tasks: updates.linked_tasks !== undefined ? updates.linked_tasks : entry.lesson.linked_tasks,
     supersedes: updates.supersedes !== undefined ? updates.supersedes : entry.lesson.supersedes,
+    // VL-279: поля аудита — additive, передаются только при явном запросе
+    last_verified: updates.last_verified !== undefined ? updates.last_verified : entry.lesson.last_verified,
+    verified_by: updates.verified_by !== undefined ? updates.verified_by : entry.lesson.verified_by,
+    applies_to: updates.applies_to !== undefined ? updates.applies_to : entry.lesson.applies_to,
+    kind: updates.kind !== undefined ? (updates.kind || null) : entry.lesson.kind,
     updated_date: today(),
   };
   const body = updates.content !== undefined ? updates.content : entry.body;
@@ -380,15 +492,22 @@ export function supersedeLesson(cwd: string, oldId: string, newId: string): void
 }
 
 /**
- * Подбирает lessons для подстановки в промпт Plan (VL-153).
+ * Подбирает lessons для подстановки в промпт Plan/Code (VL-153, VL-279).
  *
- * Читает tags задачи и находит активные lessons с теми же tags
- * (case-insensitive, любое пересечение). Возвращает компактные строки
- * вида `- [lesson-N] <title>`.
+ * Читает tags задачи и находит уроки с теми же tags (case-insensitive,
+ * любое пересечение). Возвращает компактные строки `- [lesson-N] <title>`.
  *
- * Учитывается только status='active' — устаревшие/заменённые уроки не
- * подставляются. Если у задачи нет tags, совпадений нет или задача не
- * найдена — возвращается [].
+ * VL-279 — фильтры «не подставлять устаревшее»:
+ * - только status='active' (needs-review/outdated/superseded отбрасываются:
+ *   урок под вопросом или заменённый — неверная инструкция модели);
+ * - дата актуальности (last_verified, иначе updated_date) не старше
+ *   staleDays дней — урок, не проверявшийся полгода, мог описывать уже
+ *   несуществующий API;
+ * - явный кап top-N (promptLimit), чтобы промпт не разбухал на задаче с
+ *   популярными tags.
+ *
+ * Пороги — секция `lessons` settings.json, дефолты — LESSON_DEFAULTS.
+ * Если у задачи нет tags, совпадений нет или задача не найдена — [].
  *
  * @param cwd — рабочая директория
  * @param taskId — ID задачи (VL-N)
@@ -404,8 +523,29 @@ export function loadLessonsForTask(cwd: string, taskId: string): string[] {
   const taskTags = (task.labels || []).map(t => String(t).toLowerCase());
   if (taskTags.length === 0) return [];
 
+  const settings = readLessonSettings(cwd);
+  const now = Date.now();
+  const maxAgeMs = settings.staleDays * 24 * 60 * 60 * 1000;
+
   return listLessons(cwd)
     .filter(e => e.lesson.status === 'active')
     .filter(e => e.lesson.tags.some(t => taskTags.includes(String(t).toLowerCase())))
+    .filter(e => {
+      // Дата проверки: явный last_verified приоритетнее updated_date; нет
+      // обеих дат — урок считается актуальным (нечего протухать).
+      const stamp = e.lesson.last_verified || e.lesson.updated_date;
+      if (!stamp) return true;
+      const time = Date.parse(stamp);
+      if (Number.isNaN(time)) return true;
+      return now - time <= maxAgeMs;
+    })
+    // Свежие вперёд: при капе top-N в промпт попадают проверенные уроки,
+    // а не случайные первые по алфавиту файлов.
+    .sort((a, b) => {
+      const ta = Date.parse(a.lesson.last_verified || a.lesson.updated_date || '') || 0;
+      const tb = Date.parse(b.lesson.last_verified || b.lesson.updated_date || '') || 0;
+      return tb - ta;
+    })
+    .slice(0, settings.promptLimit)
     .map(e => `- [${e.lesson.id}] ${e.lesson.title}`);
 }

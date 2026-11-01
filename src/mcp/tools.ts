@@ -46,7 +46,12 @@ import {
   updateLesson, searchLessons, linkLesson, supersedeLesson,
 } from '../core/lesson.js';
 import type { UpdateLessonInput } from '../core/lesson.js';
-import { findBacklogDir } from '../core/paths.js';
+import {
+  auditLessons, applyLessonAudit, formatLessonAuditMarkdown,
+} from '../core/lesson-audit.js';
+import { findBacklogDir, lessonsDir } from '../core/paths.js';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { markPhaseAborted, getPhaseTransientStatus } from '../core/phase-transient.js';
 // VL-248: терминальность статуса считается по workflow задачи (без хардкода имён)
 import { getWorkflowForTask, phaseStatusTransitionError, isTerminalStatus } from '../core/workflow.js';
@@ -674,6 +679,26 @@ export function listTools(): ToolDefinition[] {
       },
     },
     {
+      name: 'lesson_audit',
+      description:
+        'Механический аудит актуальности lessons (VL-279): битые пути в теле/применении, висячие ссылки на задачи, ' +
+        'поломанные supersedes и циклы, дубли (Jaccard по заголовку/tags/телу), сироты и протухание. ' +
+        'READ-ONLY по умолчанию: возвращает отчёт (findings[] по уроку + сводка по типам). ' +
+        'Записи — только при явном verified/needsReview по конкретным ID (массовых изменений нет): ' +
+        'verified → last_verified=today + verified_by=auto; needsReview → status=needs-review. ' +
+        'Пороги: threshold (дубли 0..1), staleDays (дни), write — записать backlog/lessons/AUDIT.md.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          threshold: { type: 'number', description: 'Порог схожести дублей 0..1 (по умолчанию из настроек/0.35)' },
+          staleDays: { type: 'number', description: 'Порог протухания в днях (по умолчанию из настроек/180)' },
+          write: { type: 'boolean', description: 'Записать отчёт в backlog/lessons/AUDIT.md (по умолчанию false)' },
+          verified: { type: 'array', items: { type: 'string' }, description: 'ID уроков: отметить проверенными (last_verified=today, verified_by=auto)' },
+          needsReview: { type: 'array', items: { type: 'string' }, description: 'ID уроков: перевести в статус needs-review' },
+        },
+      },
+    },
+    {
       name: 'project_map',
       description:
         'Карта проекта: модули каталога src/ — путь + назначение (первая строка шапки модуля) + экспорты. ' +
@@ -796,6 +821,8 @@ export async function handleToolCall(
       return toolLessonLink(args, cwd);
     case 'lesson_supersede':
       return toolLessonSupersede(args, cwd);
+    case 'lesson_audit':
+      return toolLessonAudit(args, cwd);
     case 'project_map':
       return toolProjectMap(args, cwd);
     // VL-268: инструменты супервизора (фазы, очередь, прогон). Идемпотентность
@@ -2360,6 +2387,61 @@ function toolLessonLink(args: ToolArgs, cwd: string): string {
 function toolLessonSupersede(args: ToolArgs, cwd: string): string {
   supersedeLesson(cwd, args.oldId as string, args.newId as string);
   return `Lesson ${args.newId} заменяет ${args.oldId} (${args.oldId} → superseded, ${args.newId} → active).`;
+}
+
+/**
+ * lesson_audit (VL-279): механический аудит актуальности уроков.
+ *
+ * Границы слоя (lesson-34): типы аргументов валидируются здесь — не-число в
+ * threshold/staleDays не роняет ядро TypeError'ом, а даёт явный текст;
+ * не-массив в verified/needsReview игнорируется. Записи выполняются только
+ * по переданным ID: без них инструмент read-only (AC9).
+ */
+function toolLessonAudit(args: ToolArgs, cwd: string): string {
+  const threshold = args.threshold;
+  const staleDays = args.staleDays;
+  if (threshold !== undefined && (typeof threshold !== 'number' || !(threshold > 0) || threshold > 1)) {
+    return 'Ошибка: поле "threshold" должно быть числом в диапазоне (0, 1].';
+  }
+  if (staleDays !== undefined && (typeof staleDays !== 'number' || !(staleDays > 0))) {
+    return 'Ошибка: поле "staleDays" должно быть положительным числом.';
+  }
+  const asIdList = (value: unknown): string[] => (
+    Array.isArray(value) ? value.map(v => String(v).trim()).filter(Boolean) : []
+  );
+  const verified = asIdList(args.verified);
+  const needsReview = asIdList(args.needsReview);
+
+  const report = auditLessons(cwd, {
+    ...(typeof threshold === 'number' ? { duplicateThreshold: threshold } : {}),
+    ...(typeof staleDays === 'number' ? { staleDays } : {}),
+  });
+
+  let auditPath: string | null = null;
+  if (args.write === true) {
+    const backlogDir = findBacklogDir(cwd);
+    if (backlogDir) {
+      auditPath = join(lessonsDir(backlogDir), 'AUDIT.md');
+      writeFileSync(auditPath, formatLessonAuditMarkdown(report), 'utf-8');
+    }
+  }
+
+  const applied = (verified.length > 0 || needsReview.length > 0)
+    ? applyLessonAudit(cwd, {
+      ...(verified.length > 0 ? { verified } : {}),
+      ...(needsReview.length > 0 ? { needsReview } : {}),
+    })
+    : null;
+
+  return truncateToolOutput(JSON.stringify({
+    total: report.total,
+    config: report.config,
+    summary: report.summary,
+    byLesson: report.byLesson,
+    findings: report.findings,
+    ...(auditPath ? { written_to: auditPath } : {}),
+    ...(applied ? { applied } : {}),
+  }, null, 2));
 }
 
 /**

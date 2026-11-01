@@ -303,7 +303,13 @@ vibelog lesson <subcommand> [опции]
   view <id>
   search <query>
   link <lessonId> <taskId> [--remove]  — двусторонняя связь: linked_tasks ↔ task.lessons
-  supersede <oldId> <newId>            — newId заменяет oldId (oldId → superseded)`,
+  supersede <oldId> <newId>            — newId заменяет oldId (oldId → superseded)
+  audit [--write] [--threshold N] [--stale-days N] [--json]
+                                       — механический аудит (VL-279): битые пути,
+                                         висячие ссылки, дубли, протухание;
+                                         --write пишет backlog/lessons/AUDIT.md;
+                                         --verify id1,id2 / --needs-review id1,id2 —
+                                         явные правки по конкретным урокам`,
 
     config: `
 vibelog config <subcommand> [опции]

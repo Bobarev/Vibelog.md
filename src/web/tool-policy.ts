@@ -76,6 +76,9 @@ const READ_MARKERS = [
   'list', 'view', 'search', 'get', 'read', 'ready', 'glob', 'grep', 'help', 'map',
   // VL-268: состояние запуска фазы — чистый read
   'status',
+  // VL-279: lesson_audit — по умолчанию read-only (записи только при явных
+  // verified/needsReview); природа по умолчанию — чтение отчёта
+  'audit',
 ] as const;
 
 /** Токенизует имя инструмента: lowercase + split по не-буквенно-цифровым. */
