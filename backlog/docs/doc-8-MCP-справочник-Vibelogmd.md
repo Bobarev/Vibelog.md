@@ -386,11 +386,13 @@ HTTP-эндпоинты карточки: `POST /api/chat/supervisor/grant-draft
 |---|---|---|---|
 | `title` | string | ✓ | Заголовок |
 | `type` | string | ✓ | repo / url / file / doc / spec |
-| `url` | string | | URL источника |
+| `url` | string | | Первая ссылка источника |
+| `urls` | string[] | | Дополнительные ссылки (VL-291); полный набор = `[url, ...urls]`, порядок = порядок секций кэша |
 | `path` | string | | Локальный путь (относительно backlog/) |
 | `tags` | string[] | | Метки |
 | `description` | string | | Описание (тело документа) |
 | `clone` | boolean | | Для type=repo: клонировать репозиторий в `data/<dir>` (по умолчанию true; идемпотентно — существующий клон пропускается) |
+| `cache` | boolean | | Скачать ссылки и сохранить markdown-кэш; при нескольких `url`/`urls` кэш склеивается в один md секциями в порядке ссылок |
 
 ### reference_view — метаданные + описание
 
@@ -398,7 +400,9 @@ HTTP-эндпоинты карточки: `POST /api/chat/supervisor/grant-draft
 |---|---|---|
 | `id` | string | ✓ |
 
-Возвращает метаданные, linked_tasks и тело документа.
+Возвращает метаданные, linked_tasks и тело документа. Для референса с кэшем — `cached_markdown`, `cached_at`, `source_hash`; `urls_all` содержит полный упорядоченный список ссылок `[url, ...urls]` (VL-291).
+
+Частичный сбой при `cache: true`: кэш записывается, упавшая ссылка помечена в md как `⚠ Ошибка загрузки: …`, ответ несёт признак частичного успеха (`partial` + список `failed`); если не удалась ни одна ссылка — кэш не создаётся.
 
 ### reference_search — поиск
 
@@ -417,10 +421,12 @@ HTTP-эндпоинты карточки: `POST /api/chat/supervisor/grant-draft
 | Параметр | Тип | Required | Описание |
 |---|---|---|---|
 | `id` | string | ✓ | ID reference (ref-N) |
+| `url` | string | | Первая ссылка (полная замена набора) |
+| `urls` | string[] | | Дополнительные ссылки (полная замена набора; `[]` очищает доп. ссылки) |
 | `tags` | string[] | | Метки (полная замена, не merge) |
 | `description` | string | | Описание (markdown, полная замена тела) |
 
-Обновляет только переданные поля. Несуществующий id — ошибка «Reference … не найден.»; вызов без `tags`/`description` — ошибка «Не указаны поля для обновления (tags, description).»
+Обновляет только переданные поля. Несуществующий id — ошибка «Reference … не найден.»; вызов без `url`/`urls`/`tags`/`description` — ошибка «Не указаны поля для обновления (url, urls, tags, description).» Передача `urls` без `url` сохраняет прежнюю первую ссылку, если она не входит в новый набор (VL-291).
 
 ### reference_link — двусторонняя связь с задачей
 
@@ -609,6 +615,11 @@ src/core/reference-cache.ts — Локальный markdown-кэш references (V
 { "name": "reference_add", "arguments": {
   "title": "vibe-kanban", "type": "repo",
   "url": "https://github.com/BloopAI/vibe-kanban.git", "tags": ["orchestration"] } }
+
+// Несколько ссылок в одном референсе (VL-291): кэш склеивается в один md
+{ "name": "reference_add", "arguments": {
+  "title": "Документация API", "type": "url",
+  "urls": ["https://a.example/docs", "https://b.example/docs"], "cache": true } }
 
 // Обновить метаданные референса (VL-164)
 { "name": "reference_update", "arguments": {
