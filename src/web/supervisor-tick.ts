@@ -239,9 +239,10 @@ const ABORTED_COMMENT_RE = /прервана агентом \(aborted\)(?::\s*([
 /**
  * Ищет признак aborted в комментариях задачи (VL-289, fallback после рестарта).
  *
- * Берётся ПОСЛЕДНИЙ комментарий @agent, матчащий маркер: исторические
- * комментарии старых задач маркер не поднимают, если после них был обычный
- * отчёт. Причина вырезается из текста между «(aborted):» и «— статус…».
+ * Смотрится ПОСЛЕДНИЙ комментарий @agent: признак есть только если он сам
+ * матчит маркер. Так исторические aborted-комментарии не поднимают правило
+ * после того, как фазу перезапустили и она оставила обычный отчёт (ложное
+ * срабатывание на норме). Причина вырезается между «(aborted):» и «— статус…».
  *
  * @returns причина либо null; пустая причина → пустая строка (признак есть)
  */
@@ -251,7 +252,7 @@ export function detectAbortedFromComments(task: Task): { reason: string } | null
     const c = comments[i]!;
     if (c.author !== '@agent') continue;
     const m = ABORTED_COMMENT_RE.exec(c.text ?? '');
-    if (m) return { reason: (m[1] ?? '').trim().slice(0, ABORTED_REASON_CHARS) };
+    return m ? { reason: (m[1] ?? '').trim().slice(0, ABORTED_REASON_CHARS) } : null;
   }
   return null;
 }
@@ -647,10 +648,11 @@ export function createAutoBug(cwd: string, ctx: AutoBugContext): { id: string; t
 
   // VL-289: причина от самой фазы первична — если агент сообщил aborted,
   // заголовок и описание строятся от его текста, а не от «нет прогресса».
-  const reasonText = ctx.abortedReason ?? ctx.failReason;
-  const hasAbortedReason = ctx.abortedReason !== undefined && ctx.abortedReason.trim() !== '';
+  const abortedReason = (ctx.abortedReason ?? '').trim();
+  const hasAbortedReason = abortedReason !== '';
+  const reasonText = hasAbortedReason ? abortedReason : ctx.failReason;
   const title = hasAbortedReason
-    ? `[авто] ${ctx.phase} ${ctx.taskId}: фаза прервана — ${shortReason(ctx.abortedReason)}`
+    ? `[авто] ${ctx.phase} ${ctx.taskId}: фаза прервана — ${shortReason(abortedReason)}`
     : `[авто] ${ctx.phase} ${ctx.taskId}: ${shortReason(ctx.failReason)}`;
   const tail = tailLines(ctx.logTail, LOG_TAIL_LINES_BUG);
   const descriptionParts: string[] = [
@@ -665,7 +667,7 @@ export function createAutoBug(cwd: string, ctx: AutoBugContext): { id: string; t
     descriptionParts.push(
       '## Что сообщила фаза (aborted)',
       '',
-      ctx.abortedReason.trim(),
+      abortedReason,
       '',
       'Фаза сама заявила, что нужны действия человека: перезапуск детерминированно ' +
         'воспроизведёт причину, автоматическое лечение остановлено.',
@@ -677,7 +679,7 @@ export function createAutoBug(cwd: string, ctx: AutoBugContext): { id: string; t
   if (
     ctx.lastComment !== undefined &&
     ctx.lastComment.text.trim() !== '' &&
-    ctx.lastComment.text.trim() !== (ctx.abortedReason ?? '').trim()
+    ctx.lastComment.text.trim() !== abortedReason
   ) {
     descriptionParts.push(
       '## Последний отчёт фазы',
@@ -1197,7 +1199,9 @@ export async function runSupervisorTick(cwd: string, deps: TickDeps = {}): Promi
             entry.pid !== undefined && !isPidAlive(entry.pid)
               ? `процесс фазы не найден (pid ${entry.pid}) — вероятен рестарт vibelog browser`
               : 'фаза завершилась без смены статуса задачи (нет прогресса)';
-          const reason = obs.lastRunError ?? entry.lastError ?? deadNote;
+          // VL-289: заявление фазы («нужен человек») важнее прочих причин —
+          // именно его увидят промпт тика и авто-баг
+          const reason = obs.abortedReason ?? obs.lastRunError ?? entry.lastError ?? deadNote;
           entry.status = 'failed';
           entry.lastError = reason;
           entry.pid = undefined;
