@@ -12,7 +12,7 @@
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { isValidToolCall, type ChatMessage } from './llm.js';
+import { isValidToolCall, type ApiMode, type ChatMessage } from './llm.js';
 import { analyzeToolRepeats, type RepeatStats } from './repeat-tracker.js';
 import type { TokenUsage } from '../core/analytics.js';
 
@@ -151,8 +151,23 @@ export interface SessionMeta {
    * от этой отметки — иначе двойной учёт (риск №1 плана VL-198).
    */
   usage_recorded?: TokenUsage;
-  /** Модель LLM (если известна), VL-198. */
+  /** Модель LLM фактического последнего рана (wire-имя), VL-198. */
   model?: string;
+  /**
+   * VL-239: МОДЕЛЬ СЕССИИ — фиксируется при создании сессии и дальше не
+   * переписывается: resume-ран идёт на ней, а не на текущем models.default
+   * (иначе смена default между plan и code незаметно меняла модель на
+   * середине задачи). id из models.available на момент создания — подпись;
+   * если пользователь его переименовал, резолв падает на пару
+   * model_provider + model_name (стабильная идентичность).
+   */
+  model_id?: string;
+  /** VL-239: id провайдера модели сессии (providers[<id>]). */
+  model_provider?: string;
+  /** VL-239: wire-имя модели сессии (что уходит в поле model запроса). */
+  model_name?: string;
+  /** VL-239: режим API, с которым сессия начата (chat|responses). */
+  api_mode?: ApiMode;
   /** Агент-исполнитель: 'vb' | 'qwen', VL-198. */
   agent?: string;
   /**

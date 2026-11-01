@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  findModelByProviderName,
   loadProviders,
   loadModels,
   resolveActiveModel,
@@ -165,6 +166,47 @@ describe('models (VL-209)', () => {
     it('api_mode по умолчанию chat', () => {
       writeSettings(fullSettings());
       expect(resolveModelById(dir, 'direct/plain').apiMode).toBe('chat');
+    });
+  });
+
+  describe('findModelByProviderName (VL-239)', () => {
+    it('находит модель по паре provider + wire-имя', () => {
+      writeSettings(fullSettings());
+      const found = findModelByProviderName(dir, 'direct', 'plain-model');
+      expect(found).toMatchObject({
+        id: 'direct/plain',
+        label: 'direct/plain',
+        providerId: 'direct',
+        model: 'plain-model',
+        baseUrl: 'https://example.com/v1',
+        apiKey: 'plain-key',
+      });
+    });
+
+    it('label и api_mode/pricing берутся из записи available', () => {
+      writeSettings(fullSettings());
+      const found = findModelByProviderName(dir, 'routerai', 'Some/Model');
+      expect(found).toMatchObject({
+        id: 'routerai/Some/Model',
+        label: 'Some Model',
+        apiMode: 'responses',
+      });
+      expect(found.pricing).toEqual({ input_per_1m: 1.2, output_per_1m: 6, cache_per_1m: 0.3 });
+    });
+
+    it('чужой provider / чужое wire-имя → null', () => {
+      writeSettings(fullSettings());
+      expect(findModelByProviderName(dir, 'routerai', 'plain-model')).toBeNull();
+      expect(findModelByProviderName(dir, 'direct', 'Some/Model')).toBeNull();
+    });
+
+    it('провайдер удалён → null; пустые аргументы → null', () => {
+      const s = fullSettings();
+      delete s.providers.direct;
+      writeSettings(s);
+      expect(findModelByProviderName(dir, 'direct', 'plain-model')).toBeNull();
+      expect(findModelByProviderName(dir, '', 'plain-model')).toBeNull();
+      expect(findModelByProviderName(dir, 'direct', '')).toBeNull();
     });
   });
 

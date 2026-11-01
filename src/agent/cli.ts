@@ -22,11 +22,13 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createLlmClient } from './llm.js';
 import type { ApiMode, ChatMessage } from './llm.js';
-import { ensureLlmEnv, loadApiMode, activeModelLogLine } from './llm-env.js';
+import { ensureLlmEnv, modelLogLine, resolveRunModel } from './llm-env.js';
+import type { ResolvedRunModel } from './llm-env.js';
 import { loadProjectEnv } from '../bot/env.js';
 import { runLoop } from './loop.js';
 import type { LoopResult } from './loop.js';
 import { agentSessionsDir, appendSessionMessage, appendSessionRun, countToolCallsInMessages, createSessionId, latestSession, loadSession, loadSessionMetaSync, saveSession, saveSessionMeta, sumUsageFromMessages, updateSessionMeta } from './session.js';
+import type { SessionMeta } from './session.js';
 import { analyzeToolRepeats } from './repeat-tracker.js';
 import { appendCommitToProgress, commitProgressChanges } from './run-progress.js';
 import { taskWorktreeDir } from '../core/worktree.js';
@@ -111,6 +113,17 @@ export interface CliOptions {
    * settings.json api_mode; без флага — api_mode из settings (дефолт chat).
    */
   apiMode?: ApiMode;
+  /**
+   * --model <id>: разовое переопределение модели рана (VL-239). Без флага
+   * resume идёт на модели, зафиксированной в мете сессии, а не на текущем
+   * models.default.
+   */
+  model?: string;
+  /**
+   * --model-follow-settings: осознанно продолжить сессию на АКТИВНОЙ модели
+   * из settings.json, игнорируя модель сессии (VL-239).
+   */
+  modelFollowSettings?: boolean;
   /** --help: показать справку. */
   help: boolean;
 }
@@ -136,6 +149,8 @@ const USAGE = `Использование:
   --resume <sessionId>     — продолжить сохранённую сессию (VL-95; префикс vb: игнорируется)
   --continue               — продолжить последнюю сессию текущего каталога (VL-95)
   --api-mode <chat|responses> — режим LLM API (VL-205; дефолт chat либо settings.json api_mode)
+  --model <id>             — разовая модель рана из models.available (VL-239; дефолт — модель сессии)
+  --model-follow-settings  — продолжить на активной модели settings, игнорируя модель сессии (VL-239)
   --help, -h               — эта справка
 Qwen-совместимость: --approval-mode <...>, --output-format json (= --headless),
 --allowed-mcp-server-names <...> — принимаются и игнорируются.
@@ -235,6 +250,12 @@ export function parseArgs(argv: string[]): CliOptions {
         throw new Error(`--api-mode: ожидается chat|responses, получено: ${raw}`);
       }
       opts.apiMode = raw;
+    } else if (arg === '--model') {
+      // VL-239: id из models.available; существование проверяет resolveRunModel
+      // (там понятная ошибка «Неизвестная модель: …») — здесь только значение
+      opts.model = takeValue(arg, argv[++i]);
+    } else if (arg === '--model-follow-settings') {
+      opts.modelFollowSettings = true;
     } else if (arg === '--approval-mode' || arg === '--allowed-mcp-server-names') {
       // qwen-совместимость: значение съедается и игнорируется (AC#4 VL-85)
       takeValue(arg, argv[++i]);
@@ -249,6 +270,9 @@ export function parseArgs(argv: string[]): CliOptions {
   }
   if (opts.resume !== undefined && opts.continue) {
     throw new Error('--resume и --continue несовместимы — укажи один флаг');
+  }
+  if (opts.model !== undefined && opts.modelFollowSettings) {
+    throw new Error('--model и --model-follow-settings несовместимы — укажи один флаг');
   }
   if (!opts.help && opts.positionals.length === 0) {
     throw new Error('Не заданы позиционные аргументы: укажи <фаза> <taskId> либо готовый промпт');
@@ -397,19 +421,12 @@ export async function main(argv: string[]): Promise<void> {
   // ключ api_key_env провайдера должен лежать в process.env к ensureLlmEnv;
   // вызов идемпотентен (dotenv-семантика, ставит только пустые ключи)
   loadProjectEnv(settingsCwd);
-  // LLM из env или секций settings.json (ensureLlmEnv, VL-189 + VL-209):
-  // при отсутствии — понятная ошибка в stderr и exit 1 (контракт
-  // оркестратора: лог фазы → logTail)
-  if (!ensureLlmEnv('агенту', settingsCwd)) {
-    process.exitCode = 1;
-    return;
-  }
-  // VL-209: лог активной модели в stderr → logTail оркестратора:
-  // «Модель: <label> (<id>), api_mode: <chat|responses>»
-  log(activeModelLogLine(settingsCwd));
-  // LLM настроен — createLlmClient не бросит (падает только без модели).
-  // Создание НИЖЕ резолва sessionId (VL-198): клиенту нужен sessionId для
-  // заголовка X-Session-Id (ref-18); до runLoop llm нигде не используется.
+  // LLM (ensureLlmEnv, VL-189 + VL-209) проверяется НИЖЕ, в точке резолва
+  // модели рана (VL-239): валидировать надо ту модель, на которой реально
+  // пойдёт ран (модель сессии при resume), а не только models.default —
+  // иначе сломанный default блокировал бы resume сессии, чья модель жива.
+  // LLM всё равно создаётся после резолва sessionId (VL-198): клиенту нужен
+  // sessionId для заголовка X-Session-Id (ref-18).
 
   // Промпт фазы собирается до инициализации сессий: ошибка шаблона завершает
   // CLI до создания jsonl. Блок объявлен после cwd (VL-112): выбор
@@ -497,23 +514,55 @@ export async function main(argv: string[]): Promise<void> {
   // VL-251: сигнатуры, отклонённые loop detection в прошлых ранах сессии —
   // читаются из меты (MCP-процесс умирает вместе с фазой, мета переживает
   // resume). Повтор такого вызова блокируется без исполнения.
-  const resumedBlockedSignatures = (() => {
+  // VL-239: та же мета — источник модели сессии (resolveRunModel ниже).
+  const sessionMeta = (() => {
     try {
-      return loadSessionMetaSync(sessionsDir, sessionId)?.blocked_signatures ?? [];
+      return loadSessionMetaSync(sessionsDir, sessionId);
     } catch {
-      return []; // битая мета — не повод ронять фазу
+      return null; // битая мета — не повод ронять фазу
     }
   })();
+  const resumedBlockedSignatures = sessionMeta?.blocked_signatures ?? [];
+
+  // VL-239: модель ЭТОГО рана резолвится из меты сессии (фиксация модели на
+  // сессии), а не из текущего models.default — иначе смена default между
+  // фазами (VL-209 + code_same_session VL-147) незаметно меняла модель на
+  // середине задачи. Приоритет флагов и fail-open — в resolveRunModel.
+  let resolvedModel: ResolvedRunModel;
+  try {
+    resolvedModel = resolveRunModel(settingsCwd, sessionMeta, {
+      ...(opts.model !== undefined ? { modelId: opts.model } : {}),
+      ...(opts.modelFollowSettings === true ? { followSettings: true } : {}),
+    });
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exitCode = 1;
+    return;
+  }
+  // Валидация окружения по ФАКТИЧЕСКОЙ модели рана (VL-239): у модели сессии
+  // может быть свой провайдер/ключ, отличный от models.default.
+  if (!ensureLlmEnv('агенту', settingsCwd, resolvedModel.active ? { active: resolvedModel.active } : undefined)) {
+    process.exitCode = 1;
+    return;
+  }
+  // Предупреждение о расхождении меты и активной модели (logTail оркестратора)
+  if (resolvedModel.warning) log(resolvedModel.warning);
+  // Лог фактической модели с источником: «Модель: … — из сессии / из настроек»
+  log(modelLogLine(resolvedModel));
 
   // LLM-клиент после резолва sessionId (VL-198): sessionId уходит в
   // заголовок X-Session-Id запросов (ref-18, группировка на дашборде RouterAI).
-  // apiMode (VL-205): флаг --api-mode приоритетнее settings.json api_mode;
-  // settings читаем по VIBELOG_CWD ?? cwd — в branch-mode агент в worktree,
-  // а settings.json в главном репо (паттерн external-mcp.ts)
+  // apiMode (VL-205): флаг --api-mode приоритетнее модели/настроек;
+  // baseUrl/apiKey/model — из резолва (VL-239): у модели сессии свой провайдер.
   const llm = createLlmClient({
     sessionId,
     cwd: settingsCwd,
-    apiMode: opts.apiMode ?? loadApiMode(settingsCwd),
+    ...(resolvedModel.baseUrl !== undefined ? { baseUrl: resolvedModel.baseUrl } : {}),
+    ...(resolvedModel.apiKey !== undefined && resolvedModel.apiKey !== ''
+      ? { apiKey: resolvedModel.apiKey }
+      : {}),
+    ...(resolvedModel.source !== 'env' ? { model: resolvedModel.model } : {}),
+    apiMode: opts.apiMode ?? resolvedModel.apiMode,
   });
 
   // Метаданные сессии (VL-110/114): два источника taskId/phase — позиционные
@@ -524,9 +573,29 @@ export async function main(argv: string[]): Promise<void> {
   // ней startResume возобновляет задачу в её worktree (инцидент VL-98).
   const isNewSession = opts.resume === undefined && !opts.continue;
   if (isNewSession) {
+    // VL-239: модель фиксируется в мете ДО первого запроса — resume возьмёт
+    // её из меты, а не текущий models.default. Для env-пути id/провайдера нет
+    // (их неоткуда взять) — закрепляем хотя бы wire-имя (model_name).
+    const modelFields: Partial<SessionMeta> = {
+      ...(resolvedModel.source !== 'env' && resolvedModel.providerId
+        ? {
+            model_id: resolvedModel.id,
+            model_provider: resolvedModel.providerId,
+            model_name: resolvedModel.model,
+          }
+        : resolvedModel.model
+          ? { model_name: resolvedModel.model }
+          : {}),
+      ...(resolvedModel.apiMode ? { api_mode: resolvedModel.apiMode } : {}),
+    };
     try {
       if (isPhaseMode) {
-        await saveSessionMeta(sessionsDir, sessionId, { taskId: positionals[1], phase, cwd });
+        await saveSessionMeta(sessionsDir, sessionId, {
+          taskId: positionals[1],
+          phase,
+          cwd,
+          ...modelFields,
+        });
       } else {
         // Env-путь (боевой спавн оркестратора): фильтруем мусор — только
         // id по префиксу конфига проекта (VL-118; дефолт VL без конфига)
@@ -536,6 +605,7 @@ export async function main(argv: string[]): Promise<void> {
             taskId: envTaskId.toUpperCase(),
             phase: process.env.VIBELOG_PHASE_NAME,
             cwd,
+            ...modelFields,
           });
         }
       }
