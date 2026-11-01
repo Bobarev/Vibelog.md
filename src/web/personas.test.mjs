@@ -1,11 +1,13 @@
 /**
  * Тесты реестра ролей веб-чата (VL-265): src/web/personas.ts + GET /api/personas.
  *
- * Покрываем: встроенные роли без секции chat_personas, переопределение
+ * Покрываем: встроенные роли без секции chat_personas (в VL-273 их три:
+ * helper/architect/supervisor), переопределение
  * дефолтной роли, добавление проектной, невалидную секцию (не объект /
  * без label / без prompt), валидацию allow_tools и default_status,
  * fail-closed резолвер промпта и приоритет проектного шаблона,
- * resolveDefaultStatus и GET /api/personas (без текстов промптов).
+ * resolveDefaultStatus и GET /api/personas (без текстов промптов),
+ * удалённый id orchestrator (RETIRED_PERSONA_IDS, VL-273).
  */
 
 import { describe, it, beforeAll, afterAll, beforeEach } from 'vitest';
@@ -17,6 +19,7 @@ import { join } from 'node:path';
 import {
   BUILTIN_PERSONAS,
   DEFAULT_PERSONA_ID,
+  RETIRED_PERSONA_IDS,
   listPersonas,
   loadPersonaPrompt,
   loadPersonas,
@@ -69,25 +72,32 @@ beforeEach(() => {
   seedProject();
 });
 
-describe('реестр ролей: встроенные (AC9)', () => {
+describe('реестр ролей: встроенные (AC9 / VL-273)', () => {
   it('без секции chat_personas доступны 3 встроенные роли с label и default_status', () => {
     const { personas, errors } = loadPersonas(cwd);
     assert.deepEqual(errors, []);
     assert.deepEqual(
       personas.map(p => p.id),
-      ['helper', 'architect', 'orchestrator', 'supervisor'],
+      ['helper', 'architect', 'supervisor'],
     );
     const helper = personas.find(p => p.id === 'helper');
     assert.equal(helper.label, 'Помощник');
     assert.equal(helper.defaultStatus, 'Spec');
     assert.equal(personas.find(p => p.id === 'architect').defaultStatus, 'Planned');
     assert.equal(DEFAULT_PERSONA_ID, 'helper');
-    assert.equal(BUILTIN_PERSONAS.length, 4);
+    assert.equal(BUILTIN_PERSONAS.length, 3);
+    // VL-273: supervisor не затронут удалением orchestrator
+    const supervisor = personas.find(p => p.id === 'supervisor');
+    assert.equal(supervisor.label, 'Супервизор');
+    assert.equal(supervisor.prompt, 'supervisor');
+    assert.equal(supervisor.defaultStatus, 'Spec');
   });
 
-  it('resolvePersona: известный id → роль, неизвестный → null', () => {
+  it('resolvePersona: известный id → роль, неизвестный → null (в т.ч. удалённый orchestrator)', () => {
     assert.equal(resolvePersona(cwd, 'architect').label, 'Архитектор');
     assert.equal(resolvePersona(cwd, 'nope'), null);
+    // VL-273: удалённая роль больше не резолвится
+    assert.equal(resolvePersona(cwd, 'orchestrator'), null);
   });
 });
 
@@ -104,7 +114,7 @@ describe('реестр ролей: секция chat_personas (AC8)', () => {
     assert.equal(personas[0].defaultStatus, 'To Do');
     // Встроенные поля, не перечисленные в секции, наследуются
     assert.equal(personas[0].defaultStatus, 'To Do');
-    assert.equal(personas.length, 4);
+    assert.equal(personas.length, 3);
   });
 
   it('добавляет проектную роль в конец реестра', () => {
@@ -121,9 +131,9 @@ describe('реестр ролей: секция chat_personas (AC8)', () => {
     assert.deepEqual(errors, []);
     assert.deepEqual(
       personas.map(p => p.id),
-      ['helper', 'architect', 'orchestrator', 'supervisor', 'researcher'],
+      ['helper', 'architect', 'supervisor', 'researcher'],
     );
-    const researcher = personas[4];
+    const researcher = personas[3];
     assert.equal(researcher.label, 'Ресёрчер');
     assert.equal(loadPersonaPrompt(cwd, researcher), 'Ищи источники и предлагай задачи.');
   });
@@ -131,7 +141,7 @@ describe('реестр ролей: секция chat_personas (AC8)', () => {
   it('секция не объект → понятная ошибка, встроенные роли живы', () => {
     writePersonas(['bad']);
     const { personas, errors } = loadPersonas(cwd);
-    assert.equal(personas.length, 4);
+    assert.equal(personas.length, 3);
     assert.equal(errors.length, 1);
     assert.match(errors[0], /chat_personas должна быть объектом/);
     assert.deepEqual(validatePersonasConfig(cwd), errors);
@@ -143,7 +153,7 @@ describe('реестр ролей: секция chat_personas (AC8)', () => {
       broken2: { label: 'Без промпта' },
     });
     const { personas, errors } = loadPersonas(cwd);
-    assert.equal(personas.length, 4);
+    assert.equal(personas.length, 3);
     assert.equal(errors.length, 2);
     assert.ok(errors.some(e => e.includes('"broken1"') && e.includes('label')));
     assert.ok(errors.some(e => e.includes('"broken2"') && e.includes('prompt')));
@@ -244,11 +254,11 @@ describe('GET /api/personas (AC13)', () => {
     assert.deepEqual(res.body.errors, []);
     assert.deepEqual(
       res.body.personas.map(p => p.id),
-      ['helper', 'architect', 'orchestrator', 'supervisor', 'researcher'],
+      ['helper', 'architect', 'supervisor', 'researcher'],
     );
     assert.ok(res.body.personas.every(p => p.prompt === undefined));
     assert.ok(!JSON.stringify(res.body).includes('Секретный текст промпта'));
-    assert.equal(res.body.personas[4].description, 'Ищет информацию');
+    assert.equal(res.body.personas[3].description, 'Ищет информацию');
   });
 
   it('невалидная секция → 200 с ошибками в errors (чат не падает)', () => {
@@ -256,11 +266,74 @@ describe('GET /api/personas (AC13)', () => {
     const res = get();
     assert.equal(res.status, 200);
     assert.ok(res.body.errors.length >= 1);
-    assert.equal(res.body.personas.length, 4);
+    assert.equal(res.body.personas.length, 3);
   });
 
   it('listPersonas отдаёт сводки без prompt/allowTools', () => {
     const { personas } = listPersonas(cwd);
     assert.ok(personas.every(p => Object.keys(p).every(k => ['id', 'label', 'description'].includes(k))));
+  });
+});
+
+describe('удалённая роль orchestrator (VL-273)', () => {
+  const get = () => handleApi('GET', '/api/personas', null, cwd);
+
+  it('запись chat_personas.orchestrator не воскрешает роль → ошибка, ролей 3', () => {
+    writePersonas({
+      orchestrator: { label: 'Оркестратор', prompt: 'orchestrator', default_status: 'Spec' },
+    });
+    const { personas, errors } = loadPersonas(cwd);
+    assert.deepEqual(
+      personas.map(p => p.id),
+      ['helper', 'architect', 'supervisor'],
+    );
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /"orchestrator"/);
+    assert.match(errors[0], /удалена из реестра/);
+    assert.match(errors[0], /supervisor/);
+    assert.deepEqual(validatePersonasConfig(cwd), errors);
+    assert.equal(resolvePersona(cwd, 'orchestrator'), null);
+    // supervisor не затронут
+    const supervisor = personas.find(p => p.id === 'supervisor');
+    assert.equal(supervisor.label, 'Супервизор');
+    assert.equal(supervisor.prompt, 'supervisor');
+    assert.equal(supervisor.defaultStatus, 'Spec');
+  });
+
+  it('проектное переопределение .vibelog/prompts/personas/orchestrator.md не читается и не ломает реестр', () => {
+    writePersonas({
+      orchestrator: { label: 'Оркестратор', prompt: 'orchestrator' },
+      researcher: { label: 'Ресёрчер', prompt: 'researcher' },
+    });
+    writeProjectPrompt('orchestrator', 'Секретный текст бывшей роли.');
+    writeProjectPrompt('researcher', 'Ищи источники.');
+    const { personas, errors } = loadPersonas(cwd);
+    assert.deepEqual(
+      personas.map(p => p.id),
+      ['helper', 'architect', 'supervisor', 'researcher'],
+    );
+    assert.ok(errors.some(e => e.includes('"orchestrator"')));
+    // длины промптов читаются только у живых ролей; шаблон удалённой не читается
+    assert.equal(loadPersonaPrompt(cwd, resolvePersona(cwd, 'researcher')), 'Ищи источники.');
+  });
+
+  it('GET /api/personas с записью orchestrator → 200, errors непуст, ролей 3', () => {
+    writePersonas({
+      orchestrator: { label: 'Оркестратор', prompt: 'orchestrator' },
+    });
+    const res = get();
+    assert.equal(res.status, 200);
+    assert.ok(res.body.errors.some(e => e.includes('"orchestrator"')));
+    assert.deepEqual(
+      res.body.personas.map(p => p.id),
+      ['helper', 'architect', 'supervisor'],
+    );
+  });
+
+  it('RETIRED_PERSONA_IDS содержит orchestrator и не содержит живых ролей', () => {
+    assert.deepEqual(RETIRED_PERSONA_IDS, ['orchestrator']);
+    assert.ok(!RETIRED_PERSONA_IDS.includes('supervisor'));
+    assert.ok(!RETIRED_PERSONA_IDS.includes('helper'));
+    assert.ok(!RETIRED_PERSONA_IDS.includes('architect'));
   });
 });

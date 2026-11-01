@@ -10,7 +10,7 @@
  *
  * Источники реестра:
  * 1. Встроенные роли в коде (BUILTIN_PERSONAS) — работают БЕЗ секции
- *    settings.json: helper / architect / orchestrator.
+ *    settings.json: helper / architect / supervisor.
  * 2. Секция `chat_personas` в `.vibelog/settings.json` — ключ = id роли,
  *    значение = { label, description?, prompt, allow_tools?, default_status? }.
  *    Секция ТОЛЬКО переопределяет встроенную роль (по id) и добавляет новые
@@ -97,13 +97,6 @@ export const BUILTIN_PERSONAS: readonly PersonaConfig[] = [
     defaultStatus: 'Planned',
   },
   {
-    id: 'orchestrator',
-    label: 'Оркестратор',
-    description: 'Согласует, какие задачи запускать и в каком порядке (промпт)',
-    prompt: 'orchestrator',
-    defaultStatus: 'Spec',
-  },
-  {
     id: 'supervisor',
     label: 'Супервизор',
     description: 'Ведёт прогон: запускает фазы, лечит зацикливания, заводит баги',
@@ -111,6 +104,15 @@ export const BUILTIN_PERSONAS: readonly PersonaConfig[] = [
     defaultStatus: 'Spec',
   },
 ];
+
+/**
+ * id удалённых встроенных ролей (VL-273): запись в chat_personas с таким id
+ * НЕ воскрешает роль — она отбрасывается с ошибкой. Смысл: старая/чужая
+ * конфигурация не должна молча вернуть в пикер подпись удалённой роли.
+ * Имя `orchestrator` занято модулем запуска одной фазы (src/web/orchestrator.ts)
+ * и в реестре ролей больше не используется — роль заменена на `supervisor`.
+ */
+export const RETIRED_PERSONA_IDS: readonly string[] = ['orchestrator'];
 
 /** Путь к встроенному каталогу шаблонов (dist/web/personas.js → ../../templates/prompts/personas/). */
 const bundledPersonasDir = fileURLToPath(
@@ -148,6 +150,14 @@ export function loadPersonas(cwd: string): PersonasRegistry {
   const builtinIndex = new Map(personas.map((p, i) => [p.id, i]));
 
   for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    // id удалённой встроенной роли (VL-273): не добавляем и не переопределяем —
+    // конфигурация не должна воскрешать роль, убранную из реестра
+    if (RETIRED_PERSONA_IDS.includes(id)) {
+      errors.push(
+        `settings.json: роль "${id}" удалена из реестра (заменена ролью "supervisor") — запись chat_personas с этим id игнорируется`,
+      );
+      continue;
+    }
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
       errors.push(`settings.json: роль "${id}" в chat_personas должна быть объектом`);
       continue;

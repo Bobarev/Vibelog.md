@@ -39,7 +39,6 @@ import {
   ChevronDownIcon,
   Compass,
   Hammer,
-  Network,
   ScanSearch,
   Sparkles,
   Telescope,
@@ -52,7 +51,6 @@ const TRIGGER_CLASS =
 const PERSONA_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   helper: Sparkles,
   architect: Compass,
-  orchestrator: Network,
   researcher: Telescope,
   auditor: ScanSearch,
   coder: Hammer,

@@ -836,6 +836,23 @@ describe('chat: роль ассистента (VL-265)', () => {
     assert.ok(!existsSync(join(pcwd, '.vibelog', 'chat-sessions', 'p-bad.jsonl')), 'история не создана');
   });
 
+  it('удалённая роль orchestrator (VL-273) → error-событие, ход не начинается', async () => {
+    const { llm, state } = fakeLlm([{ text: 'Ок.' }]);
+    const events = await collectP(
+      { message: 'привет', threadId: 'p-retired', persona: 'orchestrator' },
+      { llm },
+    );
+    const err = events.find(e => e.type === 'error');
+    assert.ok(err, 'событие error');
+    assert.equal(err.message, 'Неизвестная роль: orchestrator');
+    assert.equal(events.at(-1).type, 'error');
+    assert.equal(state.calls, 0, 'LLM не вызывался');
+    assert.ok(
+      !existsSync(join(pcwd, '.vibelog', 'chat-sessions', 'p-retired.jsonl')),
+      'история не создана',
+    );
+  });
+
   it('persona не строка → error-событие', async () => {
     const { llm } = fakeLlm([{ text: 'Ок.' }]);
     const events = await collectP({ message: 'привет', threadId: 'p-type', persona: 42 }, { llm });
