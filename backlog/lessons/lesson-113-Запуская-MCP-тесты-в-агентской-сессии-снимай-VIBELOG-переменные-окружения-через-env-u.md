@@ -22,14 +22,14 @@ kind: workaround
 ---
 ## Проблема
 
-Полный `pnpm test` в агентской сессии падает на `src/mcp/server.test.mjs` («fallback: meta без usage → jsonl»): тест спавнит MCP-сервер, тот наследует env сессии (`VIBELOG_PHASE_NAME`, `VIBELOG_RUN_PHASE`, `VIBELOG_CWD`, `VIBELOG_SESSION_ID`), и meta новой сессии получает поле `phase`, которого тест не ожидает. Падение не связано с правками задачи и выглядит как регрессия.
+Полный `pnpm test` в агентской сессии падал на `src/mcp/server.test.mjs` («fallback: meta без usage → jsonl»): тест спавнил MCP-сервер, тот наследовал env сессии (`VIBELOG_PHASE_NAME`, `VIBELOG_RUN_PHASE`, `VIBELOG_CWD`, `VIBELOG_SESSION_ID`), и meta новой сессии получала поле `phase`, которого тест не ожидал. Падение не связано с правками задачи и выглядело как регрессия.
 
-## Решение
+## Решение (актуальное)
 
-Перед прогоном снимать агентские переменные: `env -u VIBELOG_PHASE_NAME -u VIBELOG_RUN_PHASE -u VIBELOG_CWD -u VIBELOG_SESSION_ID pnpm test`. При падении MCP-тестов в первую очередь проверять именно наследование env, а не код задачи; в отчётном комментарии указать причину и способ прогона, чтобы падение не зачли как регрессию.
+Спавны CLI/MCP в тестах собирают env через `testSpawnEnv(extra)` из `src/test-env.mjs` (VL-286): хелпер снимает `VIBELOG_CWD`, `VIBELOG_SESSION_ID` и всё с префиксами `VIBELOG_PHASE_`/`VIBELOG_RUN_`, а явно нужные значения принимает параметром. Так `src/mcp/server.test.mjs` (`startServer`, `callMcpWithEnv`, кейс с env сессии) и все CLI-тесты перестали наследовать env агентской сессии.
 
-**Устранение: VL-286.** Внутри `src/mcp/server.test.mjs` env уже чистится вручную (`startServer()`: `delete env.VIBELOG_*`, VL-116/VL-259), но остальные CLI-тесты наследуют его через `{ ...process.env }`. Когда общий тестовый хелпер закроет это для всех файлов, префикс `env -u` станет необязательным, а урок — `outdated`.
+Ритуал `env -u VIBELOG_PHASE_NAME -u VIBELOG_RUN_PHASE -u VIBELOG_CWD -u VIBELOG_SESSION_ID pnpm test` **устарел**: полный прогон в фазе зелёный без него (VL-286: 2398 passed, 4 skipped). Если MCP-тест падает только внутри фазы — искать в тесте `{ ...process.env }` без хелпера, а не добавлять префикс.
 
-## Пример
+## Пример (исторический, VL-266)
 
-Observed в VL-266: без `env -u` — падение MCP-теста, с `env -u` — 98 файлов зелёные.
+Без `env -u` — падение MCP-теста, с `env -u` — 98 файлов зелёные.
