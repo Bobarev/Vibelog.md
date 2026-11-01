@@ -1027,6 +1027,19 @@ max_retries`). Такой элемент терминален:
 мигрируются в `failed_permanent` автоматически при ближайшем `sweep`
 (перед выбором следующей задачи), с заполнением причины.
 
+## Lessons: поддержка корпуса в актуальном состоянии
+
+`backlog/lessons/` — живая память проекта: урок эволюционирует после Done задачи (уточняется, объединяется, устаревает). Поддерживается не вручную «когда вспомним», а инструментами:
+
+```bash
+vibelog lesson audit --write          # отчёт backlog/lessons/AUDIT.md: битые пути, дубли, висячие задачи, протухание
+vibelog lesson supersede <old> <new>  # свести дубль: старый → superseded, новый → active + supersedes
+```
+
+Статусы: `active` (подставляется в Plan), `needs-review` (карантин «причина неясна» — в промпты не идёт), `outdated` (утверждение больше не верно; причина обязательна в теле), `superseded` (заменён другим уроком). Обходы (`kind: workaround`) уходят в задачи техдолга со двусторонней связью и строкой «Устранение: VL-N» в теле урока.
+
+Процесс, шаблоны разделов и разбивка статусов после первого санитарного прохода — в [гайде по поддержке lessons](backlog/docs/doc-20-Lessons-как-поддерживать-корпус-в-актуальном-состоянии-аудит-supersede-outdated-workaround.md).
+
 ## Документация
 
 | Документ | Для чего |
@@ -1037,6 +1050,7 @@ max_retries`). Такой элемент терминален:
 | [Агент Vibelog](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md) | Собственный LLM-агент: TUI, headless-фазы, лимиты |
 | [MCP-подключение](MCP-SETUP.md) | Подключение Vibelog MCP к Qwen Code |
 | [Best practices](backlog/docs/doc-9-Best-practices-и-производительность-Vibelogmd.md) | Workflow с Qwen Code, dogfooding, производительность |
+| [Поддержка lessons](backlog/docs/doc-20-Lessons-как-поддерживать-корпус-в-актуальном-состоянии-аудит-supersede-outdated-workaround.md) | Аудит корпуса, `needs-review`, `supersede`/`outdated`, техдолг из workaround'ов |
 
 ## Contributing
 
