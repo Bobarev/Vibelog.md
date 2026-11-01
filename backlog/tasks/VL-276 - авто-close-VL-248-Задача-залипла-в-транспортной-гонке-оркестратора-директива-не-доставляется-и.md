@@ -1,11 +1,11 @@
 ---
 id: VL-276
 title: '[авто] close VL-248: Задача залипла в транспортной гонке оркестратора: директива не доставляется и...'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-01 17:25'
-updated_date: '2026-11-01 18:59'
+updated_date: '2026-11-01 19:08'
 due_date: ''
 labels:
   - auto-bug
@@ -28,13 +28,13 @@ modified_files:
 lessons:
   - lesson-142
 token_usage:
-  input: 12481719
-  output: 272379
-  cache: 11906560
-  total: 12754098
-  requests: 139
-  duration_ms: 1404460
-  reasoning: 233022
+  input: 13488389
+  output: 276844
+  cache: 12887552
+  total: 13765233
+  requests: 163
+  duration_ms: 1601703
+  reasoning: 233829
   by_phase:
     plan:
       input: 2425904
@@ -47,10 +47,10 @@ token_usage:
       cache: 9223936
       requests: 90
     close:
-      input: 473292
-      output: 6162
-      cache: 450048
-      requests: 12
+      input: 1479962
+      output: 10627
+      cache: 1431040
+      requests: 36
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -231,5 +231,19 @@ created: 2026-11-01 18:58
 Фаза Close прервана: merge `vb/vl-276` → `master` невозможен — главный репозиторий содержит незакоммиченные правки параллельной задачи VL-277 (статус In Progress, фаза code, ведётся без worktree): `src/agent/cli.ts`, `src/agent/cli.test.mjs`, `src/web/orchestrator.ts`, `src/web/orchestrator.test.mjs`, `templates/phases/phase-close.md`, `templates/phases/phase-close-worktree.md`, `src/agent/task-commit.ts`, `src/agent/task-commit.test.mjs`. Пересечение именно по файлам VL-276 (`src/web/orchestrator.ts`, `src/web/orchestrator.test.mjs`), поэтому git отказывает до слияния: «error: Your local changes to the following files would be overwritten by merge: src/web/orchestrator.test.mjs, src/web/orchestrator.ts … Aborting». Merge не начат, конфликтных файлов нет, ничего не откатывалось и не резолвилось; статус/DoD/документация не тронуты.
 Состояние: ветка `vb/vl-276` цела (коммит 432d51b), worktree `.vibelog/worktrees/vl-276` чистый (только untracked-симлинки `node_modules`, `backlog/references/data`) и НЕ удалён, ветка не удалена.
 Что нужно: завершить (закоммитить или слить) работу VL-277 в главном репо и повторить Фазу Close VL-276. Требуется ручной выбор порядка — трогать чужие незакоммиченные файлы в этой фазе запрещено.
+---
+author: @agent
+created: 2026-11-01 18:59
+---
+Фаза close прервана агентом (aborted): Фаза Close прервана: merge `vb/vl-276` → `master` невозможен — главный репозиторий содержит незакоммиченные правки параллельной задачи VL-277 (статус In Progress, фаза code, ведётся без worktree): `src/agent/cli.ts`, `src/agent/cli.test.mjs`, `src/web/orchestrator.ts`, `src/web/orchestrator.test.mjs`, `templates/phases/phase-close.md`, `templates/phases/phase-close-worktree.md`, `src/agent/task-commit.ts`, `src/agent/task-commit.test.mjs`. Пересечение именно по файлам VL-276 (`src/web/orchestrat — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-01 19:08
+---
+Фаза Close выполнена. Ветка `vb/vl-276` слита в master (1 коммит — `432d51b`; merge-коммит `215fb27` без конфликтов), worktree `.vibelog/worktrees/vl-276` удалена (force — в ней оставались только untracked-симлинки `node_modules` и `backlog/references/data`), ветка удалена (`git branch -d`).
+Проверки после merge: `pnpm build` — ок; ранний точечный прогон `src/web/orchestrator.test.mjs` + `src/web/supervisor-healing.test.mjs` — 104 passed (включая новые кейсы VL-276: «лок снимается по exit, повторный запуск проходит; getRun не врёт про running», «живой ран не снимается reap-ом»); полный `pnpm test` — 121 файл, 2293 passed, 4 skipped, 0 failed.
+DoD: 1) Тесты проходят — полный прогон зелёный; 2) Документация обновлена — README (§«Ограничение памяти оркестратора»: grace/reap) в ветке, CHANGELOG.md (запись VL-276 в Unreleased → Исправлено, коммит `6d2c65a`); 3) Нет регрессий — полный прогон зелёный, оба тест-файла смоука проходят вместе с остальными 119 файлами.
+Урок: lesson-142 (снятие лока по `exit` с grace-таймером + reap залипших записей + расход `healAttempts` на ошибку доставки), связка с задачей обновлена.
+Операторская часть формулировки (ручная запись результата уже прошедшей close-фазы VL-248 и разрешение конфликта `vb/vl-248 → master`) кодом не выполняется — остаётся за оператором, как и было оговорено в плане (риск 5).
 ---
 <!-- COMMENTS:END -->
