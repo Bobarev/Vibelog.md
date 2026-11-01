@@ -39,6 +39,9 @@ export interface Reference {
   linked_tasks: string[];
   /** Относительный (от backlog/) путь к markdown-кэшу, если скачивался (VL-194). */
   cached_path?: string;
+  /** Дополнительные URL (VL-291): `url` — первая ссылка, `urls` — все последующие.
+   * Порядок важен: кэш склеивается секциями в этом же порядке. */
+  urls?: string[];
   /** ISO-8601 UTC момент последнего обновления кэша (VL-194). */
   cached_at?: string;
   /** sha256 сырого HTML-ответа — для проверки устаревания при sync (VL-194). */
@@ -51,6 +54,8 @@ export interface ReferenceInput {
   title: string;
   type: string;
   url?: string;
+  /** Дополнительные URL (VL-291); первый элемент может нести основную ссылку. */
+  urls?: string[];
   path?: string;
   tags?: string[];
   created_date?: string;
@@ -111,10 +116,48 @@ export function referenceFilename(id: string, title: string): string {
 }
 
 /**
+ * Нормализует дополнительные URL (VL-291): trim, отбрасывает пустые значения
+ * и дубликаты (порядок первого вхождения сохраняется — он же порядок секций
+ * склеенного кэша). Первая ссылка (`firstUrl`) участвует в дедупе: её повтор
+ * в списке дополнительных отбрасывается.
+ *
+ * @param firstUrl — первая ссылка (поле url), уже занявшая место в списке
+ * @param urls — дополнительные ссылки (поле urls)
+ */
+function normalizeExtraUrls(firstUrl: string | undefined, urls?: string[]): string[] {
+  const seen = new Set<string>();
+  if (firstUrl) seen.add(firstUrl);
+  const out: string[] = [];
+  for (const raw of urls || []) {
+    const value = String(raw ?? '').trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+/**
+ * Полный упорядоченный список URL reference (VL-291).
+ *
+ * `url` — первая ссылка, `urls` — дополнительные; пустые отбрасываются,
+ * дубликаты схлопываются. Порядок = порядок секций в склеенном кэше.
+ */
+export function referenceUrls(ref: Reference): string[] {
+  const list: string[] = [];
+  if (ref.url) list.push(ref.url);
+  for (const u of ref.urls || []) {
+    const value = String(u ?? '').trim();
+    if (value && !list.includes(value)) list.push(value);
+  }
+  return list;
+}
+
+/**
  * Создаёт объект reference (валидирует type).
  */
 export function createReference(input: ReferenceInput): Reference {
-  return {
+  const ref: Reference = {
     id: input.id || '',
     title: input.title,
     type: normalizeReferenceType(input.type),
@@ -124,6 +167,18 @@ export function createReference(input: ReferenceInput): Reference {
     created_date: input.created_date || '',
     linked_tasks: input.linked_tasks || [],
   };
+  // Продвижение первой ссылки (VL-291): url не задан, но пришёл список —
+  // первая ссылка становится `url`, чтобы `referenceUrls`/клонирование/repo
+  // видели её как основную (обратная совместимость: url остаётся основным)
+  if (!ref.url && input.urls && input.urls.length > 0) {
+    const first = String(input.urls[0] ?? '').trim();
+    if (first) ref.url = first;
+  }
+  // Доп. ссылки: ключ создаём только при непустом массиве — старые url-only
+  // файлы остаются без «висячего» поля (round-trip VL-152 сходится)
+  const extra = normalizeExtraUrls(ref.url, input.urls);
+  if (extra.length > 0) ref.urls = extra;
+  return ref;
 }
 
 /**
@@ -138,6 +193,9 @@ export function referenceToMarkdown(ref: Reference, body?: string): string {
     type: ref.type,
   };
   if (ref.url) frontmatter.url = ref.url;
+  // Доп. ссылки (VL-291): пишем только при непустом массиве — файлы без
+  // дополнительных ссылок сохраняют прежний frontmatter байт-в-байт
+  if (ref.urls && ref.urls.length > 0) frontmatter.urls = ref.urls;
   if (ref.path) frontmatter.path = ref.path;
   frontmatter.tags = ref.tags || [];
   frontmatter.created_date = ref.created_date;
@@ -170,6 +228,15 @@ export function markdownToReference(content: string): { reference: Reference; bo
   // Поля кэша (VL-194): в старых файлах их нет — ключи не создаём,
   // чтобы round-trip давал строго равный объект (см. VL-152 round-trip тест)
   if (data.cached_path) reference.cached_path = data.cached_path as string;
+  // Доп. ссылки (VL-291): в старых файлах ключа нет — не создаём (round-trip);
+  // скалярная строка принимается по аналогии с tags
+  if (data.urls !== undefined && data.urls !== null) {
+    const raw = Array.isArray(data.urls) ? (data.urls as unknown[]) : [data.urls];
+    const list = raw
+      .map(u => String(u ?? '').trim())
+      .filter(u => u.length > 0 && u !== reference.url);
+    if (list.length > 0) reference.urls = list;
+  }
   if (data.cached_at) reference.cached_at = data.cached_at as string;
   if (data.source_hash) reference.source_hash = data.source_hash as string;
   return { reference, body: body || '' };
@@ -254,6 +321,8 @@ export interface UpdateReferenceInput {
   title?: string;
   type?: string;
   url?: string;
+  /** Дополнительные URL (VL-291): полная замена набора; [] — очистить. */
+  urls?: string[];
   path?: string;
   tags?: string[];
   linked_tasks?: string[];
@@ -292,6 +361,15 @@ export function updateReference(
     cached_at: updates.cached_at !== undefined ? updates.cached_at : entry.reference.cached_at,
     source_hash: updates.source_hash !== undefined ? updates.source_hash : entry.reference.source_hash,
   };
+  // Доп. ссылки (VL-291): та же ловушка, что у кэш-полей VL-194 — без явной
+  // ветки merge любой link/rename/tags-апдейт терял бы urls. updates.urls
+  // undefined → сохраняем прежние (минус совпавшие с новым url); [] → очистка.
+  const extraUrls = normalizeExtraUrls(
+    merged.url,
+    updates.urls !== undefined ? updates.urls : entry.reference.urls,
+  );
+  if (extraUrls.length > 0) merged.urls = extraUrls;
+  else delete merged.urls;
   const body = updates.content !== undefined ? updates.content : entry.body;
 
   const newPath = join(referencesDir(backlogDir), referenceFilename(merged.id, merged.title));
@@ -330,6 +408,7 @@ export function searchReferences(cwd: string, query: string): ReferenceEntry[] {
     if (r.id.toLowerCase().includes(q)) return true;
     if (r.title.toLowerCase().includes(q)) return true;
     if (r.url && r.url.toLowerCase().includes(q)) return true;
+    if ((r.urls || []).some(u => String(u).toLowerCase().includes(q))) return true;
     if (r.path && r.path.toLowerCase().includes(q)) return true;
     if (r.tags.some(t => String(t).toLowerCase().includes(q))) return true;
     if (e.body && e.body.toLowerCase().includes(q)) return true;

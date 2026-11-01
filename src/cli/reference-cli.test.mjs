@@ -281,3 +281,86 @@ describe('VL-152 CLI — link и remove', () => {
     assert.ok(existsSync(join(backlogDir, 'references', 'data', 'cli-repo', 'data.txt')), 'клон сохранён');
   });
 });
+
+// ── VL-291: несколько ссылок у reference типа url ──
+describe('VL-291 CLI — несколько url в одном кэше', () => {
+  /** Loopback-сервер: /one и /two отдают HTML, /broken — 500 (частичный сбой). */
+  let server;
+  let base;
+
+  beforeAll(async () => {
+    const http = await import('node:http');
+    server = http.createServer((req, res) => {
+      if (req.url === '/broken') {
+        res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end('boom');
+        return;
+      }
+      const title = req.url === '/two' ? 'Второй' : 'Первый';
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(`<html><body><h1>${title}</h1></body></html>`);
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${server.address().port}`;
+  });
+
+  afterAll(async () => {
+    if (server) await new Promise(resolve => server.close(resolve));
+  });
+
+  it('add --url A --url B --cache → один md, секции в порядке ссылок', async () => {
+    const add = await runCliAsync([
+      'reference', 'add', 'Multi doc', '--type', 'url',
+      '--url', `${base}/one`, '--url', `${base}/two`, '--cache',
+    ]);
+    assert.equal(add.status, 0, add.stdout + add.stderr);
+    assert.match(add.stdout, /ссылок: 2/);
+
+    const list = await runCliAsync(['reference', 'list', '--type', 'url']);
+    const id = list.stdout.match(/(ref-\d+)\s+Multi doc/)?.[1];
+    assert.ok(id, `id не найден: ${list.stdout}`);
+
+    const md = readFileSync(join(backlogDir, 'references', 'cache', `${id}.md`), 'utf-8');
+    const i1 = md.indexOf('/one');
+    const i2 = md.indexOf('/two');
+    assert.ok(i1 >= 0 && i2 > i1, `порядок секций: ${md}`);
+    assert.match(md, /Первый/);
+    assert.match(md, /Второй/);
+
+    const view = await runCliAsync(['reference', 'view', id]);
+    assert.match(view.stdout, /url: .*\/one/);
+    assert.match(view.stdout, /url\[2\]: .*\/two/, 'view печатает доп. ссылку');
+  });
+
+  it('частичный сбой: --url broken + --url ok → exit 1 и «частичный успех», кэш записан', async () => {
+    const add = await runCliAsync([
+      'reference', 'add', 'Partial doc', '--type', 'url',
+      '--url', `${base}/broken`, '--url', `${base}/one`, '--cache',
+    ]);
+    assert.equal(add.status, 1, add.stdout + add.stderr);
+    const out = add.stdout + add.stderr;
+    assert.match(out, /частичный успех/, out);
+
+    const list = await runCliAsync(['reference', 'list', '--type', 'url']);
+    const id = list.stdout.match(/(ref-\d+)\s+Partial doc/)?.[1];
+    assert.ok(id, `id не найден: ${list.stdout}`);
+    const md = readFileSync(join(backlogDir, 'references', 'cache', `${id}.md`), 'utf-8');
+    assert.match(md, /Ошибка загрузки/);
+    assert.match(md, /Первый/, 'успешная ссылка закэширована');
+  });
+
+  it('одиночный --url остаётся совместимым (без секций-заголовков)', async () => {
+    const add = await runCliAsync([
+      'reference', 'add', 'Single doc', '--type', 'url', '--url', `${base}/one`, '--cache',
+    ]);
+    assert.equal(add.status, 0, add.stdout + add.stderr);
+    assert.doesNotMatch(add.stdout, /ссылок: \d/, 'для одной ссылки счётчик не печатается');
+
+    const list = await runCliAsync(['reference', 'list', '--type', 'url']);
+    const id = list.stdout.match(/(ref-\d+)\s+Single doc/)?.[1];
+    assert.ok(id);
+    const md = readFileSync(join(backlogDir, 'references', 'cache', `${id}.md`), 'utf-8');
+    assert.doesNotMatch(md, /^## /m, 'одиночная ссылка — прежний формат без секции');
+    assert.match(md, /Первый/);
+  });
+});

@@ -407,3 +407,119 @@ describe('VL-194 — round-trip кэш-полей через frontmatter/yaml', 
     assert.ok(!md.includes('source_hash'), md);
   });
 });
+
+// ── VL-291: множественные ссылки в одном кэше ──
+
+/** Стаб fetch: по url отдаёт заданное тело; нет маршрута → ошибка. */
+function routedFetch(routes) {
+  return async (url) => {
+    const hit = routes[url];
+    if (!hit) throw new Error(`нет маршрута: ${url}`);
+    if (hit.error) throw new Error(hit.error);
+    return new Response(hit.body, {
+      status: hit.status ?? 200,
+      headers: new Headers({ 'content-type': hit.contentType ?? 'text/html; charset=utf-8' }),
+    });
+  };
+}
+
+describe('VL-291 — кэш нескольких ссылок', () => {
+  it('cacheReference: 3 ссылки → один md, секции в порядке ссылок', async () => {
+    const ref = writeReference(testRoot, {
+      id: 'ref-850', title: 'Multi cache', type: 'url',
+      url: 'https://a.example/1',
+      urls: ['https://b.example/2', 'https://c.example/3'],
+    });
+    const res = await cacheReference(testRoot, ref, {
+      fetchFn: routedFetch({
+        'https://a.example/1': { body: '<html><body><h1>Первый</h1></body></html>' },
+        'https://b.example/2': { body: '<html><body><h1>Второй</h1></body></html>' },
+        'https://c.example/3': { body: '<html><body><h1>Третий</h1></body></html>' },
+      }),
+    });
+    assert.equal(res.cached, true, res.message);
+    assert.equal(res.partial, false, res.message);
+    const md = readFileSync(join(cacheDir, 'ref-850.md'), 'utf-8');
+    const i1 = md.indexOf('https://a.example/1');
+    const i2 = md.indexOf('https://b.example/2');
+    const i3 = md.indexOf('https://c.example/3');
+    assert.ok(i1 >= 0 && i1 < i2 && i2 < i3, `порядок секций: ${md}`);
+    assert.match(md, /## https:\/\/a\.example\/1/);
+    assert.match(md, /Первый/);
+    assert.match(md, /Второй/);
+    assert.match(md, /Третий/);
+  });
+
+  it('частичный сбой: ошибка второй ссылки не ломает остальные', async () => {
+    const ref = writeReference(testRoot, {
+      id: 'ref-951', title: 'Partial', type: 'url',
+      url: 'https://a.example/1', urls: ['https://broken.example/x', 'https://c.example/3'],
+    });
+    const res = await cacheReference(testRoot, ref, {
+      fetchFn: routedFetch({
+        'https://a.example/1': { body: '<html><body><h1>Первый</h1></body></html>' },
+        'https://broken.example/x': { error: 'boom' },
+        'https://c.example/3': { body: '<html><body><h1>Третий</h1></body></html>' },
+      }),
+    });
+    assert.equal(res.cached, true, res.message);
+    assert.equal(res.partial, true, res.message);
+    assert.match(res.message, /частичный успех/);
+    assert.equal(res.failed.length, 1);
+    assert.equal(res.failed[0].url, 'https://broken.example/x');
+    const md = readFileSync(join(cacheDir, 'ref-951.md'), 'utf-8');
+    assert.match(md, /Первый/);
+    assert.match(md, /Третий/);
+    assert.match(md, /Ошибка загрузки/);
+    assert.match(md, /boom/);
+    assert.match(md, /## https:\/\/broken\.example\/x/, 'упавшая ссылка остаётся секцией-пометкой');
+  });
+
+  it('все ссылки упали → cached:false, файл не создан', async () => {
+    const ref = writeReference(testRoot, {
+      id: 'ref-952', title: 'All broken', type: 'url',
+      url: 'https://x.example/1', urls: ['https://y.example/2'],
+    });
+    const res = await cacheReference(testRoot, ref, { fetchFn: routedFetch({}) });
+    assert.equal(res.cached, false);
+    assert.equal(res.failed.length, 2, res.message);
+    assert.ok(!existsSync(join(cacheDir, 'ref-952.md')), 'файл не записан');
+    assert.equal(getReference(testRoot, 'ref-952').reference.cached_path, undefined);
+  });
+
+  it('refresh: склеенный хэш совпал → skipped; изменился → updated', async () => {
+    const ref = writeReference(testRoot, {
+      id: 'ref-953', title: 'Refresh multi', type: 'url',
+      url: 'https://a.example/1', urls: ['https://b.example/2'],
+    });
+    const routes = {
+      'https://a.example/1': { body: '<html><body><h1>A1</h1></body></html>' },
+      'https://b.example/2': { body: '<html><body><h1>B1</h1></body></html>' },
+    };
+    const first = await cacheReference(testRoot, ref, { fetchFn: routedFetch(routes) });
+    assert.equal(first.cached, true, first.message);
+
+    const stored = getReference(testRoot, 'ref-953').reference;
+    const same = await refreshReferenceCache(testRoot, stored, { fetchFn: routedFetch(routes) });
+    assert.equal(same.status, 'skipped', same.message);
+
+    const changed = await refreshReferenceCache(testRoot, stored, {
+      fetchFn: routedFetch({ ...routes, 'https://b.example/2': { body: '<html><body><h1>B2</h1></body></html>' } }),
+    });
+    assert.equal(changed.status, 'updated', changed.message);
+  });
+
+  it('syncReferenceCaches: частичный сбой попадает в failed', async () => {
+    writeReference(testRoot, {
+      id: 'ref-954', title: 'Sync partial', type: 'url',
+      url: 'https://a.example/1', urls: ['https://broken.example/x'],
+    });
+    const res = await syncReferenceCaches(testRoot, { ids: ['ref-954'] }, {
+      fetchFn: routedFetch({
+        'https://a.example/1': { body: '<html><body><h1>A</h1></body></html>' },
+        'https://broken.example/x': { error: 'down' },
+      }),
+    });
+    assert.ok(res.failed.some(f => f.id === 'ref-954'), JSON.stringify(res));
+  });
+});

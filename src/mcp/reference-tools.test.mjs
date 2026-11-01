@@ -317,3 +317,98 @@ describe('VL-194 — MCP кэш: reference_add{cache}, reference_view, reference
     assert.ok(!('updated' in res), 'без аргументов полей кэша нет');
   });
 });
+
+// ── VL-291: несколько url через MCP (urls) ──
+
+describe('VL-291 — MCP: несколько ссылок в одном кэше', () => {
+  let server;
+  let base;
+
+  beforeAll(async () => {
+    const http = await import('node:http');
+    server = http.createServer((req, res) => {
+      if (req.url === '/broken') {
+        res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end('boom');
+        return;
+      }
+      const title = req.url === '/two' ? 'Второй' : 'Первый';
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(`<html><body><h1>${title}</h1></body></html>`);
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${server.address().port}`;
+  });
+
+  afterAll(async () => {
+    if (server) await new Promise(resolve => server.close(resolve));
+  });
+
+  it('reference_add{urls, cache:true} → склеенный кэш, порядок секций сохранён', async () => {
+    const out = await handleToolCall('reference_add', {
+      title: 'MCP multi', type: 'url',
+      url: `${base}/one`, urls: [`${base}/two`], cache: true,
+    }, testRoot);
+    assert.match(out, /ссылок: 2/, out);
+    const id = out.match(/Reference (ref-\d+)/)?.[1];
+    assert.ok(id, out);
+
+    const view = JSON.parse(await handleToolCall('reference_view', { id }, testRoot));
+    assert.deepEqual(view.urls_all, [`${base}/one`, `${base}/two`], 'полный список в порядке');
+    assert.deepEqual(view.urls, [`${base}/two`], 'доп. ссылки в метаданных');
+    assert.match(view.cached_markdown, /Первый/);
+    assert.match(view.cached_markdown, /Второй/);
+    const i1 = view.cached_markdown.indexOf('/one');
+    const i2 = view.cached_markdown.indexOf('/two');
+    assert.ok(i1 >= 0 && i2 > i1, `порядок секций: ${view.cached_markdown}`);
+  });
+
+  it('частичный сбой: сообщение о частичном успехе, ошибка в md', async () => {
+    const out = await handleToolCall('reference_add', {
+      title: 'MCP partial', type: 'url',
+      url: `${base}/broken`, urls: [`${base}/one`], cache: true,
+    }, testRoot);
+    assert.match(out, /частичный успех/, out);
+    const id = out.match(/Reference (ref-\d+)/)?.[1];
+    const view = JSON.parse(await handleToolCall('reference_view', { id }, testRoot));
+    assert.match(view.cached_markdown, /Ошибка загрузки/);
+    assert.match(view.cached_markdown, /Первый/);
+  });
+
+  it('reference_add{urls:[...]} без url: первая ссылка становится url', async () => {
+    const out = await handleToolCall('reference_add', {
+      title: 'MCP urls only', type: 'url', urls: [`${base}/one`, `${base}/two`],
+    }, testRoot);
+    const id = out.match(/Reference (ref-\d+)/)?.[1];
+    const view = JSON.parse(await handleToolCall('reference_view', { id }, testRoot));
+    assert.equal(view.url, `${base}/one`);
+    assert.deepEqual(view.urls, [`${base}/two`]);
+  });
+
+  it('reference_update{urls} заменяет набор; urls: [] очищает', async () => {
+    const out = await handleToolCall('reference_add', {
+      title: 'MCP update urls', type: 'url', url: 'https://a.example/1',
+    }, testRoot);
+    const id = out.match(/Reference (ref-\d+)/)?.[1];
+
+    await handleToolCall('reference_update', { id, urls: ['https://b.example/2', 'https://c.example/3'] }, testRoot);
+    let view = JSON.parse(await handleToolCall('reference_view', { id }, testRoot));
+    assert.deepEqual(view.urls, ['https://b.example/2', 'https://c.example/3']);
+    assert.deepEqual(view.urls_all, ['https://a.example/1', 'https://b.example/2', 'https://c.example/3']);
+
+    await handleToolCall('reference_update', { id, urls: [] }, testRoot);
+    view = JSON.parse(await handleToolCall('reference_view', { id }, testRoot));
+    assert.equal(view.urls, undefined, 'urls очищены');
+    assert.deepEqual(view.urls_all, ['https://a.example/1']);
+  });
+
+  it('одиночный url — прежний формат кэша (регрессия)', async () => {
+    const out = await handleToolCall('reference_add', {
+      title: 'MCP single', type: 'url', url: `${base}/one`, cache: true,
+    }, testRoot);
+    const id = out.match(/Reference (ref-\d+)/)?.[1];
+    const view = JSON.parse(await handleToolCall('reference_view', { id }, testRoot));
+    assert.doesNotMatch(view.cached_markdown, /^## /m, 'без секций-заголовков');
+    assert.match(view.cached_markdown, /Первый/);
+  });
+});

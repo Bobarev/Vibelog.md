@@ -35,7 +35,7 @@ import {
   listReferences, getReference, writeReference,
   updateReference, removeReference, searchReferences,
   cloneReferenceRepo, syncReferenceRepos, linkReferenceTask,
-  REFERENCE_TYPES,
+  referenceUrls, REFERENCE_TYPES,
 } from '../core/reference.js';
 import type { UpdateReferenceInput } from '../core/reference.js';
 import {
@@ -503,13 +503,14 @@ export function listTools(): ToolDefinition[] {
     },
     {
       name: 'reference_add',
-      description: 'Добавить reference (внешний источник знаний). Для type=repo по умолчанию САМ клонирует репозиторий в backlog/references/data/<dir> (идемпотентно: если каталог есть — пропуск).',
+      description: 'Добавить reference (внешний источник знаний). Для type=repo по умолчанию САМ клонирует репозиторий в backlog/references/data/<dir> (идемпотентно: если каталог есть — пропуск). Поддерживает несколько ссылок (url + urls): cache=true склеивает их в один md-файл секциями в порядке ссылок, ошибка одной ссылки не ломает остальные.',
       inputSchema: {
         type: 'object',
         properties: {
           title: { type: 'string', description: 'Заголовок reference' },
           type: { type: 'string', enum: REFERENCE_TYPES, description: 'Тип: repo/url/file/doc/spec' },
-          url: { type: 'string', description: 'URL (для repo/url)' },
+          url: { type: 'string', description: 'URL (для repo/url); повторяемые ссылки — в urls' },
+          urls: { type: 'array', items: { type: 'string' }, description: 'Дополнительные URL: кэш склеивается секциями в порядке ссылок (url + urls). Ошибка одной ссылки не ломает остальные — её секция помечается в md, результат = частичный успех' },
           path: { type: 'string', description: 'Путь (для file/doc/spec; для repo — каталог клона относительно data/)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Метки' },
           description: { type: 'string', description: 'Markdown-описание (тело)' },
@@ -554,13 +555,15 @@ export function listTools(): ToolDefinition[] {
     },
     {
       name: 'reference_update',
-      description: 'Обновить reference: теги и/или описание (полная замена).',
+      description: 'Обновить reference: теги, описание и/или набор ссылок (полная замена переданных полей).',
       inputSchema: {
         type: 'object',
         properties: {
           id: { type: 'string', description: 'ID reference (ref-N)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Метки (полная замена)' },
           description: { type: 'string', description: 'Описание (markdown, полная замена тела)' },
+          url: { type: 'string', description: 'Основная ссылка (полная замена значения url)' },
+          urls: { type: 'array', items: { type: 'string' }, description: 'Дополнительные ссылки (полная замена набора; [] — очистить). Порядок = порядок секций кэша' },
         },
         required: ['id'],
       },
@@ -2249,10 +2252,22 @@ function toolReferenceList(args: ToolArgs, cwd: string): string {
 }
 
 async function toolReferenceAdd(args: ToolArgs, cwd: string): Promise<string> {
+  // VL-291: список ссылок = url + urls (порядок сохраняется: он же порядок
+  // секций склеенного кэша). writeReference/createReference нормализуют
+  // (trim, дедуп) и продвигают первую ссылку в поле url.
+  const urls: string[] = [];
+  if (typeof args.url === 'string' && args.url.trim()) urls.push(args.url.trim());
+  if (Array.isArray(args.urls)) {
+    for (const u of args.urls as unknown[]) {
+      const value = String(u ?? '').trim();
+      if (value) urls.push(value);
+    }
+  }
   const ref = writeReference(cwd, {
     title: args.title as string,
     type: args.type as string,
-    url: args.url as string | undefined,
+    url: urls[0],
+    urls,
     path: args.path as string | undefined,
     tags: args.tags as string[] | undefined,
     content: args.description as string | undefined,
@@ -2268,13 +2283,15 @@ async function toolReferenceAdd(args: ToolArgs, cwd: string): Promise<string> {
   let cacheMessage = '';
   if (args.cache === true) {
     if (!ref.url) {
-      cacheMessage = '\nДля cache=true нужен url.';
+      cacheMessage = '\nДля cache=true нужен url (или urls).';
     } else {
       const res = await cacheReference(cwd, ref);
+      // VL-291: частичный успех виден по префиксу «частичный успех» в сообщении
       cacheMessage = '\n' + res.message;
     }
   }
-  return `Reference ${ref.id} создан: ${ref.title} (${ref.type})${cloneMessage}${cacheMessage}`;
+  const linksInfo = (ref.urls?.length || 0) > 0 ? `, ссылок: ${1 + (ref.urls?.length || 0)}` : '';
+  return `Reference ${ref.id} создан: ${ref.title} (${ref.type}${linksInfo})${cloneMessage}${cacheMessage}`;
 }
 
 function toolReferenceView(args: ToolArgs, cwd: string): string {
@@ -2285,6 +2302,9 @@ function toolReferenceView(args: ToolArgs, cwd: string): string {
   const cachedMarkdown = readReferenceCache(cwd, entry.reference);
   return JSON.stringify({
     ...entry.reference,
+    // VL-291: полный упорядоченный список ссылок (url + urls) — одна точка
+    // правды для вызывающего, порядок = порядок секций кэша
+    urls_all: referenceUrls(entry.reference),
     body: entry.body,
     path: entry.path,
     cached_markdown: cachedMarkdown,
@@ -2307,8 +2327,11 @@ function toolReferenceUpdate(args: ToolArgs, cwd: string): string {
   const updates: UpdateReferenceInput = {};
   if (args.tags !== undefined) updates.tags = args.tags as string[];
   if (args.description !== undefined) updates.content = args.description as string;
+  // VL-291: набор ссылок (полная замена переданных полей); urls: [] очищает
+  if (args.url !== undefined) updates.url = String(args.url);
+  if (args.urls !== undefined) updates.urls = (args.urls as unknown[]).map(u => String(u));
   if (Object.keys(updates).length === 0) {
-    throw new Error('Не указаны поля для обновления (tags, description).');
+    throw new Error('Не указаны поля для обновления (tags, description, url, urls).');
   }
   const entry = updateReference(cwd, args.id as string, updates);
   if (!entry) throw new Error(`Reference ${args.id} не найден.`);
@@ -2336,8 +2359,10 @@ async function toolReferenceSync(args: ToolArgs, cwd: string): Promise<string> {
     if (!entry) throw new Error(`Reference ${args.id} не найден.`);
     const res = await refreshReferenceCache(cwd, entry.reference);
     const single = { updated: [] as string[], skipped: [] as string[], failed: [] as { id: string; error: string }[] };
-    if (res.updated) single.updated.push(entry.reference.id);
-    else if (res.message.includes('ошибка')) single.failed.push({ id: entry.reference.id, error: res.message });
+    // VL-291: явный статус вместо разбора подстрок сообщения; partial —
+    // часть ссылок не скачалась, это не полный успех → в failed с текстом
+    if (res.status === 'updated') single.updated.push(entry.reference.id);
+    else if (res.status === 'failed' || res.status === 'partial') single.failed.push({ id: entry.reference.id, error: res.message });
     else single.skipped.push(entry.reference.id);
     cacheResult = single;
   } else {
