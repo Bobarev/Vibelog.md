@@ -28,6 +28,7 @@ import { runAgent } from '../../dist/cli/commands/agent.js';
 import { runBot } from '../../dist/cli/commands/bot.js';
 import { runBrowser } from '../../dist/cli/commands/browser.js';
 import { setSpawnEnvBaseForTests } from '../../dist/web/orchestrator.js';
+import { testSpawnEnv, stripVibelogEnv } from '../test-env.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
@@ -186,7 +187,7 @@ describe('CLI — интеграционные тесты', () => {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' },
+      env: testSpawnEnv(),
     });
     assert.equal(res.status, 0, `exit=${res.status} signal=${res.signal ?? '-'}`);
     const out = `${res.stdout || ''}${res.stderr || ''}`;
@@ -221,7 +222,7 @@ describe('CLI — интеграционные тесты', () => {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' },
+      env: testSpawnEnv(),
     });
     const output = `${res.stdout || ''}${res.stderr || ''}`;
     assert.equal(res.status, 1, `exit=${res.status}; output=${output}`);
@@ -236,12 +237,12 @@ describe('CLI — интеграционные тесты', () => {
     const fakeNpm = join(wrapDir, 'npm');
     writeFileSync(fakeNpm, '#!/usr/bin/env node\nconsole.log(\'"9.9.9"\');\n', 'utf-8');
     chmodSync(fakeNpm, 0o755);
-    const baseEnv = {
+    const baseEnv = stripVibelogEnv({
       ...process.env,
       PATH: `${wrapDir}:${process.env.PATH ?? ''}`,
       TMPDIR: cacheDir,
       VIBELOG_SKIP_UPDATE_CHECK: '', // пусто — НЕ отключает проверку
-    };
+    });
     try {
       // 1) Первый запуск: устаревшего кэша нет → проверка → уведомление в stderr
       const first = spawnSync('node', [cliPath, 'browser', '--help'], {

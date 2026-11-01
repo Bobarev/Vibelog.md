@@ -18,6 +18,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
+import { testSpawnEnv } from '../test-env.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const testDir = mkdtempSync(join(tmpdir(), 'vibelog-model-cli-'));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
@@ -27,7 +29,7 @@ function runCli(...args) {
     cwd: testDir,
     encoding: 'utf-8',
     timeout: 5000,
-    env: { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' },
+    env: testSpawnEnv(),
   });
   return (r.stdout || '') + (r.stderr || '');
 }

@@ -26,6 +26,8 @@ import { markdownToTask, taskToMarkdown } from '../../dist/core/task.js';
 import { handleToolCall } from '../../dist/mcp/tools.js';
 import { createTaskFile, getTask } from '../../dist/core/store.js';
 
+import { testSpawnEnv } from '../test-env.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const testDir = mkdtempSync(join(tmpdir(), 'vibelog-mcp-v11-'));
 const backlogDir = join(testDir, 'backlog');
@@ -54,7 +56,7 @@ function runCli(...args) {
     return execFileSync('node', [cliPath, ...args], {
       cwd: testDir, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
       // VL-132: без гарда каждый spawn CLI уходил бы npm view в реальный registry
-      env: { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' },
+      env: testSpawnEnv(),
     });
   } catch (err) {
     return (err.stdout || '') + (err.stderr || '');

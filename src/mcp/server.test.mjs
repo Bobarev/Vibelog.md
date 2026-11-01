@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { agentSessionsDir } from '../../dist/agent/session.js';
+import { testSpawnEnv } from '../test-env.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const testDir = mkdtempSync(join(tmpdir(), 'vibelog-mcp-server-'));
@@ -42,20 +43,12 @@ const received = [];
 
 /** Спавнит MCP-сервер один раз на файл (env-гард VL-116/VL-132). */
 function startServer() {
-  // VL-116: env фазы (VIBELOG_CWD/VIBELOG_PHASE_*) не должен утекать в
-  // MCP-сервер — иначе backlog пишется в реальный репозиторий, а не в
-  // тестовую фикстуру (инцидент загрязнения 2026-10-12)
-  // VL-132: единообразный env-гард (mcp и так в SKIP_COMMANDS, но защита не помешает)
-  const env = { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' };
-  delete env.VIBELOG_CWD;
-  delete env.VIBELOG_PHASE_TASK_ID;
-  delete env.VIBELOG_PHASE_NAME;
-  // VL-259: учёт фазы/времени рана тоже не наследуем из родительской фазы
-  delete env.VIBELOG_RUN_PHASE;
-  delete env.VIBELOG_RUN_STARTED_AT;
-  // VL-198: сессия тестового окружения не должна утекать в fallback
-  // finish_phase (иначе мета/jsonl реального репо попадут в фикстуры)
-  delete env.VIBELOG_SESSION_ID;
+  // VL-116/VL-132/VL-198/VL-259: env фазы (VIBELOG_CWD/VIBELOG_PHASE_*/
+  // VIBELOG_RUN_*/VIBELOG_SESSION_ID) не должен утекать в MCP-сервер — иначе
+  // backlog пишется в реальный репозиторий, а не в тестовую фикстуру
+  // (инцидент загрязнения 2026-10-12), а fallback-учёт токенов уходит в
+  // реальный jsonl. VL-286: очистка вынесена в общий хелпер.
+  const env = testSpawnEnv();
   proc = spawn('node', [cliPath, 'mcp', 'start'], {
     cwd: testDir,
     env,
@@ -131,14 +124,9 @@ describe('MCP-сервер', () => {
    * Сервер одноразовый: гасим по stdin.end() либо kill по таймауту.
    */
   async function callMcpWithEnv(messages, extraEnv) {
-    const env = { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true', ...extraEnv };
-    delete env.VIBELOG_CWD;
-    delete env.VIBELOG_PHASE_TASK_ID;
-    if (!('VIBELOG_PHASE_NAME' in extraEnv)) delete env.VIBELOG_PHASE_NAME;
-    // VL-259: фаза/время рана — явно переданные сохраняются, унаследованные срезаются
-    if (!('VIBELOG_RUN_PHASE' in extraEnv)) delete env.VIBELOG_RUN_PHASE;
-    if (!('VIBELOG_RUN_STARTED_AT' in extraEnv)) delete env.VIBELOG_RUN_STARTED_AT;
-    if (!('VIBELOG_SESSION_ID' in extraEnv)) delete env.VIBELOG_SESSION_ID;
+    // VL-286: унаследованный фазовый env снимается хелпером, явно переданный
+    // extraEnv накладывается поверх — ручные `if (!('X' in extraEnv)) delete …` не нужны
+    const env = testSpawnEnv(extraEnv);
     const child = spawn('node', [cliPath, 'mcp', 'start'], {
       cwd: testDir,
       env,
@@ -892,16 +880,11 @@ describe('MCP-сервер', () => {
       ]);
       const id = responses.find(r => r.id === 2).result.content[0].text.match(/mcp-\d+/)[0];
 
-      // Сервер с env сессии — как cli спавнит MCP в бою (VL-198)
-      const env = { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' };
-      delete env.VIBELOG_CWD;
-      delete env.VIBELOG_PHASE_TASK_ID;
-      delete env.VIBELOG_PHASE_NAME;
-      // VL-254: env рана агента протекает в тест-раннер и подменяет фазу из
-      // меты (VIBELOG_RUN_PHASE приоритетнее) — изолируем, как в общем хелпере
-      delete env.VIBELOG_RUN_PHASE;
-      delete env.VIBELOG_RUN_STARTED_AT;
-      env.VIBELOG_SESSION_ID = sessionId;
+      // Сервер с env сессии — как cli спавнит MCP в бою (VL-198).
+      // VL-254/VL-286: env рана агента протекает в тест-раннер и подменяет
+      // фазу из меты (VIBELOG_RUN_PHASE приоритетнее) — хелпер снимает
+      // унаследованный фазовый env, VIBELOG_SESSION_ID передаём явно.
+      const env = testSpawnEnv({ VIBELOG_SESSION_ID: sessionId });
       const srv = spawn('node', [cliPath, 'mcp', 'start'], { cwd: testDir, env, stdio: ['pipe', 'pipe', 'pipe'] });
       try {
         const call = (requests) => new Promise((resolve, reject) => {

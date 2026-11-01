@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync, spawn } from 'node:child_process';
 import { stringifyYaml } from '../../dist/core/yaml.js';
+import { testSpawnEnv } from '../test-env.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
@@ -26,7 +27,7 @@ const remoteDir = join(testRoot, 'remote-src');
 function runCli(args, env = {}) {
   const res = spawnSync('node', [cliPath, ...args], {
     cwd: testRoot, encoding: 'utf-8',
-    env: { ...gitEnv, VIBELOG_SKIP_UPDATE_CHECK: 'true', ...env },
+    env: testSpawnEnv({ ...gitEnv, ...env }),
   });
   return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
 }
@@ -40,7 +41,7 @@ function runCliAsync(args, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [cliPath, ...args], {
       cwd: testRoot,
-      env: { ...gitEnv, VIBELOG_SKIP_UPDATE_CHECK: 'true', ...env },
+      env: testSpawnEnv({ ...gitEnv, ...env }),
     });
     let stdout = '';
     let stderr = '';
@@ -82,7 +83,7 @@ describe('VL-152 CLI — add/view/list/search', () => {
     try {
       const res = spawnSync('node', [cliPath, 'reference', 'list'], {
         cwd: empty, encoding: 'utf-8',
-        env: { ...gitEnv, VIBELOG_SKIP_UPDATE_CHECK: 'true' },
+        env: testSpawnEnv(gitEnv),
       });
       assert.notEqual(res.status, 0);
       assert.match((res.stdout ?? '') + (res.stderr ?? ''), /Backlog не найден/);

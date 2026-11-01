@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { McpClient, toolsAsSpecs } from '../../dist/agent/mcp-client.js';
+import { testSpawnEnv } from '../test-env.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
@@ -59,12 +60,9 @@ rl.on('line', (line) => {
 });
 `, 'utf-8');
   // Клиент спавнит реальный CLI: node bin/vibelog.mjs mcp start, cwd=/tmp-проект.
-  // VL-116: env фазы (VIBELOG_CWD/VIBELOG_PHASE_*) не должен утекать в
+  // VL-116/VL-286: env фазы (VIBELOG_CWD/VIBELOG_PHASE_*) не должен утекать в
   // MCP-сервер — иначе задачи теста пишутся в реальный backlog
-  const env = { ...process.env };
-  delete env.VIBELOG_CWD;
-  delete env.VIBELOG_PHASE_TASK_ID;
-  delete env.VIBELOG_PHASE_NAME;
+  const env = testSpawnEnv();
   client = await McpClient.create({ bin: process.execPath, binArgs: [cliPath], cwd: testDir, env });
 });
 
