@@ -678,6 +678,89 @@ describe('MCP-сервер', () => {
       assert.ok(/1\. ○ К1/.test(listText), `К1 не должна отмечаться: ${listText}`);
     });
 
+    it('VL-248: терминальный статус при непройденных DoD без dodOverride → отказ, статус не меняется', async () => {
+      const id = await createTask('Finish: DoD не выполнен');
+      await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_manage_dod', arguments: { id, action: 'add', text: 'Тесты проходят' } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_manage_dod', arguments: { id, action: 'add', text: 'Документация обновлена' } } },
+      ]);
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: {
+          id, status: 'Done', dodChecks: [1], comment: 'Фаза (DoD не выполнен)',
+        } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
+        { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'backlog_manage_dod', arguments: { id, action: 'list' } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      // AC1: жёсткая ошибка, статус НЕ меняется, записи не происходит
+      assert.equal(fin.result.isError, true, 'без dodOverride вызов должен падать');
+      const text = fin.result.content[0].text;
+      assert.ok(text.includes('DoD'), `нет упоминания DoD: ${text}`);
+      assert.ok(text.includes('#2'), `нет номера невыполненного пункта: ${text}`);
+      assert.ok(text.includes('dodOverride'), `нет подсказки про dodOverride: ${text}`);
+
+      const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
+      assert.equal(data.status, 'To Do', 'статус не должен меняться при отказе');
+      assert.equal(data.comments.length, 0, 'комментарий не должен записаться при отказе');
+
+      // Жёсткая ошибка не персистит частичные отметки: DoD #1 по-прежнему не отмечен
+      const listText = responses.find(r => r.id === 4).result.content[0].text;
+      assert.ok(/1\. ○ Тесты проходят/.test(listText), `DoD #1 не должен отмечаться при отказе: ${listText}`);
+    });
+
+    it('VL-248: dodOverride с причиной → Done ставится, причина попадает в комментарий-отчёт', async () => {
+      const id = await createTask('Finish: DoD override');
+      await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_manage_dod', arguments: { id, action: 'add', text: 'Тесты проходят' } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_manage_dod', arguments: { id, action: 'add', text: 'Документация обновлена' } } },
+      ]);
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: {
+          id, status: 'Done', dodChecks: [1], dodOverride: 'пункт 2 перенесён в VL-XXX',
+          comment: 'Фаза (override)',
+        } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_view_task', arguments: { id } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      // AC2: статус ставится, в сводке — предупреждение с номерами и пометкой override
+      assert.ok(!fin.result.isError, `с override вызов не должен падать: ${fin.result.content[0].text}`);
+      const text = fin.result.content[0].text;
+      assert.ok(text.includes('терминальный статус при непройденных DoD: #2'), `нет предупреждения с номером: ${text}`);
+      assert.ok(text.includes('override: пункт 2 перенесён в VL-XXX'), `нет пометки override в сводке: ${text}`);
+
+      const data = JSON.parse(responses.find(r => r.id === 3).result.content[0].text);
+      assert.equal(data.status, 'Done', 'статус должен быть применён с override');
+      assert.equal(data.definitionOfDone[0].checked, true, 'отмеченный пункт DoD записан');
+      assert.equal(data.definitionOfDone[1].checked, false, 'неотмеченный пункт остаётся неотмеченным');
+      assert.ok(
+        data.comments[0].text.includes('DoD override: пункт 2 перенесён в VL-XXX'),
+        `причина override должна попасть в комментарий: ${data.comments[0].text}`,
+      );
+    });
+
+    it('VL-248: терминальный статус без непройденных DoD → без предупреждения и без требования override', async () => {
+      const id = await createTask('Finish: все DoD выполнены');
+      await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_manage_dod', arguments: { id, action: 'add', text: 'Тесты проходят' } } },
+      ]);
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: {
+          id, status: 'Done', dodChecks: [1], comment: 'Всё выполнено',
+        } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      assert.ok(!fin.result.isError, `полный DoD не должен требовать override: ${fin.result.content[0].text}`);
+      const text = fin.result.content[0].text;
+      assert.ok(!text.includes('непройденных DoD'), `предупреждения быть не должно: ${text}`);
+      assert.ok(text.includes('Статус: Done'), `статус применён: ${text}`);
+    });
+
     it('id несуществующей задачи → isError «не найдена»', async () => {
       const responses = await callMcp([
         { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },

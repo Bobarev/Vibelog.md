@@ -307,3 +307,30 @@ export function canMoveTo(workflow: Workflow, from: string, to: string): boolean
   const isWorkflowStatus = workflow.transitions.some((t) => t.produces_status === from);
   return !isWorkflowStatus && to === workflow.initial_status;
 }
+
+/**
+ * Терминальный ли статус — конец жизненного цикла задачи.
+ *
+ * Признаки (статусы берутся из конфига, хардкод имён недопустим — lesson-32):
+ * 1. из статуса нет исходящих фаз (phase !== null);
+ * 2. и при этом он либо объявлен финальным маркером (запись с phase: null,
+ *    как Done/Rejected в DEFAULT_WORKFLOW), либо достижим как produces_status
+ *    другого перехода, либо является initial_status.
+ *
+ * Статус, которого в workflow нет вовсе (Backlog до ручного входа), и
+ * промежуточный статус без исходящих фаз в кастомном workflow терминальными
+ * НЕ считаются: задача в них не закрыта.
+ *
+ * Нужно backlog_finish_phase (VL-248): закрывать задачу (ставить терминальный
+ * статус) при невыполненных пунктах DoD допустимо только с явным dodOverride —
+ * иначе Done ставился при красном прогоне (инциденты VL-212/VL-219).
+ *
+ * @param status — проверяемый статус
+ */
+export function isTerminalStatus(workflow: Workflow, status: string): boolean {
+  const hasOutgoing = workflow.transitions.some((t) => t.status === status && t.phase !== null);
+  if (hasOutgoing) return false;
+  const isFinalMarker = workflow.transitions.some((t) => t.status === status && t.phase === null);
+  const isProduced = workflow.transitions.some((t) => t.produces_status === status);
+  return isFinalMarker || isProduced || status === workflow.initial_status;
+}

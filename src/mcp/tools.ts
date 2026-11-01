@@ -48,7 +48,8 @@ import {
 import type { UpdateLessonInput } from '../core/lesson.js';
 import { findBacklogDir } from '../core/paths.js';
 import { markPhaseAborted, getPhaseTransientStatus } from '../core/phase-transient.js';
-import { getWorkflowForTask, phaseStatusTransitionError } from '../core/workflow.js';
+// VL-248: терминальность статуса считается по workflow задачи (без хардкода имён)
+import { getWorkflowForTask, phaseStatusTransitionError, isTerminalStatus } from '../core/workflow.js';
 import { buildProjectMap } from '../core/project-map.js';
 import { truncateToolOutput } from '../agent/tools.js';
 import { ackOk, unknownFields } from './tool-result.js';
@@ -437,7 +438,7 @@ export function listTools(): ToolDefinition[] {
     // === Завершение фазы (VL-138) ===
     {
       name: 'backlog_finish_phase',
-      description: 'Завершение фазы одним вызовом: статус + отчётный комментарий + modifiedFiles + батч-отметки AC/DoD. `comment` объявлен в required — заполняй его отчётом о фазе. Если comment всё же не передан (VL-253), сервер собирает отчёт автоматически из статуса, отметок AC/DoD, modified_files и фрагмента плана и завершает фазу без ошибки. Смена статуса разрешена только фазе, у которой в workflow задачи есть переход «текущий статус + фаза → запрошенный статус» (VL-245): служебные фазы (comment/prompt/analyze/resume) статус не меняют, чужая фаза чужой статус — тоже. Передавай ровно тот статус, что дал шаблон ({{producesStatus}}), иначе он не запишется. Повторный вызов со статусом, равным текущему (already_finished), возвращает ошибку с датой и источником существующего отчёта: не повторяй такой вызов, а заверши фазу финальным текстом. Невалидные значения полей (статус вне конфига, запрещённый фазой переход, битый индекс AC/DoD) пропускаются с сообщением в сводке — частичное применение. Пример сводки: «Статус: Review; отчёт добавлен; отмечено AC: 2, DoD: 1; файлов: 3». Если фаза прервана (не выполнена) — передай `aborted: true` вместе с отчётом-причиной и БЕЗ status: produces_status к такой фазе не применяется (VL-244).',
+      description: 'Завершение фазы одним вызовом: статус + отчётный комментарий + modifiedFiles + батч-отметки AC/DoD. `comment` объявлен в required — заполняй его отчётом о фазе. Если comment всё же не передан (VL-253), сервер собирает отчёт автоматически из статуса, отметок AC/DoD, modified_files и фрагмента плана и завершает фазу без ошибки. Смена статуса разрешена только фазе, у которой в workflow задачи есть переход «текущий статус + фаза → запрошенный статус» (VL-245): служебные фазы (comment/prompt/analyze/resume) статус не меняют, чужая фаза чужой статус — тоже. Передавай ровно тот статус, что дал шаблон ({{producesStatus}}), иначе он не запишется. Повторный вызов со статусом, равным текущему (already_finished), возвращает ошибку с датой и источником существующего отчёта: не повторяй такой вызов, а заверши фазу финальным текстом. Невалидные значения полей (статус вне конфига, запрещённый фазой переход, битый индекс AC/DoD) пропускаются с сообщением в сводке — частичное применение. Пример сводки: «Статус: Review; отчёт добавлен; отмечено AC: 2, DoD: 1; файлов: 3». Если фаза прервана (не выполнена) — передай `aborted: true` вместе с отчётом-причиной и БЕЗ status: produces_status к такой фазе не применяется (VL-244). Терминальный статус (Done/Rejected) при НЕвыполненных пунктах DoD отклоняется: либо отметь пункты в dodChecks, либо передай непустой `dodOverride` с причиной (попадёт в комментарий-отчёт), либо `aborted: true`, если работа не завершена (VL-248).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -447,6 +448,13 @@ export function listTools(): ToolDefinition[] {
           modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Изменённые файлы (полная замена modified_files)' },
           acChecks: { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] }, description: 'Индексы AC для отметки (с 1; батч-отметка, как в manage_ac)' },
           dodChecks: { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] }, description: 'Индексы DoD для отметки (с 1; батч-отметка, как в manage_dod)' },
+          // VL-248: условно обязательное поле. В required его нет (иначе
+          // сломался бы обычный close без замечаний) — требование выставляется
+          // явной ошибкой, когда терминальный статус ставится при непройденных DoD.
+          dodOverride: {
+            type: 'string',
+            description: 'Причина закрытия задачи, у которой остались НЕвыполненные пункты DoD (VL-248). Нужна ТОЛЬКО если ставишь терминальный статус (Done/Rejected), а часть DoD не пройдена: без неё вызов отклоняется (isError), статус не меняется. Непустая причина попадёт строкой «DoD override: …» в комментарий-отчёт фазы. Если пункт DoD выполнить не удалось и задача закрывается — это единственный законный путь; если работа не выполнена — передавай `aborted: true` вместо терминального статуса.',
+          },
           tokenUsage: {
             type: 'object',
             description: 'Явный usage токенов сессии для frontmatter (VL-198). Без него MCP резолвит сам: мета текущей сессии (VIBELOG_SESSION_ID) → её jsonl. Объект со всеми нулями трактуется как отсутствующий параметр (тот же резолв). Резолв не удался — блок пропускается с ошибкой в сводку.',
@@ -1687,6 +1695,48 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
     }
   }
 
+  // ── VL-248: терминальный статус при непройденных DoD ───────────────────
+  // Инциденты VL-212/VL-219: задача закрывалась в Done с отмеченным DoD
+  // «Тесты проходят» при красном полном прогоне. Теперь закрытие с
+  // невыполненными пунктами возможно только с явным dodOverride и причиной.
+  // Проверка идёт ДО любых записей (как жёсткая валидация VL-251): при отказе
+  // файл задачи, комментарий и usage не трогаются — статус гарантированно
+  // не меняется (AC1). Эффективный список DoD — с учётом dodChecks ЭТОГО
+  // вызова: иначе «отмечу что есть» обходило бы требование.
+  const effectiveDod = (updates.definitionOfDone ?? task.definitionOfDone ?? []) as ChecklistItem[];
+  const uncheckedDod = effectiveDod
+    .map((item, i) => ({ n: i + 1, checked: item.checked === true }))
+    .filter((x) => !x.checked)
+    .map((x) => x.n);
+  const dodNumbers = uncheckedDod.map((n) => `#${n}`).join(', ');
+  const overrideReason = typeof args.dodOverride === 'string' && args.dodOverride.trim() !== ''
+    ? args.dodOverride.trim()
+    : undefined;
+  const workflow = getWorkflowForTask(cwd, task);
+  // Жёсткое требование override — только к явно запрошенному терминальному
+  // статусу: комментарий к уже закрытой задаче блокировать нельзя.
+  const requestedTerminal = typeof updates.status === 'string' && isTerminalStatus(workflow, updates.status);
+  // Предупреждение в сводке (AC3) — по итоговому статусу: валидный запрошенный
+  // либо текущий (задача уже терминальная — напоминание без смены поведения).
+  const resultingStatus = typeof updates.status === 'string' ? updates.status : task.status;
+  const dodWarnPart = isTerminalStatus(workflow, resultingStatus) && uncheckedDod.length > 0
+    ? `терминальный статус при непройденных DoD: ${dodNumbers}` +
+      (overrideReason ? ` (override: ${overrideReason})` : '')
+    : '';
+  if (requestedTerminal && uncheckedDod.length > 0 && overrideReason === undefined) {
+    // Текст ошибки называет следующий шаг явно — иначе модель зациклится на
+    // повторе того же вызова (lesson-92). Сам термин «dodOverride» и имя поля
+    // продублированы в description схемы.
+    throw new Error(
+      `Терминальный статус «${updates.status}» при невыполненных пунктах DoD: ${dodNumbers}. ` +
+        'Статус НЕ изменён, файл задачи не тронут. Выбери одно из двух: ' +
+        '(1) если задача закрывается с честно невыполненными пунктами — повтори вызов, добавив непустой dodOverride с причиной ' +
+        '(она попадёт строкой «DoD override: …» в комментарий-отчёт фазы); ' +
+        '(2) если работа не завершена — вызывай backlog_finish_phase с "aborted": true и БЕЗ status. ' +
+        'Отмечай в dodChecks только реально выполненные пункты.',
+    );
+  }
+
   // Отчётный комментарий: author фиксирован @agent (поле author в схему не входит).
   // VL-253: comment из схемы обязателен, но модель может его не прислать
   // (description схемы не влияет на генерацию аргументов) — тогда собираем
@@ -1697,7 +1747,7 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
     : undefined;
   const acList = (task.acceptanceCriteria || []) as ChecklistItem[];
   const dodList = (task.definitionOfDone || []) as ChecklistItem[];
-  const reportText = explicitComment ?? buildAutoReport(task, {
+  let reportText = explicitComment ?? buildAutoReport(task, {
     status: typeof args.status === 'string' ? args.status : task.status,
     acChecked: acList.filter((c) => c.checked).length,
     acTotal: acList.length,
@@ -1705,6 +1755,11 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
     dodTotal: dodList.length,
     files: Array.isArray(args.modifiedFiles) ? (args.modifiedFiles as string[]) : (task.modified_files || []),
   });
+  // VL-248: причина override обязательно фиксируется в комментарии-отчёте
+  // фазы (AC2) — и для явного comment, и для авто-отчёта.
+  if (overrideReason !== undefined) {
+    reportText = `${reportText}\nDoD override: ${overrideReason}`;
+  }
   updates.comments = [...(task.comments || []), {
     author: '@agent',
     created: formatNow(),
@@ -1844,6 +1899,7 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
   }
 
   const summary = `${statusPart}; ${commentPart}${abortedPart ? `; ${abortedPart}` : ''}; отмечено AC: ${acCount}, DoD: ${dodCount}; ${filesPart}` +
+    (dodWarnPart ? `; ${dodWarnPart}` : '') +
     (tokenPart ? `; ${tokenPart}` : '') +
     (tokenFallbackNote ? `; ${tokenFallbackNote}` : '') +
     (errors.length > 0 ? `; Ошибки: ${errors.join(' | ')}` : '');
