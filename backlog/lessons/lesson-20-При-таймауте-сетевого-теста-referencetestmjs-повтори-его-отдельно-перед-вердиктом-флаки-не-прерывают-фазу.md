@@ -1,7 +1,7 @@
 ---
 id: lesson-20
 title: При таймауте сетевого теста reference.test.mjs повтори его отдельно перед вердиктом — флаки не прерывают фазу
-status: active
+status: superseded
 tags:
   - tests
   - flaky
@@ -15,8 +15,12 @@ linked_tasks:
   - VL-182
   - VL-218
 created_date: 2026-10-25
-updated_date: 2026-10-29
+updated_date: 2026-11-01
 supersedes: ''
+last_verified: ''
+verified_by: ''
+applies_to: []
+kind:
 ---
 ## Проблема
 

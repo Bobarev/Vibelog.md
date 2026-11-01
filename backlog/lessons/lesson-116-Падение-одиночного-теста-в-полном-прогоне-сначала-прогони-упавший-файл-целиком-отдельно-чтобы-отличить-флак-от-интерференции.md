@@ -13,8 +13,12 @@ source_tasks:
 linked_tasks:
   - VL-264
 created_date: 2026-10-30
-updated_date: 2026-10-30
-supersedes: ''
+updated_date: 2026-11-01
+supersedes: lesson-23
+last_verified: ''
+verified_by: ''
+applies_to: []
+kind:
 ---
 ## Проблема
 

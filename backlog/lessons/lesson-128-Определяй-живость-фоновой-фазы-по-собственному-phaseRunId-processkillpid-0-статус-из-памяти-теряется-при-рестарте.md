@@ -15,6 +15,10 @@ linked_tasks:
 created_date: 2026-11-01
 updated_date: 2026-11-01
 supersedes: ''
+last_verified: 2026-11-01
+verified_by: agent
+applies_to: []
+kind:
 ---
 ## Проблема
 
@@ -26,4 +30,6 @@ supersedes: ''
 
 ## Пример (VL-270)
 
-`src/web/supervisor-state.ts`: `isPidAlive`, `phaseAlive`. Тест: `isPidAlive(process.pid) === true`, заведомо свободный pid → false, несовпадение `phaseRunId` → false.
+`src/core/supervisor-state.ts`: `isPidAlive`, `phaseAlive`. Тест: `isPidAlive(process.pid) === true`, заведомо свободный pid → false, несовпадение `phaseRunId` → false.
+
+> Путь уточнён при санитарном проходе (VL-281): модуль лежит в `src/core/`, а не в `src/web/` — аудит показывал его как `missing_path`.

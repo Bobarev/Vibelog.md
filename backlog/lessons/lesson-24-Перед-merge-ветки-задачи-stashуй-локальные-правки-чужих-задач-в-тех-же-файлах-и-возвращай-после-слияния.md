@@ -1,7 +1,7 @@
 ---
 id: lesson-24
 title: Перед merge ветки задачи stash'уй локальные правки чужих задач в тех же файлах и возвращай после слияния
-status: active
+status: superseded
 tags:
   - git
   - merge
@@ -13,8 +13,12 @@ source_tasks:
 linked_tasks:
   - VL-172
 created_date: 2026-10-25
-updated_date: 2026-10-25
+updated_date: 2026-11-01
 supersedes: ''
+last_verified: ''
+verified_by: ''
+applies_to: []
+kind:
 ---
 ## Проблема
 

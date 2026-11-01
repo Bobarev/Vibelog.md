@@ -1,7 +1,7 @@
 ---
 id: lesson-100
 title: 'При падении полного прогона в Close сначала прогони упавший файл изолированно, затем повтори полный один раз'
-status: active
+status: superseded
 tags:
   - тесты
   - close
@@ -12,8 +12,12 @@ source_tasks:
 linked_tasks:
   - VL-242
 created_date: 2026-10-30
-updated_date: 2026-10-30
+updated_date: 2026-11-01
 supersedes: ''
+last_verified: ''
+verified_by: ''
+applies_to: []
+kind:
 ---
 ## Проблема
 

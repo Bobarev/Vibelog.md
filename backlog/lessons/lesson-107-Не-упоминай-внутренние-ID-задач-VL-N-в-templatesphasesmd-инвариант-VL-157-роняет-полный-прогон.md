@@ -1,7 +1,7 @@
 ---
 id: lesson-107
 title: 'Не упоминай внутренние ID задач (VL-N) в templates/phases/*.md — инвариант VL-157 роняет полный прогон'
-status: active
+status: superseded
 tags:
   - templates
   - tests
@@ -13,13 +13,19 @@ linked_tasks:
   - VL-247
 created_date: 2026-10-30
 updated_date: 2026-11-01
-supersedes: ''
+supersedes: lesson-29
+last_verified: ''
+verified_by: ''
+applies_to: []
+kind:
 ---
 ## Проблема
 
 В VL-244 правка шаблонов `templates/phases/phase-close*.md` добавляла в текст пояснение со ссылкой на задачи («...и поставит Done незавершённой задаче (VL-219/VL-244)»). Полный прогон упал на инвариант-тесте `src/web/phase-prompt.test.mjs` (VL-157): шаблоны промптов уходят во ВНЕШНИЕ проекты, поэтому внутренние ID задач репозитория в них запрещены — regex `/\bVL-\d|\bVL-XX/i`.
 
 ## Решение
+
+> **Заменён: `lesson-140`.** Полное правило (все файлы `templates/`, оба инвариант-теста, формулировки без ID) собрано там. Этот урок оставлен как история случая в `templates/phases/`.
 
 В `.md`-файлах `templates/` и `templates/phases/` не упоминай ID задач вообще — ни в скобках, ни в пояснениях. Обоснование правки пиши в комментариях кода (`src/**/*.ts`, где ID допустимы) и в задаче/CHANGELOG, а в промпт-шаблоне оставляй только пользовательское поведение.
 

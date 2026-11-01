@@ -12,9 +12,14 @@ source_tasks:
   - VL-233
 linked_tasks:
   - VL-233
+  - VL-286
 created_date: 2026-10-30
-updated_date: 2026-10-30
+updated_date: 2026-11-01
 supersedes: ''
+last_verified: 2026-11-01
+verified_by: agent
+applies_to: []
+kind: workaround
 ---
 ## Проблема
 
@@ -35,6 +40,8 @@ AssertionError: дефолт1: ✗ Задача fl-1 не найдена.
 env -u VIBELOG_CWD pnpm test        # build + vitest run
 env -u VIBELOG_CWD pnpm test:fast   # без сборки, dist уже собран
 ```
+
+**Устранение: VL-286** — обход нужен только пока тесты наследуют env через `{ ...process.env }`. Как только общий тестовый хелпер начнёт чистить `VIBELOG_*` при спавне CLI, префикс `env -u` перестанет быть обязательным, и урок уйдёт в `outdated`.
 
 ## Пример (VL-233)
 

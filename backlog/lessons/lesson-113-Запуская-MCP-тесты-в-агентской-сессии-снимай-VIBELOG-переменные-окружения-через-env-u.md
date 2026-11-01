@@ -1,7 +1,7 @@
 ---
 id: lesson-113
 title: 'Запуская MCP-тесты в агентской сессии, снимай VIBELOG_*-переменные окружения через env -u'
-status: active
+status: superseded
 tags:
   - tests
   - mcp
@@ -11,9 +11,14 @@ source_tasks:
 linked_tasks:
   - VL-266
   - VL-265
+  - VL-286
 created_date: 2026-10-30
-updated_date: 2026-10-30
+updated_date: 2026-11-01
 supersedes: ''
+last_verified: 2026-11-01
+verified_by: agent
+applies_to: []
+kind: workaround
 ---
 ## Проблема
 
@@ -22,6 +27,8 @@ supersedes: ''
 ## Решение
 
 Перед прогоном снимать агентские переменные: `env -u VIBELOG_PHASE_NAME -u VIBELOG_RUN_PHASE -u VIBELOG_CWD -u VIBELOG_SESSION_ID pnpm test`. При падении MCP-тестов в первую очередь проверять именно наследование env, а не код задачи; в отчётном комментарии указать причину и способ прогона, чтобы падение не зачли как регрессию.
+
+**Устранение: VL-286.** Внутри `src/mcp/server.test.mjs` env уже чистится вручную (`startServer()`: `delete env.VIBELOG_*`, VL-116/VL-259), но остальные CLI-тесты наследуют его через `{ ...process.env }`. Когда общий тестовый хелпер закроет это для всех файлов, префикс `env -u` станет необязательным, а урок — `outdated`.
 
 ## Пример
 

@@ -13,8 +13,12 @@ source_tasks:
 linked_tasks:
   - VL-204
 created_date: 2026-10-27
-updated_date: 2026-10-27
+updated_date: 2026-11-01
 supersedes: ''
+last_verified: 2026-11-01
+verified_by: agent
+applies_to: []
+kind:
 ---
 ## Проблема
 
@@ -28,4 +32,6 @@ supersedes: ''
 
 ## Пример
 
-VL-204 (src/web/components/chat/chat-runtime.tsx): первый run yield'ит parts с `approval`, статус requires-action; resume-run POST `{threadId, approval:{toolCallId, approved}}` → сервер продолжает цикл → новый текст докидывается в ту же нить.
+VL-204: первый run yield'ит parts с `approval`, статус requires-action; resume-run POST `{threadId, approval:{toolCallId, approved}}` → сервер продолжает цикл → новый текст докидывается в ту же нить.
+
+> Путь уточнён при санитарном проходе (VL-281): фронтенд живёт в отдельном workspace — `web/src/components/chat/chat-runtime.tsx` (не `src/web/components/...`).

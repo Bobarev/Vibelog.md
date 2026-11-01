@@ -1,7 +1,7 @@
 ---
 id: lesson-23
 title: Флэки orchestrator.test.mjs в полном прогоне повторяй отдельно перед вердиктом о регрессиях
-status: active
+status: superseded
 tags:
   - tests
   - flaky
@@ -13,8 +13,12 @@ linked_tasks:
   - VL-174
   - VL-209
 created_date: 2026-10-25
-updated_date: 2026-10-29
+updated_date: 2026-11-01
 supersedes: ''
+last_verified: ''
+verified_by: ''
+applies_to: []
+kind:
 ---
 ## Проблема
 

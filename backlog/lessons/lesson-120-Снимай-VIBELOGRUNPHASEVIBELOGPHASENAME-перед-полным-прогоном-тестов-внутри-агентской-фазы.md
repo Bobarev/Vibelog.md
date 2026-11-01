@@ -11,9 +11,14 @@ source_tasks:
   - VL-246
 linked_tasks:
   - VL-246
+  - VL-286
 created_date: 2026-10-30
-updated_date: 2026-10-30
-supersedes: ''
+updated_date: 2026-11-01
+supersedes: lesson-113
+last_verified: 2026-11-01
+verified_by: agent
+applies_to: []
+kind: workaround
 ---
 ## Проблема
 
@@ -28,6 +33,8 @@ env -u VIBELOG_RUN_PHASE -u VIBELOG_PHASE_NAME -u VIBELOG_PHASE_TASK_ID pnpm tes
 ```
 
 Одиночный прогон упавшего файла так же проверяется через `env -u … npx vitest run <файл>` — если без переменных зелёный, падение классифицируется как env-артефакт и указывается причиной в отчётном комментарии фазы (не как регрессия задачи).
+
+**Устранение: VL-286** — причина (наследование env при спавне CLI/MCP в тестах) закрывается общим тестовым хелпером; после этого `env -u` перестаёт быть обязательным ритуалом, а урок уходит в `outdated`.
 
 ## Пример
 
