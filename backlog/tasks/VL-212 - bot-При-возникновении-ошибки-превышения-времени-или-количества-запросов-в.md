@@ -5,12 +5,12 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-29 13:15'
-updated_date: '2026-10-30 00:31'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - bot
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: medium
 type: enhancement
@@ -229,19 +229,12 @@ author: @agent
 created: 2026-10-30 00:31
 ---
 Фаза Close выполнена (после того как чужой merge VL-219 завершился — первая попытка была прервана именно им, отчёт ниже в комментариях).
-
 **Merge**: ветка vb/vl-212 (1 коммит cd43504 «feat: VL-212 — кнопка «Продолжить» в уведомлении об ошибке лимитов», 3 файла: src/bot/formatting.ts, src/bot/handlers.ts, src/bot/formatting.test.mjs) слита в master через `git merge --no-ff` → merge-коммит 19380e8, без конфликтов (git применил «recursive» стратегию, CHANGELOG.md не конфликтовал, т.к. VL-219 свою запись уже закоммитил).
-
 **Проверки на master после merge**: `pnpm build` — ok. `pnpm test` — 1539 passed, 24 failed, все падения в src/agent/llm.test.mjs (describe «Санация отравленных пар tool_calls/tool (VL-216)», TypeError на body.messages). Это НЕ регрессия VL-212: merge затронул только src/bot/* (`git diff HEAD^1 HEAD --stat -- src/agent/` пуст), файлы src/agent/llm.ts и src/agent/llm.test.mjs байт-в-байт идентичны pre-merge master (`diff` против `git show HEAD^1:` — совпадение), и тот же файл падает теми же 24 тестами в одиночном прогоне — т.е. master был красным в этой точке до моего слияния (наследие VL-216/VL-230). Целевые тесты задачи: `npx vitest run src/bot/formatting.test.mjs src/bot/rich.test.mjs src/bot/commands.test.mjs` — 218 passed (включая 6 новых тестов limitErrorResumeRef).
-
 **Worktree и ветка**: `.vibelog/worktrees/vl-212` удалена (`--force`: внутри были только untracked-симлинки node_modules и backlog/references/data от оркестратора), `vb/vl-212` удалена (`git branch -d`, was cd43504).
-
 **Документация (DoD 2 теперь выполнен)**: doc-6, раздел «Resume сессии по reply» — новый абзац «Кнопка «Продолжить» при ошибке лимитов (VL-212)»: детект `is_error` + «Превышен лимит», кнопка в rich-рендере (`<tg-button>` последней строкой, data `resume:<agent>:<session_id>`) и в MarkdownV2-фолбэке (inline-клавиатура), поведение по нажатию (resume той же сессии, промпт «Продолжи», лимиты нового рана считаются заново), условия отсутствия кнопки и guard на повторное нажатие. CHANGELOG.md — запись в Unreleased/«Добавлено». Коммит документации: ca83ac1 «docs: VL-212 — документация и CHANGELOG».
-
 **Lessons**: lesson-82 (чужой незавершённый merge в главном репо — не резолвить/не abort, отчитаться и ждать) и lesson-83 (падение тестов после merge проверять на «файл не менялся» через diff HEAD^1 до вердикта «регрессия»), обе связаны с VL-212, закоммичены в главном репо (файлы + task.lessons).
-
 **Что честно осталось**: ручной smoke бота (/set max-requests 1 → запуск фазы → кнопка «▶ Продолжить» → «🔄 Сессия возобновлена … PID») не выполнялся — требует запущенного бота с токеном; логика покрыта юнит-тестами (детект кнопки в formatting.test.mjs, callback-парсинг resume: — существующими тестами parseResumeCommand VL-171).
-
 DoD: 1 «Тесты проходят» — целевые тесты задачи зелёные, полный прогон красный по пре-существующей причине вне scope; 2 «Документация обновлена» — выполнено в этой фазе; 3 «Нет регрессий» — регрессий от merge нет (доказано выше).
 ---
 <!-- COMMENTS:END -->

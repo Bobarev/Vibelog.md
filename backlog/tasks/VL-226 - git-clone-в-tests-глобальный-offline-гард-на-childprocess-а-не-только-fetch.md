@@ -5,12 +5,12 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-29 20:54'
-updated_date: '2026-10-30 00:52'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - core
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: medium
 type: enhancement
@@ -112,19 +112,14 @@ author: @agent
 created: 2026-10-30 00:52
 ---
 Фаза Close выполнена.
-
 Ветка vb/vl-226 слита в master (1 коммит: 53452bf; merge 97282db, --no-ff, без конфликтов), worktree .vibelog/worktrees/vl-226 удалена (force — в ней были только untracked node_modules/backlog/references/data, кладутся оркестратором), ветка vb/vl-226 удалена (была 53452bf).
-
 Проверки после merge: `pnpm build` — без ошибок. Первый полный `pnpm test` дал 24 падения в src/agent/llm.test.mjs — разобрано, это НЕ регрессия merge:
 - с прежним (до merge, из 8f7c207) src/test-setup.mjs те же 24 падения в изоляции — от spawn-guard'а не зависит;
 - причина — локальный gitignored `.vibelog/settings.json` (api_mode: "responses" у моделей): createLlmClient с дефолтным cwd выбирает /responses, а мок-тесты ждут /chat/completions;
 - при временно убранном settings.json: полный прогон 86 файлов / 1578 passed, 4 skipped, 0 failed; сам файл llm.test.mjs — 52/52; src/core/no-network.test.mjs — 13/13 (включая 6 новых spawn-guard-кейсов).
 Файл возвращён на место, в репозиторий не попал (.gitignore).
-
 DoD: 1 (тесты проходят) — да; 2 (документация обновлена) — да, запись VL-226 в CHANGELOG.md [Unreleased] → Исправлено (коммит 5094213); отдельные доки в backlog/docs не правились — поведение тестовой обвязки там не описано, шапка src/test-setup.mjs уже содержит описание guard'а из Фазы 3; 3 (нет регрессий) — да. AC-1/AC-2/AC-3 подтверждены: fail-fast за секунды, no-network.test.mjs дополнен, loopback/file:// проходят.
-
 Lessons: lesson-80 (обёртка child_process должна throw'ить, а не возвращать Promise — иначе spawn теряет ChildProcess) — уже была от Фазы Code, связана с задачей; lesson-84 (новая: при падениях llm.test.mjs проверяй локальный .vibelog/settings.json с api_mode=responses) — создана и связана. Коммит refs/lessons: ae1e712.
-
 Примечание по процессу: локальный CLI-guard тестов не смог отличить окружение от кода — впредь при «чужих» падениях сначала проверять gitignored-конфиг.
 ---
 <!-- COMMENTS:END -->

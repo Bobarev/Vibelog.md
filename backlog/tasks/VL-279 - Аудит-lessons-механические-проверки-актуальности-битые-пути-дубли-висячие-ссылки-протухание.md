@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-01 19:55'
-updated_date: '2026-11-01 20:27'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - lessons
@@ -14,7 +14,7 @@ labels:
   - tech-debt
   - audit
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: high
 type: feature

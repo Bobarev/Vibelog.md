@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-01 19:56'
-updated_date: '2026-11-01 21:08'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - lessons
@@ -15,7 +15,7 @@ labels:
   - audit
 dependencies:
   - VL-279
-milestone: ''
+milestone: v1.11
 references: []
 priority: medium
 type: feature

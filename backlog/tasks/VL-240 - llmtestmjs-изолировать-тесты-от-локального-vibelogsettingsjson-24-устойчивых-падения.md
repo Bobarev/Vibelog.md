@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-30 02:05'
-updated_date: '2026-10-30 02:48'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - tests
@@ -13,7 +13,7 @@ labels:
   - settings
 dependencies:
   - VL-209
-milestone: ''
+milestone: v1.11
 references: []
 priority: high
 type: bug
@@ -225,13 +225,9 @@ author: @agent
 created: 2026-10-30 02:48
 ---
 Фаза Close выполнена.
-
 Ветка `vb/vl-240` слита в master (1 коммит: 4936de8 → merge c17317d), worktree `.vibelog/worktrees/vl-240` удалена (force — только untracked-симлинки node_modules/refs), ветка `vb/vl-240` удалена.
-
 Проверки после merge в главном репо: `pnpm build` — успешно; `env -u VIBELOG_CWD pnpm test` — 85 файлов / 1592 теста passed, 4 skipped, плюс штатный второй проход `src/web/static.test.mjs` (7 passed). То есть дефект подтверждённо устранён: прогон в главном репо с локальным `.vibelog/settings.json` (models.default → api_mode: responses) зелёный без ручного `mv settings.json`.
-
 DoD (3/3 отмечены): «Тесты проходят» — полный прогон зелёный; «Документация обновлена» — AGENTS.md (правило про обязательный явный `apiMode` в llm-тестах) + CHANGELOG.md (Unreleased → Исправлено); «Нет регрессий» — ожидаемые URL в тестах `responses`/`chat` не менялись, регресс-тест в блоке VL-209 ловит смену приоритета опций.
-
 Lessons: обновлён lesson-78 (заголовок переформулирован в правило «тесты LLM-клиента всегда передавай с явным apiMode», тело переписано под фикс VL-240, linked_tasks += VL-240). Документация задачи закоммичена: docs-коммит ae2604f (`docs: VL-240 — CHANGELOG`). Отдельно: вне области задачи остаётся lesson-89 (фиксированные /tmp-пути CLI-тестов) — своя задача.
 ---
 <!-- COMMENTS:END -->

@@ -11,9 +11,14 @@ linked_tasks:
   - VL-159
   - VL-186
   - VL-208
+  - VL-290
 created_date: 2026-10-14
-updated_date: 2026-10-29
+updated_date: 2026-11-02
 supersedes: ''
+last_verified: ''
+verified_by: ''
+applies_to: []
+kind:
 ---
 ## Проблема
 

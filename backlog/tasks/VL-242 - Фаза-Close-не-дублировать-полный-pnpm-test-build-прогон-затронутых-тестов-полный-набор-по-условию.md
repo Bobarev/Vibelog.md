@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-30 02:05'
-updated_date: '2026-10-30 11:00'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - prompt
   - close-phase
   - tests
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: low
 type: enhancement
@@ -231,22 +231,16 @@ author: @agent
 created: 2026-10-30 11:00
 ---
 Фаза Close выполнена. Ветка vb/vl-242 слита в master (1 коммит: 810452e feat; merge-коммит создан --no-ff), worktree удалена (--force: внутри оставались только untracked-симлинки node_modules и backlog/references/data), ветка удалена (`Deleted branch vb/vl-242 (was 810452e)`). Конфликтов merge не было; затронуты AGENTS.md, src/web/phase-prompt.test.mjs, templates/phases/phase-close.md, templates/phases/phase-close-worktree.md.
-
 Прогоны по новому правилу самой задачи (соблюдено ровно его):
 1. `pnpm build` — зелёный.
 2. Ранний точечный фильтр: `env -u VIBELOG_CWD npx vitest run src/web/phase-prompt.test.mjs` — 66/66 passed (файл из diff merge).
 3. Обязательный полный прогон `env -u VIBELOG_CWD pnpm test` → **упал**: 6 падений в одном файле `src/web/orchestrator.test.mjs` (79 тестов в файле, spawn/тайминги), merge этот файл не затрагивал. Перед параллельным запуском проверено `ps aux | grep -E 'vitest|pnpm'` — параллельных vitest в других worktree нет.
 4. Классификация без повтора «наугад»: тот же файл изолированно → 79/79 passed ⇒ это флак, а не регрессия merge.
 5. **Один** повторный полный прогон (причина зафиксирована здесь): `env -u VIBELOG_CWD pnpm test > .vibelog-test.log 2>&1; echo "EXIT=$?"` → `EXIT=0`, `Test Files 88 passed` + `static.test.mjs` 1 passed. Повтор потребовался из-за флака orchestrator.test.mjs (не из-за кода задачи).
-
 Отдельно отмечу: промежуточный вызов `pnpm test 2>&1 | tail` вернул exit code пайпа, а не прогона — переделал с перенаправлением в файл и явным `$?` (зафиксировано уроком).
-
 Число полных прогонов в фазе: 2 (предел правила — один повтор, соблюдён).
-
 DoD: 1) Тесты проходят — да, итоговый полный прогон зелёный (88 файлов + static, exit 0), падение первого прогона классифицировано как флак и не связано с merge. 2) Документация обновлена — да, CHANGELOG.md (Unreleased/Добавлено, запись VL-242), коммит 325b41e; шаблоны фаз и AGENTS.md обновлены в feat-коммите ветки. 3) Нет регрессий — да, инвариант-тест VL-105 (отсутствие `pnpm` в templates/phases/*.md) зелёный, phase-prompt.test.mjs 66/66, полный прогон зелёный.
-
 AC 8 («проверено на реальной фазе Close: длительность сокращается относительно 30 минут VL-227») остаётся неотмеченным намеренно: эта фаза сама частично является такой проверкой (2 полных прогона вместо 3, точечный фильтр перед полным), но замер длительности и подтверждение на «чистой» следующей фазе Close — вне этой задачи; пункт закрывается по факту следующей реальной Фазы Close.
-
 Lessons: создан и связан lesson-100 (при падении полного прогона в Close сначала прогони упавший файл изолированно, затем повтори полный один раз) и lesson-101 (перенаправляй вывод прогона в файл и читай $?, а не пайп в tail); lesson-99, дублировавший lesson-101, помечен superseded. Коммит refs/lessons: 71341d4.
 ---
 <!-- COMMENTS:END -->

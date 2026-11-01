@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-30 14:20'
-updated_date: '2026-10-30 16:28'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - web
@@ -13,7 +13,7 @@ labels:
   - layout
   - composer
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: high
 type: bug

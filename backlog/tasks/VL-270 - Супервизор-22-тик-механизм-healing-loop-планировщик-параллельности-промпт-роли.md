@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-30 21:37'
-updated_date: '2026-11-01 14:18'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - web
@@ -16,7 +16,7 @@ labels:
 dependencies:
   - VL-268
   - VL-269
-milestone: ''
+milestone: v1.11
 references: []
 priority: high
 type: feature

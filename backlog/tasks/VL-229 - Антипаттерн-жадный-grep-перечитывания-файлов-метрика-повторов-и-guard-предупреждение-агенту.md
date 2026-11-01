@@ -6,14 +6,14 @@ assignee:
   - '@agent'
 reporter: ''
 created_date: '2026-10-29 21:54'
-updated_date: '2026-10-30 03:01'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - core
   - agent
   - mcp
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: medium
 type: enhancement

@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-30 02:06'
-updated_date: '2026-10-30 10:37'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - billing
@@ -13,7 +13,7 @@ labels:
   - orchestrator
   - close-phase
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: medium
 type: bug
@@ -255,17 +255,11 @@ author: @agent
 created: 2026-10-30 10:37
 ---
 Фаза Close выполнена.
-
 **Merge:** ветка `vb/vl-243` слита в master (`--no-ff`, 1 коммит e3d6bcf: 8 файлов, +354/−23). Worktree удалена (`--force`: только untracked-симлинки node_modules и backlog/references/data), ветка `vb/vl-243` удалена (`-d`, была e3d6bcf).
-
 **Проверки:** `pnpm build` — OK. `pnpm test:fast` в главном репо — первый прогон дал 1 падение `src/web/chat.test.mjs` («write_file: выход за пределы проекта → ошибка (AC7)»); файл вне зоны правки VL-243 (chat/tool-policy), при повторном прогоне всего набора — **89 файлов / 1681 passed, 4 skipped, 0 failed**. Падение квалифицировано как флэка LLM-мокнутого чата, регрессии нет.
-
 **Диагностика гипотезы плана (подтверждена фактом).** `.vibelog/billing/VL-227.json` содержит 3 записи: `spec` (agent-1793312164332), `plan` (agent-1793312261510, 22:18:12Z), **`plan` (тот же sessionId, 22:24:02Z)**. Коммит code-рана `fd7f330` — 22:23:56Z (+03:00 → 22:23:56Z), то есть вторая «plan»-запись закончилась через 6 с после коммита: это и есть code-ран, записанный под фазой сессии `plan` с тем же sessionId (неверная атрибуция, а не потеря записи). `close`-записи нет вовсе — детерминированный пропуск по `phaseTaskId !== 'close'`. Обе причины устранены в коде: billing пишет фазу рана (`sessionPhase`), close получает env и учитывается.
-
 **Документация:** CHANGELOG (раздел Unreleased → Исправлено, запись VL-243) и doc-10 (новый §3.3 «Учёт токенов и billing», включая явную пометку о VL-112-исключении: worktree — да, учёт — нет) — коммит **d638d52**. README («Учёт токенов») обновлён в фазе Code. Lessons: lesson-98 (уже создан и связан с задачей).
-
 **DoD:** 1. Тесты проходят — да (полный прогон 1681 passed / 0 failed); 2. Документация обновлена — да (README + CHANGELOG + doc-10); 3. Нет регрессий — да (единственное падение — флэка chat.test.mjs, повторно зелёная).
-
 **Остаётся на живую проверку:** реальный close-ран в branch-mode (запись `phase:'close'` в журнале и мете, worktree не создаётся) — автотесты инвариант покрывают (orchestrator +2, cli +2, billing +1).
 ---
 <!-- COMMENTS:END -->

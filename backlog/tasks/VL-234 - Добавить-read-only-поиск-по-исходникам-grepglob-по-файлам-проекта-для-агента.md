@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-30 00:49'
-updated_date: '2026-10-30 12:01'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - agent
   - mcp
   - tools
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: high
 type: enhancement
@@ -215,22 +215,16 @@ author: @agent
 created: 2026-10-30 12:01
 ---
 Фаза Close завершена (после разрешения конфликта). Ветка vb/vl-234 слита в master (merge-коммит `ef62540`), worktree удалена, ветка удалена.
-
 **Разрешение конфликта** (по указанию пользователя — «Разреши конфликт сам»), вручную, без откатов:
 - `src/web/tool-policy.ts` — объединил импорты обеих сторон: расширенный набор из master (`resolveInProject, truncateToolOutput, formatDirListing, formatFileSlice, parseReadPath` — принесён VL-233/VL-250) плюс `searchProjectFiles` из `../agent/search-files.js`. Все символы используются, сборка чистая; тело `makeSearchFilesTool` влилось авто-мержем.
 - `templates/prompts/chat-system.md` — сохранил расширенное описание `read_file` из master (диапазоны в path, маркер обрезки, поведение jsonl) и добавил строку `search_files` из ветки. Маркеров конфликта в дереве не осталось (проверено grep по src/templates/README/CHANGELOG).
-
 **Проверки после merge (главный репо):**
 - `pnpm build` — чисто.
 - Ранний точечный фильтр по `git diff --name-only HEAD^1..HEAD` (11 файлов): `vitest run src/agent/search-files.test.mjs src/agent/tools.test.mjs src/agent/repeat-tracker.test.mjs src/web/tool-policy.test.mjs` → 4 файла, 121 тест passed.
 - Полный `pnpm test` → **89 файлов, 1697 passed, 4 skipped, 0 failed** (пропуски штатные). Параллельного `vitest` в других worktree не было (`ps aux`). Повторных полных прогонов не делал.
-
 **Уборка:** `git worktree remove` отказался из-за untracked-симлинков `node_modules` и `backlog/references/data` (ссылки оркестратора, данные не теряются) → удалил через `--force`. `git branch -d vb/vl-234` — ок (was 13a8587).
-
 **Документация:** коммит `74bc89d` — запись VL-234 в CHANGELOG.md (Unreleased → Добавлено; отдельно зафиксировано изменение поведения — `dist` добавлен в `SKIP_DIRS` для `grep_search`/`glob`) и doc-10 §5 «Локальные (6)» → «(7)» + строка таблицы `search_files`. Отдельный коммит `bafcbf2` — lesson-97 (refs у задачи нет).
-
 **Замечание по процедуре:** doc-10 правил файлом, а не через `document_update` (MCP), как предписывал план (lesson-63); правка попала в главный репо и закоммичена, содержимое корректно, но канонический путь — MCP.
-
 DoD: все 3 пункта выполнены — тесты проходят (полный прогон), документация обновлена, регрессий нет.
 ---
 <!-- COMMENTS:END -->

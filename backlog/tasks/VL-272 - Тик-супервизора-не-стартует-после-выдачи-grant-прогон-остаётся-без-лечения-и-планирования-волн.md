@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-01 14:59'
-updated_date: '2026-11-01 15:26'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - web
@@ -13,7 +13,7 @@ labels:
   - bug
   - tick
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: high
 type: bug

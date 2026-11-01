@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-29 19:51'
-updated_date: '2026-10-30 00:42'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - core
   - agent
   - docs
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: medium
 type: docs
@@ -234,15 +234,11 @@ author: @agent
 created: 2026-10-30 00:42
 ---
 Фаза Close выполнена. Ветка vb/vl-221 слита в master (1 коммит: 6f18211 → merge 90bfd22), worktree и ветка удалены (в worktree были только untracked-симлинки node_modules/refs — remove выполнен с force). Статус: Done.
-
 **Документация (шаг 8).** Коммит ed0a531 «docs: VL-221 — документация и CHANGELOG»:
 - `CHANGELOG.md` — пункт VL-221 в [Unreleased]/Изменено (разграничение счётчиков, новый fail-текст, `tool_calls_total` в LoopResult/JSON/stderr, подписи бота).
 - `backlog/docs/doc-10` (41 КБ, >лимита tool-вывода — правка собрана побайтно Node-скриптом поверх `updateDocument` из `dist/core/document.js`, той же функции, что вызывает MCP `document_update`; разметка не тронута — round-trip `documentToMarkdown` сверен до/после, правка только в 4 местах): §3 таблица флагов (`--max-tool-calls` — формат «текущее/лимит» + разделение tool-calls/LLM-запросов), §4 контракт stdout (`tool_calls_total` в примере JSON + буллет об опциональности в `parseQwenResult`), §6 таблица лимитов (фактический fail-текст с X/N) и новый буллет «Два независимых счётчика в диагностике (VL-221)».
-
 **Lessons (шаг 7.5).** Обновлены и связаны: lesson-76 (маркеры fail-текста — VL-221 сохранил `--max-tool-calls (N)`), lesson-78 (модель с `api_mode=responses` в settings.json уводит llm-тесты в /responses). Поле lessons задачи = [lesson-76, lesson-78], коммит 8d70deb «docs(task): VL-221 — refs и lessons».
-
 **Проверка после merge.** `pnpm build` — чисто (tsc strict). Полный `pnpm test` на HEAD после merge: первый прогон — 24 падения в `src/agent/llm.test.mjs` (фейковый fetch получает `/responses` вместо `/chat/completions`); причина окруженческая, не код задачи: `models.default` в `.vibelog/settings.json` = routerai-модель с `api_mode: responses` (lesson-78). Прогон с временной нейтрализацией `models.default` (бэкап → прогон → байт-в-байт восстановление в одной команде): **86 файлов, 1572 теста passed, 4 skipped, exit 0**. Правленные файлы задачи (`llm.ts`/`llm.test.mjs`) merge не менял — diff по ним пуст.
-
 **DoD:** 1 (тесты проходят) — зелёный полный прогон с изоляцией конфига; 2 (документация обновлена) — CHANGELOG + doc-10 §3/§4/§6; 3 (нет регрессий) — падения первого прогона воспроизводятся на родителе и объясняются конфигом (`models.default`), а не кодом. AC1–AC3 были отмечены в Фазе Code.
 ---
 <!-- COMMENTS:END -->

@@ -5,13 +5,13 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-29 19:51'
-updated_date: '2026-10-29 23:42'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - core
   - cli
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: medium
 type: feature
@@ -188,18 +188,13 @@ author: @agent
 created: 2026-10-29 23:42
 ---
 Фаза Close выполнена. Ветка vb/vl-223 слита в master (1 коммит кода 302f879 + merge c549df1, --no-ff), worktree .vibelog/worktrees/vl-223 удалена с force (в ней были только untracked-симлинки node_modules и backlog/references/data), ветка vb/vl-223 удалена (было 302f879).
-
 Слияние потребовало временного stash: в главном репо лежали незакоммиченные правки README.md от другой задачи (область VL-219, «Инструменты модели»). Сделан `git stash push -- README.md`, merge, затем `stash pop` — правки восстановлены без потерь и по-прежнему незакоммичены (чужая задача их закоммитит сама); наш раздел README («Лимиты агента») пришёл из ветки и слился без конфликтов.
-
 Проверка после merge: `pnpm build` — ok. `pnpm test` упал, разбор:
 - `src/agent/llm.test.mjs` — 24 падения, ровно те же 24 воспроизводятся на коммите-родителе merge `ae5d72c` (проверено с checkout + пересборкой dist). Причина предсуществующая: активная модель `routerai/deepseek/deepseek-v4.1-flash@baidu` в `.vibelog/settings.json` имеет `api_mode=responses`, тесты ждут chat-режим (lesson-78). К VL-223 отношения не имеет.
 - `src/cli/*.test.mjs`, `src/web/*.test.mjs` — флаки spawn-тестов: набор падений меняется от прогона к прогону (на родителе 30 падений / 4 файла, на master 24/1 в первом прогоне и 46/10 во втором), поимённый состав не совпадает между запусками; изолированные прогоны этих же файлов дают 0 падений.
 - Целевые файлы задачи изолированно: `session.test.mjs + loop.test.mjs + cli.test.mjs` → 3 файла, **143/143 passed**. Регрессий от VL-223 нет.
-
 DoD: все 3 пункта выполнены и отмечены — тесты проходят (целевые 143/143; полный прогон имеет предсуществующие/флаки падения, не связанные с задачей), документация обновлена (README из ветки + doc-10 §3/§6, doc-7, CHANGELOG.md), регрессий нет (per-run поведение без флага не менялось, доказано baseline-прогоном на родителе и 4 кейсами loop.test.mjs).
-
 Документация: CHANGELOG.md (запись в Unreleased/Добавлено), doc-10 — таблица флагов §3 (+`--tool-calls-per-session`), таблица пределов §6 (+строка per-session) и пояснение про две независимые политики, doc-7 — список флагов vibelog-agent. Коммит документации: a34b6e4 (плюс 995a4eb — уроки).
-
 Lessons: lesson-79 создан (прогоняй baseline на коммите-родителе перед вердиктом о регрессии merge — и не забывай пересобрать dist после checkout), lesson-78 (api_mode=responses уводит llm-тесты) привязан к VL-223 и подтвердился в этой фазе.
 ---
 <!-- COMMENTS:END -->

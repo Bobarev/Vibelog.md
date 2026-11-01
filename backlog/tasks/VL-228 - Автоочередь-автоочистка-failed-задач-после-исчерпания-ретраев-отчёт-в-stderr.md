@@ -5,13 +5,13 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-29 20:54'
-updated_date: '2026-10-30 01:01'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - core
   - cli
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: low
 type: enhancement
@@ -191,11 +191,8 @@ author: @agent
 created: 2026-10-30 01:01
 ---
 Фаза Close выполнена. Ветка vb/vl-228 слита в master (1 коммит 5f598ac, merge 52cd45e), worktree `.vibelog/worktrees/vl-228` удалена (--force: внутри были только untracked-симлинки node_modules и backlog/references/data), ветка vb/vl-228 удалена. Docs-коммит: cd3e740 (CHANGELOG Unreleased→Добавлено + doc-6), refs/lessons-коммит: 82723e4.
-
 DoD: 1 «Тесты проходят» — целевые auto-queue (16) и auto-runner (18) зелёные, сборка ок. 2 «Документация обновлена» — README (раздел «/auto — автоочередь фаз» из фазы Code), CHANGELOG, doc-6 (список статусов, `/auto add` не реанимирует failed_permanent, stderr-строка со ссылкой на сессию, авто-миграция sweep). 3 «Нет регрессий» — `pnpm test` в главном репо дал 24 падения в `src/agent/llm.test.mjs` и 1 в `src/cli/*`; проверено, что это НЕ merge: `git diff master~2 master -- src/agent/` пуст, md5 тест-файла идентичен, тот же прогон в изолированном worktree без `.vibelog/settings.json` — 52 passed (причина — секция `models` в локальном settings.json: `resolveActiveModel` подменяет baseUrl/api_mode, lesson-78; cli-флейки — спавн CLI с timeout 5000 под нагрузкой, известны из фазы Code).
-
 Lessons: lesson-85 (новый статус — в единый список валидации, легаси → миграция в sweep с тестом идемпотентности), lesson-78 (обновлён, +VL-228; lesson-86 помечен superseded как дубликат).
-
 Вне scope по плану (не сделано, документировано): интерактивная команда `/auto retry <id>` — обход `/auto remove` + `/auto add`.
 ---
 <!-- COMMENTS:END -->

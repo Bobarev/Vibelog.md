@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-30 03:33'
-updated_date: '2026-10-30 04:18'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - tools
   - agent
   - bug
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: medium
 type: bug
@@ -222,15 +222,10 @@ author: @agent
 created: 2026-10-30 04:18
 ---
 Фаза Close выполнена. Ветка vb/vl-250 слита в master (1 коммит dea1375 + merge 45a7ac3), worktree удалена (в ней были только untracked-симлинки node_modules и backlog/references/data — удалено с --force), ветка vb/vl-250 удалена.
-
 Замечание по ходу: merge с первого раза упал не на конфликте, а на untracked `scripts/agent-session.mjs` в главном репо (устаревшая копия от предыдущей попытки, 7494 байта, hash 5ae1ceb) — она перекрывалась версией из ветки (4238 байт, hash de394d9). Устаревшую копию удалил и повторил merge; содержимое ветки (актуальная версия с `--chars`/`--limit`/списком сессий) сохранено.
-
 Проверки после merge в главном репо: `pnpm build` — ок; `pnpm test` — 87 файлов, 1643 passed | 4 skipped (скипы — `it.skip` в `src/core/compat.test.mjs` и `src/core/compat-full.test.mjs`: «Оригинал Backlog.md не найден», к VL-250 не относятся). Исключений из прогона нет.
-
 DoD: все 3 пункта выполнены — тесты проходят (полный прогон), документация обновлена (README, `templates/prompts/chat-system.md`, CHANGELOG d671c36), регрессий нет.
-
 Lessons: создан lesson-93 (применяй offset/limit и построчное усечение до бюджета символов), связан с VL-250; refs и lesson закоммичены в 6ed7096.
-
 Документация: CHANGELOG.md — запись VL-250 в Unreleased/Исправлено (docs-коммит d671c36).
 ---
 <!-- COMMENTS:END -->

@@ -5,13 +5,13 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-29 20:54'
-updated_date: '2026-10-30 01:56'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - docs
   - prompt
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: medium
 type: docs
@@ -149,18 +149,14 @@ author: @agent
 created: 2026-10-30 01:56
 ---
 Фаза Close выполнена. Ветка vb/vl-227 слита в master (1 коммит fd7f330, merge 31609a5, --no-ff без конфликтов), worktree .vibelog/worktrees/vl-227 удалена, ветка vb/vl-227 удалена (-d, was fd7f330).
-
 Проверка после merge (главный репо):
 - pnpm build — чисто.
 - pnpm test — зелёный: 85 файлов + отдельный прогон static = 1584 passed + 7 passed, 4 skipped, 0 failed; без --exclude/--skip, исключённых файлов нет. Тест src/web/phase-prompt.test.mjs — 59 tests passed, инвариант VL-227 внутри.
-
 Диагностика красного первого прогона (не регрессия merge, документально):
 1. Локальный .vibelog/settings.json (под .gitignore, есть только в главном репо) с models.default и api_mode: responses уводил llm.test.mjs на /responses — 24 падения; после временного снятия файла llm.test.mjs — 52/52 (lesson-78).
 2. Параллельно в worktree vl-233 шёл vitest run, а CLI-тесты используют фиксированные пути (/tmp/vibelog-config-cli-test, /tmp/vibelog-search-cli-test, .test-create-flags, .test-batch) — плавающие падения 29 → 7 → 33 → 12 в разных файлах; после завершения чужого прогона полный pnpm test зелёный (новый lesson-89).
 3. git diff 5e2a23d..HEAD показывает только 3 файла задачи (AGENTS.md, templates/phases/phase-code.md, src/web/phase-prompt.test.mjs) — код src/agent, src/cli, src/core не менялся.
-
 DoD: 1–3 выполнены (полный прогон без исключений, документация обновлена — CHANGELOG.md, AGENTS.md, шаблон фазы; регрессий нет).
-
 Документация: CHANGELOG.md — запись VL-227 в Unreleased → Изменено (коммит 542f647). Lessons: lesson-78 обновлён (linked_tasks + VL-227), создан lesson-89 (коммит 2180de5). Изменённых файлов сверх трёх из фазы Code нет.
 ---
 <!-- COMMENTS:END -->

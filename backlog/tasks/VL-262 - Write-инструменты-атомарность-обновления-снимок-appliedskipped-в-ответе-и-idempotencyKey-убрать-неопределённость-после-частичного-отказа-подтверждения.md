@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-30 12:21'
-updated_date: '2026-10-30 13:33'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - mcp
@@ -13,7 +13,7 @@ labels:
   - agent
   - reliability
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: medium
 type: enhancement

@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-30 02:05'
-updated_date: '2026-10-30 02:56'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - tests
@@ -13,7 +13,7 @@ labels:
   - flaky
   - worktree
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: high
 type: bug
@@ -253,15 +253,11 @@ author: @agent
 created: 2026-10-30 02:56
 ---
 Фаза Close выполнена. Ветка `vb/vl-241` слита в master (`merge --no-ff`, 1 коммит 8f2aa50 → merge-коммит), worktree `.vibelog/worktrees/vl-241` удалена (`--force`: внутри были только untracked-симлинки `node_modules`/`backlog/references/data` от оркестратора), ветка удалена (`git branch -d`).
-
 **Проверки в главном репо после merge:**
 - `pnpm build` — tsc без ошибок;
 - `env -u VIBELOG_CWD pnpm test` — 85 файлов, **1592 passed / 4 skipped**, затем `src/web/static.test.mjs` 7/7 passed. Без `--exclude`/`--skip`. Регрессий нет, конфликтов слияния не было (AGENTS.md auto-merging).
-
 **DoD:** 1) Тесты проходят — по полному прогону выше; 2) Документация обновлена — AGENTS.md (пункт «Тестовые каталоги — только mkdtemp»), `vitest.config.mts`, шапки 11 файлов, запись в CHANGELOG (Unreleased → Исправлено), коммит `e9d406e`; 3) Нет регрессий — полный прогон зелёный, `git status --porcelain | grep '.test-'` пусто.
-
 **Lessons:** lesson-89 (обход «дождись чужого прогона») помечен `superseded`, урок заменён на **lesson-90** («Задавай тестовые каталоги только через mkdtempSync(join(tmpdir(), 'vibelog-<suite>-')) и удаляй их в afterAll»); оба связаны с задачей (коммит `96c04e6`).
-
 **На заметку:** VL-240 — вторая независимая причина того же класса; её CHANGELOG-запись уже в master, повторный прогон после вливания зелёный.
 ---
 <!-- COMMENTS:END -->

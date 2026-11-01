@@ -6,13 +6,13 @@ assignee:
   - '@agent'
 reporter: ''
 created_date: '2026-10-29 21:54'
-updated_date: '2026-10-30 01:11'
+updated_date: '2026-11-02 00:23'
 due_date: ''
 labels:
   - core
   - agent
 dependencies: []
-milestone: ''
+milestone: v1.11
 references: []
 priority: high
 type: enhancement
@@ -189,14 +189,12 @@ author: @agent
 created: 2026-10-30 01:11
 ---
 Фаза Close выполнена. Ветка vb/vl-230 слита в master (merge d92cc15, 1 коммит ветки: c20bce8), worktree удалить НЕ удалось, ветка vb/vl-230 осталась — см. ниже.
-
 Что сделано:
 - `git merge --no-ff vb/vl-230` — без конфликтов (3 файла: src/agent/llm.ts, src/agent/loop.ts, src/agent/loop.test.mjs).
 - Проверка главного репо: `pnpm build` — OK; `npx vitest run` — 85 файлов зелёные, 1 файл (`src/agent/llm.test.mjs`) с 24 падениями. Это известная локальная проблема окружения (lesson-78/84/86): `models.default` в `.vibelog/settings.json` имеет `api_mode: responses`, поэтому мок-тесты клиента уходят на `/responses` вместо `/chat/completions`. Ветка этот файл не меняла (git diff fc259e6..HEAD по нему пуст), при прогоне из каталога без settings.json — 52/52 зелёные. 1564 теста прошли, 4 skipped.
 - Целевой файл задачи `src/agent/loop.test.mjs` — 70/70 зелёные (включая +3 теста VL-230).
 - DoD 2 (документация) закрыт: CHANGELOG.md — запись VL-230 в Unreleased/Добавлено; doc-10 §6.2 — пункт «Байтовый автокомпакт истории (VL-230)» (порог 70% от 900 КБ, предупреждение в stderr→logTail, shrink tool-выводов до 2048/1024 на wire-границе без мутации jsonl, работа при `--no-compact`). Диф — только вставки (+3 строки, удалений 0). Коммит документации: d9f071c.
 - Lessons: создан lesson-87 (грязный worktree с M-файлами чужой задачи не коммить и не удалять force — сверять блобы с master), связан с задачей; коммит 8c98e16.
-
 Невыполненное / замечания:
 - **worktree не удалён**: `.vibelog/worktrees/vl-230` содержит `M src/test-setup.mjs`, `M src/core/no-network.test.mjs` (правки задачи VL-226, не VL-230) + untracked `node_modules`, `backlog/references/data`. Не удалял --force: правило разрешает force только для untracked-симлинков. Проверено, что данные не теряются: блобы этих файлов (`git hash-object`) не встречаются ни в одной ветке, а `git -C .vibelog/worktrees/vl-230 diff master` по ним показывает только удаления относительно master (там лежит устаревшая версия; в master те же файлы полнее — есть оба теста spawn-guard и сканирование командной строки exec из VL-226).
 - **ветка vb/vl-230 не удалена**: `git branch -d` отказался — «checked out at .vibelog/worktrees/vl-230» (следствие неудалённого worktree).
