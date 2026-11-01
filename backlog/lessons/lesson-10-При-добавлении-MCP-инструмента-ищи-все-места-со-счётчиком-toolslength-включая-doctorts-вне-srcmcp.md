@@ -12,9 +12,14 @@ source_tasks:
 linked_tasks:
   - VL-164
   - VL-235
+  - VL-279
 created_date: 2026-10-15
-updated_date: 2026-10-30
+updated_date: 2026-11-01
 supersedes: ''
+last_verified: ''
+verified_by: ''
+applies_to: []
+kind:
 ---
 ## Проблема
 
