@@ -31,13 +31,13 @@ modified_files:
 lessons:
   - lesson-119
 token_usage:
-  input: 8900307
-  output: 64176
-  cache: 8640000
-  total: 8964483
-  requests: 117
-  duration_ms: 1204400
-  reasoning: 20527
+  input: 9002292
+  output: 64269
+  cache: 8740352
+  total: 9066561
+  requests: 119
+  duration_ms: 1462314
+  reasoning: 21245
   by_phase:
     plan:
       input: 1203684
@@ -50,10 +50,10 @@ token_usage:
       cache: 6618624
       requests: 73
     close:
-      input: 936439
-      output: 5317
-      cache: 902144
-      requests: 23
+      input: 1038424
+      output: 5410
+      cache: 1002496
+      requests: 25
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->

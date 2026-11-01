@@ -30,13 +30,13 @@ lessons:
   - lesson-113
   - lesson-114
 token_usage:
-  input: 8477509
-  output: 59039
-  cache: 8238080
-  total: 8536548
-  requests: 140
-  duration_ms: 2492200
-  reasoning: 25194
+  input: 8602214
+  output: 59198
+  cache: 8360960
+  total: 8661412
+  requests: 142
+  duration_ms: 2852063
+  reasoning: 28041
   by_phase:
     spec:
       input: 336618
@@ -54,10 +54,10 @@ token_usage:
       cache: 5550080
       requests: 74
     close:
-      input: 1383339
-      output: 8675
-      cache: 1334784
-      requests: 31
+      input: 1508044
+      output: 8834
+      cache: 1457664
+      requests: 33
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->

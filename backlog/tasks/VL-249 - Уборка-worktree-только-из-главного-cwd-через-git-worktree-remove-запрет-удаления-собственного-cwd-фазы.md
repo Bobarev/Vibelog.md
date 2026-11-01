@@ -29,13 +29,13 @@ modified_files:
 lessons:
   - lesson-109
 token_usage:
-  input: 8363609
-  output: 54019
-  cache: 7632128
-  total: 8417628
-  requests: 123
-  duration_ms: 1777179
-  reasoning: 26744
+  input: 8468459
+  output: 54112
+  cache: 7735040
+  total: 8522571
+  requests: 125
+  duration_ms: 2039560
+  reasoning: 29318
   by_phase:
     spec:
       input: 67357
@@ -53,10 +53,10 @@ token_usage:
       cache: 5090816
       requests: 65
     close:
-      input: 1097375
-      output: 6150
-      cache: 1060864
-      requests: 26
+      input: 1202225
+      output: 6243
+      cache: 1163776
+      requests: 28
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->

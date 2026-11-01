@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-10-30 12:17'
-updated_date: '2026-10-30 12:59'
+updated_date: '2026-10-30 13:00'
 due_date: ''
 labels:
   - mcp
@@ -28,13 +28,13 @@ modified_files:
 lessons:
   - lesson-102
 token_usage:
-  input: 6189338
-  output: 69960
-  cache: 6016000
-  total: 6259298
-  requests: 122
-  duration_ms: 1044867
-  reasoning: 23829
+  input: 6482387
+  output: 70271
+  cache: 6304768
+  total: 6552658
+  requests: 126
+  duration_ms: 1759261
+  reasoning: 38781
   by_phase:
     plan:
       input: 799680
@@ -47,10 +47,10 @@ token_usage:
       cache: 2962944
       requests: 53
     close:
-      input: 2356109
-      output: 21697
-      cache: 2291712
-      requests: 48
+      input: 2649158
+      output: 22008
+      cache: 2580480
+      requests: 52
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
