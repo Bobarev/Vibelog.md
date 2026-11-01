@@ -528,7 +528,7 @@ describe('orchestrator (VL-28)', () => {
     // settings.json с лимитами + выключенным компакшном — оркестратор прокидывает
     // все флага (только vb): --no-compact появляется только при явном off (VL-122)
     mkdirSync(join(testRoot, '.vibelog'), { recursive: true });
-    writeFileSync(join(testRoot, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], max_wall_time: 1800, max_requests: 50, compact: false }), 'utf-8');
+    writeFileSync(join(testRoot, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], max_wall_time: 1800, max_requests: 50, idle_timeout_seconds: 900, compact: false }), 'utf-8');
     allowAllPhases(testRoot);
     try {
       const res = startPhase(testRoot, task1.id, 'code', undefined, undefined, 'vb');
@@ -538,8 +538,10 @@ describe('orchestrator (VL-28)', () => {
       const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
       const iWall = argv.indexOf('--max-wall-time');
       const iReq = argv.indexOf('--max-requests');
+      const iIdle = argv.indexOf('--idle-timeout');
       assert.ok(iWall !== -1 && argv[iWall + 1] === '1800', 'нет --max-wall-time 1800: ' + JSON.stringify(argv));
       assert.ok(iReq !== -1 && argv[iReq + 1] === '50', 'нет --max-requests 50: ' + JSON.stringify(argv));
+      assert.ok(iIdle !== -1 && argv[iIdle + 1] === '900', 'нет --idle-timeout 900 (VL-274): ' + JSON.stringify(argv));
       assert.ok(argv.includes('--no-compact'), 'нет --no-compact при compact: false: ' + JSON.stringify(argv));
     } finally {
       rmSync(join(testRoot, '.vibelog', 'settings.json'), { force: true });
@@ -555,7 +557,40 @@ describe('orchestrator (VL-28)', () => {
     assert.ok(!argv2.includes('--max-wall-time'), 'неожиданный --max-wall-time: ' + JSON.stringify(argv2));
     assert.ok(!argv2.includes('--max-requests'), 'неожиданный --max-requests: ' + JSON.stringify(argv2));
     assert.ok(!argv2.includes('--no-compact'), 'неожиданный --no-compact (компакшн включён по умолчанию): ' + JSON.stringify(argv2));
+    // VL-274: без ключа idle_timeout_seconds флаг не передаётся — поведение прежнее
+    assert.ok(!argv2.includes('--idle-timeout'), 'неожиданный --idle-timeout: ' + JSON.stringify(argv2));
     setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
+  });
+
+  it('VL-274: --idle-timeout не передаётся агенту qwen (флаг только для vb)', async () => {
+    setStubEnv({
+      VL28_STUB_MARKER: join(testRoot, 'marker-idle-qwen.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+    });
+    mkdirSync(join(testRoot, '.vibelog'), { recursive: true });
+    writeFileSync(
+      join(testRoot, '.vibelog', 'settings.json'),
+      JSON.stringify({ chats: [], idle_timeout_seconds: 900 }),
+      'utf-8',
+    );
+    allowAllPhases(testRoot);
+    try {
+      const res = startPhase(testRoot, task1.id, 'code', undefined, undefined, 'qwen');
+      assert.equal(res.started, true);
+      const run = await waitDone(task1.id);
+      assert.equal(run.exitCode, 0);
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
+      assert.ok(
+        !argv.includes('--idle-timeout'),
+        'qwen не поддерживает --idle-timeout: ' + JSON.stringify(argv),
+      );
+    } finally {
+      // Снести секцию лимитов, но вернуть workflow (allowAllPhases) — иначе
+      // последующие тесты потеряют permissive-переходы фаз
+      rmSync(join(testRoot, '.vibelog', 'settings.json'), { force: true });
+      allowAllPhases(testRoot);
+    }
   });
 
   it('startPrompt: guard общий для qwen и vb (VL-92)', async () => {

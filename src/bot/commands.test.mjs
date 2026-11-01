@@ -533,6 +533,13 @@ describe('parseSetCommand (VL-94)', () => {
     assert.deepEqual(parseSetCommand('max-wall-time 0'), { key: 'max-wall-time', value: 0 });
   });
 
+  it('VL-274: idle-timeout — число, причём 0 значит «выключено», а не сброс', () => {
+    assert.deepEqual(parseSetCommand('idle-timeout 600'), { key: 'idle-timeout', value: 600 });
+    assert.deepEqual(parseSetCommand('idle-timeout 0'), { key: 'idle-timeout', value: 0 });
+    assert.match(parseSetCommand('idle-timeout abc').error, /неотрицательное целое/);
+    assert.match(parseSetCommand('idle-timeout').error, /неотрицательное целое/);
+  });
+
   it('VL-104: числовые параметры — мусор, дроби, отрицательные → error', () => {
     for (const bad of ['max-wall-time abc', 'max-wall-time -5', 'max-wall-time 3.5', 'max-requests', 'max-requests xyz']) {
       const r = parseSetCommand(bad);

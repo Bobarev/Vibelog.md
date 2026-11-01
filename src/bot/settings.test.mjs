@@ -18,6 +18,7 @@ import {
   resolveDefaultAgent,
   resolveMaxWallTime,
   resolveMaxRequests,
+  resolveIdleTimeout,
   resolveBranchMode,
   resolveCodeSameSession,
   botSettingsPath,
