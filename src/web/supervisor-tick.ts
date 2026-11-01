@@ -1460,6 +1460,21 @@ interface AppliedHeal {
 }
 
 /**
+ * VL-276: текст причины отказа доставки директивы/перезапуска.
+ *
+ * Различает транспортную природу отказа (лок оркестратора: «Запуск уже
+ * выполняется», «Фаза уже идёт») от содержательной — по этой строке в
+ * heartbeat и авто-баге видно, что дело в транспорте, а не в самой задаче.
+ * Иначе разбор инцидента снова упирался бы в догадки (VL-248).
+ */
+export function classifyDeliveryError(error: string, base: string): string {
+  if (/Запуск уже выполняется|уже идёт|уже в очереди/i.test(error)) {
+    return `фаза занята локом оркестратора (транспорт): ${error}`;
+  }
+  return `${base}: ${error}`;
+}
+
+/**
  * Применяет действие лечения к задаче.
  *
  * `retry` — перезапуск той же фазы с `--resume` последней сессии (VL-200):
@@ -1540,7 +1555,19 @@ function applyHealAction(
     });
     const res = startPhaseImpl(cwd, ctx.taskId, 'comment', { comment: text });
     if ('error' in res) {
-      entry.lastError = `директива не доставлена: ${res.error}`;
+      // VL-276: неудачная доставка директивы — ТОЖЕ попытка лечения. Раньше
+      // healAttempts не рос, статус оставался прежним → следующий тик повторял
+      // ровно тот же безуспешный шаг, пока не сгорал весь прогон (инцидент
+      // VL-248: «Запуск уже выполняется» вечно, status_unchanged, прогресса нет).
+      entry.healAttempts += 1;
+      entry.status = 'failed';
+      entry.pid = undefined;
+      entry.phaseRunId = undefined;
+      entry.lastError = classifyDeliveryError(res.error, 'директива не доставлена');
+      console.log(
+        `[supervisor] ${ctx.taskId}: доставка директивы (${ctx.ruleId}) не удалась — ` +
+          `попытка ${entry.healAttempts}/${runtime.healAttempts}: ${entry.lastError}`
+      );
       return {};
     }
     entry.healAttempts += 1;
@@ -1561,7 +1588,18 @@ function applyHealAction(
     ...(extraArgs.length > 0 ? { extraArgs } : {}),
   });
   if ('error' in res) {
-    entry.lastError = `перезапуск фазы не удался: ${res.error}`;
+    // VL-276: та же логика, что и в ветке comment_and_retry — неудачный
+    // перезапуск расходует бюджет лечения, иначе цикл «тик → тот же отказ →
+    // тик» бесконечен и задача никогда не дойдёт до авто-бага.
+    entry.healAttempts += 1;
+    entry.status = 'failed';
+    entry.pid = undefined;
+    entry.phaseRunId = undefined;
+    entry.lastError = classifyDeliveryError(res.error, 'перезапуск фазы не удался');
+    console.log(
+      `[supervisor] ${ctx.taskId}: перезапуск фазы ${phase} (${ctx.ruleId}) не удался — ` +
+        `попытка ${entry.healAttempts}/${runtime.healAttempts}: ${entry.lastError}`
+    );
     return {};
   }
   entry.healAttempts += 1;

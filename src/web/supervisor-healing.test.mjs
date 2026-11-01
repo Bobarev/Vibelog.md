@@ -349,6 +349,46 @@ describe('healing уровня 1 в тике (AC6–AC9)', () => {
     assert.equal(second.bugs.length, 1, JSON.stringify(second));
   });
 
+  it('ошибка доставки директивы/рестарта расходует healAttempts и доходит до авто-бага (VL-276)', async () => {
+    const task = createTaskFile(cwd, { title: 'Залипший лок (VL-276)', status: 'Spec' });
+    updateTaskFile(cwd, task.id, { status: 'In Progress' });
+    grantFor([task.id]);
+    writeHealConfig({
+      heal_rules: [{ id: 'no-progress', when: { status_unchanged: true }, action: 'retry_once_then_bug' }],
+      default_action: 'bug',
+    });
+    seedFailed(task, { healAttempts: 0 });
+    const llm = passiveLlm();
+    setTickLlmForTests(llm);
+    // Стаб оркестратора: лок навсегда — ровно то, что давал инцидент VL-248
+    const attempts = [];
+    setTickStartPhaseForTests((dir, taskId, phase) => {
+      attempts.push({ taskId, phase });
+      return { error: `Запуск уже выполняется (${String(taskId).toUpperCase()})` };
+    });
+    setTickActiveCountForTests(() => 0);
+    const key = task.id.toUpperCase();
+
+    // Тик 1: доставка не удалась → попытка израсходована (иначе цикл бесконечен)
+    const first = await runSupervisorTick(cwd, { llm });
+    assert.equal(attempts.length, 1, 'попытка запуска была');
+    const afterFirst = loadState(cwd).tasks[key];
+    assert.equal(afterFirst.healAttempts, 1, 'неудачная доставка расходует бюджет лечения');
+    assert.equal(afterFirst.status, 'failed', 'неудача оставляет задачу в failed, а не running');
+    assert.match(afterFirst.lastError ?? '', /транспорт|Запуск уже выполняется/, 'причина различима как транспортная');
+    assert.equal(first.bugs.length, 0, 'на первой попытке баг не заводится');
+
+    // Тик 2: ещё одна попытка (1 < лимита 2) — снова неудача, бюджет исчерпан
+    const second = await runSupervisorTick(cwd, { llm });
+    assert.equal(loadState(cwd).tasks[key].healAttempts, 2, 'вторая неудача тоже расходует бюджет');
+    assert.equal(second.bugs.length, 0, 'пока бюджет не исчерпан, баг не заводится');
+
+    // Тик 3: healAttempts=2 >= лимита 2 → авто-баг и стоп (цикл завершён)
+    const third = await runSupervisorTick(cwd, { llm });
+    assert.equal(third.bugs.length, 1, `ожидался авто-баг: ${JSON.stringify(third)}`);
+    assert.equal(loadState(cwd).tasks[key].frozen, true, 'задача остановлена после бага');
+  });
+
   it('битое правило не роняет тик: выпадает с предупреждением, тик работает', async () => {
     const task = createTaskFile(cwd, { title: 'Битый конфиг', status: 'Spec' });
     updateTaskFile(cwd, task.id, { status: 'In Progress' });

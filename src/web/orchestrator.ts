@@ -42,6 +42,9 @@ import { agentSessionsDir, analyzeToolRepeatsFromJsonlSync, appendSessionRun, fi
 import { hasUsageDelta, usageDelta } from '../core/analytics.js';
 import type { TokenUsage } from '../core/analytics.js';
 import { appendBilling } from '../core/billing.js';
+// VL-276: живость процесса фазы — reap залипших локов (см. reapStaleRuns);
+// функция уже написана для супервизора, дублировать логику process.kill нельзя
+import { isPidAlive } from '../core/supervisor-state.js';
 
 // Реэкспорт для обратной совместимости (VL-85): renderPrompt/Phase вынесены
 // в phase-prompt.ts — общий модуль оркестратора и CLI vibelog-agent.
@@ -50,6 +53,36 @@ export type { Phase };
 
 /** Сколько строк лога хранить в хвосте. */
 const LOG_TAIL_LINES = 50;
+
+/**
+ * VL-276: окно ожидания события `close` после `exit` дочернего процесса.
+ *
+ * Node эмитит `close` не по смерти процесса, а после закрытия его stdio-потоков.
+ * Если stdout-пайп удерживает живой потомок (MCP-сервер агента, node/npx-обёртка),
+ * `close` не приходит никогда, хотя процесс давно вышел — и запись `activeRuns`
+ * живёт вечно: задача получает «Запуск уже выполняется» и не двигается с места
+ * (инцидент VL-248 → баг VL-276). Поэтому по `exit` заводим таймер: не дождались
+ * `close` — завершаем ран сами (данные рана при этом сохраняются: `tailBuf`
+ * досыпается в `finish`, парсер получает накопленный stdout).
+ */
+const RUN_CLOSE_GRACE_MS = 2000;
+
+/**
+ * Тестовый шов VL-140/VL-276: переопределяет grace-период (null — прод-значение).
+ * Нужен, чтобы тест «потомок держит stdout» не ждал 2 секунды: с прокидкой 150 мс
+ * кейс остаётся быстрым и не становится флаковым.
+ */
+let runCloseGraceMsOverride: number | null = null;
+
+/** Задаёт grace-период завершения рана по `exit` (только для тестов). */
+export function setRunCloseGraceMsForTests(ms: number | null): void {
+  runCloseGraceMsOverride = ms;
+}
+
+/** Действующий grace-период: тестовый шов либо прод-константа. */
+function runCloseGraceMs(): number {
+  return runCloseGraceMsOverride ?? RUN_CLOSE_GRACE_MS;
+}
 
 /** Состояние запуска фазы для API. */
 export interface PhaseRun {
@@ -104,6 +137,21 @@ interface ActiveRun {
   onExit?: PhaseExitCallback;
   /** Агент запуска (VL-93) — попадает в PhaseRun для рендера session_id. */
   agent: string;
+  /**
+   * VL-276: код выхода из события `exit` (null/undefined — процесс ещё жив или
+   * exit не приходил). Нужен reap'у и проверке живости: `exitCode !== null`
+   * означает «процесса нет», даже если `close` так и не пришёл.
+   */
+  exitCode?: number | null;
+  /** VL-276: сигнал из события `exit` (SIGTERM/SIGKILL и т.п.). */
+  signalCode?: string | null;
+  /**
+   * VL-276: замыкание на `finish()` этого рана — единая точка корректного
+   * завершения (закрыть probe тишины, досыпать буферы, разобрать результат,
+   * записать lastRuns, вызвать onExit). Reap обязан идти через него, а не
+   * удалять запись напрямую: иначе теряются logTail/учёт/уведомление.
+   */
+  finalize?: (code?: number | null) => void;
 }
 
 /** Задача → активный запуск (guard от двойного запуска). */
@@ -314,6 +362,8 @@ export function startPhase(
     // Активный запуск задачи (любой фазы) → в очередь не ставим: guard
     // activeRuns в spawnQwenRun вернул бы ту же ошибу и при dequeue — раньше
     // и понятнее для вызывающего
+    // VL-276: залипший лок снимаем ДО проверки — иначе мёртвый ран блокирует close
+    if (activeRuns.has(canon)) reapStaleRun(canon);
     if (activeRuns.has(canon)) {
       return {
         error: 'Запуск уже выполняется' + (taskIdPattern(cwd).test(canon) ? ` (${canon})` : ''),
@@ -342,6 +392,16 @@ export function startPhase(
     // Двойной /close одной задачи: она уже ждёт в очереди — дубликат не добавляем
     if (closeQueue.some((e) => e.taskId.toUpperCase() === canon)) {
       return { error: `Close уже в очереди: ${canon}` };
+    }
+    // VL-276: close-очередь залипала навсегда, если флаг closeActive остался
+    // от рана, который завершился без onExit (close не пришёл — stdio держал
+    // потомок). Живого close-рана нет → флаг фиктивный: снимаем и разгребаем
+    // очередь, иначе ни один следующий close не стартует.
+    if (closeActive && !hasLiveCloseRun()) {
+      console.log(`[phase ${canon}] VL-276: снят залипший closeActive — живого close-рана нет`);
+      closeActive = false;
+      closeOwner = null;
+      drainCloseQueue();
     }
     if (closeActive) {
       closeQueue.push({ cwd, taskId, onExit, extraVars, agent, extraArgs: opts?.extraArgs });
@@ -776,6 +836,10 @@ function spawnQwenRun(
   // например 'ot-5' при meta 'OT-5') совпадали в guard'е; prompt и
   // resume:<sessionId> регистр не меняют.
   const key = taskIdPattern(cwd).test(runKey) ? runKey.toUpperCase() : runKey;
+  // VL-276: перед отказом снимаем залипший лок — запись, чей процесс уже вышел
+  // (exit пришёл, close нет: stdio держит потомок). Иначе задача навсегда
+  // получает «Запуск уже выполняется» при том, что фаза давно доработала.
+  if (activeRuns.has(key)) reapStaleRun(key);
   if (activeRuns.has(key)) {
     // VL-145: подсказка, какая задача занята (строка «Запуск уже выполняется»
     // сохранена как есть — существующие тесты матчат её подстрокой)
@@ -929,7 +993,12 @@ function spawnQwenRun(
     env: spawnEnv ?? baseEnv(),
   });
 
-  activeRuns.set(key, { phase, child, onExit, agent });
+  // VL-276: запись актива создаём до finish() (сам finish объявлен ниже) —
+  // ссылка на объект нужна, чтобы позже положить в неё finalize (reap из
+  // внешнего гарда обязан завершать ран через штатный finish, а не удалять
+  // запись напрямую: иначе теряются logTail/учёт/уведомление onExit).
+  const activeEntry: ActiveRun = { phase, child, onExit, agent };
+  activeRuns.set(key, activeEntry);
   // VL-243/259: runStartedAt посчитан ДО спавна (он уходит в env рана) —
   // по нему finish() решает, оставил ли CLI пост-ран свою billing-запись
   // (маркер billing_recorded.finishedAt >= старта).
@@ -1035,7 +1104,7 @@ function spawnQwenRun(
   // Завершение запуска. Node НЕ гарантирует close после error (ENOENT при
   // отсутствии бинаря) — cleanup выполняется из обоих событий, один раз.
   let finished = false;
-  const finish = (code: number | null) => {
+  const finish = (code: number | null = null) => {
     if (finished) return;
     finished = true;
     clearInterval(probe);
@@ -1340,16 +1409,45 @@ function spawnQwenRun(
     }
   };
 
+  // VL-276: публикуем finalize для reap'а — внешний гард сможет корректно
+  // завершить залипший ран (см. ActiveRun.finalize) вместо простого удаления.
+  activeEntry.finalize = finish;
+  // VL-276: таймер завершения по exit, если close не придёт (потомок держит stdio)
+  let closeGraceTimer: NodeJS.Timeout | null = null;
+
   child.on('exit', (code, signal) => {
     console.log(`[phase ${key}] ${ts()} exit: code=${code} signal=${signal}`);
+    // VL-276: факт выхода фиксируем в записи — по нему reap отличает мёртвый
+    // ран от живого, даже когда close не пришёл вовсе
+    activeEntry.exitCode = code;
+    activeEntry.signalCode = signal;
+    const grace = runCloseGraceMs();
+    if (finished || closeGraceTimer !== null) return;
+    closeGraceTimer = setTimeout(() => {
+      closeGraceTimer = null;
+      if (finished) return;
+      console.log(
+        `[phase ${key}] ${ts()} close не пришёл за ${grace} мс — завершаю ран по exit (потомок держит stdio)`
+      );
+      finish(code);
+    }, grace);
+    closeGraceTimer.unref?.();
   });
   child.on('error', (err) => {
     log += `${log ? '\n' : ''}Ошибка запуска: ${err.message}`;
     console.log(`[phase ${key}] ${ts()} error: ${err.message}`);
+    if (closeGraceTimer !== null) {
+      clearTimeout(closeGraceTimer);
+      closeGraceTimer = null;
+    }
     finish(null);
   });
   child.on('close', (code) => {
     console.log(`[phase ${key}] ${ts()} close: code=${code}`);
+    if (closeGraceTimer !== null) {
+      clearTimeout(closeGraceTimer);
+      closeGraceTimer = null;
+    }
     finish(code);
   });
 
@@ -1371,14 +1469,89 @@ function lookupCI<V>(map: Map<string, V>, k: string): V | undefined {
 }
 
 /**
+ * VL-276: снимает лок одного рана, если процесс уже мёртв.
+ *
+ * Признак смерти: пришло событие `exit` (exitCode/signalCode установлены —
+ * `close` мог не прийти, если stdout-пайп держит потомок) либо pid не отвечает
+ * на `process.kill(pid, 0)`. Завершение идёт через `finalize` (штатный
+ * `finish`): состояние рана (logTail, lastRuns, транзиентный In Progress,
+ * onExit-уведомление) сохраняется — иначе бот/автоочередь не узнали бы об
+ * окончании фазы. `finalize` отсутствует только в окне между `spawn` и
+ * объявлением `finish` — там запись снимаем минимально.
+ *
+ * @returns true ⇔ запись удалена (лок снят)
+ */
+function reapStaleRun(key: string): boolean {
+  const entry = lookupCI(activeRuns, key);
+  if (!entry) return false;
+  const exited = entry.exitCode !== undefined || entry.signalCode !== undefined;
+  // Живой процесс не трогаем: снимаем только заведомо мёртвые записи.
+  // `pid === undefined` — процесс ещё не получил pid (ошибка спавна ENOENT
+  // приходит событием `error`, а не мёртвым pid) — такой ран НЕ наш случай.
+  const pid = entry.child.pid;
+  const pidDead = typeof pid === 'number' && pid > 0 && !isPidAlive(pid);
+  if (!exited && !pidDead) return false;
+  console.log(
+    `[phase ${key}] VL-276: лок снят — процесс не найден (exit code ${entry.exitCode ?? '—'}` +
+      `${entry.signalCode ? `, signal ${entry.signalCode}` : ''}); close так и не пришёл`
+  );
+  if (entry.finalize) {
+    entry.finalize(entry.exitCode ?? null);
+    return true;
+  }
+  // Фолбэк: успеть до объявления finish — запись убираем сами (ран без данных)
+  activeRuns.delete(key);
+  lastRuns.set(key, {
+    running: false,
+    phase: entry.phase,
+    agent: entry.agent,
+    exitCode: entry.exitCode ?? null,
+    finishedAt: new Date().toISOString(),
+  });
+  return true;
+}
+
+/**
+ * VL-276: снимает все залипшие локи (см. reapStaleRun).
+ *
+ * @returns число снятых записей (диагностика/тесты)
+ */
+export function reapStaleRuns(): number {
+  let reaped = 0;
+  for (const key of [...activeRuns.keys()]) {
+    if (reapStaleRun(key)) reaped += 1;
+  }
+  return reaped;
+}
+
+/**
+ * VL-276: есть ли живой close-ран (флаг closeActive обязан ему соответствовать).
+ *
+ * Нужен сбросу залипшего closeActive в startPhase: если все close-записи
+ * оказались мёртвыми, флаг фиктивен и очередь close никогда не разгребётся.
+ */
+function hasLiveCloseRun(): boolean {
+  for (const entry of activeRuns.values()) {
+    if (entry.phase !== 'close') continue;
+    const exited = entry.exitCode !== undefined || entry.signalCode !== undefined;
+    if (!exited && isPidAlive(entry.child.pid)) return true;
+  }
+  return false;
+}
+
+/**
  * Сколько фаз запущено прямо сейчас (VL-268).
  *
  * Нужно лимиту `max_parallel_phases` супервизора: перед запуском новой фазы
  * проверяется, что одновременно работающих фаз меньше лимита. Ограничение
  * честно документировано: `activeRuns` живёт в памяти процесса, после рестарта
  * счётчик обнуляется (полноценный планировщик — VL-269).
+ *
+ * VL-276: залипшие записи (процесс вышел, close не пришёл) снимаются перед
+ * подсчётом — мёртвый ран не должен занимать слот и блокировать запуск.
  */
 export function countActiveRuns(): number {
+  reapStaleRuns();
   return activeRuns.size;
 }
 
@@ -1389,6 +1562,9 @@ export function countActiveRuns(): number {
  * @returns текущий или последний запуск, либо null если запусков не было
  */
 export function getRun(taskId: string): PhaseRun | null {
+  // VL-276: мёртвый ран не должен выглядеть как running:true — сначала reap,
+  // затем обычный lookup (finalize положит завершившийся ран в lastRuns)
+  reapStaleRuns();
   const active = lookupCI(activeRuns, taskId);
   if (active) {
     return { running: true, phase: active.phase, pid: active.child.pid, agent: active.agent };
