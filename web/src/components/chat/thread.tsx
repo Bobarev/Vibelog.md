@@ -49,6 +49,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  PanelLeftIcon,
   Pencil,
   RefreshCw,
   Square,
@@ -58,6 +59,7 @@ import { MarkdownView } from "@/lib/markdown"
 import { Button } from "@/components/ui/button"
 import { historyToMessages } from "@/lib/chat-threads"
 import { useChatThreadId } from "@/lib/use-hash-route"
+import { useIsMobile } from "@/hooks/use-mobile"
 import { ApprovalCard } from "./approval-card"
 import { CHAT_ERROR_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider } from "./chat-runtime"
 import { ChatErrorState } from "./error-state"
@@ -65,7 +67,7 @@ import { ModelPicker, PersonaPicker } from "./pickers"
 import { StoppedRun } from "./stopped-run"
 import { ToolCall, ToolGroup, type ToolPart } from "./tool-call"
 import { isWriteTool } from "./tool-meta"
-import { ThreadSidebar, type ThreadSummary } from "./thread-sidebar"
+import { ThreadSidebar, ThreadSidebarSheet, type ThreadSummary } from "./thread-sidebar"
 
 /** Ответ GET /api/chat/threads/:id (VL-264: + allowList треда). */
 interface ThreadHistoryResponse {
@@ -707,31 +709,81 @@ export function ChatPage() {
     if (window.location.hash !== target) window.location.hash = target
   }, [])
 
+  /**
+   * Активный тред для подсветки: id из hash, иначе — загруженный в рантайм
+   * (новый тред до первого хода id не имеет).
+   */
+  const activeThreadId =
+    typeof hashThreadId === "string" && hashThreadId !== "new"
+      ? hashThreadId
+      : load.runtimeThreadId ?? null
+
+  /** Открыта ли мобильная панель тредов (VL-282), только для < md. */
+  const [threadsOpen, setThreadsOpen] = React.useState(false)
+  const isMobile = useIsMobile()
+
+  // Ресайз/поворот экрана за пределы мобильной ширины: «залипшая» панель
+  // не должна оставаться открытой над десктопным сайдбаром
+  React.useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!isMobile) setThreadsOpen(false)
+  }, [isMobile])
+
   return (
-    <div className="flex h-full min-h-0">
-      <div className="relative min-w-0 flex-1">
-        {load.status === "loading" && <LoadingState />}
-        {load.status === "error" && (
-          <ErrorState
-            message={load.error ?? "Ошибка загрузки треда"}
-            onRetry={() => setRetry(r => r + 1)}
-          />
-        )}
-        {load.status === "ready" && (
-          <ChatRuntimeProvider
-            key={runtimeKey}
-            threadId={load.runtimeThreadId}
-            initialMessages={load.messages}
-            allowList={load.allowList}
-            onThreadCreated={handleThreadCreated}
-          >
-            <ChatThread />
-          </ChatRuntimeProvider>
-        )}
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Мобильная шапка чата (VL-282): на десктопе скрыта, список тредов
+          живёт в `aside` справа. h-12 shrink-0 — чтобы лента ниже получила
+          остаток высоты и скроллилась сама (lesson-112) */}
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b px-2 md:hidden">
+        <Button
+          size="icon"
+          variant="ghost"
+          className="size-8"
+          aria-label="Открыть список чатов"
+          aria-expanded={threadsOpen}
+          onClick={() => setThreadsOpen(true)}
+        >
+          <PanelLeftIcon className="size-4" />
+        </Button>
+        <span className="min-w-0 truncate text-sm font-medium">
+          {activeThreadId ? "Чат" : "Новый чат"}
+        </span>
       </div>
-      {/* Справа — список тредов (решение из комментария VL-207) */}
-      <ThreadSidebar
-        activeThreadId={typeof hashThreadId === "string" && hashThreadId !== "new" ? hashThreadId : load.runtimeThreadId ?? null}
+
+      <div className="flex min-h-0 flex-1">
+        <div className="relative min-w-0 flex-1">
+          {load.status === "loading" && <LoadingState />}
+          {load.status === "error" && (
+            <ErrorState
+              message={load.error ?? "Ошибка загрузки треда"}
+              onRetry={() => setRetry(r => r + 1)}
+            />
+          )}
+          {load.status === "ready" && (
+            <ChatRuntimeProvider
+              key={runtimeKey}
+              threadId={load.runtimeThreadId}
+              initialMessages={load.messages}
+              allowList={load.allowList}
+              onThreadCreated={handleThreadCreated}
+            >
+              <ChatThread />
+            </ChatRuntimeProvider>
+          )}
+        </div>
+        {/* Справа — список тредов (решение из комментария VL-207) */}
+        <ThreadSidebar
+          activeThreadId={activeThreadId}
+          onNewThread={() => {
+            window.location.hash = "#/chat/new"
+          }}
+        />
+      </div>
+      {/* Тот же список на мобильном — выезжающей панелью (VL-282) */}
+      <ThreadSidebarSheet
+        open={threadsOpen}
+        onOpenChange={setThreadsOpen}
+        activeThreadId={activeThreadId}
         onNewThread={() => {
           window.location.hash = "#/chat/new"
         }}
