@@ -40,6 +40,7 @@ import {
   type RepeatStats,
 } from './repeat-tracker.js';
 import { buildRunProgress, type RunProgress, type RunProgressReason } from './run-progress.js';
+import { createIdleGuard } from './idle-guard.js';
 
 /** Лимиты цикла; дефолты — 100 tool-calls и 900 секунд wall-time. */
 export interface LoopLimits {
@@ -60,6 +61,14 @@ export interface LoopLimits {
   toolCallsUsedThisSession?: number;
   /** Максимальное время фазы в миллисекундах (дефолт 900000, --max-wall-time). */
   maxWallTimeMs?: number;
+  /**
+   * VL-274: окно простоя в миллисекундах (--idle-timeout) — максимум тишины
+   * (нет новых токенов стрима, нет завершённых tool-вызовов) до прерывания
+   * фазы. Без значения — `IDLE_TIMEOUT_MS_DEFAULT` (600000 = 600 с); `0` —
+   * проверка выключена (аналог `HERMES_CRON_TIMEOUT=0`, ref-10). Wall-time при
+   * этом остаётся жёстким потолком безопасности и не заменяется.
+   */
+  idleTimeoutMs?: number;
   /**
    * Максимум LLM-запросов фазы (ходов модели, numTurns) — лимит запросов,
    * не tool-calls (VL-104). Без значения — без лимита.
@@ -237,6 +246,13 @@ export interface RunLoopOptions {
 
 const MAX_TOOL_CALLS_DEFAULT = 100;
 const MAX_WALL_TIME_MS_DEFAULT = 900_000;
+/**
+ * VL-274: дефолт idle-таймаута — 600 с (как в hermes-agent, ref-10
+ * `cron/AGENTS.md`: «default 600s idle»). Заведомо больше любой легитимной
+ * паузы стрима (reasoning модели, ретрай-паузы LLM) — при отсутствии настройки
+ * поведение фаз не меняется (AC5).
+ */
+const IDLE_TIMEOUT_MS_DEFAULT = 600_000;
 const LOOP_DETECTION_REPEAT_DEFAULT = 3;
 // VL-253: жёсткий кап заблокированных вызовов за ран. Второй блок той же
 // сигнатуры — уже фазовый отказ (модель проигнорировала директиву), но
@@ -288,6 +304,16 @@ export function loopDetectionDirective(name: string, repeatLimit: number): strin
     `Loop detection: инструмент ${name} вызван ${repeatLimit} раза подряд с одинаковыми аргументами — вызов НЕ выполнен и заблокирован. ` +
     `Повтор с теми же аргументами бесполезен. ${NEXT_STEP_HINT}`
   );
+}
+
+/**
+ * Текст прерывания фазы по простою (VL-274).
+ *
+ * Маркер «idle-таймаут» обязателен: по нему отличают idle-обрыв от wall-time
+ * и max-requests и в отчёте фазы, и в авто-разборе (AC1/AC8 VL-274).
+ */
+export function idleTimeoutText(timeoutMs: number): string {
+  return `Превышен idle-таймаут (${Math.round(timeoutMs / 1000)} секунд без активности) — фаза прервана.`;
 }
 
 /**
@@ -369,6 +395,8 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   const maxToolCallsPerSession = options.limits?.maxToolCallsPerSession;
   const toolCallsSessionBase = options.limits?.toolCallsUsedThisSession ?? 0;
   const maxWallTimeMs = options.limits?.maxWallTimeMs ?? MAX_WALL_TIME_MS_DEFAULT;
+  // VL-274: idle-таймаут фазы (максимум тишины). 0 — проверка выключена.
+  const idleTimeoutMs = options.limits?.idleTimeoutMs ?? IDLE_TIMEOUT_MS_DEFAULT;
   // Лимит LLM-запросов (VL-104): без значения — без лимита (поведение прежнее)
   const maxRequests = options.limits?.maxRequests;
   const repeatLimit = options.limits?.loopDetectionRepeat ?? LOOP_DETECTION_REPEAT_DEFAULT;
@@ -481,6 +509,18 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
 
   const duration = (): number => now() - startedAt;
 
+  // VL-274: idle-watchdog фазы. Активность (токен стрима / завершённый
+  // tool-вызов) переводит таймер заново; тишина дольше окна абортит сигнал —
+  // тот же AbortSignal-путь, что у отмены фазы, поэтому висящего HTTP-запроса
+  // не остаётся (AC6). Сигнал комбинированный: внешний options.signal (отмена)
+  // ИЛИ idle-abort.
+  const idleGuard = createIdleGuard({
+    timeoutMs: idleTimeoutMs,
+    now,
+    ...(options.signal ? { externalSignal: options.signal } : {}),
+  });
+  const signal = idleGuard.signal;
+
   /**
    * Ошибка фазы: partial-текст + текст ошибки, без исключений наружу.
    *
@@ -490,6 +530,8 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
    * историю, оканчивающуюся tool-сообщением — см. комментарий VL-95).
    */
   const fail = (errorText: string): LoopResult => {
+    // VL-274: снимаем idle-таймер на всех fail-путях — иначе он держит процесс/тесты
+    idleGuard.dispose();
     // TUI-блок ошибок (VL-86): событие до возврата — headless его игнорирует
     options.onError?.(errorText);
     const resultText = partialText ? `${partialText}\n\n${errorText}` : errorText;
@@ -534,6 +576,15 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   };
 
   for (;;) {
+    // VL-274: idle-watchdog — первый по приоритету (AC9): если фаза зависла,
+    // причина — простой, даже когда к этому моменту истёк и wall-time
+    // (зависшая сессия не должна выглядеть как «сработал общий лимит»).
+    // Проверка по своей отметке активности (токены стрима / завершённые
+    // tool-вызовы); при idleTimeoutMs <= 0 выключена. Живая фаза отметку
+    // обновляет и сюда не попадает — wall-time остаётся жёстким потолком.
+    if (idleTimeoutMs > 0 && (idleGuard.timedOut() || idleGuard.idleMs() > idleTimeoutMs)) {
+      return failWithProgress(idleTimeoutText(idleTimeoutMs), 'idle');
+    }
     // Лимит wall-time — на каждой итерации, включая первую (0 мс — ок).
     if (duration() > maxWallTimeMs) {
       return failWithProgress(
@@ -611,10 +662,17 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         }
       }
       response = await options.llm.streamChat(wire, toolDefs, {
-        onToken: options.onToken,
-        signal: options.signal,
+        // VL-274: каждый токен стрима — активность для idle-watchdog (пауза
+        // между токенами при долгом reasoning не считается зависанием).
+        onToken: (t: string) => {
+          idleGuard.noteActivity();
+          options.onToken?.(t);
+        },
+        signal,
       });
     } catch (err) {
+      // VL-274: аборт по простою — не ошибка API, а idle-обрыв: свой reason
+      if (idleGuard.timedOut()) return failWithProgress(idleTimeoutText(idleTimeoutMs), 'idle');
       return fail(`Ошибка LLM-запроса: ${err instanceof Error ? err.message : String(err)}`);
     }
     addUsage(usage, response.usage);
@@ -698,6 +756,8 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         ...(response.payloadBytes !== undefined ? { payload_bytes: response.payloadBytes } : {}),
         ...(response.shrinkLevel !== undefined ? { shrink_level: response.shrinkLevel } : {}),
       });
+      // VL-274: успешный финал — снимаем idle-таймер (не держит процесс/тесты)
+      idleGuard.dispose();
       return {
         result: response.text,
         is_error: false,
@@ -899,6 +959,10 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       const spec = byName.get(call.name);
       let output: string;
       let toolError = false;
+      // VL-274: на время инструмента idle-таймер снимается — долгий
+      // легитимный tool (`pnpm test` 20+ мин без вывода) не зависание;
+      // зависший инструмент ловят его собственные таймауты и wall-time фазы.
+      idleGuard.pause();
       if (!spec) {
         toolError = true;
         output = `Неизвестный инструмент: ${call.name}`;
@@ -906,7 +970,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         options.onToolStart?.(call.name, call.arguments ?? {});
         try {
           output = await spec.handler(call.arguments ?? {}, {
-            signal: options.signal,
+            signal,
             // VL-254: остаток бюджета — run_shell_command усекает timeout_ms,
             // чтобы shell-таймаут не наложился на wall-time фазы
             remainingWallTimeMs: () => Math.max(maxWallTimeMs - duration(), 0),
@@ -917,6 +981,9 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           output = `Ошибка выполнения инструмента ${call.name}: ${err instanceof Error ? err.message : String(err)}`;
         }
       }
+      // VL-274: tool завершён — активность; окно простоя отсчитывается заново
+      // (resume делает и noteActivity: длительность инструмента не «съедает» бюджет)
+      idleGuard.resume();
       // VL-178: единый ingestion-cap ВСЕХ tool-выводов, включая внешние MCP
       // (chrome_devtools__take_snapshot приносил 624 КБ целиком — VL-110-cap
       // работал только для встроенных инструментов, MCP шёл мимо). Обрезка

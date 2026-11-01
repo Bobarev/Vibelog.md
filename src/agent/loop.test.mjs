@@ -1786,9 +1786,199 @@ describe('VL-254: бюджет wall-time и прогресс до обрыва (
     assert.equal(res.progress, undefined);
   });
 
+  it('idleTimeoutMs=0: проверка выключена — ран жив и завершается нормально', async () => {
+    const c = clock();
+    c.state.value = 10_000_000; // огромный простой по часам
+    const { llm } = fakeLlm([{ text: 'Готово!' }]);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [],
+      limits: { idleTimeoutMs: 0 },
+      now: c.now,
+    });
+    assert.equal(res.is_error, false);
+    assert.equal(res.result, 'Готово!');
+  });
+
+  it('приоритет idle над wall-time: зависшая фаза → reason=idle, а не wall-time', async () => {
+    const c = clock();
+    c.state.value = 0;
+    // Фантомный tool_call (пустые name/id) не исполняется и не даёт активности:
+    // часы уходят за оба порога (idle 10 с, wall-time 50 с) при полной тишине.
+    const res = await runLoop({
+      llm: {
+        async streamChat() {
+          c.state.value = 200_000;
+          return {
+            text: '',
+            toolCalls: [{ id: '', name: '', arguments: {} }],
+            usage: zeroUsage(),
+          };
+        },
+      },
+      messages: USER_MSG,
+      tools: [],
+      limits: { idleTimeoutMs: 10_000, maxWallTimeMs: 50_000 },
+      now: c.now,
+    });
+    assert.equal(res.is_error, true);
+    assert.match(res.result, /idle-таймаут/, 'зависание важнее истёкшего потолка');
+    assert.equal(res.progress.reason, 'idle', 'зависание не спутано с wall-time');
+  });
+
+  it('AC7 (VL-254): 30 минут виртуального времени с активностью каждые 5 минут — успешное завершение', async () => {
+    const c = clock();
+    c.state.value = 0;
+    // wall-time 40 мин (как в проекте: 2400 с), idle 10 мин. Каждый ход
+    // «работает» 5 минут и отдаёт токены стрима; суммарно 35 минут. Старая
+    // проблема VL-254 — фаза сгорала на wall-time, хотя работала.
+    let turn = 0;
+    const { spec } = countingTool('t');
+    const res = await runLoop({
+      llm: {
+        async streamChat(_messages, _tools, opts) {
+          // Каждый ход «работает» 5 минут и отдаёт токены стрима (активность)
+          if (turn >= 7) return { text: 'Готово!', toolCalls: [], usage: zeroUsage() };
+          opts.onToken?.('работаю');
+          c.state.value += 300_000;
+          return {
+            text: `шаг ${turn + 1}`,
+            toolCalls: [{ id: `c${++turn}`, name: 't', arguments: { x: turn } }],
+            usage: zeroUsage(),
+          };
+        },
+      },
+      messages: USER_MSG,
+      tools: [spec],
+      limits: { idleTimeoutMs: 600_000, maxWallTimeMs: 2_400_000 },
+      now: c.now,
+    });
+    assert.equal(res.is_error, false, 'живая фаза 35 минут не обрывается ни idle, ни wall-time');
+    assert.equal(res.result, 'Готово!');
+    assert.equal(c.state.value, 7 * 300_000, 'виртуальное время — 35 минут');
+  });
+
+  it('AC2: редкие, но регулярные токены сбрасывают idle — долгая фаза не обрывается', async () => {
+    const c = clock();
+    c.state.value = 0;
+    const { spec } = countingTool('t');
+    let turn = 0;
+    const res = await runLoop({
+      llm: {
+        async streamChat(_messages, _tools, opts) {
+          // Стрим отдаёт токены редко (раз в 9 с при окне 10 с) — окно ни разу
+          // не истекает, и ран продолжается
+          c.state.value += 9_000;
+          opts.onToken?.('думаю');
+          c.state.value += 9_000;
+          if (turn >= 3) return { text: 'Готово!', toolCalls: [], usage: zeroUsage() };
+          return {
+            text: '',
+            toolCalls: [{ id: `c${++turn}`, name: 't', arguments: { x: turn } }],
+            usage: zeroUsage(),
+          };
+        },
+      },
+      messages: USER_MSG,
+      tools: [spec],
+      limits: { idleTimeoutMs: 10_000 },
+      now: c.now,
+    });
+    assert.equal(res.is_error, false, 'регулярная активность не даёт сработать watchdog');
+    assert.equal(res.result, 'Готово!');
+  });
+
+  it('долгий tool (pause) не считается простоем: > idle, но ран жив', async () => {
+    const c = clock();
+    c.state.value = 0;
+    let turn = 0;
+    const slowTool = {
+      name: 'slow',
+      description: 'долгий инструмент',
+      inputSchema: { type: 'object', properties: {} },
+      handler: async () => {
+        // Инструмент работает 5 минут «по часам» — вчетверо дольше idle (60 с)
+        c.state.value += 300_000;
+        return 'ok';
+      },
+    };
+    const res = await runLoop({
+      llm: {
+        async streamChat() {
+          if (turn >= 2) return { text: 'Готово!', toolCalls: [], usage: zeroUsage() };
+          return {
+            text: '',
+            toolCalls: [{ id: `c${++turn}`, name: 'slow', arguments: {} }],
+            usage: zeroUsage(),
+          };
+        },
+      },
+      messages: USER_MSG,
+      tools: [slowTool],
+      limits: { idleTimeoutMs: 60_000 },
+      now: c.now,
+    });
+    assert.equal(res.is_error, false, 'долгий tool не ловится idle-watchdog');
+    assert.equal(res.result, 'Готово!');
+  });
+
+  it('AC1: стрим молчит дольше idle → обрыв с reason=idle и is_error=true', async () => {
+    const c = clock();
+    c.state.value = 0;
+    const { spec } = countingTool('t');
+    let calls = 0;
+    const res = await runLoop({
+      llm: {
+        async streamChat() {
+          calls++;
+          if (calls === 1) {
+            // Первый ход: инструмент отработал — активность была
+            return {
+              text: '',
+              toolCalls: [{ id: 'c1', name: 't', arguments: { x: 1 } }],
+              usage: zeroUsage(),
+            };
+          }
+          // Дальше модель «зависла»: тишина дольше окна (30 с при idle 10 с)
+          c.state.value += 30_000;
+          return { text: '', toolCalls: [{ id: '', name: '', arguments: {} }], usage: zeroUsage() };
+        },
+      },
+      messages: USER_MSG,
+      tools: [spec],
+      limits: { idleTimeoutMs: 10_000 },
+      now: c.now,
+    });
+    assert.equal(res.is_error, true);
+    assert.match(res.result, /Превышен idle-таймаут \(10 секунд без активности\) — фаза прервана\./);
+    assert.equal(res.progress?.reason, 'idle', 'отдельный reason — не путается с wall-time');
+  });
+
+  it('AC6: реальный idle-таймер абортит стрим через AbortSignal (не остаётся запроса)', async () => {
+    const seen = { abortedDuringStream: false };
+    const res = await runLoop({
+      llm: {
+        async streamChat(_messages, _tools, opts) {
+          // Модель молчит: ждём дольше окна; abort приходит сигналом loop'а
+          await new Promise((r) => setTimeout(r, 120));
+          seen.abortedDuringStream = opts.signal?.aborted === true;
+          if (seen.abortedDuringStream) throw new Error('Операция прервана пользователем');
+          return { text: 'Готово!', toolCalls: [], usage: zeroUsage() };
+        },
+      },
+      messages: USER_MSG,
+      tools: [],
+      limits: { idleTimeoutMs: 40 },
+    });
+    assert.equal(seen.abortedDuringStream, true, 'сигнал абортится по простою — висящего запроса нет');
+    assert.equal(res.is_error, true);
+    assert.match(res.result, /idle-таймаут/, 'аборт по простою — не «Ошибка LLM-запроса»');
+    assert.equal(res.progress?.reason, 'idle');
+  });
+
   it('AC1: три shell-вызова с одним скелетом → предупреждение guard’а + shell_* в метрике', async () => {
     const shell = {
-      name: 'run_shell_command',
       description: 'shell',
       inputSchema: { type: 'object', properties: { command: { type: 'string' } } },
       handler: async (args) => `ok:${args.command}`,

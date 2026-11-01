@@ -57,6 +57,13 @@ describe('VL-254 — buildRunProgress', () => {
     assert.equal(progress.commit, null);
   });
 
+  it('VL-274: reason=idle → подпись «по idle-таймауту», отдельная от wall-time', () => {
+    const progress = buildRunProgress({ messages: [], reason: 'idle', durationMs: 610_000 });
+    assert.equal(progress.reason, 'idle');
+    assert.match(progress.text, /по idle-таймауту \(простой без активности\)/);
+    assert.doesNotMatch(progress.text, /по лимиту wall-time/);
+  });
+
   it('пустой ран: маркеры на месте, «правок нет»', () => {
     const progress = buildRunProgress({ messages: [], reason: 'max-requests' });
     assert.match(progress.text, /Сделано/);

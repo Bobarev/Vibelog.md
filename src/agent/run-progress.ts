@@ -23,8 +23,13 @@ import { execFileSync } from 'node:child_process';
 import { parsePorcelain } from '../core/git.js';
 import { isValidToolCall, type ChatMessage } from './llm.js';
 
-/** Причина обрыва рана: лимит времени, лимит запросов или прочее. */
-export type RunProgressReason = 'wall-time' | 'max-requests' | 'other';
+/**
+ * Причина обрыва рана: лимит времени, лимит запросов, простой (VL-274) или прочее.
+ *
+ * `idle` отделён от `wall-time`/`max-requests` намеренно (AC8 VL-274): по мете
+ * сессии должно быть видно, что именно сработало — зависание или жёсткий потолок.
+ */
+export type RunProgressReason = 'wall-time' | 'max-requests' | 'idle' | 'other';
 
 /** Блок «что сделано / что осталось» для меты сессии и комментария задачи. */
 export interface RunProgress {
@@ -48,6 +53,8 @@ const PROGRESS_MAX_TEXT = 300;
 const REASON_LABELS: Record<RunProgressReason, string> = {
   'wall-time': 'по лимиту wall-time',
   'max-requests': 'по лимиту LLM-запросов',
+  // VL-274: зависание отличается от жёсткого потолка — по подписи видно, что сработало
+  idle: 'по idle-таймауту (простой без активности)',
   other: 'по ошибке',
 };
 

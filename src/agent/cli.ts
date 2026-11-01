@@ -90,6 +90,12 @@ export interface CliOptions {
   maxWallTimeSec?: number;
   /** --max-requests N: лимит LLM-запросов фазы (ходов; без лимита, VL-104). */
   maxRequests?: number;
+  /**
+   * --idle-timeout сек: idle-таймаут фазы (VL-274) — максимум тишины без
+   * токенов стрима и завершённых tool-вызовов; дефолт агента 600, `0` —
+   * выключено (в отличие от остальных числовых лимитов 0 здесь не «сброс»).
+   */
+  idleTimeoutSec?: number;
   /** --compact-tail N: хвост истории для LLM-запроса при компакшне (VL-122, дефолт 50). */
   compactTail?: number;
   /** --compact-at-tokens N: порог компакшна по usage-токенам (VL-122, дефолт 850000). */
@@ -123,6 +129,7 @@ const USAGE = `Использование:
   --tool-calls-per-session <N> — кумулятивный лимит tool-calls сессии через resume-раны (VL-223; без флага — только per-run)
   --max-wall-time <сек>    — лимит времени фазы (дефолт 900)
   --max-requests <N>       — лимит LLM-запросов фазы (ходов; без лимита)
+  --idle-timeout <сек>     — idle-таймаут фазы: максимум тишины (нет токенов/tool-вызовов; дефолт 600, 0 — выключено, VL-274)
   --compact-tail <N>       — компакшн истории: хвост LLM-запроса (дефолт 50, VL-122)
   --compact-at-tokens <N>  — компакшн истории: порог по usage-токенам (дефолт 850000, VL-122)
   --no-compact             — отключить компакшн истории (VL-122; по умолчанию включён)
@@ -191,6 +198,14 @@ export function parseArgs(argv: string[]): CliOptions {
         throw new Error(`--max-requests: ожидается положительное целое, получено: ${raw}`);
       }
       opts.maxRequests = n;
+    } else if (arg === '--idle-timeout') {
+      // VL-274: 0 допустим и означает «выключено» (в отличие от --max-wall-time)
+      const raw = takeValue(arg, argv[++i]);
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 0) {
+        throw new Error(`--idle-timeout: ожидается неотрицательное целое (0 — выключено), получено: ${raw}`);
+      }
+      opts.idleTimeoutSec = n;
     } else if (arg === '--compact-tail') {
       const raw = takeValue(arg, argv[++i]);
       const n = Number(raw);
@@ -713,6 +728,7 @@ export async function main(argv: string[]): Promise<void> {
       ...(opts.toolCallsPerSession !== undefined ? { maxToolCallsPerSession: opts.toolCallsPerSession } : {}),
       ...(toolCallsSessionBase > 0 ? { toolCallsUsedThisSession: toolCallsSessionBase } : {}),
       ...(opts.maxWallTimeSec !== undefined ? { maxWallTimeMs: opts.maxWallTimeSec * 1000 } : {}),
+      ...(opts.idleTimeoutSec !== undefined ? { idleTimeoutMs: opts.idleTimeoutSec * 1000 } : {}),
       ...(opts.maxRequests !== undefined ? { maxRequests: opts.maxRequests } : {}),
       ...(opts.compactTail !== undefined ? { compactTailMessages: opts.compactTail } : {}),
       ...(opts.compactAtTokens !== undefined ? { compactAtTokens: opts.compactAtTokens } : {}),

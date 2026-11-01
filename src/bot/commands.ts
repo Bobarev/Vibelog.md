@@ -80,6 +80,12 @@ export type SetCommand =
   | { key: 'max-wall-time'; value: number }
   /** Лимит LLM-запросов фазы (ходов модели); 0 — сброс (VL-104). */
   | { key: 'max-requests'; value: number }
+  /**
+   * VL-274: idle-таймаут фазы в секундах. Семантика 0 здесь иная, чем у
+   * остальных числовых (VL-274, doc-19 §8): 0 = watchdog ВЫКЛЮЧЕН, а не сброс
+   * — как `HERMES_CRON_TIMEOUT=0` в hermes (ref-10).
+   */
+  | { key: 'idle-timeout'; value: number }
   /** Режим параллельной разработки в git-ветках vb/vl-N (VL-107). */
   | { key: 'branch-mode'; value: boolean }
   /** Компакшн истории LLM-запроса (VL-122); по умолчанию включён. */
@@ -333,11 +339,12 @@ export function parseCloseCommand(
 
 /**
  * Разбирает /set: «agent <qwen|vb>» | «max-wall-time <сек>» |
- * «max-requests <N>» | «branch-mode <on|off>» | «compact <on|off>» |
- * «code-same-session <on|off>» (VL-94/104/107/122/147).
+ * «max-requests <N>» | «idle-timeout <сек>» | «branch-mode <on|off>» |
+ * «compact <on|off>» | «code-same-session <on|off>» (VL-94/104/107/122/147/274).
  * Числовые параметры — неотрицательные целые: 0 — явный сброс настройки
  * (удаление ключа в settings.json), дробные, отрицательные и пустые значения —
- * {error} с подсказкой. Булевы on/off-параметры принимают on|off|true|false
+ * {error} с подсказкой. Исключение (VL-274): у `idle-timeout` 0 — не сброс, а
+ * выключение watchdog. Булевы on/off-параметры принимают on|off|true|false
  * (регистр не важен — значение уже в нижнем регистре).
  *
  * @param text — аргументы команды (без слова /set)
@@ -345,7 +352,7 @@ export function parseCloseCommand(
  */
 export function parseSetCommand(text: string): SetCommand | { error: string } {
   const hint =
-    'Синтаксис: /set agent <qwen|vb> | model <id> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off> | code-same-session <on|off> (0/пусто — сброс у числовых)';
+    'Синтаксис: /set agent <qwen|vb> | model <id> | max-wall-time <сек> | max-requests <N> | idle-timeout <сек> | branch-mode <on|off> | compact <on|off> | code-same-session <on|off> (0/пусто — сброс у числовых, кроме idle-timeout: там 0 — выключить watchdog)';
   const trimmed = text.trim();
   if (!trimmed) return { error: hint };
   const spaceIdx = trimmed.indexOf(' ');
@@ -359,12 +366,13 @@ export function parseSetCommand(text: string): SetCommand | { error: string } {
     key !== 'model' &&
     key !== 'max-wall-time' &&
     key !== 'max-requests' &&
+    key !== 'idle-timeout' &&
     key !== 'branch-mode' &&
     key !== 'compact' &&
     key !== 'code-same-session'
   ) {
     return {
-      error: `Неизвестный параметр: ${key}. Доступные: agent, model, max-wall-time, max-requests, branch-mode, compact, code-same-session. ${hint}`,
+      error: `Неизвестный параметр: ${key}. Доступные: agent, model, max-wall-time, max-requests, idle-timeout, branch-mode, compact, code-same-session. ${hint}`,
     };
   }
   // VL-209: id модели — как ввёл пользователь (регистр не трогаем)
@@ -407,6 +415,9 @@ export function parseSetCommand(text: string): SetCommand | { error: string } {
       error: `${key}: ожидается неотрицательное целое (0 — сброс), получено: ${value || '(пусто)'}. ${hint}`,
     };
   }
+  // VL-274: у idle-timeout 0 — не сброс, а выключение watchdog (как
+  // HERMES_CRON_TIMEOUT=0 в hermes, ref-10). Явная ветка перед общим union.
+  if (key === 'idle-timeout') return { key: 'idle-timeout', value: n };
   return { key, value: n };
 }
 

@@ -252,6 +252,23 @@ describe('vibelog-agent CLI (VL-85)', () => {
     assert.throws(() => parseArgs(['x', '--max-requests']), /требует значение/);
   });
 
+  // ── VL-274: parseArgs --idle-timeout ──
+
+  it('parseArgs: --idle-timeout 600 → idleTimeoutSec=600', () => {
+    assert.equal(parseArgs(['фаза', 'VL-1', '--idle-timeout', '600']).idleTimeoutSec, 600);
+    assert.equal(parseArgs(['x']).idleTimeoutSec, undefined, 'без флага — undefined (дефолт агента)');
+  });
+
+  it('parseArgs: --idle-timeout 0 → выключено (0 допустим, в отличие от --max-wall-time)', () => {
+    assert.equal(parseArgs(['x', '--idle-timeout', '0']).idleTimeoutSec, 0);
+  });
+
+  it('parseArgs: --idle-timeout abc / -5 / без значения — throw', () => {
+    assert.throws(() => parseArgs(['x', '--idle-timeout', 'abc']), /неотрицательное целое/);
+    assert.throws(() => parseArgs(['x', '--idle-timeout', '-5']), /неотрицательное целое/);
+    assert.throws(() => parseArgs(['x', '--idle-timeout']), /требует значение/);
+  });
+
   it('--tool-calls-per-session (VL-223): парсинг и валидация', () => {
     assert.equal(
       parseArgs(['фаза', 'VL-1', '--tool-calls-per-session', '500']).toolCallsPerSession,
