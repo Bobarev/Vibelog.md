@@ -15,7 +15,7 @@ Markdown-нативный таск-менеджер для git-репозито�
 - **Node.js 20+**, никаких нативных зависимостей
 - **Формат данных идентичен** Backlog.md — при апгрейде macOS можно переключиться на оригинал
 - **Работает с Qwen Code** через CLI и MCP
-- **Минимум зависимостей** — runtime-зависимость только grammy (Telegram-бот)
+- **Минимум зависимостей** — runtime-зависимости только grammy (Telegram-бот) и undici; HTML→markdown для кэша references конвертирует собственный код (`src/core/html-to-markdown.ts`, VL-232)
 
 ## Prerequisites
 
