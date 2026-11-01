@@ -39,6 +39,7 @@ import {
   ChevronDownIcon,
   Compass,
   Hammer,
+  Lock,
   ScanSearch,
   Sparkles,
   Telescope,
@@ -128,13 +129,25 @@ export function ModelPicker() {
 }
 
 /**
- * Пикер роли: иконка + название + ChevronDownIcon, дропдаун с name +
- * description и галочкой у выбранной роли. Стартовое значение — дефолт
- * сервера (всегда helper, AC14); localStorage не используется.
+ * Загрузка реестра ролей (общая для пикера и бейджа VL-283).
+ *
+ * `personas === null` — ещё грузим; `[]` — API недоступен/список пуст
+ * (тогда ни пикер, ни бейдж не рендерятся, lesson-16).
+ *
+ * `onLoad` вызывается из then-колбэка fetch (не в теле эффекта): пикеру нужно
+ * синхронизировать выбор с ответом сервера, а setState в теле эффекта даёт
+ * каскадные рендеры (правило react-hooks/set-state-in-effect).
  */
-export function PersonaPicker() {
+function usePersonas(
+  onLoad?: (personas: PersonaInfo[], defaultId: string) => void,
+): { personas: PersonaInfo[] | null; defaultId: string | null } {
   const [personas, setPersonas] = React.useState<PersonaInfo[] | null>(null)
-  const [selected, setSelected] = React.useState<string>(getActivePersonaId())
+  const [defaultId, setDefaultId] = React.useState<string | null>(null)
+  // Колбэк в ref: эффект не перезапускается на каждый рендер
+  const loadRef = React.useRef(onLoad)
+  React.useEffect(() => {
+    loadRef.current = onLoad
+  })
 
   React.useEffect(() => {
     let cancelled = false
@@ -142,14 +155,8 @@ export function PersonaPicker() {
       .then((d) => {
         if (cancelled) return
         setPersonas(d.personas)
-        // Роли из ответа могут не содержать локально выбранный id (секцию
-        // правили на сервере) — падаем на дефолт сервера
-        setSelected((prev) =>
-          d.personas.some((p) => p.id === prev) ? prev : d.default,
-        )
-        if (!d.personas.some((p) => p.id === getActivePersonaId())) {
-          setActivePersonaId(d.default)
-        }
+        setDefaultId(d.default)
+        loadRef.current?.(d.personas, d.default)
       })
       .catch(() => {
         // Пикер — не критично: при недоступности API прячем
@@ -159,6 +166,29 @@ export function PersonaPicker() {
       cancelled = true
     }
   }, [])
+
+  return { personas, defaultId }
+}
+
+/**
+ * Пикер роли: иконка + название + ChevronDownIcon, дропдаун с name +
+ * description и галочкой у выбранной роли. Стартовое значение — дефолт
+ * сервера (всегда helper, AC14); localStorage не используется.
+ *
+ * VL-283: пикер показывается ТОЛЬКО в пустом треде — роль фиксируется за
+ * тредом при первом ходе, в начатом чате вместо него PersonaBadge.
+ */
+export function PersonaPicker() {
+  // Старт — локальный выбор (module-state); после ответа сервера выбор
+  // корректируется: роли могло не оказаться в реестре
+  const [selected, setSelected] = React.useState<string>(getActivePersonaId())
+  const sync = React.useCallback((roles: PersonaInfo[], fallback: string) => {
+    setSelected((prev) => (roles.some((p) => p.id === prev) ? prev : fallback))
+    if (!roles.some((p) => p.id === getActivePersonaId())) {
+      setActivePersonaId(fallback)
+    }
+  }, [])
+  const { personas } = usePersonas(sync)
 
   if (!personas || personas.length === 0) return null
   const current = personas.find((p) => p.id === selected) ?? personas[0]!
@@ -201,5 +231,37 @@ export function PersonaPicker() {
         })}
       </DropdownMenuContent>
     </DropdownMenu>
+  )
+}
+
+/**
+ * Бейдж роли треда (VL-283): роль зафиксирована при создании треда и в
+ * начатом чате не переключается — значит нужен неинтерактивный индикатор
+ * (иконка + название + замок), а не дропдаун.
+ *
+ * Источник id — ответ `GET /api/chat/threads/:id` (поле `persona`), а НЕ
+ * module-state activePersonaId: открытие треда с другой ролью не должно
+ * перетирать выбор роли для следующего нового треда (AC5).
+ * Роль, которой нет в реестре (удалена из chat_personas), показывается как
+ * «Помощник» — сервер в этом случае ведёт тред помощником.
+ */
+export function PersonaBadge({ personaId }: { personaId: string }) {
+  const { personas, defaultId } = usePersonas()
+  if (!personas || personas.length === 0) return null
+  const fallbackId = defaultId ?? "helper"
+  const current =
+    personas.find((p) => p.id === personaId) ?? personas.find((p) => p.id === fallbackId)
+  const label = current?.label ?? "Помощник"
+  const iconId = current?.id ?? fallbackId
+  return (
+    <span
+      className={cn(TRIGGER_CLASS, "border border-border bg-transparent", "cursor-default")}
+      title="Роль зафиксирована при создании треда — переключение недоступно"
+      aria-label={`Роль треда: ${label} (зафиксирована)`}
+    >
+      <PersonaIcon id={iconId} className="size-3.5" />
+      <span className="max-w-40 truncate">{label}</span>
+      <Lock className="size-3 opacity-60" aria-hidden="true" />
+    </span>
   )
 }
