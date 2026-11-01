@@ -83,6 +83,18 @@ export interface SupervisorTaskState {
    * не разбудил бы тик для запуска разблокированной задачи.
    */
   blockedBy?: string[];
+  /**
+   * VL-289: фаза сама сообщила аварийное завершение (`aborted: true`).
+   *
+   * Хранится в состоянии, чтобы признак пережил рестарт `vibelog browser`
+   * (lastRuns оркестратора живёт в памяти) и чтобы сработало правило лечения
+   * «aborted-requires-human»: фаза, которая просит человека, не перезапускается
+   * (иначе merge-конфликт VL-285 воспроизводился до сгорания heal_attempts).
+   * Снимается при старте новой фазы задачи — признак не должен «прилипать».
+   */
+  aborted?: boolean;
+  /** VL-289: дословная причина от фазы (текст отчёта агента, обрезка 500). */
+  abortedReason?: string;
 }
 
 /** Последнее решение прогона (его же показывает heartbeat). */
@@ -142,6 +154,12 @@ export interface TaskObservation {
   sessionId?: string | null;
   repeatStats?: SupervisorTaskState['lastRepeatStats'];
   finishedAt?: string;
+  /** VL-289: фаза сообщила aborted — повод для правила без retry. */
+  aborted?: boolean;
+  /** VL-289: дословная причина от фазы (усечённая, ≤500). */
+  abortedReason?: string;
+  /** VL-289: последний комментарий фазы — «что агент успел сказать» (≤800). */
+  lastComment?: { author: string; created: string; text: string };
 }
 
 /** Каталог супервизора создаётся лениво. */
@@ -189,6 +207,13 @@ export function loadState(cwd: string): SupervisorTickState | null {
         // поле не должно оживлять ложную блокировку после рестарта процесса
         ...(Array.isArray(t.blockedBy) && t.blockedBy.length > 0
           ? { blockedBy: t.blockedBy.filter((x): x is string => typeof x === 'string' && x !== '') }
+          : {}),
+        // aborted/abortedReason (VL-289): переживают рестарт, иначе после
+        // перезапуска браузера правило «нужен человек» не сработает и фаза
+        // снова уйдёт в retry
+        ...(t.aborted === true ? { aborted: true } : {}),
+        ...(typeof t.abortedReason === 'string' && t.abortedReason !== ''
+          ? { abortedReason: t.abortedReason }
           : {}),
       };
     }
@@ -324,6 +349,9 @@ export function snapshotKey(
         // у самой задачи ничего не меняется — без этого элемента wake gate
         // счёл бы состояние неизменным и не запустил разблокированную задачу
         t.blockedBy !== undefined && t.blockedBy.length > 0 ? t.blockedBy.join(',') : '',
+        // aborted (VL-289): фаза сама сказала «нужен человек» — смена признака
+        // обязана будить тик, иначе wake gate съест событие и лечения не будет
+        t.aborted === true ? `aborted:${t.abortedReason ?? ''}` : '',
       ].join('|'),
     );
   }
@@ -407,6 +435,21 @@ export function writeHeartbeat(
       const inRun = new Set(Object.keys(state.tasks));
       const blockers = (t.blockedBy ?? []).map(b => (inRun.has(b) ? b : `${b} (нет в прогоне)`));
       lines.push(`- ${id} — ждёт ${blockers.join(', ')}`);
+    }
+    lines.push('');
+  }
+
+  // Прерванные фазой (VL-289): отдельная секция по образцу «Заблокированы
+  // зависимостями» — причина содержит требуемое действие человека, и в таблицу
+  // задач (фиксированный формат) её вписать нельзя.
+  const abortedIds = ids.filter(id => state.tasks[id]?.aborted === true);
+  if (abortedIds.length > 0) {
+    lines.push('## Прервано фазой (нужны действия человека)');
+    lines.push('');
+    for (const id of abortedIds) {
+      const t = state.tasks[id]!;
+      const reason = (t.abortedReason ?? 'причина не указана').replace(/\s+/g, ' ').slice(0, 300);
+      lines.push(`- ${id} — фаза ${t.phase}: ${reason}`);
     }
     lines.push('');
   }

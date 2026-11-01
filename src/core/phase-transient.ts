@@ -265,6 +265,59 @@ export function getPhaseTransientStatus(cwd: string, taskKey: string, phase: str
 }
 
 /**
+ * Исход финализации транзиента (VL-289): что произошло с фазой.
+ *
+ * Нужен оркестратору, чтобы положить результат в `PhaseRun` — иначе признак
+ * «фаза сама сказала aborted» после удаления записи кэша теряется, и
+ * супервизор видит только «статус не изменился → нет прогресса → retry»
+ * (инцидент VL-285: merge-конфликт воспроизводился до сгорания бюджета).
+ */
+export interface PhaseFinalizeOutcome {
+  /** Фаза, которая завершилась. */
+  phase: string;
+  /** Статус задачи до фазы. */
+  prevStatus: string;
+  /** Агент прислал `aborted: true` (VL-244). */
+  aborted: boolean;
+  /** Текст отчёта агента при aborted (обрезка 500). */
+  abortedReason?: string;
+  /** Итог рана: ok — статус применён, aborted/failed — откат к prevStatus, skipped — итог уже был зафиксирован агентом. */
+  outcome: 'ok' | 'aborted' | 'failed' | 'skipped';
+}
+
+/**
+ * Читает транзиент-запись задачи БЕЗ удаления (VL-289).
+ *
+ * Нужна оркестратору ДО `finalizePhaseStatus`: тот удаляет запись из кэша, и
+ * после него признак `aborted` доступен только разбором текста комментария.
+ * Fail-open как во всём модуле: сбой чтения → null (сигнал просто не дойдёт).
+ *
+ * @param cwd — директория проекта
+ * @param taskKey — ID задачи в любом регистре (ключи кэша канонические UPPER)
+ * @returns запись либо null, если фаза не в транзиенте
+ */
+export function readPhaseTransient(
+  cwd: string,
+  taskKey: string,
+): { phase: string; prevStatus: string; aborted?: boolean; abortedReason?: string } | null {
+  try {
+    const entry = readCache(cwd)[taskKey.toUpperCase()];
+    if (!entry || typeof entry.phase !== 'string' || typeof entry.prevStatus !== 'string') return null;
+    return {
+      phase: entry.phase,
+      prevStatus: entry.prevStatus,
+      ...(entry.aborted === true ? { aborted: true } : {}),
+      ...(typeof entry.abortedReason === 'string' && entry.abortedReason !== ''
+        ? { abortedReason: entry.abortedReason }
+        : {}),
+    };
+  } catch (err) {
+    console.log(`[phase-transient] readPhaseTransient(${taskKey}) не удался: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+/**
  * Финализирует транзиентный статус ЗАВЕРШИВШЕЙСЯ фазы.
  *
  * Вызывается в finish() spawnQwenRun строго ДО onExit: авто-очередь
@@ -282,26 +335,38 @@ export function getPhaseTransientStatus(cwd: string, taskKey: string, phase: str
  *   откат к исходному статусу + комментарий-причина (@agent).
  *
  * @param record — финальный PhaseRun (exitCode/result/logTail)
+ * @returns исход финализации (VL-289) либо null, если транзиента не было/сбой.
+ *   Запись кэша при этом по-прежнему удаляется: вызывающий получает снимок
+ *   признака `aborted` и может положить его в PhaseRun для супервизора.
  */
 export function finalizePhaseStatus(
   cwd: string,
   taskKey: string,
   phase: string,
   record: { exitCode?: number | null; result?: { is_error?: boolean } | null; logTail?: string }
-): void {
+): PhaseFinalizeOutcome | null {
   try {
     const cache = readCache(cwd);
     const entry = cache[taskKey];
-    if (!entry) return;
+    if (!entry) return null;
     delete cache[taskKey];
     writeCache(cwd, cache);
-    const task = getTask(cwd, taskKey);
-    if (!task) return;
-    if (task.status !== 'In Progress') return; // итог зафиксирован агентом
     const phaseName = entry.phase || phase;
+    const aborted = entry.aborted === true;
+    const base: PhaseFinalizeOutcome = {
+      phase: phaseName,
+      prevStatus: entry.prevStatus,
+      aborted,
+      ...(typeof entry.abortedReason === 'string' && entry.abortedReason !== ''
+        ? { abortedReason: entry.abortedReason }
+        : {}),
+      outcome: aborted ? 'aborted' : 'skipped',
+    };
+    const task = getTask(cwd, taskKey);
+    if (!task) return base;
+    if (task.status !== 'In Progress') return { ...base, outcome: 'skipped' }; // итог зафиксирован агентом
     // VL-244: явный aborted-флаг агента сильнее кода выхода — «обычный текст
     // с exit 0» больше не означает «фаза выполнена»
-    const aborted = entry.aborted === true;
     if (!aborted && record.exitCode === 0 && record.result?.is_error !== true) {
       const workflow = getWorkflowForTask(cwd, task);
       const next = getStatusAfterPhase(workflow, entry.prevStatus, phaseName) ?? entry.prevStatus;
@@ -309,6 +374,7 @@ export function finalizePhaseStatus(
       console.log(
         `[phase-transient] ${taskKey}: фаза ${phaseName} завершилась — статус ${entry.prevStatus} → ${next}`
       );
+      return { ...base, outcome: 'ok' };
     } else {
       // Причина: либо явный aborted-флаг (с текстом отчёта агента), либо
       // код выхода + хвост лога. Fallback по тексту лога («не завершена»)
@@ -321,10 +387,12 @@ export function finalizePhaseStatus(
       console.log(
         `[phase-transient] ${taskKey}: фаза ${phaseName} ${aborted ? 'прервана агентом (aborted)' : 'провалена'} — статус откачен к ${entry.prevStatus}`
       );
+      return { ...base, outcome: aborted ? 'aborted' : 'failed' };
     }
   } catch (err) {
     // Финализация не должна ронять finish()/onExit — логируем и продолжаем
     console.log(`[phase-transient] finalizePhaseStatus(${taskKey}) не удался: ${(err as Error).message}`);
+    return null;
   }
 }
 
