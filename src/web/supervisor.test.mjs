@@ -6,7 +6,7 @@
  * мгновенно, после afterAll снимается env-база и удаляется каталог.
  */
 
-import { describe, it, beforeAll, afterAll } from 'vitest';
+import { describe, it, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,6 +25,11 @@ import {
   supervisorRunStatus,
 } from '../../dist/web/supervisor.js';
 import { findActiveGrant, writeGrant, GRANTABLE_TOOLS } from '../../dist/web/supervisor-grant.js';
+import {
+  isSupervisorTimerRunning,
+  startSupervisorTimer,
+  stopSupervisorTimer,
+} from '../../dist/web/supervisor-tick.js';
 
 const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-supervisor-'));
 const stubBin = join(testRoot, 'qwen-stub.cjs');
@@ -66,6 +71,13 @@ beforeAll(() => {
 afterAll(() => {
   setSpawnEnvBaseForTests(null);
   rmSync(testRoot, { recursive: true, force: true });
+});
+
+// VL-272: startSupervisorRun поднимает интервал тика (unref, 60 с), а швы
+// isolate:false переиспользуют воркеры между файлами — таймер обязан сниматься
+// после каждого теста, иначе утечёт в соседние файлы.
+afterEach(() => {
+  stopSupervisorTimer();
 });
 
 describe('VL-268 — buildSupervisorPlan (сухой прогон)', () => {
@@ -202,5 +214,98 @@ describe('VL-268 — предпросмотр карточки grant', () => {
     assert.equal(hours, 2);
     assert.ok(preview.rationale.length > 0);
     assert.equal(preview.maxParallelPhases, 3);
+  });
+});
+
+describe('VL-272 — таймер тика поднимается и снимается прогоном', () => {
+  // Изоляция: grant'ы от предыдущих describes («грант выдан раньше»), а
+  // supervisorRunStatus выбирает самый свежий из всех записей — с чистым
+  // каталогом супервизора результат детерминирован.
+  beforeEach(() => {
+    stopSupervisorTimer();
+    rmSync(join(testRoot, '.vibelog'), { recursive: true, force: true });
+  });
+
+  it('AC1: успешный startSupervisorRun поднимает таймер тика (без перезапуска сервера)', async () => {
+    const task = createTaskFile(testRoot, { title: 'Таймер', status: 'Spec', priority: 'High' });
+    const plan = buildSupervisorPlan(testRoot, [task.id]);
+    assert.equal(plan.taskIds.length, 1);
+
+    const grantedAt = new Date().toISOString();
+    const expiresAt = new Date(Date.parse(grantedAt) + 3_600_000).toISOString();
+    const res = startSupervisorRun(testRoot, plan, [...GRANTABLE_TOOLS], expiresAt, grantedAt);
+
+    assert.equal(res.ok, true, res.message);
+    assert.equal(
+      isSupervisorTimerRunning(),
+      true,
+      'grant выдан при уже работающем сервере — таймер обязан подняться из startSupervisorRun',
+    );
+    stopSupervisorTimer();
+    await waitIdle(1200);
+  });
+
+  it('AC2: stopSupervisorRun снимает таймер тика', async () => {
+    const task = createTaskFile(testRoot, { title: 'Стоп', status: 'Spec', priority: 'High' });
+    const plan = buildSupervisorPlan(testRoot, [task.id]);
+    const grantedAt = new Date().toISOString();
+    const expiresAt = new Date(Date.parse(grantedAt) + 3_600_000).toISOString();
+    const res = startSupervisorRun(testRoot, plan, [...GRANTABLE_TOOLS], expiresAt, grantedAt);
+    assert.equal(res.ok, true, res.message);
+    assert.equal(isSupervisorTimerRunning(), true);
+
+    const stopped = stopSupervisorRun(testRoot, plan.runId);
+    assert.equal(stopped.ok, true);
+    assert.equal(isSupervisorTimerRunning(), false, 'после остановки прогона тик не считает');
+    assert.equal(findActiveGrant(testRoot), null);
+    await waitIdle(1200);
+  });
+
+  it('AC2: авто-отзыв grant-а (все задачи терминальны) снимает таймер тика', () => {
+    const done = createTaskFile(testRoot, { title: 'Терминальная', status: 'Done' });
+    const grantedAt = new Date().toISOString();
+    writeGrant(testRoot, {
+      runId: 'run-vl-272-auto-revoke',
+      taskIds: [done.id],
+      allowedTools: [...GRANTABLE_TOOLS],
+      grantedAt,
+      expiresAt: new Date(Date.parse(grantedAt) + 3_600_000).toISOString(),
+    });
+    assert.equal(startSupervisorTimer(testRoot, { intervalMs: 3_600_000 }), true);
+    assert.equal(isSupervisorTimerRunning(), true);
+
+    const status = supervisorRunStatus(testRoot);
+    assert.equal(status.autoRevoked, true, status.message);
+    assert.equal(isSupervisorTimerRunning(), false, 'авто-отзыв гасит таймер');
+    assert.equal(findActiveGrant(testRoot), null);
+  });
+
+  it('AC5: неуспешный старт (ни одна фаза не запустилась) не оставляет таймер', async () => {
+    const task = createTaskFile(testRoot, { title: 'Провал старта', status: 'Spec', priority: 'High' });
+    const plan = buildSupervisorPlan(testRoot, [task.id]);
+    // Портим фазу в плане: startTaskPhase откажет («фаза недопустима из статуса»),
+    // grant будет отозван — рабочий таймер оставаться не должен.
+    const broken = { ...plan, order: plan.order.map(i => ({ ...i, phase: 'nonsense' })) };
+
+    const res = startSupervisorRun(testRoot, broken, [...GRANTABLE_TOOLS], '2030-01-01T00:00:00.000Z');
+    assert.equal(res.ok, false, 'старт обязан провалиться');
+    assert.match(res.message, /не запущен/);
+    assert.equal(findActiveGrant(testRoot), null, 'grant отозван при полном провале');
+    assert.equal(isSupervisorTimerRunning(), false, 'таймера после провала нет');
+    await waitIdle(1200);
+  });
+
+  it('AC6: VIBELOG_SUPERVISOR_TICK=off не поднимает таймер даже при успешном старте', async () => {
+    const task = createTaskFile(testRoot, { title: 'Флаг', status: 'Spec', priority: 'High' });
+    const plan = buildSupervisorPlan(testRoot, [task.id]);
+    process.env.VIBELOG_SUPERVISOR_TICK = 'off';
+    try {
+      const res = startSupervisorRun(testRoot, plan, [...GRANTABLE_TOOLS], '2030-01-01T00:00:00.000Z');
+      assert.equal(res.ok, true, res.message);
+      assert.equal(isSupervisorTimerRunning(), false, 'флаг off глушит тик и на старте прогона');
+    } finally {
+      delete process.env.VIBELOG_SUPERVISOR_TICK;
+    }
+    await waitIdle(1200);
   });
 });
