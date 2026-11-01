@@ -21,12 +21,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createTaskFile, getTask, updateTaskFile } from '../../dist/core/store.js';
+import { addComment, createTaskFile, getTask, updateTaskFile } from '../../dist/core/store.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { loadState, saveState } from '../../dist/core/supervisor-state.js';
 import { writeGrant } from '../../dist/web/supervisor-grant.js';
 import {
   buildTickPrompt,
+  collectTaskObservation,
+  createAutoBug,
+  detectAbortedFromComments,
   extractJsonObject,
   parseTickDecision,
   runSupervisorTick,
@@ -500,6 +503,112 @@ describe('промпт тика (AC3)', () => {
     assert.ok(prompt.length <= 1200, `промпт ${prompt.length} символов`);
     assert.match(prompt, /усечён по бюджету/);
     assert.doesNotMatch(prompt, /строка-1\b/, 'начало длинного лога не должно попасть');
+  });
+});
+
+describe('VL-289: результат фазы в наблюдении, промпте и авто-баге', () => {
+  it('detectAbortedFromComments: берёт последний маркер, причину вырезает по контракту', () => {
+    const task = createTaskFile(cwd, { title: 'Маркер aborted', status: 'Spec' });
+    addComment(
+      cwd,
+      task.id,
+      'Фаза close прервана агентом (aborted): конфликт UU README.md — разреши вручную. — статус возвращён к Review.',
+      '@agent',
+    );
+    const found = detectAbortedFromComments(getTask(cwd, task.id));
+    assert.ok(found, 'маркер найден');
+    assert.match(found.reason, /UU README\.md — разреши вручную/);
+
+    // Обычный отчёт после маркера не должен «поднимать» старый признак
+    addComment(cwd, task.id, 'Фаза Close выполнена. Изменено: README.md', '@agent');
+    assert.equal(detectAbortedFromComments(getTask(cwd, task.id)), null);
+  });
+
+  it('collectTaskObservation: aborted из комментария задачи при отсутствии рана', () => {
+    const task = createTaskFile(cwd, { title: 'Fallback после рестарта', status: 'In Progress' });
+    addComment(
+      cwd,
+      task.id,
+      'Фаза close прервана агентом (aborted): сборка падает (tsc error) — исправь код и повтори. — статус возвращён к Review.',
+      '@agent',
+    );
+    // lastRuns пуст (эмуляция рестарта vibelog browser) → fallback по комментарию
+    const obs = collectTaskObservation(cwd, getTask(cwd, task.id));
+    assert.equal(obs.aborted, true);
+    assert.match(obs.abortedReason, /сборка падает/);
+    // последний комментарий фазы тоже попал в наблюдение (для обычных падений)
+    assert.match(obs.lastComment.text, /прервана агентом/);
+    assert.equal(obs.lastComment.author, '@agent');
+    assert.equal(detectAbortedFromComments(getTask(cwd, task.id)) !== null, true);
+  });
+
+  it('collectTaskObservation: без aborted-маркера признак не выставляется', () => {
+    const task = createTaskFile(cwd, { title: 'Обычная задача', status: 'In Progress' });
+    addComment(cwd, task.id, 'Фаза Code выполнена. Изменено: src/a.ts', '@agent');
+    const obs = collectTaskObservation(cwd, getTask(cwd, task.id));
+    assert.equal(obs.aborted, undefined);
+    assert.match(obs.lastComment.text, /Фаза Code выполнена/);
+  });
+
+  it('промпт тика: строка aborted и блок «Отчёт фазы» в упавших фазах', () => {
+    const task = createTaskFile(cwd, { title: 'Промпт aborted', status: 'Review' });
+    grantFor([task.id]);
+    const prompt = buildTickPrompt(cwd, {
+      state: {
+        runId: 'run-tick-test',
+        mode: 'conservative',
+        startedAt: '2026-11-01T10:00:00.000Z',
+        updatedAt: '2026-11-01T10:00:00.000Z',
+        tick: 3,
+        lastDecision: { tick: 2, action: 'wait', reason: '' },
+        tasks: {},
+        tuning: { applied: 0 },
+      },
+      heal: { rules: [], defaultAction: 'bug', errors: [] },
+      runtimeErrors: [],
+      grant: { runId: 'run-tick-test', taskIds: [task.id], allowedTools: [], grantedAt: '', expiresAt: '2099-01-01T00:00:00.000Z' },
+      heartbeat: 'кратко',
+      candidates: [],
+      failing: [{
+        taskId: task.id,
+        obs: {
+          running: false,
+          status: 'Review',
+          aborted: true,
+          abortedReason: 'merge vb/vl-285 → master: UU README.md',
+          lastComment: {
+            author: '@agent',
+            created: '2026-11-01 23:20',
+            text: 'Нужно разрешить конфликт UU README.md вручную и повторить Close.',
+          },
+        },
+        state: { phase: 'close', status: 'failed', attempt: 1, healAttempts: 0 },
+      }],
+      lastDecision: { tick: 2, action: 'wait', reason: '' },
+    });
+    assert.match(prompt, /фаза сама сообщила: aborted — merge vb\/vl-285/);
+    assert.match(prompt, /#### Отчёт фазы/);
+    assert.match(prompt, /разрешить конфликт UU README\.md/);
+    // Контракт: aborted не перезапускается
+    assert.match(prompt, /НЕ перезапускается/);
+  });
+
+  it('createAutoBug с причиной фазы: секция aborted и «лог пуст — см. отчёт выше»', () => {
+    const source = createTaskFile(cwd, { title: 'Исходная VL-285', status: 'Review' });
+    const bug = createAutoBug(cwd, {
+      taskId: source.id,
+      phase: 'close',
+      failReason: 'нет прогресса',
+      abortedReason: 'merge vb/vl-285 → master: конфликт UU README.md; разреши вручную и повтори Close',
+      ruleChain: ['aborted-requires-human'],
+      sourceTaskTitle: source.title,
+    });
+    const task = getTask(cwd, bug.id);
+    assert.match(task.title, /фаза прервана — merge vb\/vl-285/);
+    assert.match(task.description, /## Что сообщила фаза \(aborted\)/);
+    assert.match(task.description, /UU README\.md/);
+    assert.match(task.description, /\(лог пуст\) — см\. отчёт фазы выше/);
+    assert.doesNotMatch(task.description, /## Причина\nнет прогресса/, 'причина от фазы первична');
   });
 });
 

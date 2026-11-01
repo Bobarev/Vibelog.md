@@ -21,6 +21,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { renderPrompt, startAnalyze, startPhase, startPrompt, startResume, startTaskPhase, getRun, setSpawnEnvBaseForTests, setRunCloseGraceMsForTests, countActiveRuns } from '../../dist/web/orchestrator.js';
+import { markPhaseAborted } from '../../dist/core/phase-transient.js';
 import { handleApi } from '../../dist/web/api.js';
 import { addComment, createTaskFile, getTask, updateTaskFile } from '../../dist/core/store.js';
 import { ensureTaskWorktree } from '../../dist/core/worktree.js';
@@ -2663,6 +2664,47 @@ describe('transient In Progress (VL-196)', () => {
       assert.equal(getTask(trRoot, 'VL-904').status, 'Planned', 'финализация не перетирает запись агента');
       const cache = existsSync(trCache) ? JSON.parse(readFileSync(trCache, 'utf-8')) : {};
       assert.equal('VL-904' in cache, false, 'кэш почищен');
+    } finally {
+      resetStubEnv();
+    }
+  });
+  it('VL-289: aborted во время фазы → getRun отдаёт признак, exitCode 0 не меняется', async () => {
+    const task = createTaskFile(trRoot, { id: 'VL-905', title: 'транзиент: aborted', status: 'Spec' });
+    setStubEnv({ VIBELOG_QWEN_BIN: trStub, VL28_STUB_SLEEP: '400', VL28_STUB_EXIT: '0' });
+    try {
+      const res = startPhase(trRoot, task.id, 'plan');
+      assert.equal(res.started, true, JSON.stringify(res));
+      // Имитация backlog_finish_phase {aborted: true, comment} — MCP пишет флаг
+      // в транзиент-кэш (процессы разные), оркестратор снимает его в finish()
+      assert.equal(
+        markPhaseAborted(trRoot, task.id, 'merge vb/vl-289 → master: UU README.md — разреши вручную'),
+        true,
+        'флаг записан в транзиент',
+      );
+      const run = await waitDone('VL-905');
+      // Сигнал живёт отдельным полем: exitCode остаётся 0 (на него смотрят
+      // автоочередь и боты), а супервизор получает «нужен человек»
+      assert.equal(run.exitCode, 0, run.logTail ?? '');
+      assert.equal(run.aborted, true);
+      assert.match(run.abortedReason ?? '', /UU README\.md/);
+      assert.equal(run.phaseResult, 'aborted');
+      assert.equal(getTask(trRoot, 'VL-905').status, 'Spec', 'статус откачен при aborted');
+    } finally {
+      resetStubEnv();
+    }
+  });
+
+  it('VL-289 регрессия: обычный ран без флага aborted признака не выставляет', async () => {
+    const task = createTaskFile(trRoot, { id: 'VL-906', title: 'транзиент: обычный успех', status: 'Spec' });
+    setStubEnv({ VIBELOG_QWEN_BIN: trStub, VL28_STUB_SLEEP: '0', VL28_STUB_EXIT: '0' });
+    try {
+      const res = startPhase(trRoot, task.id, 'plan');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-906');
+      assert.equal(run.aborted, undefined, 'aborted не выставляется без сигнала агента');
+      assert.equal(run.abortedReason, undefined);
+      assert.equal(run.phaseResult, 'ok');
+      assert.equal(getTask(trRoot, 'VL-906').status, 'Planned', 'produces_status применён');
     } finally {
       resetStubEnv();
     }

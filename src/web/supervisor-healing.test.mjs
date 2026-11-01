@@ -13,7 +13,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createTaskFile, getTask, listTasks, updateTaskFile } from '../../dist/core/store.js';
+import { addComment, createTaskFile, getTask, listTasks, updateTaskFile } from '../../dist/core/store.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { loadState, saveState } from '../../dist/core/supervisor-state.js';
 import { writeGrant } from '../../dist/web/supervisor-grant.js';
@@ -425,6 +425,67 @@ describe('healing уровня 1 в тике (AC6–AC9)', () => {
     // Дефолтное правило no-progress (retry_once_then_bug) обработало падение
     assert.equal(res.healed.length, 1);
     assert.ok(stub.started.length >= 1);
+  });
+});
+
+describe('VL-289: инцидент VL-285 — aborted не перезапускается, а становится багом', () => {
+  it('close с aborted: правило aborted-requires-human, retry НЕ выполняется, причина в баге', async () => {
+    const task = createTaskFile(cwd, { title: 'VL-285: merge-конфликт', status: 'Spec' });
+    updateTaskFile(cwd, task.id, { status: 'Review' });
+    // Комментарий фазы — ровно то, что оставил агент в VL-285 (контракт формата
+    // держит fallback-парсер; здесь он же даёт текст причины в наблюдении)
+    addComment(
+      cwd,
+      task.id,
+      'Фаза close прервана агентом (aborted): merge vb/vl-285 → master дал конфликт UU README.md. ' +
+        'Разреши конфликт вручную и повтори Close. — статус возвращён к Review.',
+      '@agent',
+    );
+    grantFor([task.id]);
+    // Конфиг без файла: дефолтные правила, где aborted-requires-human первый
+    seedFailed(task, { phase: 'close', statusAtStart: 'Review' });
+    const llm = passiveLlm();
+    setTickLlmForTests(llm);
+    const stub = startStub();
+    setTickStartPhaseForTests(stub.fn);
+    setTickActiveCountForTests(() => 0);
+
+    const res = await runSupervisorTick(cwd, { llm });
+    const key = task.id.toUpperCase();
+    // Правило сработало: bug без retry (startTaskPhase не вызывался)
+    assert.deepEqual(res.healed.map(h => h.ruleId), ['aborted-requires-human'], JSON.stringify(res));
+    assert.equal(res.healed[0].action, 'bug');
+    assert.equal(stub.started.length, 0, 'перезапуск фазы запрещён при aborted');
+    assert.equal(res.bugs.length, 1, JSON.stringify(res));
+    // Авто-баг содержит ДОСЛОВНУЮ причину и требуемое действие
+    const bug = getTask(cwd, res.bugs[0].bugId);
+    assert.match(bug.title, /фаза прервана/);
+    assert.match(bug.description, /## Что сообщила фаза \(aborted\)/);
+    assert.match(bug.description, /UU README\.md/);
+    assert.match(bug.description, /Разреши конфликт вручную и повтори Close/);
+    // Пустой лог не единственное содержимое описания
+    assert.match(bug.description, /см\. отчёт фазы выше/);
+    assert.equal(loadState(cwd).tasks[key].frozen, true, 'задача остановлена после бага');
+  });
+
+  it('регрессия: обычное падение без aborted по-прежнему лечится no-progress', async () => {
+    const task = createTaskFile(cwd, { title: 'Обычное падение', status: 'Spec' });
+    updateTaskFile(cwd, task.id, { status: 'In Progress' });
+    grantFor([task.id]);
+    writeHealConfig({
+      heal_rules: [{ id: 'no-progress', when: { status_unchanged: true }, action: 'retry_once_then_bug' }],
+      default_action: 'bug',
+    });
+    seedFailed(task, { lastError: 'тесты упали: 3 failed' });
+    const llm = passiveLlm();
+    setTickLlmForTests(llm);
+    const stub = startStub();
+    setTickStartPhaseForTests(stub.fn);
+    setTickActiveCountForTests(() => 0);
+
+    const res = await runSupervisorTick(cwd, { llm });
+    assert.deepEqual(res.healed.map(h => h.ruleId), ['no-progress'], JSON.stringify(res));
+    assert.equal(stub.started.length, 1, 'обычное падение перезапускается');
   });
 });
 

@@ -210,6 +210,50 @@ describe('heartbeat.md и tailLines', () => {
     assert.doesNotMatch(text, /- VL-1 —/);
   });
 
+  it('VL-289: aborted и abortedReason входят в ключ (событие будит тик)', () => {
+    const state = makeState();
+    const obs = { 'VL-1': { running: false, status: 'Spec' } };
+    const without = snapshotKey(state, obs, 'g1');
+    state.tasks['VL-1'].aborted = true;
+    const withAborted = snapshotKey(state, obs, 'g1');
+    assert.notEqual(without, withAborted, 'появление aborted меняет ключ');
+    // Смена причины — тоже изменение: за одним и тем же флагом стоят разные
+    // требуемые действия человека
+    state.tasks['VL-1'].abortedReason = 'разреши конфликт README.md';
+    assert.notEqual(snapshotKey(state, obs, 'g1'), withAborted);
+  });
+
+  it('VL-289: aborted/abortedReason переживают запись и чтение состояния', () => {
+    saveState(cwd, makeState({ tasks: {
+      'VL-1': {
+        phase: 'close',
+        status: 'failed',
+        attempt: 1,
+        healAttempts: 0,
+        aborted: true,
+        abortedReason: 'merge vb/vl-285 → master: UU README.md',
+      },
+    } }));
+    const back = loadState(cwd);
+    assert.equal(back.tasks['VL-1'].aborted, true);
+    assert.equal(back.tasks['VL-1'].abortedReason, 'merge vb/vl-285 → master: UU README.md');
+  });
+
+  it('VL-289: heartbeat показывает секцию «Прервано фазой» с причиной', () => {
+    const state = makeState();
+    state.tasks['VL-1'].status = 'failed';
+    state.tasks['VL-1'].aborted = true;
+    state.tasks['VL-1'].abortedReason = 'разреши конфликт UU README.md и повтори Close';
+    const text = writeHeartbeat(cwd, state, { running: true });
+    assert.match(text, /## Прервано фазой \(нужны действия человека\)/);
+    assert.match(text, /- VL-1 — фаза plan: разреши конфликт UU README\.md и повтори Close/);
+  });
+
+  it('VL-289: без aborted секции «Прервано фазой» нет', () => {
+    const text = writeHeartbeat(cwd, makeState(), { running: true });
+    assert.doesNotMatch(text, /## Прервано фазой/);
+  });
+
   it('снятие блокировки убирает секцию блокировок из heartbeat', () => {
     const state = makeState();
     const text = writeHeartbeat(cwd, state, { running: true });

@@ -220,6 +220,60 @@ export function makePhaseRunId(taskId: string, phase: string, attempt: number): 
   return `run-${canonicalTaskId(taskId)}-${phase}-${attempt}`;
 }
 
+/** Бюджет причины aborted в наблюдении: как в markPhaseAborted (500). */
+const ABORTED_REASON_CHARS = 500;
+/** Бюджет последнего комментария фазы в наблюдении (в состояние кладётся усечённый). */
+const LAST_COMMENT_CHARS = 800;
+
+/**
+ * Маркер комментария-причины при аварийном завершении фазы (VL-244/289).
+ *
+ * Формат зафиксирован контрактом: `finalizePhaseStatus` пишет
+ * «Фаза <фаза> прервана агентом (aborted): <причина> — статус возвращён к X».
+ * Парсер нужен как fallback: `lastRuns` оркестратора живёт в памяти и после
+ * рестарта `vibelog browser` пуст, а комментарий в задаче остаётся. Формат
+ * нельзя менять без правки этого регэкспа (проверяется тестом).
+ */
+const ABORTED_COMMENT_RE = /прервана агентом \(aborted\)(?::\s*([\s\S]*?))?(?:\s+—\s+статус|\s*$)/;
+
+/**
+ * Ищет признак aborted в комментариях задачи (VL-289, fallback после рестарта).
+ *
+ * Смотрится ПОСЛЕДНИЙ комментарий @agent: признак есть только если он сам
+ * матчит маркер. Так исторические aborted-комментарии не поднимают правило
+ * после того, как фазу перезапустили и она оставила обычный отчёт (ложное
+ * срабатывание на норме). Причина вырезается между «(aborted):» и «— статус…».
+ *
+ * @returns причина либо null; пустая причина → пустая строка (признак есть)
+ */
+export function detectAbortedFromComments(task: Task): { reason: string } | null {
+  const comments = task.comments ?? [];
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const c = comments[i]!;
+    if (c.author !== '@agent') continue;
+    const m = ABORTED_COMMENT_RE.exec(c.text ?? '');
+    return m ? { reason: (m[1] ?? '').trim().slice(0, ABORTED_REASON_CHARS) } : null;
+  }
+  return null;
+}
+
+/** Последний комментарий фазы (@agent) в бюджете — «что агент успел сказать». */
+function lastAgentComment(task: Task): TaskObservation['lastComment'] {
+  const comments = task.comments ?? [];
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const c = comments[i]!;
+    if (c.author !== '@agent') continue;
+    const text = (c.text ?? '').replace(/\s+/g, ' ').trim();
+    if (text === '') continue;
+    return {
+      author: c.author,
+      created: c.created ?? '',
+      text: text.slice(0, LAST_COMMENT_CHARS),
+    };
+  }
+  return undefined;
+}
+
 /**
  * Собирает наблюдение за задачей: запуск в оркестраторе + сессия агента +
  * метрика повторов + следующая фаза по workflow.
@@ -256,6 +310,28 @@ export function collectTaskObservation(cwd: string, task: Task, phaseHint?: stri
     ...(run?.logTail !== undefined ? { logTail: run.logTail } : {}),
     sessionId,
   };
+  // VL-289: результат фазы — первичный сигнал лечения.
+  // 1) основной источник — запись рана (getRun отдаёт aborted/abortedReason
+  //    из PhaseRun, куда их положил оркестратор до финализации транзиента);
+  // 2) fallback — маркер в комментарии задачи: lastRuns живёт в памяти и
+  //    после рестарта `vibelog browser` пуст, а след в задаче остаётся.
+  if (run?.aborted === true) {
+    obs.aborted = true;
+    if (run.abortedReason !== undefined) obs.abortedReason = run.abortedReason.slice(0, ABORTED_REASON_CHARS);
+  } else if (run === null || run === undefined) {
+    // Fallback включается ТОЛЬКО без записи рана (рестарт процесса). Если ран
+    // есть и признака нет — верить комментарию нельзя: в задаче мог остаться
+    // старый aborted-комментарий прошлой фазы (ложное срабатывание на норме).
+    const fromComments = detectAbortedFromComments(task);
+    if (fromComments !== null) {
+      obs.aborted = true;
+      if (fromComments.reason !== '') obs.abortedReason = fromComments.reason;
+    }
+  }
+  // Последний комментарий фазы нужен и для обычных падений: «что фаза успела
+  // сказать» — единственный содержательный диагноз, если лог пуст.
+  const lastComment = lastAgentComment(task);
+  if (lastComment !== undefined) obs.lastComment = lastComment;
   if (sessionId) {
     const meta = loadSessionMetaSync(sessionDir, sessionId);
     if (meta) {
@@ -331,6 +407,8 @@ export function matchHealRule(
     repeatCalls: number;
     failReason: string;
     statusUnchanged: boolean;
+    /** VL-289: фаза сама сообщила aborted (нужны действия человека). */
+    aborted?: boolean;
   },
 ): HealRule | null {
   const reason = ctx.failReason.toLowerCase();
@@ -345,6 +423,9 @@ export function matchHealRule(
       if (!hit) ok = false;
     }
     if (ok && when.status_unchanged !== undefined && ctx.statusUnchanged !== when.status_unchanged) ok = false;
+    // VL-289: aborted — отдельное измерение «фаза просит человека»; строгое
+    // сравнение (undefined ≠ true), чтобы правило не срабатывало на обычных ранах
+    if (ok && when.aborted !== undefined && (ctx.aborted === true) !== when.aborted) ok = false;
 
     if (ok) return rule;
   }
@@ -539,6 +620,10 @@ export interface AutoBugContext {
   sessionId?: string | null;
   ruleChain?: string[];
   sourceTaskTitle: string;
+  /** VL-289: дословная причина, которую сообщила фаза в aborted. */
+  abortedReason?: string;
+  /** VL-289: последний комментарий фазы — «что агент успел сказать». */
+  lastComment?: { author: string; created: string; text: string };
 }
 
 /**
@@ -561,15 +646,57 @@ export function createAutoBug(cwd: string, ctx: AutoBugContext): { id: string; t
   );
   if (existing) return { id: existing.id, title: existing.title, created: false };
 
-  const title = `[авто] ${ctx.phase} ${ctx.taskId}: ${shortReason(ctx.failReason)}`;
+  // VL-289: причина от самой фазы первична — если агент сообщил aborted,
+  // заголовок и описание строятся от его текста, а не от «нет прогресса».
+  const abortedReason = (ctx.abortedReason ?? '').trim();
+  const hasAbortedReason = abortedReason !== '';
+  const reasonText = hasAbortedReason ? abortedReason : ctx.failReason;
+  const title = hasAbortedReason
+    ? `[авто] ${ctx.phase} ${ctx.taskId}: фаза прервана — ${shortReason(abortedReason)}`
+    : `[авто] ${ctx.phase} ${ctx.taskId}: ${shortReason(ctx.failReason)}`;
   const tail = tailLines(ctx.logTail, LOG_TAIL_LINES_BUG);
-  const description = [
+  const descriptionParts: string[] = [
     '## Причина',
-    ctx.failReason.trim() === '' ? 'причина не зафиксирована' : ctx.failReason.trim(),
+    reasonText.trim() === '' ? 'причина не зафиксирована' : reasonText.trim(),
     '',
+  ];
+  // Секция «что сообщила фаза»: дословный текст отчёта агента при aborted.
+  // Без неё описание авто-бага состояло из «10 попыток без прогресса» и
+  // пустого лога (инциденты VL-287/VL-288) — разбирать было нечего.
+  if (hasAbortedReason) {
+    descriptionParts.push(
+      '## Что сообщила фаза (aborted)',
+      '',
+      abortedReason,
+      '',
+      'Фаза сама заявила, что нужны действия человека: перезапуск детерминированно ' +
+        'воспроизведёт причину, автоматическое лечение остановлено.',
+      '',
+    );
+  }
+  // Последний отчёт фазы — независимо от aborted: при обычном падении это
+  // единственный содержательный диагноз, когда лог пуст.
+  if (
+    ctx.lastComment !== undefined &&
+    ctx.lastComment.text.trim() !== '' &&
+    ctx.lastComment.text.trim() !== abortedReason
+  ) {
+    descriptionParts.push(
+      '## Последний отчёт фазы',
+      '',
+      `${ctx.lastComment.author} (${ctx.lastComment.created}): ${ctx.lastComment.text}`,
+      '',
+    );
+  }
+  const description = [
+    ...descriptionParts,
     '## Последние строки лога',
     '```',
-    tail === '' ? '(лог пуст)' : tail,
+    tail === ''
+      ? hasAbortedReason
+        ? '(лог пуст) — см. отчёт фазы выше'
+        : '(лог пуст)'
+      : tail,
     '```',
     '',
     '## Сессия',
@@ -847,6 +974,16 @@ export function buildTickPrompt(
     for (const item of args.failing) {
       parts.push(`### ${item.taskId} — фаза ${item.state.phase}, попыток ${item.state.attempt}, лечение ${item.state.healAttempts}`);
       parts.push(`- причина: ${item.obs.lastRunError ?? item.state.lastError ?? 'не зафиксирована'}`);
+      // VL-289: результат фазы — первичный вход разбора. Без этих двух строк
+      // модель видела только «нет прогресса» и не могла понять, что агент
+      // просил человека (инцидент VL-285: merge-конфликт).
+      if (item.obs.aborted === true || item.state.aborted === true) {
+        const why = item.obs.abortedReason ?? item.state.abortedReason ?? 'причина не указана';
+        parts.push(`- фаза сама сообщила: aborted — ${why}`);
+      }
+      if (item.obs.lastComment !== undefined) {
+        parts.push('#### Отчёт фазы', '', fit(item.obs.lastComment.text, 400), '');
+      }
       if (item.obs.repeatStats) {
         const top = item.obs.repeatStats.top.slice(0, 3).map(e => `${e.key} ×${e.count}`).join(', ');
         parts.push(
@@ -903,6 +1040,8 @@ export function buildTickPrompt(
     '- запрещено править max_parallel_phases, heal_attempts, allow_self_tuning, parallel_mode — это страховочные поля пользователя.',
     '- запрещено подделывать прогресс: не отмечай фазы выполненными, не меняй статусы (backlog_finish_phase тебе недоступен).',
     '- не запускай задачу, которой нет в списке задач прогона.',
+    '- фаза, которая сама сообщила aborted, НЕ перезапускается: если причина требует человека ' +
+      'или внешнего действия — bug, иначе stop; retry запрещён (перезапуск воспроизведёт причину).',
   );
 
   return fit(parts.join('\n'), budget);
@@ -1060,7 +1199,9 @@ export async function runSupervisorTick(cwd: string, deps: TickDeps = {}): Promi
             entry.pid !== undefined && !isPidAlive(entry.pid)
               ? `процесс фазы не найден (pid ${entry.pid}) — вероятен рестарт vibelog browser`
               : 'фаза завершилась без смены статуса задачи (нет прогресса)';
-          const reason = obs.lastRunError ?? entry.lastError ?? deadNote;
+          // VL-289: заявление фазы («нужен человек») важнее прочих причин —
+          // именно его увидят промпт тика и авто-баг
+          const reason = obs.abortedReason ?? obs.lastRunError ?? entry.lastError ?? deadNote;
           entry.status = 'failed';
           entry.lastError = reason;
           entry.pid = undefined;
@@ -1098,6 +1239,21 @@ export async function runSupervisorTick(cwd: string, deps: TickDeps = {}): Promi
     }
 
     state.tasks[key] = entry;
+
+    // VL-289: признак aborted живёт в состоянии до старта новой фазы. Пишем
+    // его только для не-идущей фазы (у живой рана нет), снимаем при старте —
+    // иначе признак «прилипнет» и после успешного перезапуска фаза снова
+    // попадёт под правило «нужен человек».
+    if (entry.status === 'running') {
+      delete entry.aborted;
+      delete entry.abortedReason;
+    } else if (obs.aborted === true) {
+      entry.aborted = true;
+      if (obs.abortedReason !== undefined) entry.abortedReason = obs.abortedReason;
+    } else {
+      delete entry.aborted;
+      delete entry.abortedReason;
+    }
 
     // ── Незакрытые зависимости (VL-275) ──────────────────────────────────────
     // Планировщик прогона и автоочередь фильтруют задачи по isReady, а тик —
@@ -1157,6 +1313,9 @@ export async function runSupervisorTick(cwd: string, deps: TickDeps = {}): Promi
         sessionId: item.obs.sessionId ?? null,
         ruleChain: [...(entry.ruleChain ?? []), 'heal_attempts-exhausted'],
         sourceTaskTitle: getTask(cwd, item.taskId)?.title ?? item.taskId,
+        // VL-289: причина и последний отчёт фазы — в описание авто-бага
+        ...(item.obs.abortedReason !== undefined ? { abortedReason: item.obs.abortedReason } : {}),
+        ...(item.obs.lastComment !== undefined ? { lastComment: item.obs.lastComment } : {}),
       });
       entry.ruleChain = [...(entry.ruleChain ?? []), 'heal_attempts-exhausted'];
       entry.frozen = true;
@@ -1173,6 +1332,9 @@ export async function runSupervisorTick(cwd: string, deps: TickDeps = {}): Promi
       repeatCalls: item.obs.repeatStats?.repeat_calls ?? 0,
       failReason: `${item.obs.lastRunError ?? ''} ${entry.lastError ?? ''}`,
       statusUnchanged,
+      // VL-289: фаза сама сказала «нужен человек» — правило
+      // aborted-requires-human стоит первым и даёт bug без retry
+      aborted: item.obs.aborted === true,
     });
     if (rule === null) {
       stillFailing.push(item); // уровень 2 — решение модели
@@ -1297,6 +1459,10 @@ export async function runSupervisorTick(cwd: string, deps: TickDeps = {}): Promi
       entry.statusAtStart = getTask(cwd, id)?.status ?? entry.statusAtStart;
       entry.pid = res.pid;
       entry.phaseRunId = makePhaseRunId(id, phase, entry.attempt);
+      // VL-289: новая фаза стартовала — старый признак aborted снимаем,
+      // иначе он «прилипнет» и следующее падение снова уйдёт в bug без retry
+      delete entry.aborted;
+      delete entry.abortedReason;
       startedIds.push(id);
       startedCount += 1;
     }
@@ -1316,6 +1482,12 @@ export async function runSupervisorTick(cwd: string, deps: TickDeps = {}): Promi
         sessionId: observations[id]?.sessionId ?? null,
         ruleChain: [...(entry.ruleChain ?? []), 'l2:model'],
         sourceTaskTitle: getTask(cwd, id)?.title ?? id,
+        ...(observations[id]?.abortedReason !== undefined
+          ? { abortedReason: observations[id]!.abortedReason }
+          : {}),
+        ...(observations[id]?.lastComment !== undefined
+          ? { lastComment: observations[id]!.lastComment }
+          : {}),
       });
       entry.frozen = true;
       entry.ruleChain = [...(entry.ruleChain ?? []), 'l2:model'];
@@ -1376,6 +1548,12 @@ export async function runSupervisorTick(cwd: string, deps: TickDeps = {}): Promi
       sessionId: observations[id]?.sessionId ?? null,
       ruleChain: [...(entry.ruleChain ?? []), 'l2:bug'],
       sourceTaskTitle: getTask(cwd, id)?.title ?? id,
+      ...(observations[id]?.abortedReason !== undefined
+        ? { abortedReason: observations[id]!.abortedReason }
+        : {}),
+      ...(observations[id]?.lastComment !== undefined
+        ? { lastComment: observations[id]!.lastComment }
+        : {}),
     });
     entry.frozen = true;
     entry.status = 'done';
@@ -1506,11 +1684,15 @@ function applyHealAction(
     const bug = createAutoBug(cwd, {
       taskId: ctx.taskId,
       phase: entry.phase,
-      failReason: reason,
+      // VL-289: заявление самой фазы («нужен человек») первичнее общей
+      // формулировки «нет прогресса»
+      failReason: obs?.abortedReason ?? reason,
       logTail: obs?.logTail,
       sessionId: obs?.sessionId ?? null,
       ruleChain: entry.ruleChain ?? [],
       sourceTaskTitle: task?.title ?? ctx.taskId,
+      ...(obs?.abortedReason !== undefined ? { abortedReason: obs.abortedReason } : {}),
+      ...(obs?.lastComment !== undefined ? { lastComment: obs.lastComment } : {}),
     });
     entry.frozen = true;
     entry.status = 'done';

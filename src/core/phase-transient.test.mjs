@@ -25,6 +25,7 @@ import {
   recoverStalePhaseStatuses,
   phaseTransientCachePath,
   getPhaseTransientStatus,
+  readPhaseTransient,
 } from '../../dist/core/phase-transient.js';
 import { createTaskFile, getTask, updateTaskFile } from '../../dist/core/store.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
@@ -105,6 +106,43 @@ describe('phase-transient (VL-196)', () => {
     assert.match(task.comments[0].text, /merge не завершён/, 'причина из отчёта агента');
     assert.match(task.comments[0].text, /возвращён к Spec/);
     assert.equal('VL-907' in readCache(), false, 'запись кэша удалена');
+  });
+
+  // VL-289 (шаг 1): результат фазы должен дожить до оркестратора, а не
+  // остаться только в удалённой записи кэша. readPhaseTransient читает запись
+  // без удаления, finalizePhaseStatus возвращает снимок признака.
+  it('readPhaseTransient: читает aborted до финализации, после — null', () => {
+    rmSync(cacheFile, { force: true });
+    markPhaseStarted(root, 'VL-907', 'plan', 424247);
+    markPhaseAborted(root, 'VL-907', 'разреши конфликт README.md и повтори close');
+    const seen = readPhaseTransient(root, 'vl-907');
+    assert.ok(seen, 'запись читается по ключу любого регистра');
+    assert.equal(seen.phase, 'plan');
+    assert.equal(seen.prevStatus, 'Spec');
+    assert.equal(seen.aborted, true);
+    assert.equal(seen.abortedReason, 'разреши конфликт README.md и повтори close');
+    assert.equal('VL-907' in readCache(), true, 'чтение не удаляет запись');
+    finalizePhaseStatus(root, 'VL-907', 'plan', { exitCode: 0 });
+    assert.equal(readPhaseTransient(root, 'VL-907'), null, 'после финализации записи нет');
+  });
+
+  it('finalizePhaseStatus возвращает исход: aborted + причина (VL-289)', () => {
+    rmSync(cacheFile, { force: true });
+    markPhaseStarted(root, 'VL-907', 'plan', 424247);
+    markPhaseAborted(root, 'VL-907', 'merge vb/vl-285 → master: UU README.md');
+    const out = finalizePhaseStatus(root, 'VL-907', 'plan', { exitCode: 0 });
+    assert.ok(out, 'исход возвращён');
+    assert.equal(out.outcome, 'aborted');
+    assert.equal(out.aborted, true);
+    assert.equal(out.phase, 'plan');
+    assert.equal(out.prevStatus, 'Spec');
+    assert.match(out.abortedReason, /UU README.md/);
+    assert.equal(getTask(root, 'VL-907').status, 'Spec', 'статус откачен');
+  });
+
+  it('finalizePhaseStatus без транзиента возвращает null (fail-open)', () => {
+    rmSync(cacheFile, { force: true });
+    assert.equal(finalizePhaseStatus(root, 'VL-901', 'plan', { exitCode: 0 }), null);
   });
 
   it('markPhaseAborted без записи кэша — no-op, false, не бросает', () => {

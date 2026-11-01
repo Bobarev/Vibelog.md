@@ -68,6 +68,7 @@ export const KNOWN_HEAL_WHEN_KEYS = [
   'repeat_calls_min',
   'fail_reason_contains',
   'status_unchanged',
+  'aborted',
 ] as const;
 
 /**
@@ -96,6 +97,13 @@ export interface HealWhen {
   fail_reason_contains?: string[];
   /** Фаза завершилась, а статус задачи не сменился (нет прогресса). */
   status_unchanged?: boolean;
+  /**
+   * VL-289: фаза сама сообщила аварийное завершение (`aborted: true`).
+   * Перезапуск такую причину детерминированно воспроизведёт (инцидент VL-285:
+   * merge-конфликт) — правило обязано стоять раньше `no-progress` и давать
+   * `bug`/`stop`, без retry.
+   */
+  aborted?: boolean;
 }
 
 /** Правило лечения уровня 1 (декларативное, модель может править). */
@@ -137,6 +145,17 @@ export interface SupervisorRuntime {
  * цикл лечения сразу (иначе фича есть, а пользы нет до ручной настройки).
  */
 export const DEFAULT_HEAL_RULES: HealRule[] = [
+  {
+    // VL-289: фаза сама сказала «нужны действия человека» (aborted: true).
+    // Перезапуск детерминированно воспроизведёт причину (VL-285: merge-конфликт
+    // UU README.md воспроизводился, пока heal_attempts не сгорел) — поэтому
+    // правило стоит ПЕРВЫМ, раньше repeat-loop-stuck и no-progress.
+    // Действие `bug`, а не `stop`: bug и причину сохраняет, и задачу
+    // замораживает; stop причину теряет.
+    id: 'aborted-requires-human',
+    when: { aborted: true },
+    action: 'bug',
+  },
   {
     // VL-284: раньше repeat-loop (comment_and_retry) перезапускал действительно
     // зацикленный ран, и повтор детерминированно воспроизводил тот же
@@ -369,6 +388,14 @@ export function validateHealRule(value: unknown, index: number, errors: string[]
         return null;
       }
       when.status_unchanged = val;
+    } else if (key === 'aborted') {
+      // VL-289: булев признак «фаза сама сообщила aborted» — проверка типа как
+      // у status_unchanged, невалидное значение выкидывает правило
+      if (typeof val !== 'boolean') {
+        errors.push(`supervisor.settings.json: правило ${label} — aborted должен быть true/false, правило выпало`);
+        return null;
+      }
+      when.aborted = val;
     }
   }
 

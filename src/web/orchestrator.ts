@@ -39,7 +39,7 @@ import { getMergeState } from '../core/git.js';
 import { getWorkflowForTask, getStatusAfterPhase, isPhaseAllowed } from '../core/workflow.js';
 // VL-196: транзиентный In Progress на время workflow-фазы — mark после спавна,
 // finalize в finish() до onExit (единая точка spawnQwenRun для всех запусков)
-import { markPhaseStarted, finalizePhaseStatus } from '../core/phase-transient.js';
+import { markPhaseStarted, finalizePhaseStatus, readPhaseTransient } from '../core/phase-transient.js';
 import { agentSessionsDir, analyzeToolRepeatsFromJsonlSync, appendSessionRun, findTaskPhaseSessionSync, listTaskSessionMetas, loadSessionMetaSync, saveSessionMeta, updateSessionMeta } from '../agent/session.js';
 import { hasUsageDelta, usageDelta } from '../core/analytics.js';
 import type { TokenUsage } from '../core/analytics.js';
@@ -98,6 +98,17 @@ export interface PhaseRun {
   result?: QwenResult;
   /** Агент запуска (VL-93): 'qwen' по умолчанию, 'vb' — встроенный агент. */
   agent?: string;
+  /**
+   * VL-289: фаза сама сообщила аварийное завершение (`aborted: true` в
+   * backlog_finish_phase). Признак НЕ влияет на `exitCode` (0 остаётся 0 —
+   * на код смотрят автоочередь и боты) и живёт отдельным полем, чтобы
+   * супервизор видел «агент попросил человека» вместо «нет прогресса».
+   */
+  aborted?: boolean;
+  /** VL-289: дословный текст отчёта фазы при aborted (обрезка 500). */
+  abortedReason?: string;
+  /** VL-289: итог рана — ok (статус применён) / aborted / failed / skipped. */
+  phaseResult?: 'ok' | 'aborted' | 'failed' | 'skipped';
   /** VL-146: queued=true — close ждёт в очереди branch-mode (состояние getRun). */
   queued?: boolean;
 }
@@ -1372,6 +1383,15 @@ function spawnQwenRun(
       logTail: [log.trim(), stderrLog.trim()].filter(Boolean).join('\n'),
       result,
     };
+    // VL-289: снимаем транзиент ДО финализации — она удаляет запись кэша, и
+    // после неё признак aborted доступен только разбором текста комментария.
+    // Сигнал живёт отдельным полем: exitCode остаётся прежним (на него смотрят
+    // автоочередь и боты), а супервизор получает «агент попросил человека».
+    const transient = readPhaseTransient(cwd, key);
+    if (transient?.aborted === true) {
+      record.aborted = true;
+      if (transient.abortedReason !== undefined) record.abortedReason = transient.abortedReason;
+    }
     lastRuns.set(key, record);
     // VL-178: авто-resume при отказе провайдера «high risk» — страховка вместо
     // ручного «Продолжить» (основной повтор — в LLM-клиенте, здесь ловим случай,
@@ -1407,7 +1427,11 @@ function spawnQwenRun(
     // VL-196: финализация транзиентного In Progress ДО onExit — авто-очередь
     // (progressed по статусу) и rejectTask-onExit видят уже финальный статус;
     // high-risk авто-resume выше делает return — на время повтора транзиент жив
-    finalizePhaseStatus(cwd, key, phase, record);
+    // VL-289: исход финализации дописываем в уже опубликованную запись
+    // (lastRuns хранит её по ссылке) — getRun отдаёт phaseResult рядом с
+    // running/phase/exitCode. aborted/abortedReason сняты до финализации.
+    const outcome = finalizePhaseStatus(cwd, key, phase, record);
+    if (outcome !== null) record.phaseResult = outcome.outcome;
     // VL-48: уведомление о завершении (бот). Fire-and-forget в try/catch:
     // сетевые ошибки Telegram не должны ронять polling оркестратора.
     try {

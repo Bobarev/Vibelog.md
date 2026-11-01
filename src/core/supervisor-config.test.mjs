@@ -124,11 +124,33 @@ describe('resolveSupervisorRuntime: дефолты (doc-19 §7)', () => {
 describe('loadHealRules: дефолты и битые правила (AC6, AC8)', () => {
   it('файла нет → дефолтные правила из doc-19 §12', () => {
     const cfg = loadHealRules(cwd);
-    assert.deepEqual(cfg.rules.map(r => r.id), ['repeat-loop-stuck', 'repeat-loop', 'payload-limit', 'wall-timeout', 'no-progress']);
+    assert.deepEqual(cfg.rules.map(r => r.id), ['aborted-requires-human', 'repeat-loop-stuck', 'repeat-loop', 'payload-limit', 'wall-timeout', 'no-progress']);
     assert.equal(cfg.rules.length, DEFAULT_HEAL_RULES.length);
     assert.equal(cfg.defaultAction, DEFAULT_HEAL_ACTION);
     assert.equal(cfg.defaultAction, 'bug');
     assert.deepEqual(cfg.errors, []);
+  });
+
+  // VL-289: фаза, которая сама сообщила aborted, не перезапускается — правило
+  // стоит ПЕРВЫМ, чтобы no-progress не успел перезапустить детерминированную
+  // причину (инцидент VL-285: merge-конфликт воспроизводился до сгорания бюджета)
+  it('VL-289: aborted-requires-human первым в дефолтных правилах, действие bug', () => {
+    const cfg = loadHealRules(cwd);
+    assert.equal(cfg.rules[0].id, 'aborted-requires-human');
+    assert.deepEqual(cfg.rules[0].when, { aborted: true });
+    assert.equal(cfg.rules[0].action, 'bug');
+  });
+
+  it('VL-289: when.aborted не boolean → правило выпадает с ошибкой', () => {
+    writeHealFile({
+      heal_rules: [
+        { id: 'bad-aborted', when: { aborted: 'да' }, action: 'bug' },
+        { id: 'ok-aborted', when: { aborted: true }, action: 'bug' },
+      ],
+    });
+    const cfg = loadHealRules(cwd);
+    assert.deepEqual(cfg.rules.map(r => r.id), ['ok-aborted']);
+    assert.ok(cfg.errors.some(e => /aborted должен быть true\/false/.test(e)), cfg.errors.join(' | '));
   });
 
   it('битый JSON → дефолты + предупреждение', () => {
