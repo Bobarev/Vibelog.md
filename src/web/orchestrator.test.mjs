@@ -1947,6 +1947,13 @@ describe('orchestrator (VL-28)', () => {
       const resumeIdx = argv.indexOf('--resume');
       assert.ok(resumeIdx !== -1, 'в argv есть --resume: ' + JSON.stringify(argv));
       assert.equal(argv[resumeIdx + 1], 'agent-plan-1470', 'после --resume — sessionId plan-сессии');
+      // VL-239: модель в argv спавна НЕ передаётся — фиксацию модели делает
+      // CLI по мете сессии; явные флаги иначе перебивали бы модель сессии
+      assert.ok(!argv.includes('--model'), 'спавн не передаёт --model: ' + JSON.stringify(argv));
+      assert.ok(
+        !argv.includes('--model-follow-settings'),
+        'спавн не передаёт --model-follow-settings',
+      );
       // Примечание о продолжении plan в промпте (контекст планирования в истории)
       const prompt = argv.find((a) => a.includes('Фаза 3'));
       assert.ok(prompt?.includes('VL-147'), 'примечание VL-147 в промпте');

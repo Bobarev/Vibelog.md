@@ -857,6 +857,162 @@ describe('vibelog-agent CLI (VL-85)', () => {
     }
   });
 
+  // ── VL-239: фиксация модели на сессии ──
+
+  /**
+   * Пишет settings.json с реестром моделей в каталог проекта. base_url —
+   * мок-LM теста, чтобы запрос реально уходил на него (провайдеру нужен
+   * рабочий endpoint). default — параметром: тесты «смена модели между
+   * ранами» переключают его через повторный вызов.
+   */
+  function writeModelsSettings(projDir, defaultId) {
+    mkdirSync(join(projDir, '.vibelog'), { recursive: true });
+    writeFileSync(
+      join(projDir, '.vibelog', 'settings.json'),
+      JSON.stringify({
+        providers: {
+          mockp: { base_url: `http://127.0.0.1:${mock.port}/v1`, api_key: 'test-key' },
+        },
+        models: {
+          default: defaultId,
+          available: {
+            'mockp/ModelA': { label: 'Model A', provider: 'mockp', model: 'wire-a', api_mode: 'chat' },
+            'mockp/ModelB': { label: 'Model B', provider: 'mockp', model: 'wire-b', api_mode: 'chat' },
+          },
+        },
+      }),
+      'utf-8',
+    );
+  }
+
+  /** env мок-LM без VIBELOG_LLM_MODEL: источник модели — только settings.json. */
+  function settingsEnv() {
+    const env = llmEnv();
+    delete env.VIBELOG_LLM_MODEL;
+    return env;
+  }
+
+  it('VL-239 (AC1): мета сессии фиксирует model_id/model_provider/model_name/api_mode', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl239meta-'));
+    try {
+      mkdirSync(join(projDir, 'backlog', 'tasks'), { recursive: true });
+      writeFileSync(join(projDir, 'backlog', 'config.yml'), 'project_name: VL239 Meta\n', 'utf-8');
+      createTaskFile(projDir, { id: 'VL-239', title: 'Задача фиксации модели' });
+      writeModelsSettings(projDir, 'mockp/ModelB');
+      const { code, stdout } = await runCli(
+        ['comment', 'VL-239', '--no-mcp'],
+        settingsEnv(),
+        projDir,
+      );
+      assert.equal(code, 0, stdout);
+      const sid = JSON.parse(stdout.trim()).session_id;
+      const meta = JSON.parse(
+        readFileSync(join(projDir, '.vibelog', 'agent-sessions', `${sid}.meta.json`), 'utf-8'),
+      );
+      assert.equal(meta.model_id, 'mockp/ModelB');
+      assert.equal(meta.model_provider, 'mockp');
+      assert.equal(meta.model_name, 'wire-b');
+      assert.equal(meta.api_mode, 'chat');
+      assert.equal(meta.taskId, 'VL-239');
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
+  it('VL-239 (AC2/AC3): resume идёт на модели сессии после смены models.default + предупреждение', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl239resume-'));
+    try {
+      mkdirSync(join(projDir, 'backlog', 'tasks'), { recursive: true });
+      writeFileSync(join(projDir, 'backlog', 'config.yml'), 'project_name: VL239 Resume\n', 'utf-8');
+      createTaskFile(projDir, { id: 'VL-239', title: 'Задача фиксации модели' });
+      // Ран 1: сессия стартует на ModelA (default)
+      writeModelsSettings(projDir, 'mockp/ModelA');
+      const first = await runCli(['comment', 'VL-239', '--no-mcp'], settingsEnv(), projDir);
+      assert.equal(first.code, 0, first.stdout);
+      const sid = JSON.parse(first.stdout.trim()).session_id;
+      assert.match(first.stderr, /Модель: Model A \(mockp\/ModelA\), api_mode: chat — из настроек/);
+
+      // Пользователь переключил default на ModelB
+      writeModelsSettings(projDir, 'mockp/ModelB');
+
+      // Ран 2 (resume): модель должна остаться ModelA (wire-a — в запросе)
+      llmRequests.length = 0;
+      const second = await runCli(['Продолжи', '--resume', sid, '--no-mcp'], settingsEnv(), projDir);
+      assert.equal(second.code, 0, second.stdout);
+      assert.match(second.stderr, /Модель: Model A \(mockp\/ModelA\), api_mode: chat — из сессии/);
+      assert.match(second.stderr, /модель сессии Model A \(mockp\/ModelA\)/);
+      assert.match(second.stderr, /активная в settings Model B \(mockp\/ModelB\)/);
+      assert.match(second.stderr, /--model-follow-settings/);
+      assert.ok(llmRequests.length >= 1, 'LLM запрос был');
+      assert.equal(llmRequests.at(-1).model, 'wire-a', 'запрос ушёл на модель сессии');
+
+      // AC2: --model явно переопределяет
+      llmRequests.length = 0;
+      const third = await runCli(
+        ['Продолжи', '--resume', sid, '--no-mcp', '--model', 'mockp/ModelB'],
+        settingsEnv(),
+        projDir,
+      );
+      assert.equal(third.code, 0, third.stdout);
+      assert.match(third.stderr, /— явный --model/);
+      assert.equal(llmRequests.at(-1).model, 'wire-b');
+
+      // AC2: --model-follow-settings продолжает на активной
+      llmRequests.length = 0;
+      const fourth = await runCli(
+        ['Продолжи', '--resume', sid, '--no-mcp', '--model-follow-settings'],
+        settingsEnv(),
+        projDir,
+      );
+      assert.equal(fourth.code, 0, fourth.stdout);
+      assert.match(fourth.stderr, /Модель: Model B \(mockp\/ModelB\), api_mode: chat — из настроек/);
+      assert.equal(llmRequests.at(-1).model, 'wire-b');
+
+      // AC4: неизвестный --model — ошибка (явный флаг не fail-open)
+      const bad = await runCli(
+        ['Продолжи', '--resume', sid, '--no-mcp', '--model', 'nope/nope'],
+        settingsEnv(),
+        projDir,
+      );
+      assert.equal(bad.code, 1);
+      assert.match(bad.stderr, /Неизвестная модель: nope\/nope/);
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
+  it('VL-239 (AC4): сессия без меты → активная модель (старое поведение не сломано)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl239nometa-'));
+    try {
+      writeModelsSettings(projDir, 'mockp/ModelB');
+      // Готовый промпт (isPhaseMode=false) мету не создаёт (VL-110)
+      const { code, stdout } = await runCli(['Просто запрос', '--no-mcp'], settingsEnv(), projDir);
+      assert.equal(code, 0, stdout);
+      const sid = JSON.parse(stdout.trim()).session_id;
+      assert.ok(
+        !existsSync(join(projDir, '.vibelog', 'agent-sessions', `${sid}.meta.json`)),
+        'мета не создаётся (инвариант VL-110)',
+      );
+      llmRequests.length = 0;
+      const resumed = await runCli(['Продолжи', '--resume', sid, '--no-mcp'], settingsEnv(), projDir);
+      assert.equal(resumed.code, 0, resumed.stdout);
+      assert.match(resumed.stderr, /Модель: Model B \(mockp\/ModelB\), api_mode: chat — из настроек/);
+      assert.equal(llmRequests.at(-1).model, 'wire-b');
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
+  it('VL-239: parseArgs — --model/--model-follow-settings и их несовместимость', () => {
+    assert.equal(parseArgs(['x', '--model', 'p/M']).model, 'p/M');
+    assert.equal(parseArgs(['x', '--model-follow-settings']).modelFollowSettings, true);
+    assert.throws(
+      () => parseArgs(['x', '--model', 'p/M', '--model-follow-settings']),
+      /несовместимы/,
+    );
+    assert.throws(() => parseArgs(['x', '--model']), /требует значение/);
+  });
+
   it('VL-203 (AC1): stderr фазы содержит байты payload и usage; мета — last_payload_bytes', async () => {
     const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-wirediag-'));
     try {

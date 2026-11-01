@@ -152,15 +152,15 @@ export function loadModels(cwd: string): ModelsConfig {
 }
 
 /**
- * Резолвит модель по явному id (VL-209: переопределение в веб-чате).
+ * Собирает полный ActiveModel из записи available (VL-239: общий билдер).
  *
- * @returns null, если id отсутствует в available либо провайдер не найден;
- *   apiKey — env[api_key_env] → provider.api_key → '' (как в resolveActiveModel)
+ * Вынесено из resolveModelById, чтобы резолв по паре provider+wire-имя
+ * (findModelByProviderName) давал ровно тот же объект — расхождение билдеров
+ * давало бы разные baseUrl/apiKey у «той же» модели.
+ *
+ * @returns null, если провайдер записи не найден в providers
  */
-export function resolveModelById(cwd: string, id: string): ActiveModel | null {
-  const models = loadModels(cwd);
-  const conf = models.available[id];
-  if (!conf) return null;
+function buildActiveModel(cwd: string, id: string, conf: ModelConfig): ActiveModel | null {
   const provider = loadProviders(cwd)[conf.provider];
   if (!provider) return null;
   const apiKey =
@@ -176,6 +176,47 @@ export function resolveModelById(cwd: string, id: string): ActiveModel | null {
     apiKey,
     apiKeyEnv: provider.api_key_env,
   };
+}
+
+/**
+ * Резолвит модель по явному id (VL-209: переопределение в веб-чате).
+ *
+ * @returns null, если id отсутствует в available либо провайдер не найден;
+ *   apiKey — env[api_key_env] → provider.api_key → '' (как в resolveActiveModel)
+ */
+export function resolveModelById(cwd: string, id: string): ActiveModel | null {
+  const models = loadModels(cwd);
+  const conf = models.available[id];
+  if (!conf) return null;
+  return buildActiveModel(cwd, id, conf);
+}
+
+/**
+ * Находит модель по паре provider + wire-имя (VL-239).
+ *
+ * Идентичность модели в мете сессии — именно пара provider+model: id из
+ * available пользователь может переименовать, а wire-имя у провайдера и
+ * ссылка на провайдера остаются те же. Поэтому resume-ран сначала пробует
+ * model_id, а при промахе — эту функцию.
+ *
+ * @param providerId — id провайдера в providers (meta.model_provider)
+ * @param wireName — имя модели у провайдера (meta.model_name, поле `model`)
+ * @returns ActiveModel (id — ключ available, найденный первым по порядку
+ *   секции) либо null, если пары нет или провайдер удалён
+ */
+export function findModelByProviderName(
+  cwd: string,
+  providerId: string,
+  wireName: string,
+): ActiveModel | null {
+  if (!providerId || !wireName) return null;
+  const models = loadModels(cwd);
+  for (const [id, conf] of Object.entries(models.available)) {
+    if (conf.provider !== providerId || conf.model !== wireName) continue;
+    const resolved = buildActiveModel(cwd, id, conf);
+    if (resolved !== null) return resolved;
+  }
+  return null;
 }
 
 /**
