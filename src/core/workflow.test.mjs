@@ -22,6 +22,7 @@ import {
   getStatusAfterPhase,
   isPhaseAllowed,
   canMoveTo,
+  isTerminalStatus,
 } from '../../dist/core/workflow.js';
 import { pickAutoPhase } from '../../dist/bot/auto-runner.js';
 import { settingsPath } from '../../dist/core/settings.js';
@@ -211,6 +212,36 @@ describe('workflow (VL-188)', () => {
     assert.equal(canMoveTo(DEFAULT_WORKFLOW, 'Done', 'To Do'), false);
     assert.equal(canMoveTo(DEFAULT_WORKFLOW, 'Rejected', 'To Do'), false);
     assert.equal(canMoveTo(DEFAULT_WORKFLOW, 'Done', 'Done'), true);
+  });
+
+  // ── isTerminalStatus (VL-248) ──
+
+  it('isTerminalStatus: Done/Rejected терминальны, промежуточные — нет', () => {
+    for (const status of ['Done', 'Rejected']) {
+      assert.equal(isTerminalStatus(DEFAULT_WORKFLOW, status), true, status);
+    }
+    for (const status of ['To Do', 'Spec', 'Planned', 'In Progress', 'Review', 'Backlog']) {
+      assert.equal(isTerminalStatus(DEFAULT_WORKFLOW, status), false, status);
+    }
+  });
+
+  it('isTerminalStatus: кастомный финал и бесфазный статус вне workflow', () => {
+    // Кастомный workflow: финал — 'Archive' (phase null), 'Review' ведёт в него
+    const custom = {
+      initial_status: 'To Do',
+      transitions: [
+        { status: 'To Do', phase: 'do', produces_status: 'Review' },
+        { status: 'Review', phase: 'close', produces_status: 'Archive' },
+        { status: 'Archive', phase: null, produces_status: null },
+      ],
+    };
+    assert.equal(isTerminalStatus(custom, 'Archive'), true, 'финальный маркер');
+    assert.equal(isTerminalStatus(custom, 'Review'), false, 'есть исходящая фаза');
+    assert.equal(isTerminalStatus(custom, 'To Do'), false, 'есть исходящая фаза');
+    assert.equal(isTerminalStatus(custom, 'Backlog'), false, 'статуса нет в workflow');
+    // initial_status без исходящих фаз — тупик, считаем терминальным
+    const onlyInitial = { initial_status: 'Backlog', transitions: [] };
+    assert.equal(isTerminalStatus(onlyInitial, 'Backlog'), true, 'бесфазный initial — тупик');
   });
 
   it('canMoveTo: initial_status без исходящих транзишенов-фаз из from', () => {
