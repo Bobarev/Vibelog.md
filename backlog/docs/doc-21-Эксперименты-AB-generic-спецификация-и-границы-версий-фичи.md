@@ -19,7 +19,7 @@ tags:
 | Профиль | Что сравнивается | Как получаются результаты |
 |---|---|---|
 | **Generic (ядро)** | фичи, UX-тексты, алгоритмы, производительность, конфиги | manual runner: человек/внешний скрипт делает вариант и вызывает `experiment record` (в т.ч. `--from-json`) |
-| **AI-профиль (опция)** | промпты фаз, модели, параметры генерации | ai-phase runner (v2) запускает headless-раны; LLM-judge (MVP шаг 2) ставит `score` |
+| **AI-профиль (опция)** | промпты фаз, модели, параметры генерации | ai-phase runner (v2) запускает headless-раны; LLM-judge (MVP шаг 5) ставит `score` |
 
 Промпты, judge и pricing — не фундамент, а **надстройка** над одним и тем же хранилищем результатов. Не-AI проект использует 100% схемы, кроме секции `judge` и подстановки промптов: у него `score` приходит из его собственных метрик (`row.custom`, `--score`), а вход задачи — поле `input`/`payload` датасета.
 
@@ -39,15 +39,19 @@ tags:
 ### MVP (фича)
 
 1. `backlog/experiments/` как артефакт: `exp-<id>.md` + frontmatter, `datasets/`, `prompts/`, `exp-<id>/run-<N>/`.
-2. Dataset JSONL: схема, валидация, резолв «частный → общий».
-3. Резолв промптов вариантов + **manual runner** и `record` (upsert, `--run`, `--from-json`).
-4. `report`: mean/median/дельта/win-rate/custom/errors + `n`/`dropped`; `--compare run-N`.
-5. `judge`: схема в frontmatter + LLM-скоринг (второй шаг MVP; путь `score: null` работает и без judge).
+2. Dataset JSONL: схема, валидация, резолв «частный → общий», команды `dataset create/list/view` (в т.ч. `--from-completed`).
+3. Резолв промптов вариантов (включая `builtin:<phase>`) + **manual runner** и `record` (upsert, `--run`, `--from-json`).
+4. `report`: mean/median/дельта/win-rate/custom/errors + `n`/`dropped`; `--compare run-N`; завершение прогона (`running → completed`).
+
+**MVP закрывается после шага 4.** Шаг 5 — MVP-опция: basic-сценарий работает без judge (путь `score: null`).
+
+5. `judge`: схема в frontmatter (фиксируется на шаге 1) + LLM-скоринг.
 
 ### v2 (фича)
 
 6. `ai-phase` runner с изоляцией: отдельный git worktree на прогон, откат между задачами, `VIBELOG_EXPERIMENT`, timeout на задачу, cost по модели варианта, `--dry-run` с оценкой стоимости.
-7. External runner (`--runner-cmd`), `--rerun N --yes`, `experiment gc` (явная gitignore-политика), расширение `lesson.references`.
+7. External runner (`--runner-cmd`), `--rerun N --yes`.
+8. `experiment gc` (явная gitignore-политика) и связь lesson ↔ эксперимент через `reference type: experiment`.
 
 ## 3. Структура `backlog/experiments/`
 
@@ -94,12 +98,12 @@ metrics:
 variants:                          # MAP, не массив (A/B/C/D)
   A:
     label: "текущий промпт"
-    prompt: phase-architect        # имя файла в prompts/ (общий или частный)
+    prompt: phase-architect        # имя файла в prompts/ ИЛИ builtin:<phase>
     model: provider/model-a        # опционально: id из models.available
     params: {temperature: 0.2}     # произвольные параметры раннера
   B:
     label: "новый промпт"
-    prompt: variant-b
+    prompt: builtin:spec           # встроенный промпт фазы — резолва файла не требует
 judge:                             # ОПЦИОНАЛЬНО; схема фиксируется сразу
   enabled: true
   model: provider/judge-model      # по умолчанию models.default
@@ -115,11 +119,22 @@ notes: ""
 
 Почему `variants` — map: сравнений «три и более» в реальности больше, чем кажется (A/B/C — шум-тест, контроль изоляции), а список потребовал бы индексов. Ограничение MVP — **CLI принимает только A и B**; схема готова к C/D без миграции.
 
+**`variant.prompt` — строка в одном из двух форматов:**
+
+| Значение | Что значит | Как резолвится |
+|---|---|---|
+| `<name>` | файл в `prompts/` | частный `exp-<id>/prompts/<name>.md` → общий `prompts/<name>.md` (§6, с warning при коллизии) |
+| `builtin:<phase>` | встроенный промпт фазы | **файловая система не ищется**: текст берётся из `templates/phases/phase-<phase>.md` с приоритетом `.vibelog/prompts/phases/phase-<phase>.md`; неизвестная фаза → ошибка со списком доступных |
+
+Почему `builtin:` обязателен: главный сценарий AI-профиля — «сравнить *текущий встроенный* промпт фазы с его вариантом». Без него пришлось бы копировать шаблон в `prompts/`, и эксперимент сравнивал бы две копии, а не встроенный оригинал (дрейф шаблона не отслеживался бы).
+
 `status`:
 - `draft` — создан, ничего не запускалось;
 - `running` — есть незавершённый прогон (живёт в `meta.json` рана);
 - `completed` — последний прогон завершён;
 - `failed` — прогон оборван (SIGINT, таймаут, ошибка раннера).
+
+Статус эксперимента — производный от последнего рана: пересчитывается при завершении рана, не выставляется вручную.
 
 ### Правило «stale running»
 
@@ -150,6 +165,19 @@ notes: ""
 
 Проблемы валидации (битый JSON, отсутствие `task_id`, дубликат `task_id`) не роняют команду: строки попадают в `errors`, печатаются в stderr и считаются как `dropped` в отчёте. Причина: датасет — пользовательские данные, частичный прогон полезнее падения.
 
+### Создание датасета
+
+```
+vibelog experiment dataset create <name> [--from-completed] [--limit N]   # --force для перезаписи
+vibelog experiment dataset list                                           # общие + частные, с пометкой
+vibelog experiment dataset view <name> [--exp <exp-id>]                   # валидация, число строк, task_id
+vibelog experiment dataset <exp-id> [--dataset-path <p>]                  # резолв для конкретного эксперимента
+```
+
+- `create` без флагов создаёт пустой общий файл и печатает шаблон строки (ручное заполнение).
+- `create --from-completed` собирает строки из завершённых задач проекта (`backlog/tasks/**` со `status: Done`): `task_id` = ID задачи, `title`+`description` → `input`, `acceptanceCriteria[].text` → `expected_ac`, `type`/`priority` → `custom`; `--limit N` (по умолчанию 20) ограничивает число.
+- Почему `--from-completed` в MVP: без готового входа manual-runner не с чего начать, а завершённые задачи — единственный датасет, который у проекта уже есть.
+
 ## 6. Резолв dataset и prompt: частный → общий (не молча)
 
 Порядок поиска одного и того же имени `name`:
@@ -167,6 +195,7 @@ notes: ""
   ```
 - Если не найден ни один — ошибка с перечнем проверенных путей (не «файл не найден»).
 - Если найден только частный — без warning (это штатное переопределение).
+- `builtin:<phase>` в резолве **не участвует** (см. §4): файловая система для него не опрашивается.
 - Escape hatch (перебивает резолв полностью): `--dataset-path <path>`, `--variant-a-prompt-path <path>`, `--variant-b-prompt-path <path>`.
 
 Почему warning обязателен: общий файл правят «для всех», частный случайно затеняет его, и разница в результатах прогонов объясняется не вариантом, а забытым переопределением. Молчаливый резолв — источник ложных выводов эксперимента.
@@ -212,11 +241,14 @@ notes: ""
   "dropped": 0,
   "cost_total": null,
   "pricing_missing": true,
-  "rerun_of": null
+  "rerun_of": null,
+  "reason": null
 }
 ```
 
-`n` и `dropped` дублируются в `meta.json` при завершении рана: отчёт можно посмотреть без парсинга `results.jsonl` (важно при `results_ignored: true`).
+`n` и `dropped` дублируются в `meta.json` при завершении рана: отчёт можно посмотреть без парсинга `results.jsonl` (важно при `results_ignored: true`). Заполняются только командой `report` — источник этих чисел всегда `results.jsonl`, `meta` лишь кэш для чтения.
+
+**Завершение прогона.** Прогон закрывает `report` (не `record`): если для **всех** строк датасета × всех вариантов есть строка с `score` или `error`, ран переводится в `completed` (`finished_at`, `n`, `dropped`, `cost_total`), статус эксперимента пересчитывается. Если данных не хватает — `report` печатает список недостающих пар `(task_id, variant)` и статус **не меняет**. Почему так: manual-ран не имеет процесса, который мог бы «сам завершиться», а `completed` на половине данных опаснее, чем явный `running`.
 
 **Идемпотентность номера прогона:** номер = `max(существующих run-<N>) + 1`, каталог создаётся атомарно (`mkdir` без `recursive` на листовом уровне); при `EEXIST` номер увеличивается и попытка повторяется. `run` никогда не пишет в существующий каталог.
 
@@ -246,14 +278,19 @@ notes: ""
 ## 10. CLI-поверхность
 
 ```
-vibelog experiment create <slug> [--title <t>] [--dataset <name>]
-       [--variant-a '<json>'] [--variant-a-prompt <name>] [--variant-a-model <id>] [--variant-a-label <l>]
-       [--variant-b '<json>'] [--variant-b-prompt <name>] [--variant-b-model <id>] [--variant-b-label <l>]
+vibelog experiment create <slug> [--title <t>] [--dataset <name>] [--runner <mode>]
+       [--variant-a '<json>'] [--variant-a-prompt <name|builtin:phase>] [--variant-a-model <id>] [--variant-a-label <l>]
+       [--variant-b '<json>'] [--variant-b-prompt <name|builtin:phase>] [--variant-b-model <id>] [--variant-b-label <l>]
 vibelog experiment list [--status <s>]
+vibelog experiment dataset create <name> [--from-completed] [--limit N] [--force]
+vibelog experiment dataset list
+vibelog experiment dataset view <name> [--exp <exp-id>]
 vibelog experiment dataset <exp-id> [--dataset-path <p>]        # показать резолв и валидацию
-vibelog experiment run <exp-id> [--dry-run] [--variant A,B] [--timeout <sec>] [--max-tasks N] [--recover]
-vibelog experiment record <exp-id> --variant A --task <task_id> --score <n>
-       [--run N] [--output <text>] [--error <text>] [--error-kind <k>] [--from-json <file>]
+vibelog experiment run <exp-id> [--dry-run] [--variant A,B] [--timeout <sec>] [--max-tasks N] [--recover] [--rerun N --yes]
+vibelog experiment record <exp-id> --variant A --task <task_id>
+       [--score <n>] [--output <text>] [--error <text>] [--error-kind <k>]
+       [--tool-calls N] [--duration <ms>] [--cost <n>] [--custom '<json>']
+       [--run N] [--from-json <file>]
 vibelog experiment report <exp-id> [--run N] [--compare run-M] [--json]
 vibelog experiment judge <exp-id> [--run N]
 vibelog experiment gc <exp-id> [--apply]      # v2
@@ -261,10 +298,11 @@ vibelog experiment gc <exp-id> [--apply]      # v2
 
 Решения:
 - **`run` — основной глагол** («прогнать эксперимент»), `create` — флаги. `--variant-a '<json>'` — альтернатива набору флагов (JSON-объект варианта целиком) для сложных конфигураций; оба способа в одном вызове — ошибка.
-- **`run --dry-run` обязателен:** печатает матрицу «строк датасета × вариантов», список резолвнутых файлов и оценку стоимости (по среднему usage прошлых ранов; при отсутствии данных — 0 и пометка «оценки нет»). Без него дорогой прогон запускается случайно.
+- **`run --dry-run` обязателен:** печатает матрицу «строк датасета × вариантов», список резолвнутых файлов (с пометкой общий / частный / builtin) и оценку стоимости (по среднему usage прошлых ранов; при отсутствии данных — «оценки нет»). Без него дорогой прогон запускается случайно.
 - **`record` без `--run`** пишет в последний прогон и печатает предупреждение, если прогонов больше одного (легко записать не туда).
 - **`--from-json <file>`** — массив results-строк, upsert пачкой (не-AI проекты и внешние раннеры).
 - **`--recover`** — см. §4.
+- **`report` закрывает прогон** — см. §8.
 
 ## 11. Стоимость по модели ВАРИАНТА
 
@@ -328,7 +366,7 @@ Headless-ран пишет usage в `.vibelog/billing/<taskId>.json` (`billingPa
 ## 14. Прерывание, таймаут, ошибки
 
 - **SIGINT / SIGTERM** → ран переводится в `failed`; уже записанные строки `results.jsonl` **валидны** (upsert атомарен построчно); текущая задача получает `error_kind: "interrupted"` (если успели записать).
-- **Timeout на задачу** — обязательный параметр `--timeout <sec>` (дефолт в настройках); по истечении — строка с `error_kind: "timeout"`, прогон продолжается со следующей задачи (одна зависшая задача не убивает весь эксперемент).
+- **Timeout на задачу** — обязательный параметр `--timeout <sec>` (дефолт в настройках); по истечении — строка с `error_kind: "timeout"`, прогон продолжается со следующей задачи (одна зависшая задача не убивает весь эксперимент).
 - **Ошибка API/раннера** — `error_kind: "api" | "runner"`, строка пишется, задача считается `dropped`.
 - **`status: failed` ≠ «данные плохие»** — это маркер неполного прогона. Отчёт по `failed`-рану печатается и помечается «частичный прогон: n из N».
 
@@ -343,7 +381,7 @@ Headless-ран пишет usage в `.vibelog/billing/<taskId>.json` (`billingPa
 
 `backlog/experiments/` — расширение Vibelog.md, как `lessons/`, `references/`, `decisions/`. Оригинал Backlog.md не знает этот каталог и игнорирует незнакомые поддиректории — round-trip данных задач/документов не ломается. Формат `exp-<id>.md` — markdown с YAML-фронтматтером, читаемый любым markdown-инструментом.
 
-`lesson.references` **не меняется**: связь «урок ↔ эксперимент» делается через `reference type: experiment` (в `REFERENCE_TYPES`) + `reference_link`. Расширение схемы lesson (поле `references`) — только v2 и только по решению пользователя.
+`lesson.references` **не меняется**: связь «урок ↔ эксперимент» делается через `reference type: experiment` (в `REFERENCE_TYPES`) + `reference_link`. Расширение схемы lesson (поле `references`) — только v2 и только по отдельному решению пользователя.
 
 ## 17. Решения по 10 открытым вопросам
 
@@ -353,33 +391,38 @@ Headless-ран пишет usage в `.vibelog/billing/<taskId>.json` (`billingPa
 | 2 | Метрики отчёта | mean/median/дельта/win-rate/custom/errors + **обязательно `n` и `dropped`** | без `n`/`dropped` среднее по 2 строкам из 40 выглядит как результат; `dropped` отделяет «оценка не получена» от «оценка плохая» |
 | 3 | CLI-синтаксис | `run <exp-id>` — новый прогон, `create` флагами; `--variant-a '<json>'` как альтернатива; `run --dry-run` обязателен | `run` — глагол действия; JSON-вариант нужен для сложных конфигураций; dry-run защищает от дорогого случайного прогона |
 | 4 | Статусы | `draft\|running\|completed\|failed` + правило stale running (`--recover`) | без stale-правила `running` навсегда блокирует эксперимент после падения машины |
-| 5 | judge в MVP | схема в frontmatter сразу, реализация — второй шаг MVP; путь `score: null` обязателен | `score: null` нужен и без judge (ошибки, ручные прогоны) — он проектируется первым |
+| 5 | judge в MVP | схема в frontmatter сразу, реализация — шаг 5 MVP (после закрытия MVP); путь `score: null` обязателен | `score: null` нужен и без judge (ошибки, ручные прогоны) — он проектируется первым |
 | 6 | Изменяемость run | run неизменяем (append-only), `--run N` у `run` не поддерживается; `report --run N` для просмотра; `--rerun` в v2 | как billing: изменяемая база сравнения делает сравнение бессмысленным |
 | 7 | `record` | `--run N` нужен, дефолт — последний + предупреждение при >1 run; **upsert по `(task_id, variant)`**, не append; `--from-json` | append оставил бы противоречащие оценки одной задачи; предупреждение спасает от записи не в тот прогон |
 | 8 | Резолв частный → общий | резолв есть, но **не молча**: warning в stderr + `resolution` в `meta.json`; escape hatch `--dataset-path` / `--variant-*-prompt-path` | забытое частное переопределение объясняет разницу прогонов лучше, чем сам вариант — молчание даёт ложные выводы |
 | 9 | `results.jsonl` > 10 MB | warning + `results_ignored: true`; `report.md` остаётся; `.gitignore` автоматически не правится (явная `gc` в v2) | отчёт сохраняет историю; правка `.gitignore` — побочный эффект в чужом репозитории |
-| 10 | Не-AI проекты | manual runner + `record` + `--from-json`; external runner — v2 | manual покрывает 100% generic-сценариев без риска записи в репозиторий |
+| 10 | Не-AI проекты | manual runner + `record` + `--from-json` + `dataset create --from-completed`; external runner — v2 | manual покрывает 100% generic-сценариев без риска записи в репозиторий |
 
 ## 18. Задачи реализации
 
 | ID | Label | Задача | Зависит от |
 |---|---|---|---|
-| VL-294 | mvp | артефакт `backlog/experiments/`, frontmatter `exp-<id>.md`, paths, `reference type: experiment`, CLI `create`/`list` | — |
-| VL-295 | mvp | dataset JSONL: схема, валидация, резолв частный → общий + warning | VL-294 |
-| VL-296 | mvp | резолв промптов + manual runner и `record` (upsert, `--run`, `--from-json`, stale running) | VL-294, VL-295 |
-| VL-297 | mvp | `report` (mean/median/дельта/win-rate/custom/errors, `n`/`dropped`) и `--compare` | VL-296 |
-| VL-298 | mvp | `judge`: схема + LLM-скоринг, путь `score: null` | VL-296 |
+| VL-294 | mvp | артефакт `backlog/experiments/`, frontmatter `exp-<id>.md` (включая парсинг `metrics`/`judge`), paths, `reference type: experiment`, CLI `create`/`list` | — |
+| VL-295 | mvp | dataset JSONL: схема, валидация, резолв частный → общий + warning, `dataset create/list/view`, `--from-completed` | VL-294 |
+| VL-296 | mvp | резолв промптов (включая `builtin:<phase>`) + manual runner и `record` (upsert, `--run`, `--from-json`, stale running) | VL-294, VL-295 |
+| VL-297 | mvp | `report` (mean/median/дельта/win-rate/custom/errors, `n`/`dropped`) и `--compare` + **завершение прогона** | VL-296 |
+| VL-298 | mvp (опция) | `judge`: схема + LLM-скоринг, путь `score: null` | VL-296 |
 | VL-299 | v2 | `ai-phase` runner с изоляцией (worktree, `VIBELOG_EXPERIMENT`, timeout, cost варианта) | VL-296, VL-297, VL-298 |
-| VL-300 | v2 | external runner, `--rerun`, `experiment gc`, `lesson.references` | VL-299 |
+| VL-300 | v2 | external runner (`--runner-cmd`), `run --rerun N --yes` | VL-299 |
+| VL-301 | v2 | `experiment gc` (явная gitignore-политика), связь lesson ↔ эксперимент через reference | VL-299 |
 
-Порядок: артефакт+frontmatter → dataset → резолв prompt → record → report (+compare) → judge → ai-phase runner с изоляцией.
+Порядок: артефакт+frontmatter → dataset → резолв prompt → record → report (+compare, завершение) → judge → ai-phase runner с изоляцией → external/rerun → gc/lesson.
 
-## 19. Открытые вопросы к пользователю (с рекомендациями)
+**MVP закрывается после VL-297.** VL-298 — опция внутри MVP: без judge `score` приходит из `--score` / `--from-json`, отчёт и сравнение работают полностью.
 
-1. **Дефолт `--timeout` на задачу.** Рекомендация: 600 с (как типичный wall-time фазы), переопределяется в `exp-<id>.md` (`timeout_sec`) и флагом. Решение нужно до VL-299.
-2. **Нужен ли MCP-инструмент `experiment_*`?** Сейчас в спецификации только CLI. Рекомендация: v2, после стабилизации CLI — иначе два контракта поддерживать одновременно.
-3. **Единицы `score` при `judge.scale: pass_fail`.** Рекомендация: `1`/`0`, а не `true`/`false` — иначе `median` и `win_rate` требуют отдельной ветки.
-4. **Блокировка параллельных прогонов одного эксперимента.** Рекомендация: `meta.json` + `pid` как lock; второй `run` того же эксперимента при живом pid — отказ (не очередь). Нужно решение до VL-299.
-5. **Судьба `lesson.references`.** Рекомендация: не расширять схему lesson; связь через `reference type: experiment`. Если нужно обратное — это отдельная задача.
-6. **Нужен ли `experiment export <exp-id> --csv`?** Рекомендация: v2, по спросу; `report --json` закрывает машинную обработку.
-7. **Политика хранения старых ранов.** Рекомендация: ничего не удалять автоматически; `gc` (v2) только предлагает кандидатов на `.gitignore`.
+## 19. Открытые вопросы к пользователю
+
+| № | Вопрос | Статус | Решение / рекомендация |
+|---|---|---|---|
+| 1 | Дефолт `--timeout` на задачу | **БЛОКЕР VL-299** (решается до кода) | Рекомендация: 600 с, переопределяется `timeout_sec` в frontmatter и флагом |
+| 2 | Блокировка параллельных прогонов одного эксперимента | **БЛОКЕР VL-299** (решается до кода) | Рекомендация: `meta.json` + `pid` как lock; второй `run` того же эксперимента при живом pid — отказ, не очередь |
+| 3 | Единицы `score` при `judge.scale: pass_fail` | **БЛОКЕР VL-299** (решается до кода) | Рекомендация: `1`/`0`, а не `true`/`false` — иначе `median` и `win_rate` требуют отдельной ветки |
+| 4 | Нужен ли MCP-инструмент `experiment_*`? | открыт, не блокирует | Рекомендация: v2, после стабилизации CLI — иначе два контракта поддерживать одновременно |
+| 5 | Судьба `lesson.references` | решено для v2 | Схему lesson не расширять; связь через `reference type: experiment` (VL-301). Расширение схемы — отдельная задача по решению пользователя |
+| 6 | Нужен ли `experiment export <exp-id> --csv`? | открыт, не блокирует | Рекомендация: v2, по спросу; `report --json` закрывает машинную обработку |
+| 7 | Политика хранения старых ранов | решено | Ничего не удалять автоматически; `gc` (VL-301) только предлагает кандидатов на `.gitignore` |

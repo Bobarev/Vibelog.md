@@ -371,13 +371,13 @@ HTTP-эндпоинты карточки: `POST /api/chat/supervisor/grant-draft
 
 ## Референсы (references, VL-152)
 
-Внешние источники знаний: репозитории, URL, файлы, документация, спецификации. Метаданные — `backlog/references/<id>-<title>.md` (в git), клоны репозиториев — `backlog/references/data/` (в .gitignore). Типы: `repo`, `url`, `file`, `doc`, `spec`. Двусторонняя связь с задачами: `reference.linked_tasks` ↔ `task.references` (Plan-фаза читает источники задачи, Code-фаза добавляет новые).
+Внешние источники знаний: репозитории, URL, файлы, документация, спецификации, эксперименты. Метаданные — `backlog/references/<id>-<title>.md` (в git), клоны репозиториев — `backlog/references/data/` (в .gitignore). Типы: `repo`, `url`, `file`, `doc`, `spec`, `experiment` (VL-294 — ссылка на карточку эксперимента `backlog/experiments/exp-<id>.md`). Двусторонняя связь с задачами: `reference.linked_tasks` ↔ `task.references` (Plan-фаза читает источники задачи, Code-фаза добавляет новые).
 
 ### reference_list — список референсов
 
 | Параметр | Тип | Описание |
 |---|---|---|
-| `type` | string | Фильтр по типу (repo / url / file / doc / spec) |
+| `type` | string | Фильтр по типу (repo / url / file / doc / spec / experiment) |
 | `tags` | string[] | Фильтр по меткам |
 
 ### reference_add — создать референс
@@ -385,7 +385,7 @@ HTTP-эндпоинты карточки: `POST /api/chat/supervisor/grant-draft
 | Параметр | Тип | Required | Описание |
 |---|---|---|---|
 | `title` | string | ✓ | Заголовок |
-| `type` | string | ✓ | repo / url / file / doc / spec |
+| `type` | string | ✓ | repo / url / file / doc / spec / experiment |
 | `url` | string | | Первая ссылка источника |
 | `urls` | string[] | | Дополнительные ссылки (VL-291); полный набор = `[url, ...urls]`, порядок = порядок секций кэша |
 | `path` | string | | Локальный путь (относительно backlog/) |
