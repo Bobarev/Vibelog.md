@@ -773,12 +773,20 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         return;
       }
       case 'max-wall-time':
-      case 'max-requests': {
+      case 'max-requests':
+      case 'idle-timeout': {
         // Числовые лимиты (VL-104): 0 — сброс (удаление ключа из settings.json),
-        // иначе — запись; применяются при следующем запуске фазы (агент vb)
+        // иначе — запись; применяются при следующем запуске фазы (агент vb).
+        // VL-274: у idle-timeout 0 — НЕ сброс, а выключение watchdog, поэтому
+        // ветка записывает значение как есть (и 0 тоже).
         const key = parsed.key;
-        const field = key === 'max-wall-time' ? 'max_wall_time' : 'max_requests';
-        if (parsed.value === 0) {
+        const field =
+          key === 'max-wall-time'
+            ? 'max_wall_time'
+            : key === 'max-requests'
+              ? 'max_requests'
+              : 'idle_timeout_seconds';
+        if (key !== 'idle-timeout' && parsed.value === 0) {
           settings[field] = undefined;
           saveBotSettings(deps.cwd, settings);
           await sendMd(
@@ -789,6 +797,15 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         }
         settings[field] = parsed.value;
         saveBotSettings(deps.cwd, settings);
+        if (key === 'idle-timeout') {
+          await sendMd(
+            ctx,
+            parsed.value === 0
+              ? '⚙️ Idle-таймаут *выключен* — фаза прерывается только по wall-time/max-requests.'
+              : `⚙️ Idle-таймаут: *${parsed.value} с* без активности (дефолт 600). Передаётся при запуске фаз (агент vb).`
+          );
+          return;
+        }
         await sendMd(
           ctx,
           `⚙️ Лимит *${key}*: *${parsed.value}*. Передаётся при запуске фаз (агент vb). Сброс: \`/set ${key} 0\`.`

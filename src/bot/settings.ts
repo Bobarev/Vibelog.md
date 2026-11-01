@@ -32,6 +32,12 @@ export interface BotSettings {
   /** Лимит LLM-запросов фазы, ходов модели (VL-104, /set max-requests). */
   max_requests?: number;
   /**
+   * VL-274: idle-таймаут фазы в секундах (/set idle-timeout). `0` — watchdog
+   * выключен, ключ отсутствует — агент берёт дефолт 600 с. В отличие от
+   * прочих числовых настроек 0 здесь НЕ сброс, а явное выключение.
+   */
+  idle_timeout_seconds?: number;
+  /**
    * Режим параллельной разработки (VL-107, /set branch-mode): фазы задач
    * выполняются в git worktree ветки vb/vl-N, backlog — общий в главном репо.
    */
@@ -144,6 +150,18 @@ export function loadBotSettings(cwd: string): BotSettings {
   // агент получит флаг только при валидной настройке
   const maxWallTime = readPositiveInt(raw.max_wall_time);
   const maxRequests = readPositiveInt(raw.max_requests);
+  // VL-274: idle-таймаут читается терпимо, но 0 — валидное значение
+  // («watchdog выключен»), поэтому нужен отдельный неотрицательный ридер.
+  // Битое значение откатывается к дефолту агента (600 с) с предупреждением в
+  // logTail — настройка не должна молча отключать watchdog (AC4).
+  let idleTimeout = readNonNegativeInt(raw.idle_timeout_seconds);
+  if (idleTimeout === undefined && raw.idle_timeout_seconds !== undefined) {
+    console.error(
+      `[vibelog-settings] idle_timeout_seconds: ожидается неотрицательное целое (0 — выключено), ` +
+        `получено ${JSON.stringify(raw.idle_timeout_seconds)} — используется дефолт агента`,
+    );
+    idleTimeout = undefined;
+  }
   // Режим параллельной разработки (VL-107): только строгое true; любое другое
   // значение (false, строка, мусор) → undefined → resolveBranchMode даст false
   const branchMode = raw.branch_mode === true ? true : undefined;
@@ -160,6 +178,8 @@ export function loadBotSettings(cwd: string): BotSettings {
     ...(defaultAgent ? { default_agent: defaultAgent } : {}),
     ...(maxWallTime !== undefined ? { max_wall_time: maxWallTime } : {}),
     ...(maxRequests !== undefined ? { max_requests: maxRequests } : {}),
+    // VL-274: 0 пишется явно (watchdog выключен) — undefined ключ не создаёт
+    ...(idleTimeout !== undefined ? { idle_timeout_seconds: idleTimeout } : {}),
     ...(branchMode !== undefined ? { branch_mode: branchMode } : {}),
     ...(compact !== undefined ? { compact } : {}),
     ...(codeSameSession !== undefined ? { code_same_session: codeSameSession } : {}),
@@ -180,6 +200,19 @@ function readPositiveInt(raw: unknown): number | undefined {
 }
 
 /**
+ * Неотрицательное целое из значения настроек (VL-274); иначе undefined.
+ *
+ * Отличие от readPositiveInt — допускается `0` (idle-таймаут: 0 = watchdog
+ * выключен). null/undefined/'' отсутствующим значением не считаются: `null`
+ * дал бы Number(null) === 0 и молча выключил watchdog — отвергаем явно.
+ */
+function readNonNegativeInt(raw: unknown): number | undefined {
+  if (raw === null || raw === undefined || raw === '') return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : undefined;
+}
+
+/**
  * Сохраняет настройки бота (создаёт .vibelog/ при необходимости).
  *
  * Read-modify-write через saveSettingsPatch: env-секция и git_user_name
@@ -197,6 +230,8 @@ export function saveBotSettings(cwd: string, settings: BotSettings): void {
     default_agent: settings.default_agent,
     max_wall_time: settings.max_wall_time,
     max_requests: settings.max_requests,
+    // VL-274: idle-таймаут пишется и при 0 (явное выключение watchdog)
+    idle_timeout_seconds: settings.idle_timeout_seconds,
     // branch_mode пишем всегда, когда задан (в т.ч. false — /set branch-mode off
     // должен оставить явный ключ в settings.json, а не терять его)
     branch_mode: settings.branch_mode,
@@ -261,6 +296,16 @@ export function resolveMaxWallTime(cwd: string): number | undefined {
  */
 export function resolveMaxRequests(cwd: string): number | undefined {
   return loadBotSettings(cwd).max_requests;
+}
+
+/**
+ * Idle-таймаут фазы из settings.json (VL-274): секунды; `0` — watchdog выключен,
+ * undefined — настройка не задана (оркестратор не передаёт --idle-timeout, агент
+ * берёт дефолт 600 с). Читается перед каждым запуском фазы — /set idle-timeout
+ * не требует перезапуска бота.
+ */
+export function resolveIdleTimeout(cwd: string): number | undefined {
+  return loadBotSettings(cwd).idle_timeout_seconds;
 }
 
 /**

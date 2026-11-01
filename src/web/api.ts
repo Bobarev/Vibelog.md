@@ -739,6 +739,24 @@ function validateSettingsPatch(
         patch[key] = n;
         break;
       }
+      case 'idle_timeout_seconds': {
+        // VL-274: idle-таймаут — неотрицательное целое. Семантика 0 иная,
+        // чем у max_wall_time/max_requests: 0 — не сброс, а явное выключение
+        // watchdog (как HERMES_CRON_TIMEOUT=0 в hermes, ref-10), и пишется в
+        // settings.json. Сброс к дефолту агента (600 с) — только null.
+        if (value === null) {
+          patch.idle_timeout_seconds = undefined;
+          break;
+        }
+        const n = Number(value);
+        if (!Number.isInteger(n) || n < 0) {
+          return {
+            error: `idle_timeout_seconds: ожидается неотрицательное целое (0 — выключено, null — сброс), получено ${JSON.stringify(value)}`,
+          };
+        }
+        patch.idle_timeout_seconds = n;
+        break;
+      }
       case 'branch_mode':
       case 'compact':
       case 'code_same_session':

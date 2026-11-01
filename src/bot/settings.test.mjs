@@ -199,6 +199,41 @@ describe('max_wall_time/max_requests (VL-104)', () => {
   });
 });
 
+describe('idle_timeout_seconds (VL-274)', () => {
+  const idleRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-idle-'));
+
+  afterAll(() => {
+    rmSync(idleRoot, { recursive: true, force: true });
+  });
+
+  it('roundtrip save/load, включая явный 0 (выключенный watchdog)', () => {
+    saveBotSettings(idleRoot, { chats: [111], idle_timeout_seconds: 900 });
+    assert.equal(loadBotSettings(idleRoot).idle_timeout_seconds, 900);
+    saveBotSettings(idleRoot, { chats: [111], idle_timeout_seconds: 0 });
+    assert.equal(loadBotSettings(idleRoot).idle_timeout_seconds, 0, '0 пишется явно — это «выключено»');
+    // Сброс к дефолту агента — только удаление ключа
+    saveBotSettings(idleRoot, { chats: [111] });
+    assert.equal(loadBotSettings(idleRoot).idle_timeout_seconds, undefined);
+  });
+
+  it('битое значение откатывается к дефолту агента (undefined)', () => {
+    const root = join(idleRoot, 'invalid');
+    mkdirSync(join(root, '.vibelog'), { recursive: true });
+    writeFileSync(
+      botSettingsPath(root),
+      JSON.stringify({ chats: [], idle_timeout_seconds: 'abc' }),
+      'utf-8',
+    );
+    assert.equal(loadBotSettings(root).idle_timeout_seconds, undefined);
+  });
+
+  it('resolveIdleTimeout: без файла → undefined, с файлом → значение', () => {
+    assert.equal(resolveIdleTimeout(join(idleRoot, 'nonexistent')), undefined);
+    saveBotSettings(idleRoot, { chats: [], idle_timeout_seconds: 600 });
+    assert.equal(resolveIdleTimeout(idleRoot), 600);
+  });
+});
+
 describe('branch_mode (VL-107)', () => {
   const branchRoot = mkdtempSync(join(tmpdir(), 'vibelog-bot-branch-'));
 

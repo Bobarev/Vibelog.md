@@ -713,9 +713,9 @@ export function startResume(
 }
 
 /**
- * Флаги лимитов фазы из settings.json (VL-104/122): --max-wall-time, --max-requests
- * и --no-compact (компакшн истории выключен через /set compact off), если
- * настройки заданы. Только для агента vb — qwen эти флаги не поддерживает.
+ * Флаги лимитов фазы из settings.json (VL-104/122/274): --max-wall-time, --max-requests,
+ * --idle-timeout и --no-compact (компакшн истории выключен через /set compact off),
+ * если настройки заданы. Только для агента vb — qwen эти флаги не поддерживает.
  * Отсутствие/битый settings.json — пустой массив (норма: настройки не заданы,
  * флаги не передаются, поведение прежнее).
  */
@@ -725,6 +725,10 @@ function spawnLimitFlags(cwd: string): string[] {
     const s = loadBotSettings(cwd);
     if (s.max_wall_time !== undefined) flags.push('--max-wall-time', String(s.max_wall_time));
     if (s.max_requests !== undefined) flags.push('--max-requests', String(s.max_requests));
+    // VL-274: idle-таймаут (0 — явное выключение watchdog: флаг передаём как есть)
+    if (s.idle_timeout_seconds !== undefined) {
+      flags.push('--idle-timeout', String(s.idle_timeout_seconds));
+    }
     // VL-122: компакшн включён по умолчанию — --no-compact только при явном off
     if (s.compact === false) flags.push('--no-compact');
   } catch {
