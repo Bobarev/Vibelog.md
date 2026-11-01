@@ -31,11 +31,16 @@ import {
 import type { ToolSpec } from './tools.js';
 import { truncateToolOutput } from './tools.js';
 import {
+  REPEAT_BLOCK_MAX_PER_RUN,
   REPEAT_READ_LIMIT_DEFAULT,
   REPEAT_SEARCH_LIMIT_DEFAULT,
   REPEAT_SHELL_LIMIT_DEFAULT,
+  REPEAT_WRITE_LIMIT_DEFAULT,
   analyzeToolRepeats,
   createRepeatGuard,
+  repeatBlockDirective,
+  repeatKey,
+  toolRepeatKind,
   type RepeatGuard,
   type RepeatStats,
 } from './repeat-tracker.js';
@@ -101,6 +106,19 @@ export interface LoopLimits {
    * REPEAT_SHELL_LIMIT_DEFAULT).
    */
   repeatShellLimit?: number;
+  /**
+   * VL-284: порог повторов правки одного файла — N-й `edit`/`write_file` по
+   * тому же пути даёт модели предупреждение (дефолт 6,
+   * REPEAT_WRITE_LIMIT_DEFAULT). `0` — выключить порог для write.
+   */
+  repeatWriteLimit?: number;
+  /**
+   * VL-284: множитель порога блокировки для search/read/shell (дефолт 2):
+   * после `repeatBlockMultiplier × порог` вызов не выполняется, модели
+   * уходит tool-результат с директивой «Повтор заблокирован». У write свой
+   * явный порог (REPEAT_WRITE_BLOCK_DEFAULT = 8).
+   */
+  repeatBlockMultiplier?: number;
   /**
    * VL-229: выключить guard повторов (метрика repeat_stats при этом
    * считается: отчёты не страдают).
@@ -174,6 +192,13 @@ export interface LoopResult {
    * корректна для сессии, а не только для текущего рана.
    */
   repeat_stats: RepeatStats;
+  /**
+   * VL-284: сколько вызовов guard повторов заблокировал за ран (эскалация
+   * после `repeatBlockMultiplier × порог`; кап REPEAT_BLOCK_MAX_PER_RUN).
+   * Диагностика для stderr/logTail — видно, что фаза упиралась в зацикливание,
+   * а не просто долго шла.
+   */
+  repeat_blocked?: number;
   /**
    * VL-251: новые сигнатуры, заблокированные loop detection в этом ране
    * (подмножество уже отброшенных + добавленные сейчас). CLI дописывает их
@@ -428,7 +453,16 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           readLimit: options.limits?.repeatReadLimit ?? REPEAT_READ_LIMIT_DEFAULT,
           // VL-254: shell-скелеты — самый частый вид зацикливания (VL-235: 65%)
           shellLimit: options.limits?.repeatShellLimit ?? REPEAT_SHELL_LIMIT_DEFAULT,
+          // VL-284: write-повторы больше не «только в метрике» (инцидент close
+          // VL-280: цикл `edit tools.ts` + `pnpm build` при payload 508 КБ)
+          writeLimit: options.limits?.repeatWriteLimit ?? REPEAT_WRITE_LIMIT_DEFAULT,
+          ...(options.limits?.repeatBlockMultiplier !== undefined
+            ? { blockMultiplier: options.limits.repeatBlockMultiplier }
+            : {}),
         });
+  // VL-284: счётчик заблокированных вызовов за ран — кап блокировок, чтобы
+  // сами директивы не раздували контекст (по образцу REPEAT_WARN_MAX_PER_RUN)
+  let repeatBlockCount = 0;
   // Предупреждения, выданные в текущем ране (кап — REPEAT_WARN_MAX_PER_RUN)
   let repeatWarnCount = 0;
   // Компакшн истории (VL-122): хвост и порог; выключить можно --no-compact
@@ -547,6 +581,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       last_payload_bytes: lastPayload,
       max_payload_bytes: maxPayload,
       repeat_stats: analyzeToolRepeats(messages),
+      ...(repeatBlockCount > 0 ? { repeat_blocked: repeatBlockCount } : {}),
       // VL-251: новые сигнатуры блока — CLI дописывает их в мету сессии,
       // следующий resume блокирует повторы без исполнения (AC5)
       ...(blocked.size > blockedInitial.length
@@ -770,6 +805,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         max_payload_bytes: maxPayload,
         // VL-229 (AC1): метрика по всему транскрипту — включая прошлые раны
         repeat_stats: analyzeToolRepeats(messages),
+      ...(repeatBlockCount > 0 ? { repeat_blocked: repeatBlockCount } : {}),
         // VL-251: блокировки, накопленные в этом ране (успешный финал)
         ...(blocked.size > blockedInitial.length
           ? { blocked_signatures: [...blocked].filter((s) => !blockedInitial.includes(s)) }
@@ -944,8 +980,13 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // провал handler'а тоже был обращением к тому же объекту). Кап
       // REPEAT_WARN_MAX_PER_RUN: без него зацикленный ране раздувал бы
       // контекст самими предупреждениями (риск 4 плана).
+      // VL-284: здесь же — эскалация: после порога блокировки вызов НЕ
+      // выполняется, модели уходит tool-результат с директивой. Порядок
+      // важен: note() инкрементирует счётчик, shouldBlock() его читает.
+      const callArgs = (call.arguments ?? {}) as Record<string, unknown>;
+      let blockDirective: string | null = null;
       if (repeatGuard) {
-        const warning = repeatGuard.note(call.name, (call.arguments ?? {}) as Record<string, unknown>);
+        const warning = repeatGuard.note(call.name, callArgs);
         if (warning) {
           if (repeatWarnCount < REPEAT_WARN_MAX_PER_RUN) {
             repeatWarnCount++;
@@ -953,6 +994,22 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           }
           // Диагностика в точке срабатывания → logTail оркестратора (lesson-77)
           console.error(`[vibelog-agent] повтор обращения: ${warning}`);
+        }
+        // VL-284: кап REPEAT_BLOCK_MAX_PER_RUN — зацикленный ран не должен
+        // раздувать контекст самими директивами (симметрично капу warning'ов)
+        if (repeatBlockCount < REPEAT_BLOCK_MAX_PER_RUN && repeatGuard.shouldBlock(call.name, callArgs)) {
+          repeatBlockCount++;
+          repeatGuard.noteBlocked();
+          const blockKey = repeatKey(call.name, callArgs);
+          const blockKind = toolRepeatKind(call.name);
+          if (blockKey !== null && blockKind !== null) {
+            blockDirective = repeatBlockDirective(
+              blockKey,
+              repeatGuard.countOf(call.name, callArgs),
+              blockKind,
+            );
+            console.error(`[vibelog-agent] повтор заблокирован: ${blockKey}`);
+          }
         }
       }
 
@@ -963,7 +1020,12 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // легитимный tool (`pnpm test` 20+ мин без вывода) не зависание;
       // зависший инструмент ловят его собственные таймауты и wall-time фазы.
       idleGuard.pause();
-      if (!spec) {
+      if (blockDirective !== null) {
+        // VL-284: блокировка — это tool-результат, а НЕ пропуск вызова:
+        // парность assistant(tool_calls)↔tool обязательна, иначе провайдер
+        // отклонит payload (риск 1 плана).
+        output = blockDirective;
+      } else if (!spec) {
         toolError = true;
         output = `Неизвестный инструмент: ${call.name}`;
       } else {

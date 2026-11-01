@@ -138,6 +138,16 @@ export interface SupervisorRuntime {
  */
 export const DEFAULT_HEAL_RULES: HealRule[] = [
   {
+    // VL-284: раньше repeat-loop (comment_and_retry) перезапускал действительно
+    // зацикленный ран, и повтор детерминированно воспроизводил тот же
+    // payload-лимит (инцидент close VL-280: 5 попыток, payload 508 КБ). Порог
+    // выше и действие жёстче: если повторов много, лечение рестартом уже
+    // бесполезно — нужен разбор человеком/моделью в авто-баге.
+    id: 'repeat-loop-stuck',
+    when: { repeat_share_min: 0.3, repeat_calls_min: 15 },
+    action: 'bug',
+  },
+  {
     id: 'repeat-loop',
     when: { repeat_share_min: 0.25, repeat_calls_min: 8 },
     action: 'comment_and_retry',

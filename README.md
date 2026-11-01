@@ -85,10 +85,22 @@ vibelog browser --host 0.0.0.0
 
 - 3-е обращение к тому же `grep_search`/`glob` с тем же `pattern`;
 - 5-е чтение того же файла (`read_file`, любой `offset`/`limit`);
-- `edit`/`write_file` только считаются — повторная правка легитимна.
+- 6-е `edit`/`write_file` по тому же пути (VL-284: инцидент close, где
+  `edit src/mcp/tools.ts` в цикле с `pnpm build` довёл payload до 508 КБ).
+
+**Эскалация до блокировки (VL-284).** Предупреждения модель на длинном ране
+игнорирует, поэтому после порога блокировки вызов **не выполняется**: модели
+уходит tool-результат с маркером «Повтор заблокирован: <ключ> — N обращений за
+ран» и следующим шагом. Порог блокировки — `repeatBlockMultiplier` (дефолт 2)
+от порога предупреждения для search/read/shell и явные 8 правок для
+`edit`/`write_file`; блокировок не больше `REPEAT_BLOCK_MAX_PER_RUN` (5) за ран,
+чтобы сами директивы не раздували контекст. Парность `assistant(tool_calls) ↔
+tool` сохраняется — блокировка приходит tool-результатом, а не пропуском
+вызова. Число блокировок печатается в stderr-диагностике (`блокировок=N`).
 
 Пороги настраиваются программно (`LoopLimits.repeatSearchLimit` /
-`repeatReadLimit`), guard отключается `repeatGuardDisabled`; CLI-флагов нет.
+`repeatReadLimit` / `repeatWriteLimit` / `repeatBlockMultiplier`), guard
+отключается `repeatGuardDisabled`; CLI-флагов нет.
 Текст предупреждения: «Ты уже обращался к … N раз — используй ранее
 полученный результат…»; максимум 15 предупреждений за ран.
 
@@ -611,6 +623,8 @@ gate** (изменилось ли что-то?) → вызвать модель 
 ```json
 {
   "heal_rules": [
+    { "id": "repeat-loop-stuck", "when": { "repeat_share_min": 0.3, "repeat_calls_min": 15 },
+      "action": "bug" },
     { "id": "repeat-loop", "when": { "repeat_share_min": 0.25, "repeat_calls_min": 8 },
       "action": "comment_and_retry",
       "comment_template": "Ты повторно обращался к тем же путям: {top_repeats}. Следующий шаг — правка, а не чтение." },
@@ -620,6 +634,12 @@ gate** (изменилось ли что-то?) → вызвать модель 
   "default_action": "bug"
 }
 ```
+
+Дефолтный набор (если `settings.json` нет) содержит ещё и `repeat-loop-stuck`
+(VL-284): при действительно сильном зацикливании (`repeat_share_min` 0.3 и
+`repeat_calls_min` 15) рестарт уже бесполезен — повтор детерминированно
+воспроизводит тот же payload-лимит (инцидент close: 5 попыток, 508 КБ), поэтому
+правило стоит раньше `repeat-loop` и сразу создаёт авто-баг.
 
 Подстановки шаблона: `{top_repeats}`, `{fail_reason}`, `{task_id}`, `{attempt}`.
 Директива уходит фазе `comment` перед рестартом. Битое правило выпадает с
