@@ -178,9 +178,44 @@ describe('snapshotKey: wake gate (AC2)', () => {
     assert.notEqual(base, withStats);
     assert.notEqual(base, snapshotKey(state, { 'VL-1': { running: false, status: 'Spec' } }, 'g2'));
   });
+
+  it('VL-275: blockedBy входит в ключ (снятие блокировки будит тик)', () => {
+    const state = makeState();
+    const obs = { 'VL-1': { running: false, status: 'Spec' } };
+    const without = snapshotKey(state, obs, 'g1');
+    state.tasks['VL-1'].blockedBy = ['VL-209'];
+    const withBlocker = snapshotKey(state, obs, 'g1');
+    assert.notEqual(without, withBlocker, 'появление блокировки меняет ключ');
+    // Снятие блокировки возвращает состояние к прежнему ключу — значит тик
+    // увидит изменение и запустит разблокированную задачу (AC4)
+    delete state.tasks['VL-1'].blockedBy;
+    assert.equal(snapshotKey(state, obs, 'g1'), without);
+  });
 });
 
 describe('heartbeat.md и tailLines', () => {
+  it('VL-275: heartbeat перечисляет заблокированные задачи и помечает внешние блокеры', () => {
+    const state = makeState();
+    state.tasks['VL-2'] = {
+      phase: 'plan',
+      status: 'pending',
+      attempt: 0,
+      healAttempts: 0,
+      blockedBy: ['VL-209', 'VL-1'],
+    };
+    const text = writeHeartbeat(cwd, state, { running: true });
+    assert.match(text, /## Заблокированы зависимостями/);
+    assert.match(text, /- VL-2 — ждёт VL-209 \(нет в прогоне\), VL-1/);
+    // Блокеров у VL-1 нет — в секции он не появляется
+    assert.doesNotMatch(text, /- VL-1 —/);
+  });
+
+  it('снятие блокировки убирает секцию блокировок из heartbeat', () => {
+    const state = makeState();
+    const text = writeHeartbeat(cwd, state, { running: true });
+    assert.doesNotMatch(text, /## Заблокированы зависимостями/);
+  });
+
   it('heartbeat содержит прогон, таблицу задач, прошлое решение и обоснование групп', () => {
     const state = makeState();
     const text = writeHeartbeat(cwd, state, {

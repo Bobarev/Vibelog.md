@@ -71,6 +71,18 @@ export interface SupervisorTaskState {
   frozen?: boolean;
   /** Следующая фаза по workflow (заполняет тик, когда фаза завершена). */
   nextPhase?: string;
+  /**
+   * Канонические ID незакрытых зависимостей задачи (VL-275) — «ждёт VL-X».
+   *
+   * Поле заполняет тик, когда у задачи есть блокеры, не находящиеся в
+   * терминальном статусе (внешние или внутри прогона): такая задача НЕ
+   * запускается и НЕ лечится как «нет прогресса» — причина у неё внешняя, и
+   * перезапуск фазы её не устранит (инцидент VL-239: 7 прогонов `code` при
+   * незакрытой VL-209, которой в прогоне не было). Поле входит в snapshotKey:
+   * без этого снятие блокировки не изменило бы снимок состояния и wake gate
+   * не разбудил бы тик для запуска разблокированной задачи.
+   */
+  blockedBy?: string[];
 }
 
 /** Последнее решение прогона (его же показывает heartbeat). */
@@ -173,6 +185,11 @@ export function loadState(cwd: string): SupervisorTickState | null {
         ...(typeof t.statusAtStart === 'string' ? { statusAtStart: t.statusAtStart } : {}),
         ...(t.frozen === true ? { frozen: true } : {}),
         ...(typeof t.nextPhase === 'string' ? { nextPhase: t.nextPhase } : {}),
+        // blockedBy (VL-275): не-строки/пустой массив отбрасываем — битое
+        // поле не должно оживлять ложную блокировку после рестарта процесса
+        ...(Array.isArray(t.blockedBy) && t.blockedBy.length > 0
+          ? { blockedBy: t.blockedBy.filter((x): x is string => typeof x === 'string' && x !== '') }
+          : {}),
       };
     }
   }
@@ -303,6 +320,10 @@ export function snapshotKey(
         phaseAlive(state, id) ? 'alive' : 'dead',
         obs ? `${obs.status}/${obs.nextPhase ?? ''}/${obs.running ? 'run' : 'idle'}` : 'gone',
         obs?.repeatStats ? `${obs.repeatStats.repeat_calls}/${obs.repeatStats.tool_calls_total}` : '',
+        // blockedBy (VL-275): снятие блокировки меняет ТОЛЬКО статус блокера,
+        // у самой задачи ничего не меняется — без этого элемента wake gate
+        // счёл бы состояние неизменным и не запустил разблокированную задачу
+        t.blockedBy !== undefined && t.blockedBy.length > 0 ? t.blockedBy.join(',') : '',
       ].join('|'),
     );
   }
@@ -373,6 +394,22 @@ export function writeHeartbeat(
     );
   }
   lines.push('');
+
+  // Заблокированные зависимости (VL-275): отдельная секция, а не колонка —
+  // список блокеров переменной длины, а таблицу задач читают и человек, и
+  // модель (формат таблицы менять нельзя, на него опираются тесты).
+  const blocked = ids.filter(id => (state.tasks[id]?.blockedBy?.length ?? 0) > 0);
+  if (blocked.length > 0) {
+    lines.push('## Заблокированы зависимостями');
+    lines.push('');
+    for (const id of blocked) {
+      const t = state.tasks[id]!;
+      const inRun = new Set(Object.keys(state.tasks));
+      const blockers = (t.blockedBy ?? []).map(b => (inRun.has(b) ? b : `${b} (нет в прогоне)`));
+      lines.push(`- ${id} — ждёт ${blockers.join(', ')}`);
+    }
+    lines.push('');
+  }
 
   const decision = state.lastDecision;
   lines.push('## Прошлое решение');
