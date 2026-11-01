@@ -49,8 +49,9 @@ afterAll(() => {
 // ── Типы и сериализация ──
 
 describe('VL-152 — типы и сериализация', () => {
-  it('REFERENCE_TYPES: repo, url, file, doc, spec', () => {
-    assert.deepEqual(REFERENCE_TYPES, ['repo', 'url', 'file', 'doc', 'spec']);
+  it('REFERENCE_TYPES: repo, url, file, doc, spec, experiment', () => {
+    // VL-294: добавлен тип experiment — ссылка на карточку эксперимента
+    assert.deepEqual(REFERENCE_TYPES, ['repo', 'url', 'file', 'doc', 'spec', 'experiment']);
   });
 
   it('normalizeReferenceType: case-insensitive, ошибка для мусора', () => {

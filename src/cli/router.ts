@@ -41,6 +41,7 @@ import { runAgent } from './commands/agent.js';
 import { runSession } from './commands/session.js';
 import { runReference } from './commands/reference.js';
 import { runLesson } from './commands/lesson.js';
+import { runExperiment } from './commands/experiment.js';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -112,6 +113,9 @@ export async function route(args: string[]): Promise<void> {
       return runReference(subcommand, positional, flags, cwd);
     case 'lesson':
       return runLesson(subcommand, positional, flags, cwd);
+    // VL-294: каркас экспериментов (A/B) — create/list
+    case 'experiment':
+      return runExperiment(subcommand, positional, flags, cwd);
     case 'config':
       return runConfig(subcommand, positional, flags, cwd);
     case 'model':
@@ -151,8 +155,9 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('mcp', colors.cyan)} start                        MCP-сервер (JSON-RPC)
   ${colorize('milestone', colors.cyan)} add|list|rename|...      Управление вехами
   ${colorize('doc', colors.cyan)} create|list|...          Документы (spec/guide)
-  ${colorize('reference', colors.cyan)} list|add|...          Референсы (repo/url/file/doc/spec)
+  ${colorize('reference', colors.cyan)} list|add|...          Референсы (repo/url/file/doc/spec/experiment)
   ${colorize('lesson', colors.cyan)} list|create|...         Уроки из задач (lessons learned)
+  ${colorize('experiment', colors.cyan)} create|list            Эксперименты (A/B): карточки backlog/experiments/
   ${colorize('config', colors.cyan)} get|set|list             Конфиг проекта
   ${colorize('model', colors.cyan)} list|use|current          LLM-модели: список, переключение
   ${colorize('provider', colors.cyan)} list                   LLM-провайдеры (base_url, ключ)

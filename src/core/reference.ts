@@ -2,7 +2,7 @@
  * Модель references (VL-152) — метаданные о внешних источниках знаний.
  *
  * Reference — markdown-файл с YAML-фронтматтером в backlog/references/.
- * Поля: id (ref-N), title, type (repo/url/file/doc/spec), url?, path?,
+ * Поля: id (ref-N), title, type (repo/url/file/doc/spec/experiment), url?, path?,
  * tags[], created_date, linked_tasks[]. Тело — markdown-описание (rawContent).
  *
  * Расширение формата Vibelog.md: Backlog.md не знает про references и
@@ -24,8 +24,9 @@ import { parseFrontmatter, serializeFrontmatter } from './frontmatter.js';
 import { findBacklogDir, referencesDir, referencesDataDir, referencesCacheDir } from './paths.js';
 import { getTask, updateTaskFile } from './store.js';
 
-/** Типы референсов. */
-export const REFERENCE_TYPES = ['repo', 'url', 'file', 'doc', 'spec'];
+/** Типы референсов. `experiment` (VL-294) позволяет ссылаться на карточку
+ * эксперимента backlog/experiments/exp-<id>.md без изменения схемы lesson. */
+export const REFERENCE_TYPES = ['repo', 'url', 'file', 'doc', 'spec', 'experiment'];
 
 /** Объект reference (метаданные; тело — отдельно в ReferenceEntry). */
 export interface Reference {

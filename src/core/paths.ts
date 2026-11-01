@@ -160,6 +160,51 @@ export function lessonsDir(backlogDir: string): string {
 }
 
 /**
+ * Возвращает путь к директории экспериментов (VL-294).
+ *
+ * Эксперименты — артефакт проекта в git (как docs/, lessons/, references/):
+ * карточки `exp-<id>.md`, общие датасеты `datasets/`, общие промпты `prompts/`
+ * и каталоги прогонов `exp-<id>/run-<N>/`. Backlog.md про каталог не знает
+ * (расширение формата Vibelog.md, round-trip задач не затрагивается).
+ */
+export function experimentsDir(backlogDir: string): string {
+  return join(backlogDir, 'experiments');
+}
+
+/**
+ * Возвращает путь к каталогу ОБЩИХ датасетов экспериментов (VL-294).
+ *
+ * `backlog/experiments/datasets/` — переиспользуемые JSONL-датасеты;
+ * частный датасет конкретного эксперимента лежит в
+ * `exp-<id>/datasets/` и переопределяет общий (резолв — VL-296).
+ */
+export function experimentsDatasetsDir(backlogDir: string): string {
+  return join(experimentsDir(backlogDir), 'datasets');
+}
+
+/**
+ * Возвращает путь к каталогу ОБЩИХ промптов экспериментов (VL-294).
+ *
+ * `backlog/experiments/prompts/` — шаблоны вариантов; частный промпт
+ * `exp-<id>/prompts/` переопределяет общий (резолв — VL-296).
+ */
+export function experimentsPromptsDir(backlogDir: string): string {
+  return join(experimentsDir(backlogDir), 'prompts');
+}
+
+/**
+ * Возвращает путь к каталогу прогонов эксперимента (VL-294).
+ *
+ * Внутри — `run-<N>/` (meta.json, results.jsonl, report.md). Каталога может
+ * не быть: эксперимент без прогонов — нормальное состояние (status: draft).
+ *
+ * @param expId — id эксперимента (exp-N)
+ */
+export function experimentRunsDir(backlogDir: string, expId: string): string {
+  return join(experimentsDir(backlogDir), expId);
+}
+
+/**
  * Возвращает путь к файлу конфига.
  *
  * Приоритет:

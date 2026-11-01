@@ -496,7 +496,7 @@ export function listTools(): ToolDefinition[] {
       inputSchema: {
         type: 'object',
         properties: {
-          type: { type: 'string', enum: REFERENCE_TYPES, description: 'Фильтр по типу (repo/url/file/doc/spec)' },
+          type: { type: 'string', enum: REFERENCE_TYPES, description: 'Фильтр по типу (repo/url/file/doc/spec/experiment)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Фильтр по меткам (все указанные должны совпасть)' },
         },
       },
@@ -508,7 +508,7 @@ export function listTools(): ToolDefinition[] {
         type: 'object',
         properties: {
           title: { type: 'string', description: 'Заголовок reference' },
-          type: { type: 'string', enum: REFERENCE_TYPES, description: 'Тип: repo/url/file/doc/spec' },
+          type: { type: 'string', enum: REFERENCE_TYPES, description: 'Тип: repo/url/file/doc/spec/experiment' },
           url: { type: 'string', description: 'URL (для repo/url); повторяемые ссылки — в urls' },
           urls: { type: 'array', items: { type: 'string' }, description: 'Дополнительные URL: кэш склеивается секциями в порядке ссылок (url + urls). Ошибка одной ссылки не ломает остальные — её секция помечается в md, результат = частичный успех' },
           path: { type: 'string', description: 'Путь (для file/doc/spec; для repo — каталог клона относительно data/)' },
