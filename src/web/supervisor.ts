@@ -22,7 +22,7 @@ import { loadSettings } from '../core/settings.js';
 import { getNextPhase, getWorkflowForTask } from '../core/workflow.js';
 import { resolveSupervisorRuntime } from '../core/supervisor-config.js';
 import type { ParallelMode } from '../core/supervisor-config.js';
-import { makePhaseRunId } from './supervisor-tick.js';
+import { makePhaseRunId, startSupervisorTimer, stopSupervisorTimer } from './supervisor-tick.js';
 import { loadState, saveState } from '../core/supervisor-state.js';
 import type { SupervisorTickState } from '../core/supervisor-state.js';
 import {
@@ -139,6 +139,16 @@ const PRIORITY_ORDER: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
 /** Терминальный ли статус (прогон по задаче закончен). */
 function isTerminal(status: string): boolean {
   return TERMINAL_STATUSES.includes(status.toLowerCase());
+}
+
+/**
+ * Гасит таймер тика, если после отзыва grant'а активных прогонов не осталось.
+ *
+ * Слепой `stopSupervisorTimer()` здесь был бы ошибкой: в проекте может идти
+ * второй прогон (другой grant), и его таймер должен продолжать считать.
+ */
+function stopTimerIfNoActiveGrant(cwd: string): void {
+  if (findActiveGrant(cwd) === null) stopSupervisorTimer();
 }
 
 /**
@@ -548,6 +558,9 @@ export function startSupervisorRun(
   if (record.started.length === 0) {
     revokeGrant(cwd, plan.runId, 'ни одна фаза не запустилась');
     saveRunRecord(cwd, { ...record, finishedAt: new Date().toISOString() });
+    // VL-272: неуспешный старт не оставляет работающий таймер — грант отозван,
+    // наблюдать нечего (AC5). Если есть другой активный прогон, его таймер живёт.
+    stopTimerIfNoActiveGrant(cwd);
     return {
       ok: false,
       runId: plan.runId,
@@ -555,6 +568,18 @@ export function startSupervisorRun(
       failed,
       message: `Прогон ${plan.runId} не запущен: ${failed.map(f => `${f.id} — ${f.reason}`).join('; ')}`,
     };
+  }
+
+  // VL-272: таймер тика поднимается ЗДЕСЬ, а не только при старте сервера:
+  // сервер обычно уже работает, когда пользователь подтверждает grant, поэтому
+  // единственная серверная точка старта оставляла прогон без лечения и
+  // планирования волн. Вызов идемпотентен (внутри guard tickTimer !== null) —
+  // повторный start второй интервал не создаст (AC4).
+  try {
+    startSupervisorTimer(cwd);
+  } catch (err) {
+    // Прогон уже запущен — ошибка таймера не отменяет его, но должна быть видна
+    console.error(`[supervisor] таймер не запущен: ${(err as Error).message}`);
   }
 
   return {
@@ -590,6 +615,9 @@ export function stopSupervisorRun(cwd: string, runId?: unknown): { ok: boolean; 
   if (!revoked && !record) {
     return { ok: false, message: `Прогон ${effectiveRunId} не найден.` };
   }
+  // VL-272: грант отозван — прогон больше не наблюдается, таймер снимаем
+  // (если других активных прогонов нет) — AC2.
+  stopTimerIfNoActiveGrant(cwd);
   return {
     ok: true,
     runId: effectiveRunId,
@@ -664,6 +692,9 @@ export function supervisorRunStatus(cwd: string, now: Date = new Date()): Superv
     const rec = loadRunRecord(cwd, grant.runId);
     if (rec && !rec.finishedAt) saveRunRecord(cwd, { ...rec, finishedAt: now.toISOString() });
     autoRevoked = true;
+    // VL-272: авто-отзыв (все задачи терминальны) — прогон закончен, таймер
+    // снимаем: иначе он продолжил бы считать по завершённому прогону (AC2).
+    stopTimerIfNoActiveGrant(cwd);
   }
 
   const activeAfter = grant ? isGrantActive(grant, now) && !autoRevoked : false;

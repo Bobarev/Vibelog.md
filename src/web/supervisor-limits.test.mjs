@@ -26,6 +26,7 @@ import {
   startSupervisorTimer,
   stopSupervisorTimer,
 } from '../../dist/web/supervisor-tick.js';
+import { startWebServer } from '../../dist/web/server.js';
 
 const cwd = mkdtempSync(join(tmpdir(), 'vibelog-supervisor-limits-'));
 
@@ -163,5 +164,39 @@ describe('таймер тика (AC1)', () => {
     process.env.VIBELOG_SUPERVISOR_TICK = 'off';
     assert.equal(startSupervisorTimer(cwd, { intervalMs: 3_600_000 }), false);
     assert.equal(isSupervisorTimerRunning(), false);
+  });
+
+  // VL-272, AC4: выдача grant'а может прийти из startSupervisorRun, а таймер
+  // там поднимается повторно относительно возможного серверного вызова —
+  // второй интервал не должен создаваться.
+  it('AC4: повторный startSupervisorTimer не дублирует интервал', () => {
+    const task = createTaskFile(cwd, { title: 'Идемпотентность', status: 'Spec' });
+    writeGrant(cwd, {
+      runId: 'run-timer-idempotent',
+      taskIds: [task.id],
+      allowedTools: ['backlog_trigger_phase'],
+      grantedAt: '2026-11-01T10:00:00.000Z',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    assert.equal(startSupervisorTimer(cwd, { intervalMs: 3_600_000 }), true);
+    assert.equal(startSupervisorTimer(cwd, { intervalMs: 3_600_000 }), true, 'повторный вызов безопасен');
+    assert.equal(isSupervisorTimerRunning(), true);
+    // один stopSupervisorTimer снимает таймер целиком: второго интервала не осталось
+    stopSupervisorTimer();
+    assert.equal(isSupervisorTimerRunning(), false);
+    assert.equal(startSupervisorTimer(cwd, { intervalMs: 3_600_000 }), true, 'после stop таймер заводится заново');
+    stopSupervisorTimer();
+  });
+
+  // VL-272, AC7: старт сервера без grant'а — таймера нет (поведение VL-270 не сломано)
+  it('AC7: startWebServer без активного grant не поднимает таймер', async () => {
+    const server = startWebServer(cwd, 0, false, join(cwd, 'no-dist'));
+    try {
+      await new Promise(resolve => server.on('listening', resolve));
+      assert.equal(isSupervisorTimerRunning(), false, 'нет прогона — наблюдать нечего');
+    } finally {
+      await new Promise(resolve => server.close(resolve));
+      assert.equal(isSupervisorTimerRunning(), false, 'server.close гасит таймер');
+    }
   });
 });

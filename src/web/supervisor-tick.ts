@@ -1535,6 +1535,13 @@ let ticking = false;
  * (иначе `server.close()` в тестах вешал бы воркер). Флаг `ticking` не даёт
  * тикам накладываться, если предыдущий ещё считает.
  *
+ * Точки вызова (VL-272): старт сервера, когда grant уже лежит на диске
+ * (`src/web/server.ts`), и выдача grant'а в `startSupervisorRun`
+ * (`src/web/supervisor.ts`) — сервер к этому моменту обычно запущен раньше
+ * grant'а, поэтому одной серверной точки мало. Гасится `stopSupervisorTimer`
+ * (stop прогона, авто-отзыв grant'а, `server.close`/`server.on('error')`)
+ * либо собственным self-stop'ом, когда тик увидел отсутствие/истечение grant'а.
+ *
  * @returns true — таймер поставлен (grant активен); false — не заведён
  */
 export function startSupervisorTimer(cwd: string, opts: { llm?: TickLlm | null; intervalMs?: number } = {}): boolean {
@@ -1549,6 +1556,14 @@ export function startSupervisorTimer(cwd: string, opts: { llm?: TickLlm | null; 
     ticking = true;
     const deps: TickDeps = 'llm' in opts ? { ...(opts.llm !== undefined ? { llm: opts.llm } : {}) } : {};
     void runSupervisorTick(cwd, deps)
+      .then(res => {
+        // VL-272: grant истёк или отозван — интервалу больше нечего наблюдать
+        // (модель и так не вызывается, skipped='no-grant'), а новый grant
+        // поднимет таймер заново из startSupervisorRun. Без этого само-стопа
+        // истечение expiresAt заметить некому: тик «молотил» бы до конца
+        // процесса, а heartbeat выглядел бы живым при мёртвом прогоне.
+        if (res.skipped === 'no-grant') stopSupervisorTimer();
+      })
       .catch(err => {
         console.error(`[supervisor] тик упал: ${(err as Error).message}`);
       })
