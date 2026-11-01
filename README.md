@@ -56,6 +56,7 @@ vibelog browser
 | [Агент Vibelog](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md) | LLM-агент: TUI, headless-фазы, лимиты и guard повторов, модели и провайдеры, учёт токенов |
 | [Супервизор](backlog/docs/doc-19-Роль-Супервизор-автозапуск-и-лечение-фаз-из-чата-спецификация.md) | Роль «Супервизор»: тик-цикл, лечение фаз, grant на прогон, шаблоны лечения, планировщик |
 | [Best practices](backlog/docs/doc-9-Best-practices-и-производительность-Vibelogmd.md) | Workflow с Qwen Code, dogfooding, производительность |
+| [Поддержка lessons](backlog/docs/doc-20-Lessons-как-поддерживать-корпус-в-актуальном-состоянии-аудит-supersede-outdated-workaround.md) | Аудит корпуса, `needs-review`, `supersede`/`outdated`, техдолг из workaround'ов |
 | [MCP-подключение](MCP-SETUP.md) | Подключение Vibelog MCP к Qwen Code |
 
 ## Contributing
