@@ -16,9 +16,15 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getTask } from '../core/store.js';
+import type { Task } from '../core/task.js';
 import { blockedBy, isReady } from '../core/deps.js';
 import { loadSettings } from '../core/settings.js';
 import { getNextPhase, getWorkflowForTask } from '../core/workflow.js';
+import { resolveSupervisorRuntime } from '../core/supervisor-config.js';
+import type { ParallelMode } from '../core/supervisor-config.js';
+import { makePhaseRunId } from './supervisor-tick.js';
+import { loadState, saveState } from '../core/supervisor-state.js';
+import type { SupervisorTickState } from '../core/supervisor-state.js';
 import {
   GRANTABLE_TOOLS,
   SUPERVISOR_DIR,
@@ -37,10 +43,13 @@ import {
 import type { SupervisorGrant } from './supervisor-grant.js';
 import { getRun, startTaskPhase } from './orchestrator.js';
 
-/** Значения лимитов прогона по умолчанию (секция `supervisor` настроек). */
-export const DEFAULT_MAX_PARALLEL_PHASES = 2;
-/** Верхняя граница параллельности: больше 8 фаз одновременно не проверяемо. */
-export const MAX_PARALLEL_PHASES_CEILING = 8;
+/**
+ * Значения лимитов прогона — реэкспорт из core (VL-270, lesson-37: дефолты
+ * живут в одном месте). Раньше здесь было 2, doc-19 §7 требует 3; тик и
+ * лимит параллельности читают ОДНУ константу, иначе план прогона и тик
+ * разошлись бы по значению.
+ */
+export { DEFAULT_MAX_PARALLEL_PHASES, MAX_PARALLEL_PHASES_CEILING } from '../core/supervisor-config.js';
 
 /** Терминальные статусы задачи: прогон по ним закончен. */
 const TERMINAL_STATUSES = ['done', 'rejected', 'completed'];
@@ -58,29 +67,21 @@ export interface SupervisorSettings {
 /**
  * Читает секцию `supervisor` настроек терпимо: битые значения не роняют чат и
  * не отключают дефолты, а попадают в `errors`.
+ *
+ * VL-270: чтение `max_parallel_phases` делегировано в `resolveSupervisorRuntime`
+ * (core/supervisor-config.ts) — тик и план прогона обязаны видеть одно и то же
+ * значение (lesson-37). Здесь остаётся только специфичный для прогона TTL
+ * grant'а, которого у тика нет.
  */
 export function loadSupervisorSettings(cwd: string): SupervisorSettings {
-  const errors: string[] = [];
-  const raw = loadSettings(cwd).supervisor;
-  let maxParallelPhases = DEFAULT_MAX_PARALLEL_PHASES;
+  const runtime = resolveSupervisorRuntime(cwd);
+  const errors = runtime.errors.slice();
   let defaultTtlHours = 8;
-  if (raw === undefined) return { maxParallelPhases, defaultTtlHours, errors };
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-    errors.push('settings.json: секция supervisor должна быть объектом');
-    return { maxParallelPhases, defaultTtlHours, errors };
-  }
-  const section = raw as Record<string, unknown>;
-  const mp = section.max_parallel_phases;
-  if (mp !== undefined) {
-    if (typeof mp === 'number' && Number.isInteger(mp) && mp >= 1 && mp <= MAX_PARALLEL_PHASES_CEILING) {
-      maxParallelPhases = mp;
-    } else {
-      errors.push(
-        `settings.json: supervisor.max_parallel_phases должен быть целым 1..${MAX_PARALLEL_PHASES_CEILING}`,
-      );
-    }
-  }
-  const ttl = section.default_ttl_hours;
+  const ttl = ((): unknown => {
+    const raw = loadSettings(cwd).supervisor;
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    return (raw as Record<string, unknown>).default_ttl_hours;
+  })();
   if (ttl !== undefined) {
     if (typeof ttl === 'number' && Number.isFinite(ttl) && ttl > 0 && ttl <= 336) {
       defaultTtlHours = ttl;
@@ -88,7 +89,7 @@ export function loadSupervisorSettings(cwd: string): SupervisorSettings {
       errors.push('settings.json: supervisor.default_ttl_hours должен быть числом 0..336');
     }
   }
-  return { maxParallelPhases, defaultTtlHours, errors };
+  return { maxParallelPhases: runtime.maxParallelPhases, defaultTtlHours, errors };
 }
 
 /** Задача в плане прогона: что с ней сделают и почему. */
@@ -120,6 +121,14 @@ export interface SupervisorPlan {
   /** Волны параллельности (в каждой — до maxParallelPhases задач). */
   groups: string[][];
   rationale: string;
+  /**
+   * VL-270: обоснование групп (по одной строке на группу). В conservative это
+   * результат планировщика, в aggressive — пометка «без обоснования»; строки
+   * попадают в heartbeat.md прогона (doc-19 §14, AC12).
+   */
+  groupsRationale: string[];
+  /** Режим группировки на момент плана (conservative/aggressive). */
+  parallelMode: ParallelMode;
   skipped: SupervisorPlanSkipped[];
   maxParallelPhases: number;
 }
@@ -253,15 +262,69 @@ export function buildSupervisorPlan(cwd: string, ids: unknown, now: Date = new D
   }
 
   const runId = makeRunId(now);
+  const parallelMode = resolveSupervisorRuntime(cwd).parallelMode;
   return {
     runId,
     taskIds: order.map(i => i.id),
     order,
     groups,
     rationale: buildRationale(order, groups, skipped, settings.maxParallelPhases),
+    groupsRationale: planGroupNotes(cwd, groups, order, parallelMode, settings.maxParallelPhases),
+    parallelMode,
     skipped,
     maxParallelPhases: settings.maxParallelPhases,
   };
+}
+
+/**
+ * Обоснование групп волнового плана (VL-270).
+ *
+ * Волны считаются по зависимостям внутри набора, поэтому две задачи с
+ * `dependencies`/`blocks` в одну волну попасть не могут ПО ПОСТРОЕНИЮ — это и
+ * есть жёсткий запрет параллели (AC12). Метка-предупреждение о зависимостях
+ * ставится, если в волне всё же оказалась связанная пара (цикл зависимостей —
+ * `computeWave` не зацикливается, но пара возможна).
+ */
+function planGroupNotes(
+  cwd: string,
+  groups: string[][],
+  order: SupervisorPlanItem[],
+  mode: ParallelMode,
+  maxParallelPhases: number,
+): string[] {
+  const notes: string[] = [];
+  groups.forEach((group, index) => {
+    const parts: string[] = [];
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        const a = getTask(cwd, group[i]!);
+        const b = getTask(cwd, group[j]!);
+        if (a && b && hasDependencyTiePublic(cwd, a, b)) {
+          parts.push(`внимание: ${a.id} и ${b.id} связаны зависимостью — волна построена по циклу зависимостей`);
+        }
+      }
+    }
+    const maxInWave = Math.min(maxParallelPhases, group.length);
+    notes.push(
+      `Волна ${index + 1} (режим ${mode}): ${group.join(', ')} — ` +
+        (mode === 'conservative'
+          ? 'conservative: обоснование — волна построена по зависимостям набора, задачи внутри волны независимы'
+          : 'aggressive: без обоснования') +
+        `, максимум ${maxInWave} фаз одновременно` +
+        (index === 0 ? ', зависимостей внутри набора нет' : `, ждут завершения волны ${index}`) +
+        (parts.length > 0 ? `; ${parts.join('; ')}` : ''),
+    );
+  });
+  void order;
+  return notes;
+}
+
+/** Связь задач по зависимостям в любую сторону (обёртка для плана). */
+function hasDependencyTiePublic(cwd: string, a: Task, b: Task): boolean {
+  const canon = (x: string): string => x.toUpperCase();
+  const aBlocksB = blockedBy(cwd, b).some(t => canon(t.id) === canon(a.id));
+  const bBlocksA = blockedBy(cwd, a).some(t => canon(t.id) === canon(b.id));
+  return aBlocksB || bBlocksA;
 }
 
 /** Текст обоснования плана (показывается в чате и в MCP-ответе). */
@@ -411,6 +474,7 @@ export function startSupervisorRun(
   if (tools.length === 0) {
     return { ok: false, message: 'Не выбран ни один инструмент для развязывания — прогон не имеет смысла.' };
   }
+  const runtime = resolveSupervisorRuntime(cwd);
   const grant: SupervisorGrant = {
     runId: plan.runId,
     taskIds: plan.taskIds,
@@ -427,6 +491,21 @@ export function startSupervisorRun(
     started: [],
   };
   saveRunRecord(cwd, record);
+
+  // VL-270: прогон стартует с ЧИСТОГО state.json — тик читает его как источник
+  // истины о запущенных фазах. Живость фазы определяется по pid + phaseRunId,
+  // поэтому запуск обязан сразу записать обоих: иначе первый же тик после
+  // рестарта процесса принял бы живую фазу за зависшую (AC5).
+  const tickState: SupervisorTickState = {
+    runId: plan.runId,
+    mode: runtime.parallelMode,
+    startedAt: grantedAt,
+    updatedAt: grantedAt,
+    tick: 0,
+    lastDecision: { tick: 0, action: 'wait', reason: 'прогон запущен, тик ещё не считал' },
+    tasks: {},
+    tuning: { applied: 0 },
+  };
 
   const firstWave = plan.groups[0] ?? plan.taskIds;
   const toStart = firstWave.slice(0, Math.max(1, plan.maxParallelPhases));
@@ -446,9 +525,25 @@ export function startSupervisorRun(
       continue;
     }
     record.started.push(id);
+    const attempt = 1;
+    tickState.tasks[canonicalTaskId(id)] = {
+      phase: item.phase,
+      status: 'running',
+      phaseRunId: makePhaseRunId(id, item.phase, attempt),
+      pid: res.pid,
+      startedAt: grantedAt,
+      attempt,
+      healAttempts: 0,
+      groupId: 'g1',
+      statusAtStart: item.status,
+      nextPhase: item.phase,
+    };
     if (!firstStarted) firstStarted = { id, phase: item.phase, pid: res.pid };
   }
   saveRunRecord(cwd, record);
+  // Состояние пишется и при частичном успехе: у запущенных задач pid есть,
+  // у остальных их добавит первый тик (они попадут в candidates как pending)
+  if (Object.keys(tickState.tasks).length > 0) saveState(cwd, tickState);
 
   if (record.started.length === 0) {
     revokeGrant(cwd, plan.runId, 'ни одна фаза не запустилась');

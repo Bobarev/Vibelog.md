@@ -23,6 +23,7 @@ import { getAssetsHtml } from './assets.js';
 import { serveStatic } from './static.js';
 import { recoverStalePhaseStatuses } from '../core/phase-transient.js';
 import { DEFAULT_WEB_HOST, lanAddresses, startupLines, startupUrls } from './host-binding.js';
+import { startSupervisorTimer, stopSupervisorTimer } from './supervisor-tick.js';
 
 // Путь к собранному React UI. Вычисляется от расположения этого модуля
 // (dist/web/server.js → ../../web/dist), а не от cwd: команда vibelog browser
@@ -161,6 +162,16 @@ export function startWebServer(
       const cmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
       exec(`${cmd} ${local}`, () => {});
     }
+
+    // VL-270 (doc-19 §5): тик супервизора живёт в процессе vibelog browser.
+    // Таймер заводится только при активном grant'е (без прогона наблюдать
+    // нечего, а лишний LLM-вызов стоит денег) и не держит процесс — unref.
+    // Ошибка старта таймера не должна мешать подъёму доски.
+    try {
+      startSupervisorTimer(cwd);
+    } catch (err) {
+      console.error(`[supervisor] таймер не запущен: ${(err as Error).message}`);
+    }
   });
 
   server.on('error', (err) => {
@@ -170,7 +181,15 @@ export function startWebServer(
     } else {
       console.error(`Ошибка сервера: ${err.message}`);
     }
+    stopSupervisorTimer();
     process.exit(1);
+  });
+
+  // VL-270: сервер закрыли (тест, /web stop) — тик обязан остановиться вместе
+  // с ним: иначе таймер продолжит считать по закрытому проекту, а в тестах
+  // оставит воркеру незавершённую работу.
+  server.on('close', () => {
+    stopSupervisorTimer();
   });
 
   return server;

@@ -103,6 +103,13 @@ export const BUILTIN_PERSONAS: readonly PersonaConfig[] = [
     prompt: 'orchestrator',
     defaultStatus: 'Spec',
   },
+  {
+    id: 'supervisor',
+    label: 'Супервизор',
+    description: 'Ведёт прогон: запускает фазы, лечит зацикливания, заводит баги',
+    prompt: 'supervisor',
+    defaultStatus: 'Spec',
+  },
 ];
 
 /** Путь к встроенному каталогу шаблонов (dist/web/personas.js → ../../templates/prompts/personas/). */

@@ -112,7 +112,7 @@ describe('VL-268 — настройки прогона терпимы к мус�
       supervisor: { max_parallel_phases: 'много', default_ttl_hours: -5 },
     }), 'utf-8');
     const settings = loadSupervisorSettings(testRoot);
-    assert.equal(settings.maxParallelPhases, 2);
+    assert.equal(settings.maxParallelPhases, 3);
     assert.equal(settings.defaultTtlHours, 8);
     assert.equal(settings.errors.length, 2);
     rmSync(join(testRoot, '.vibelog'), { recursive: true, force: true });
@@ -201,6 +201,6 @@ describe('VL-268 — предпросмотр карточки grant', () => {
     const hours = (Date.parse(preview.expiresAt) - Date.parse(preview.grantedAt)) / 3_600_000;
     assert.equal(hours, 2);
     assert.ok(preview.rationale.length > 0);
-    assert.equal(preview.maxParallelPhases, 2);
+    assert.equal(preview.maxParallelPhases, 3);
   });
 });

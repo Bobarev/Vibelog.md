@@ -53,6 +53,7 @@ import {
 } from './personas.js';
 import type { PersonaConfig } from './personas.js';
 import { checkSupervisorGrant } from './supervisor-grant.js';
+import { resolveSupervisorRuntime } from '../core/supervisor-config.js';
 import type { SupervisorGrantPreview } from './supervisor.js';
 import { supervisorGrantPreview } from '../mcp/supervisor.js';
 
@@ -636,6 +637,19 @@ async function produce(
   // в лог сервера, ход продолжается (AC3).
   const { limits, errors: limitsErrors } = resolveChatLimits(cwd);
   if (limitsErrors.length > 0) console.error(formatChatLimitsErrors(limitsErrors));
+
+  // VL-270 (doc-19 §7, AC15): у роли supervisor СВОИ лимиты — 30 итераций и
+  // 600 с вместо 8/120 у остальных ролей. Остальным ролям значения не меняем:
+  // override применяется ТОЛЬКО к активной персоне supervisor, иначе длинный
+  // ход «перетёк» бы в обычный чат против воли пользователя.
+  if (activePersona.id === 'supervisor') {
+    const supervisorRuntime = resolveSupervisorRuntime(cwd);
+    if (supervisorRuntime.errors.length > 0) {
+      console.error(`[supervisor] конфигурация: ${supervisorRuntime.errors.join('; ')}`);
+    }
+    limits.maxIterations = supervisorRuntime.limits.chatMaxIterations;
+    limits.maxWallTimeMs = supervisorRuntime.limits.chatMaxWallTimeMs;
+  }
   /** Компактный снимок лимитов для события truncated (секунды — как в конфиге). */
   const limitsView = {
     maxIterations: limits.maxIterations,
