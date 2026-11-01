@@ -119,6 +119,7 @@ export function extractLessonPaths(body: string): string[] {
     // Обрезки каталогов («src/web/» как упоминание папки) не проверяем на
     // существование файла — только полные пути.
     if (!path.includes('/')) continue;
+    if (path.endsWith('/')) continue;
     // Иллюстративные имена («templates/phases/x.md») — пример, а не факт
     // о репозитории: односимвольное имя файла считаем плейсхолдером.
     const base = path.split('/').pop() || '';

@@ -298,7 +298,7 @@ vibelog lesson <subcommand> [опции]
 Урок эволюционирует вне замороженной задачи: устаревает, заменяется (supersede).
 
 Подкоманды:
-  list [--status active|outdated|superseded] [--tags a,b] [--json]
+  list [--status active|needs-review|outdated|superseded] [--tags a,b] [--json]
   create <title> [--tags ...] [--source-tasks VL-1,VL-2] [-d desc]
   view <id>
   search <query>

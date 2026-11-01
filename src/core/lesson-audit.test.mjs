@@ -46,9 +46,10 @@ beforeAll(() => {
   mkdirSync(completedPath, { recursive: true });
   mkdirSync(lessonsPath, { recursive: true });
   mkdirSync(join(testRoot, 'src', 'core'), { recursive: true });
-  mkdirSync(join(testRoot, 'templates'), { recursive: true });
+  mkdirSync(join(testRoot, 'templates', 'phases'), { recursive: true });
   // Реальный файл, на который ссылается «живой» урок
   writeFileSync(join(testRoot, 'src', 'core', 'lesson.ts'), '// stub\n', 'utf-8');
+  writeFileSync(join(testRoot, 'templates', 'phases', 'phase-code.md'), '# stub\n', 'utf-8');
 
   writeFileSync(join(backlogDir, 'config.yml'), stringifyYaml({
     project_name: 'Test',
@@ -59,7 +60,6 @@ beforeAll(() => {
   }), 'utf-8');
 
   // Открытая задача (не Done) — источник для «живого» урока
-  writeFileSync(join(tasksPath, 'VL-1 - Открытая задача.md'), stringifyYaml({}) + '', 'utf-8');
   writeFileSync(join(tasksPath, 'VL-1 - Открытая задача.md'), [
     '---', 'id: VL-1', 'title: Открытая задача', 'status: In Progress',
     'created_date: 2026-01-01', 'updated_date: 2026-01-01', '---', '', '## Description', '', 'x', '',
@@ -159,8 +159,8 @@ describe('VL-279 — auditLessons: четыре типа находок (AC2–A
   it('фикстура: битый путь, висячий supersedes, дубль, протухший урок', () => {
     // Живой урок: путь существует, задача открыта, дата свежая
     writeLesson('lesson-801', {
-      title: 'Правило про шаблоны промптов',
-      tags: ['templates', 'prompts'],
+      title: 'Живой урок про формат логов фазы',
+      tags: ['logging', 'observability'],
       source_tasks: ['VL-1'],
       linked_tasks: ['VL-1'],
       updated_date: '2026-05-20',

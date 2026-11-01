@@ -594,7 +594,7 @@ export function listTools(): ToolDefinition[] {
       inputSchema: {
         type: 'object',
         properties: {
-          status: { type: 'string', description: 'Фильтр по статусу (active|outdated|superseded)' },
+          status: { type: 'string', description: 'Фильтр по статусу (active|needs-review|outdated|superseded)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Фильтр по меткам (все указанные должны совпасть)' },
         },
       },
@@ -632,12 +632,16 @@ export function listTools(): ToolDefinition[] {
         properties: {
           id: { type: 'string', description: 'ID lesson (lesson-N)' },
           title: { type: 'string', description: 'Новый заголовок (переименовывает файл)' },
-          status: { type: 'string', enum: ['active', 'outdated', 'superseded'], description: 'Статус' },
+          status: { type: 'string', enum: ['active', 'needs-review', 'outdated', 'superseded'], description: 'Статус' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Метки (полная замена)' },
           sourceTasks: { type: 'array', items: { type: 'string' }, description: 'Задачи-источники (полная замена)' },
           linkedTasks: { type: 'array', items: { type: 'string' }, description: 'Задачи, где применялся (полная замена)' },
           supersedes: { type: 'string', description: 'ID заменённого lesson (пустая строка — сброс)' },
           content: { type: 'string', description: 'Тело (markdown, полная замена)' },
+          lastVerified: { type: 'string', description: 'Дата проверки актуальности YYYY-MM-DD (VL-279)' },
+          verifiedBy: { type: 'string', enum: ['auto', 'agent', 'human'], description: 'Кто проверил актуальность (VL-279)' },
+          appliesTo: { type: 'array', items: { type: 'string' }, description: 'Glob-пути/имена символов, проверяемые механически (VL-279)' },
+          kind: { type: 'string', description: 'Тип урока: rule|workaround|fact (пусто — сброс) (VL-279)' },
         },
         required: ['id'],
       },
@@ -2362,6 +2366,11 @@ function toolLessonUpdate(args: ToolArgs, cwd: string): string {
   if (args.sourceTasks !== undefined) updates.source_tasks = args.sourceTasks as string[];
   if (args.linkedTasks !== undefined) updates.linked_tasks = args.linkedTasks as string[];
   if (args.supersedes !== undefined) updates.supersedes = args.supersedes as string;
+  // VL-279: поля аудита (additive)
+  if (args.lastVerified !== undefined) updates.last_verified = args.lastVerified as string;
+  if (args.verifiedBy !== undefined) updates.verified_by = args.verifiedBy as string;
+  if (args.appliesTo !== undefined) updates.applies_to = args.appliesTo as string[];
+  if (args.kind !== undefined) updates.kind = (args.kind as string) || null;
   if (args.content !== undefined) updates.content = args.content as string;
   if (Object.keys(updates).length === 0) {
     throw new Error('Не указаны поля для обновления.');
@@ -2433,15 +2442,25 @@ function toolLessonAudit(args: ToolArgs, cwd: string): string {
     })
     : null;
 
-  return truncateToolOutput(JSON.stringify({
+  // JSON-безопасный кап вывода (lesson-30): сообщения находок (message)
+  // опускаем — они дублируют details и раздувают JSON на сотни байт каждая;
+  // при нехватке места убираем избыточную byLesson (findings её дублируют),
+  // но никогда не режем строку — обрезанный JSON ломает разбор.
+  const compactFindings = report.findings.map(f => ({
+    type: f.type, lessonId: f.lessonId, details: f.details,
+  }));
+  const buildPayload = (includeByLesson: boolean): string => JSON.stringify({
     total: report.total,
     config: report.config,
     summary: report.summary,
-    byLesson: report.byLesson,
-    findings: report.findings,
+    ...(includeByLesson ? { byLesson: report.byLesson } : {}),
+    findings: compactFindings,
     ...(auditPath ? { written_to: auditPath } : {}),
     ...(applied ? { applied } : {}),
-  }, null, 2));
+  }, null, 2);
+
+  const full = buildPayload(true);
+  return full.length <= 20000 ? full : buildPayload(false);
 }
 
 /**

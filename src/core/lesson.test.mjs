@@ -40,8 +40,8 @@ afterAll(() => {
 // ── Типы и сериализация ──
 
 describe('VL-153 — типы и сериализация', () => {
-  it('LESSON_STATUSES: active, outdated, superseded', () => {
-    assert.deepEqual(LESSON_STATUSES, ['active', 'outdated', 'superseded']);
+  it('LESSON_STATUSES: active, needs-review, outdated, superseded', () => {
+    assert.deepEqual(LESSON_STATUSES, ['active', 'needs-review', 'outdated', 'superseded']);
   });
 
   it('normalizeLessonStatus: case-insensitive, ошибка для мусора', () => {
