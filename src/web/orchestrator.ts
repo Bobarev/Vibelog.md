@@ -22,7 +22,7 @@ import { addComment, addTaskTokenUsage, getTask, rejectTaskFile, wasInCode } fro
 // VL-277: файл задачи коммитится после записи token_usage рана (qwen — основной путь close)
 import { commitTaskFile, isTaskCommitPhase } from '../agent/task-commit.js';
 import type { Task } from '../core/task.js';
-import { ensureTaskWorktree, taskBranchName, taskWorktreeDir } from '../core/worktree.js';
+import { ensureTaskWorktree, shouldEnsureWorktree, taskBranchName, taskWorktreeDir } from '../core/worktree.js';
 import { explainQwenParse, parseQwenResult } from './qwen-result.js';
 import type { QwenResult } from './qwen-result.js';
 import {
@@ -912,18 +912,15 @@ function spawnQwenRun(
     };
   }
   if (resolveBranchMode(cwd) && branchTask !== '') {
-    // VL-134: worktree создаётся впервые только на фазе plan (или do —
-    // VL-188: в simple workflow фазы plan нет, первая «кодовая» фаза — do);
-    // для epic — никогда. Остальные фазы (spec/code/comment/resume)
-    // используют worktree ТОЛЬКО если он уже существует (ensure идемпотентен);
-    // иначе — главный cwd.
-    const wtDir = taskWorktreeDir(cwd, branchTask);
-    const wtExists = existsSync(wtDir);
-    const taskType = (getTask(cwd, branchTask)?.type ?? '').toLowerCase();
+    // VL-107/VL-134/VL-188/VL-278: нужно ли worktree — решает ОДИН общий
+    // хелпер core/worktree (тот же, что использует путь создания задачи):
+    // готовый worktree используется всегда, впервые создаётся на фазе plan
+    // (или do — VL-188: в simple workflow фазы plan нет), для epic — никогда.
+    // Дубль условия здесь запрещён — иначе пути «фаза» и «чат» разъедутся.
     // Вход в блок: готовый worktree либо первое создание (plan/do, не epic).
     // Иначе блок пропускается целиком: runCwd = главный cwd, VIBELOG_CWD не
     // задаётся, «Режим параллельной разработки» не добавляется в промпт.
-    if (wtExists || ((phase === 'plan' || phase === 'do') && taskType !== 'epic')) {
+    if (shouldEnsureWorktree(cwd, branchTask, { kind: 'phase', phase })) {
       let runDir: string;
       try {
         runDir = ensureTaskWorktree(cwd, branchTask);

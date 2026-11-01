@@ -22,6 +22,10 @@
 import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { resolveBranchMode } from '../bot/settings.js';
+import { getTask } from './store.js';
+import { getWorkflowForTask } from './workflow.js';
+import type { Task } from './task.js';
 
 /**
  * Кэш ensure в памяти процесса: ключ `cwd\0taskId` → путь worktree.
@@ -187,3 +191,157 @@ export function buildTaskWorktree(cwd: string, taskId: string): void {
 export function worktreeCliPath(cwd: string, taskId: string): string {
   return join(taskWorktreeDir(cwd, taskId), 'bin', 'vibelog.mjs');
 }
+
+/**
+ * Триггер, по которому запрошен worktree (VL-278).
+ *
+ * Раньше условие «создавать ли worktree» было захардкожено внутри
+ * оркестратора (`phase === 'plan' || phase === 'do'`) и жило ТОЛЬКО на пути
+ * запуска фазы — из-за этого задача, созданная сразу в статусе Planned через
+ * чат (фаза plan не запускалась), молча оставалась без ветки и worktree
+ * (инцидент VL-277: code шёл в главном дереве, close — без merge-шага).
+ */
+export type WorktreeTrigger =
+  /** Запуск фазы агентом (оркестратор/бот/CLI). */
+  | { kind: 'phase'; phase: string }
+  /** Создание задачи сразу в статусе «plan уже выполнен» (чат/CLI/API). */
+  | { kind: 'create'; status: string };
+
+/**
+ * Фазы, создающие worktree задачи впервые (VL-134, VL-188).
+ *
+ * plan — классическая цепочка spec → plan → code; do — simple-workflow
+ * (chore/docs/spike), где фазы plan нет. Остальные фазы лишь ИСПОЛЬЗУЮТ
+ * существующий worktree (ensure идемпотентен).
+ */
+export const WORKTREE_CREATING_PHASES: readonly string[] = ['plan', 'do'];
+
+/** Типы задач, которым worktree не нужен никогда: эпик — контейнер детей. */
+const NO_WORKTREE_TYPES: readonly string[] = ['epic'];
+
+/**
+ * Единое условие «нужен ли worktree для задачи» (VL-278).
+ *
+ * Используется и оркестратором фаз, и путём создания задачи — две копии
+ * условия дали бы расхождение поведения «одинаковый статус, разные условия
+ * работы» (зависит от того, каким путём пришла задача).
+ *
+ * Логика:
+ *   1. branch-mode выключен → worktree не нужен (поведение до VL-107);
+ *   2. тип задачи epic → не нужен (у эпика нет своей ветки, VL-134);
+ *   3. worktree уже существует → нужен (используем его независимо от фазы —
+ *      ensure идемпотентен; так resume/comment остаются в ветке);
+ *   4. триггер — запуск фазы plan/do (WORKTREE_CREATING_PHASES) → нужен;
+ *   5. триггер — создание задачи, и её статус совпадает с состоянием
+ *      «фаза plan уже пройдена» (produces_status перехода фазы plan в
+ *      workflow этой задачи) → нужен: иначе ветка не появится никогда.
+ *
+ * Статус «plan выполнен» НЕ хардкодится: для default-workflow это Planned,
+ * для кастомного — что скажет workflow; в simple-workflow фазы plan нет,
+ * поэтому эквивалента нет и worktree поднимет запуск do (п.4).
+ *
+ * @param cwd — корень главного репозитория
+ * @param taskId — ID задачи (VL-278)
+ * @param trigger — что вызвало проверку (фаза либо создание задачи)
+ * @returns true — worktree нужно создать/использовать
+ */
+export function shouldEnsureWorktree(cwd: string, taskId: string, trigger: WorktreeTrigger): boolean {
+  // 1) branch-mode — единственный выключатель режима параллельной разработки
+  if (!resolveBranchMode(cwd)) return false;
+
+  const task = getTask(cwd, taskId);
+  const type = (task?.type ?? '').toLowerCase();
+  // 2) эпик — контейнер детей, код в нём не пишется
+  if (NO_WORKTREE_TYPES.includes(type)) return false;
+
+  // 3) готовый worktree используется всегда: ensure идемпотентен, а
+  //    незавершённая изоляция хуже её отсутствия
+  if (existsSync(taskWorktreeDir(cwd, taskId))) return true;
+
+  if (trigger.kind === 'phase') {
+    // 4) первое создание — plan (default-workflow) или do (simple)
+    return WORKTREE_CREATING_PHASES.includes(trigger.phase);
+  }
+
+  // 5) создание задачи: worktree нужен, если статус = «после фазы plan»
+  if (!task) return false; // задача не читается — не гадаем
+  return isPlanDoneStatus(cwd, task, trigger.status);
+}
+
+/**
+ * Статус эквивалентен «фаза plan уже выполнена» для этой задачи (VL-278).
+ *
+ * Считается по workflow задачи (кастомные workflows из backlog/config.yml и
+ * .vibelog/settings.json уважаются): берём статус, в который переходит
+ * задача из своего initial_status после фазы plan. Для workflow без фазы
+ * plan (simple) эквивалента нет — false, worktree поднимет запуск do.
+ *
+ * @param cwd — корень главного репозитория
+ * @param task — задача после записи (нужен type для выбора workflow)
+ * @param status — статус, в котором задачу создают
+ */
+function isPlanDoneStatus(cwd: string, task: Task, status: string): boolean {
+  const wanted = (status ?? '').trim().toLowerCase();
+  if (!wanted) return false;
+  const wf = getWorkflowForTask(cwd, task);
+  // Статусы, из которых workflow разрешает фазу plan — по одному на ветку,
+  // фактически это initial-статус цепочки с планированием
+  const planSources = wf.transitions.filter((t) => t.phase === 'plan');
+  for (const src of planSources) {
+    const after = src.produces_status;
+    if (after !== null && after.toLowerCase() === wanted) return true;
+  }
+  // Workflow без фазы plan (simple: chore/docs/spike) эквивалента не имеет —
+  // в нём worktree поднимает запуск первой «кодовой» фазы do (п.4 выше).
+  return false;
+}
+
+/** Итог попытки поднять worktree на пути создания задачи (VL-278). */
+export interface EnsureWorktreeOnCreateResult {
+  /** Путь созданного/найденного worktree; null — worktree не нужен. */
+  worktreePath: string | null;
+  /** Предупреждение для ответа вызывающему (fail-open: задача уже создана). */
+  warning?: string;
+}
+
+/**
+ * Поднимает worktree задачи на пути СОЗДАНИЯ (VL-278), fail-open.
+ *
+ * Повторяет ровно то, что делает запуск фазы plan: ensure ветки vb/<id> +
+ * worktree .vibelog/worktrees/<id> + симлинки node_modules и
+ * backlog/references/data из главного репо (linkWorktreeDeps внутри ensure).
+ * Сборка dist (buildTaskWorktree) НЕ выполняется — как и при штатном запуске
+ * plan: сборка происходит при перезапуске бота из ветки.
+ *
+ * Fail-open (паттерн ensure/build в боте): ошибка git НЕ отменяет создание
+ * задачи — задача уже записана, вызывающий получает warning, диагностика
+ * уходит в stderr. Иначе сломанный git-репозиторий блокировал бы работу с
+ * backlog целиком.
+ *
+ * @param cwd — корень главного репозитория
+ * @param taskId — ID только что созданной задачи
+ * @param status — статус, в котором задачу создали (для проверки триггера)
+ * @returns путь worktree (null — не требовался) и предупреждение при сбое
+ */
+export function ensureWorktreeOnCreate(
+  cwd: string,
+  taskId: string,
+  status: string,
+): EnsureWorktreeOnCreateResult {
+  if (!shouldEnsureWorktree(cwd, taskId, { kind: 'create', status })) {
+    return { worktreePath: null };
+  }
+  try {
+    return { worktreePath: ensureTaskWorktree(cwd, taskId) };
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    // stderr — диагностика для человека (бот/сервер пишут его в лог)
+    console.error(`[vibelog-worktree] задача ${taskId} создана, worktree не поднят: ${detail}`);
+    return {
+      worktreePath: null,
+      warning: `Задача ${taskId} создана, но worktree для неё не создан: ${detail}`,
+    };
+  }
+}
+
+

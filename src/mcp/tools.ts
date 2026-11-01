@@ -55,6 +55,7 @@ import { truncateToolOutput } from '../agent/tools.js';
 import { ackOk, unknownFields } from './tool-result.js';
 import type { SkippedField } from './tool-result.js';
 import { withIdempotency } from './idempotency.js';
+import { ensureWorktreeOnCreate } from '../core/worktree.js';
 import type { Task, TaskComment, ChecklistItem } from '../core/task.js';
 import { addTaskTokenUsage } from '../core/store.js';
 import { hasUsageDelta, usageDelta } from '../core/analytics.js';
@@ -867,6 +868,16 @@ function toolCreateTask(args: ToolArgs, cwd: string, opts?: HandleToolCallOpts):
     description: task.description ?? '',
   };
   const skipped = unknownFields(args, CREATE_TASK_FIELDS);
+  // VL-278: задача, созданная сразу в статусе «plan уже выполнен», должна
+  // получить ветку vb/<id> и worktree — иначе фаза code пойдёт в главном
+  // дереве (инцидент VL-277). Fail-open: ошибка git не отменяет создание.
+  const wt = ensureWorktreeOnCreate(cwd, task.id, task.status);
+  if (wt.worktreePath !== null) {
+    applied.worktree = wt.worktreePath;
+  }
+  if (wt.warning !== undefined) {
+    return ackOk(`${wt.warning}\nЗадача ${task.id} создана: ${task.title}`, applied, skipped);
+  }
   return ackOk(`Задача ${task.id} создана: ${task.title}`, applied, skipped);
 }
 
