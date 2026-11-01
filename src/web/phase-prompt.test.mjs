@@ -467,6 +467,28 @@ describe('VL-227 — отчёт об исключённых тест-файла�
   });
 });
 
+// VL-284: Close не правит код и не собирает дважды — инцидент close VL-280
+// (цикл `edit tools.ts` + `pnpm build`, payload 508 КБ, 5 попыток без прогресса).
+// Маркеры короткие и стабильные (lesson-130: не матчить целые абзацы).
+describe('VL-284 — Close не правит код и собирает не больше одного раза', () => {
+  const closeText = readFileSync(join(templatesDir, 'phase-close.md'), 'utf-8');
+  const wtText = readFileSync(join(templatesDir, 'phase-close-worktree.md'), 'utf-8');
+
+  it('оба close-шаблона содержат запрет правки кода', () => {
+    for (const [name, text] of [['phase-close.md', closeText], ['phase-close-worktree.md', wtText]]) {
+      assert.ok(text.includes('Close не правит код'), `${name}: маркер запрета правки кода`);
+      assert.ok(text.includes('aborted'), `${name}: падение сборки → аварийный итог`);
+    }
+  });
+
+  it('оба close-шаблона ограничивают сборку одним запуском', () => {
+    for (const [name, text] of [['phase-close.md', closeText], ['phase-close-worktree.md', wtText]]) {
+      assert.ok(text.includes('не более одного раза за фазу'),
+        `${name}: маркер «pnpm build — не более одного раза за фазу»`);
+    }
+  });
+});
+
 // Точечные инварианты VL-242 (паттерн VL-227): в фазе Close полный прогон
 // тестов остаётся обязательным, но он один — перед ним ранний точечный фильтр,
 // а повтор допускается только после классификации падений. Правило живёт в

@@ -124,7 +124,7 @@ describe('resolveSupervisorRuntime: дефолты (doc-19 §7)', () => {
 describe('loadHealRules: дефолты и битые правила (AC6, AC8)', () => {
   it('файла нет → дефолтные правила из doc-19 §12', () => {
     const cfg = loadHealRules(cwd);
-    assert.deepEqual(cfg.rules.map(r => r.id), ['repeat-loop', 'payload-limit', 'wall-timeout', 'no-progress']);
+    assert.deepEqual(cfg.rules.map(r => r.id), ['repeat-loop-stuck', 'repeat-loop', 'payload-limit', 'wall-timeout', 'no-progress']);
     assert.equal(cfg.rules.length, DEFAULT_HEAL_RULES.length);
     assert.equal(cfg.defaultAction, DEFAULT_HEAL_ACTION);
     assert.equal(cfg.defaultAction, 'bug');
@@ -134,7 +134,7 @@ describe('loadHealRules: дефолты и битые правила (AC6, AC8)'
   it('битый JSON → дефолты + предупреждение', () => {
     writeHealFile('{ это не json');
     const cfg = loadHealRules(cwd);
-    assert.equal(cfg.rules.length, 4);
+    assert.equal(cfg.rules.length, DEFAULT_HEAL_RULES.length);
     assert.equal(cfg.errors.length, 1);
     assert.match(cfg.errors[0], /не читается как JSON/);
   });
@@ -142,7 +142,7 @@ describe('loadHealRules: дефолты и битые правила (AC6, AC8)'
   it('heal_rules не массив → дефолты + предупреждение', () => {
     writeHealFile({ heal_rules: 'одно правило' });
     const cfg = loadHealRules(cwd);
-    assert.equal(cfg.rules.length, 4);
+    assert.equal(cfg.rules.length, DEFAULT_HEAL_RULES.length);
     assert.ok(cfg.errors.some(e => /должен быть массивом/.test(e)));
   });
 

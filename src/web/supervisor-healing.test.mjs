@@ -26,6 +26,7 @@ import {
   setTickLlmForTests,
   setTickStartPhaseForTests,
 } from '../../dist/web/supervisor-tick.js';
+import { DEFAULT_HEAL_RULES } from '../../dist/core/supervisor-config.js';
 
 const cwd = mkdtempSync(join(tmpdir(), 'vibelog-supervisor-healing-'));
 
@@ -159,6 +160,22 @@ describe('matchHealRule: порядок и семантика when (AC6)', () =>
 
   it('ни одно правило не совпало → null (решение отдаётся модели, уровень 2)', () => {
     assert.equal(matchHealRule(rules, { repeatShare: 0, repeatCalls: 0, failReason: 'тесты упали: 3 failed', statusUnchanged: false }), null);
+  });
+
+  it('VL-284: дефолтные правила — сильное зацикливание сразу уходит в bug, не в retry', () => {
+    // Порог repeat-loop-stuck (0.3/15) строже repeat-loop (0.25/8) и стоит раньше:
+    // повтор такого рана воспроизводит payload-лимит (инцидент close VL-280).
+    const stuck = matchHealRule(DEFAULT_HEAL_RULES, {
+      repeatShare: 0.35, repeatCalls: 20, failReason: '', statusUnchanged: false,
+    });
+    assert.equal(stuck.id, 'repeat-loop-stuck');
+    assert.equal(stuck.action, 'bug');
+    // Чуть меньше порога — работает прежнее мягкое лечение
+    const soft = matchHealRule(DEFAULT_HEAL_RULES, {
+      repeatShare: 0.26, repeatCalls: 9, failReason: '', statusUnchanged: false,
+    });
+    assert.equal(soft.id, 'repeat-loop');
+    assert.equal(soft.action, 'comment_and_retry');
   });
 });
 

@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { runLoop, compactWireMessages } from '../../dist/agent/loop.js';
 import { zeroUsage, MAX_PAYLOAD_BYTES, PAYLOAD_WARN_BYTES, PAYLOAD_COMPACT_TOOL_CHARS } from '../../dist/agent/llm.js';
 import { TOOL_OUTPUT_MAX_CHARS } from '../../dist/agent/tools.js';
+import { REPEAT_BLOCK_MAX_PER_RUN } from '../../dist/agent/repeat-tracker.js';
 
 /**
  * Фейковый LLM: очередь элементов.
@@ -1666,6 +1667,112 @@ describe('runLoop guard повторов обращений (VL-229)', () => {
     const warnings = res.messages.filter(hasWarn);
     assert.equal(warnings.length, 1, 'только на 5-м чтении (4-е — молчание)');
     assert.match(warnings[0].content, /5 раз/);
+  });
+
+  it('VL-284: 8-я правка того же файла НЕ выполняется — tool-результат с директивой, паринг цел', async () => {
+    // Стаб-handler считает реальные исполнения: 7 первых правок проходят,
+    // 8-я блокируется guard'ом (порог REPEAT_WRITE_BLOCK_DEFAULT = 8).
+    let executed = 0;
+    const editTool = {
+      name: 'edit',
+      description: 'правка файла',
+      inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+      handler: async () => {
+        executed++;
+        return 'ok:edit';
+      },
+    };
+    const same = (id) => ({ id, name: 'edit', arguments: { path: 'src/a.ts' } });
+    // Перемежение «другими» правками, чтобы loop detection (3 одинаковых подряд)
+    // не сработал раньше guard'а — нам нужна именно эскалация по счётчику.
+    const other = (id) => ({ id, name: 'edit', arguments: { path: `src/${id}.ts` } });
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [same('a'), other('o1')] },
+      { text: '', toolCalls: [same('b'), other('o2')] },
+      { text: '', toolCalls: [same('c'), other('o3')] },
+      { text: '', toolCalls: [same('d'), other('o4')] },
+      { text: '', toolCalls: [same('e'), other('o5')] },
+      { text: '', toolCalls: [same('f'), other('o6')] },
+      { text: '', toolCalls: [same('g')] },
+      { text: '', toolCalls: [same('h')] },
+      { text: 'Готово!' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [editTool] });
+    assert.equal(res.is_error, false);
+    // 7 правок src/a.ts (a..g) + 6 «других» правок исполнены; 8-я (h) заблокирована
+    assert.equal(executed, 13, '7 правок src/a.ts + 6 посторонних, 8-я заблокирована');
+    const blocked = res.messages.filter((m) => m.role === 'tool' && `${m.content}`.includes('Повтор заблокирован'));
+    assert.equal(blocked.length, 1);
+    assert.match(blocked[0].content, /edit\|src\/a\.ts — 8 обращений/);
+    assert.equal(res.repeat_blocked, 1);
+    // Риск 1 плана: блокировка — это tool-результат, паринг assistant↔tool цел
+    for (let i = 0; i < res.messages.length; i++) {
+      const m = res.messages[i];
+      if (m.role !== 'assistant' || !m.tool_calls) continue;
+      for (const tc of m.tool_calls) {
+        const toolAt = res.messages.findIndex((x) => x.role === 'tool' && x.tool_call_id === tc.id);
+        assert.ok(toolAt > i, `tool-результат для ${tc.id} после своего assistant`);
+      }
+    }
+  });
+
+  it('VL-284: repeatGuardDisabled → правки не блокируются (fail-open)', async () => {
+    let executed = 0;
+    const editTool = {
+      name: 'edit',
+      description: 'правка файла',
+      inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+      handler: async () => {
+        executed++;
+        return 'ok:edit';
+      },
+    };
+    const same = (id) => ({ id, name: 'edit', arguments: { path: 'src/a.ts' } });
+    const other = (id) => ({ id, name: 'edit', arguments: { path: `src/${id}.ts` } });
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [same('a'), other('o1')] },
+      { text: '', toolCalls: [same('b'), other('o2')] },
+      { text: '', toolCalls: [same('c'), other('o3')] },
+      { text: '', toolCalls: [same('d'), other('o4')] },
+      { text: '', toolCalls: [same('e'), other('o5')] },
+      { text: '', toolCalls: [same('f'), other('o6')] },
+      { text: '', toolCalls: [same('g')] },
+      { text: '', toolCalls: [same('h')] },
+      { text: 'Готово!' },
+    ]);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [editTool],
+      limits: { repeatGuardDisabled: true },
+    });
+    assert.equal(executed, 14, 'все 8 правок src/a.ts + 6 посторонних исполнены');
+    assert.equal(res.messages.filter((m) => m.role === 'tool' && `${m.content}`.includes('Повтор заблокирован')).length, 0);
+    assert.equal(res.repeat_blocked ?? 0, 0);
+  });
+
+  it('VL-284: кап REPEAT_BLOCK_MAX_PER_RUN (5) — блокировок не больше 5 за ран', async () => {
+    const other = (id) => ({ id, name: 'edit', arguments: { path: `src/${id}.ts` } });
+    const same = (id) => ({ id, name: 'edit', arguments: { path: 'src/a.ts' } });
+    // 12 правок src/a.ts вперемешку: первые 7 идут, дальше 5 блокируются (кап)
+    const turns = [];
+    for (let i = 0; i < 12; i++) {
+      turns.push({ text: '', toolCalls: [same(`s${i}`), other(`o${i}`)] });
+    }
+    turns.push({ text: 'Готово!' });
+    const { llm } = fakeLlm(turns);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [{
+        name: 'edit',
+        description: 'правка файла',
+        inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+        handler: async () => 'ok:edit',
+      }],
+    });
+    assert.equal(res.is_error, false);
+    assert.equal(res.repeat_blocked, REPEAT_BLOCK_MAX_PER_RUN, 'кап блокировок — 5');
   });
 });
 

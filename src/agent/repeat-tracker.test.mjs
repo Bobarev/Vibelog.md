@@ -10,12 +10,16 @@ import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {
+  REPEAT_BLOCK_MAX_PER_RUN,
   REPEAT_READ_LIMIT_DEFAULT,
   REPEAT_SEARCH_LIMIT_DEFAULT,
   REPEAT_SHELL_LIMIT_DEFAULT,
+  REPEAT_WRITE_BLOCK_DEFAULT,
+  REPEAT_WRITE_LIMIT_DEFAULT,
   analyzeToolRepeats,
   createRepeatGuard,
   emptyRepeatStats,
+  repeatBlockDirective,
   repeatKey,
   shellCommandKey,
   toolRepeatKind,
@@ -211,12 +215,72 @@ describe('repeat-tracker: guard-предупреждение (VL-229, AC2)', () 
     assert.equal(guard.note('grep_search', { pattern: 'c' }), null);
   });
 
-  it('edit/write_file guard не срабатывает никогда (повторная правка легитимна)', () => {
+  it('VL-284: 6-я правка того же пути → предупреждение, 5-я — молчание', () => {
     const guard = createRepeatGuard();
-    for (let i = 0; i < 10; i++) {
-      assert.equal(guard.note('edit', { path: 'a.ts', old_string: `x${i}` }), null);
-      assert.equal(guard.note('write_file', { path: 'a.ts', content: 'y' }), null);
+    for (let i = 0; i < 5; i++) {
+      assert.equal(guard.note('edit', { path: 'a.ts', old_string: `x${i}` }), null, `${i + 1}-я`);
     }
+    const warn = guard.note('edit', { path: 'a.ts', old_string: 'x5' });
+    assert.ok(warn, '6-я правка того же пути — предупреждение');
+    assert.match(warn, /6 раз/);
+    assert.match(warn, /edit\|a\.ts/);
+  });
+
+  it('VL-284: writeLimit 0 восстанавливает поведение «только метрика»', () => {
+    const guard = createRepeatGuard({ writeLimit: 0 });
+    for (let i = 0; i < 20; i++) {
+      assert.equal(guard.note('edit', { path: 'a.ts', old_string: `x${i}` }), null);
+      assert.equal(guard.shouldBlock('edit', { path: 'a.ts', old_string: `x${i}` }), false);
+    }
+  });
+
+  it('VL-284: shouldBlock для write на 8-м обращении, на 7-м — false', () => {
+    const guard = createRepeatGuard();
+    for (let i = 0; i < 7; i++) {
+      guard.note('edit', { path: 'a.ts', old_string: `x${i}` });
+      assert.equal(guard.shouldBlock('edit', { path: 'a.ts', old_string: `x${i}` }), false, `${i + 1}-я`);
+    }
+    const eighth = { path: 'a.ts', old_string: 'x7' };
+    guard.note('edit', eighth);
+    assert.equal(guard.shouldBlock('edit', eighth), true, '8-я правка — блокировка');
+    assert.equal(guard.countOf('edit', eighth), 8);
+    assert.equal(guard.blockedCount(), 0, 'noteBlocked вызывается loop-ом, не guard-ом');
+    guard.noteBlocked();
+    assert.equal(guard.blockedCount(), 1);
+  });
+
+  it('VL-284: shouldBlock для read на 10-м чтении (2× от порога 5)', () => {
+    const guard = createRepeatGuard();
+    const args = { path: 'src/agent/loop.ts' };
+    for (let i = 0; i < 9; i++) {
+      guard.note('read_file', args);
+      assert.equal(guard.shouldBlock('read_file', args), false, `${i + 1}-е чтение`);
+    }
+    guard.note('read_file', args);
+    assert.equal(guard.shouldBlock('read_file', args), true, '10-е чтение — блокировка');
+  });
+
+  it('VL-284: блокировки нет при нулевом пороге (fail-open) и для неслеживаемых инструментов', () => {
+    const guard = createRepeatGuard({ searchLimit: 0 });
+    for (let i = 0; i < 20; i++) {
+      guard.note('grep_search', { pattern: 'x' });
+      assert.equal(guard.shouldBlock('grep_search', { pattern: 'x' }), false);
+    }
+    assert.equal(guard.shouldBlock('backlog_view_task', { id: 'VL-1' }), false);
+  });
+
+  it('VL-284: repeatBlockDirective — маркер «Повтор заблокирован» и следующий шаг', () => {
+    assert.match(repeatBlockDirective('edit|a.ts', 8, 'write'), /^Повтор заблокирован: edit\|a\.ts — 8 обращений за ран/);
+    assert.match(repeatBlockDirective('edit|a.ts', 8, 'write'), /аварийный итог фазы/);
+    assert.match(repeatBlockDirective('read_file|a.ts', 10, 'read'), /одним read_file/);
+    assert.match(repeatBlockDirective('grep_search|x', 6, 'search'), /сузь pattern\/path/);
+    assert.match(repeatBlockDirective('run_shell_command|pnpm build', 6, 'shell'), /полученный вывод/);
+  });
+
+  it('VL-284: дефолтные write-пороги соответствуют AC', () => {
+    assert.equal(REPEAT_WRITE_LIMIT_DEFAULT, 6);
+    assert.equal(REPEAT_WRITE_BLOCK_DEFAULT, 8);
+    assert.equal(REPEAT_BLOCK_MAX_PER_RUN, 5);
   });
 
   it('AC1: shell-скелет — предупреждение на 3-м вызове, «используй полученный вывод»', () => {

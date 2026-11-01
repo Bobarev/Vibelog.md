@@ -35,11 +35,45 @@ export const REPEAT_READ_LIMIT_DEFAULT = 5;
 export const REPEAT_SHELL_LIMIT_DEFAULT = 3;
 
 /**
+ * VL-284: порог повторов правки одного файла (дефолт 6).
+ *
+ * Инцидент VL-284 (close VL-280): главным зацикленным вызовом был именно
+ * `edit|src/mcp/tools.ts`×5 в цикле с `pnpm build`, а guard write-операции
+ * вовсе не отслеживал (`write: 0`) — модель не получила ни одного
+ * предупреждения, payload рос до 508 КБ, фаза сгорела за 5 попыток.
+ * Итеративная правка одного файла — норма (исправил → проверил → поправил),
+ * поэтому порог выше, чем у поиска: 6-я правка того же пути за ран — уже
+ * повод предупредить.
+ */
+export const REPEAT_WRITE_LIMIT_DEFAULT = 6;
+
+/**
+ * VL-284: порог блокировки правки одного файла (дефолт 8).
+ *
+ * Отдельная константа, а не `writeLimit * blockMultiplier`: у write порог
+ * эскалации задан явно, потому что цена ложной блокировки правки выше, чем
+ * у чтения (модель не сможет дописать нужное изменение в этом ране).
+ */
+export const REPEAT_WRITE_BLOCK_DEFAULT = 8;
+
+/**
+ * VL-284: сколько повторов можно заблокировать за один ран (дефолт 5).
+ *
+ * По образцу `REPEAT_WARN_MAX_PER_RUN` (VL-229): каждая блокировка — это
+ * tool-результат с директивой, и без капа зацикленный ран раздувал бы
+ * контекст самими директивами, то есть лечил бы симптом тем же способом,
+ * каким растёт payload.
+ */
+export const REPEAT_BLOCK_MAX_PER_RUN = 5;
+
+/**
  * Категория повтора: от неё зависит, срабатывает ли guard и на каком пороге.
  * - search — grep_search/glob: повтор запроса тратит контекст без новой информации;
  * - read — read_file: повторное чтение того же файла (в т.ч. кусками);
- * - write — edit/write_file: в метрике считается, но guard НЕ ставит —
- *   повторная правка одного файла легитимна (итеративное исправление);
+ * - write — edit/write_file: в метрике считается, а с VL-284 ещё и даёт
+ *   предупреждение (порог 6) и блокировку (порог 8): инцидент VL-284 показал,
+ *   что цикл `edit` + `pnpm build` в close — такой же антипаттерн, как
+ *   перечитывание файла, только контекст он раздувает быстрее;
  * - shell (VL-254) — run_shell_command: ключ — нормализованный скелет команды,
  *   а не вся строка (см. shellCommandKey). В VL-235 однотипные `node -e` и
  *   `grep -rn` по тем же путям давали 65% всех tool-calls, а guard не видел их
@@ -301,15 +335,66 @@ export interface RepeatGuardOptions {
   readLimit?: number;
   /** Порог повторов shell-скелета (VL-254, дефолт REPEAT_SHELL_LIMIT_DEFAULT = 3). */
   shellLimit?: number;
+  /**
+   * VL-284: порог предупреждения для правки одного файла (дефолт
+   * REPEAT_WRITE_LIMIT_DEFAULT = 6). `0` — выключить порог для write
+   * (поведение до VL-284: только метрика).
+   */
+  writeLimit?: number;
+  /**
+   * VL-284: порог блокировки для правки одного файла (дефолт
+   * REPEAT_WRITE_BLOCK_DEFAULT = 8). Игнорируется при `writeLimit <= 0`.
+   */
+  writeBlockLimit?: number;
+  /**
+   * VL-284: во сколько раз порог блокировки больше порога предупреждения для
+   * search/read/shell (дефолт 2). Для write порог блокировки задан явно —
+   * цена ложной блокировки правки выше, чем ложной блокировки чтения.
+   */
+  blockMultiplier?: number;
 }
 
-/** Guard повторов: выдаёт текст предупреждения модели либо null. */
+/** Guard повторов: предупреждение + эскалация до блокировки (VL-284). */
 export interface RepeatGuard {
   /**
    * Учитывает вызов инструмента и возвращает предупреждение, если порог
    * достигнут. `null` — повтор в норме либо инструмент не отслеживается.
    */
   note(name: string, args: Record<string, unknown>): string | null;
+  /**
+   * VL-284: пора ли НЕ выполнять этот вызов (порог блокировки достигнут).
+   *
+   * Счётчик НЕ инкрементирует — инкремент делает `note`, который loop
+   * вызывает первым. `false`, если порог для категории выключен (`<= 0`) —
+   * fail-open: без явных порогов guard не блокирует ничего.
+   */
+  shouldBlock(name: string, args: Record<string, unknown>): boolean;
+  /** VL-284: сколько вызовов guard заблокировал за ран (для stderr). */
+  blockedCount(): number;
+  /** VL-284: пометить вызов заблокированным (увеличивает blockedCount). */
+  noteBlocked(): void;
+  /** VL-284: текущее число обращений по ключу (0, если не отслеживается). */
+  countOf(name: string, args: Record<string, unknown>): number;
+}
+
+/**
+ * Текст директивы блокировки повтора (VL-284).
+ *
+ * Маркер «Повтор заблокирован» стабилен (lesson-76): по нему событие опознают
+ * тесты и разборы сессий. Формулировка намеренно НЕ пересекается с маркером
+ * loop detection (`Loop detection:`) — причины разные: там один и тот же
+ * вызов подряд, здесь накопленный счётчик за ран.
+ */
+export function repeatBlockDirective(key: string, count: number, kind: RepeatKind): string {
+  const next =
+    kind === 'write'
+      ? 'правь другой участок файла либо зафиксируй прогресс и оформи аварийный итог фазы — повторная правка того же места нового результата не даст'
+      : kind === 'read'
+        ? 'возьми нужный диапазон одним read_file'
+        : kind === 'search'
+          ? 'сузь pattern/path либо работай с уже найденным файлом'
+          : 'используй уже полученный вывод команды';
+  return `Повтор заблокирован: ${key} — ${count} обращений за ран. Вызов НЕ выполнен. ${next}.`;
 }
 
 /**
@@ -323,8 +408,9 @@ export interface RepeatGuard {
  *
  * Предупреждение отдаётся на N-м вызове (порог) и на каждом последующем:
  * однократное предупреждение модель легко «забывает» на длинном ране.
- * `edit`/`write_file` в счётчиках участвуют, но предупреждения не дают —
- * повторная правка файла легитимна (итеративное исправление).
+ * С VL-284 guard не только советует, но и эскалирует: после порога блокировки
+ * вызов не выполняется (AC2) — иначе на зацикленном ране совет игнорируется,
+ * а payload растёт до отказа провайдера (инцидент VL-284: 508 КБ).
  */
 export function createRepeatGuard(options: RepeatGuardOptions = {}): RepeatGuard {
   const limits: Record<RepeatKind, number> = {
@@ -332,10 +418,21 @@ export function createRepeatGuard(options: RepeatGuardOptions = {}): RepeatGuard
     read: options.readLimit ?? REPEAT_READ_LIMIT_DEFAULT,
     // VL-254: однотипные shell-вызовы — самый частый вид зацикливания
     shell: options.shellLimit ?? REPEAT_SHELL_LIMIT_DEFAULT,
-    // 0 = «никогда»: write-повторы только в метрике
-    write: 0,
+    // VL-284: правка одного файла 6 раз за ран — уже зацикливание (инцидент
+    // close VL-280: `edit|src/mcp/tools.ts`×5 без единого предупреждения)
+    write: options.writeLimit ?? REPEAT_WRITE_LIMIT_DEFAULT,
+  };
+  const multiplier = options.blockMultiplier ?? 2;
+  const blockLimits: Record<RepeatKind, number> = {
+    // Порог блокировки: у write он задан явно, у прочих — кратен множителю.
+    // `limit <= 0` (порог выключен) → 0, то есть блокировки нет (fail-open).
+    search: limits.search > 0 ? limits.search * multiplier : 0,
+    read: limits.read > 0 ? limits.read * multiplier : 0,
+    shell: limits.shell > 0 ? limits.shell * multiplier : 0,
+    write: limits.write > 0 ? (options.writeBlockLimit ?? REPEAT_WRITE_BLOCK_DEFAULT) : 0,
   };
   const counts = new Map<string, number>();
+  let blocked = 0;
   return {
     note(name: string, args: Record<string, unknown>): string | null {
       const kind = toolRepeatKind(name);
@@ -352,9 +449,30 @@ export function createRepeatGuard(options: RepeatGuardOptions = {}): RepeatGuard
           ? 'сузь pattern/path или читай найденный файл'
           : kind === 'shell'
             ? 'используй её вывод; для обзора дерева/модулей — project_map или read_file каталога'
-            : 'читай нужные чанки offset/limit одним вызовом';
+            : kind === 'write'
+              ? 'правь другой участок файла или переходи к проверке — повторная правка того же места не даёт нового результата'
+              : 'читай нужные чанки offset/limit одним вызовом';
       // Для shell формулировка «используй полученный вывод» — из AC1 VL-254
       return `Ты уже обращался к ${key} ${count} раз — используй ранее полученный результат (${hint}), не повторяй вызов.`;
+    },
+    shouldBlock(name: string, args: Record<string, unknown>): boolean {
+      const kind = toolRepeatKind(name);
+      const key = repeatKey(name, args);
+      if (kind === null || key === null) return false;
+      const blockLimit = blockLimits[kind];
+      // 0 — порог выключен (fail-open): guard не блокирует «по умолчанию»
+      if (blockLimit <= 0) return false;
+      return (counts.get(key) ?? 0) >= blockLimit;
+    },
+    blockedCount(): number {
+      return blocked;
+    },
+    noteBlocked(): void {
+      blocked++;
+    },
+    countOf(name: string, args: Record<string, unknown>): number {
+      const key = repeatKey(name, args);
+      return key === null ? 0 : (counts.get(key) ?? 0);
     },
   };
 }

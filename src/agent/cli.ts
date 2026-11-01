@@ -1065,6 +1065,9 @@ export async function main(argv: string[]): Promise<void> {
       `shell-повторов=${loopResult.repeat_stats.shell_repeat_calls}/${loopResult.repeat_stats.shell_tool_calls} ` +
       `(${Math.round(loopResult.repeat_stats.shell_share * 100)}%), ` +
       `топ-повторов=${loopResult.repeat_stats.top.slice(0, 3).map((e) => `${e.key}×${e.count}`).join(', ') || 'нет'}, ` +
+      // VL-284: сколько вызовов guard заблокировал — видно, что фаза упиралась
+      // в зацикливание, а не просто долго шла (инцидент close VL-280)
+      `блокировок=${loopResult.repeat_blocked ?? 0}, ` +
       `payload последнего запроса=${loopResult.last_payload_bytes ?? 'н/д'} байт ` +
       `(макс ${loopResult.max_payload_bytes ?? 'н/д'}), usage=${JSON.stringify(loopResult.usage)}`,
   );
