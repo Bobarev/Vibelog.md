@@ -24,6 +24,8 @@ import { markdownToTask, taskToMarkdown, taskFilename } from '../../dist/core/ta
 import { parseYaml, stringifyYaml } from '../../dist/core/yaml.js';
 import { listTools } from '../../dist/mcp/tools.js';
 
+import { testSpawnEnv } from '../test-env.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const BACKLOG = 'backlog/references/data/Backlog.md';
@@ -273,7 +275,7 @@ describe('Совместимость: CLI-команды', () => {
       return execFileSync('node', [cliPath, ...args], {
         encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
         // VL-132: без гарда каждый spawn CLI уходил бы npm view в реальный registry
-        env: { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' },
+        env: testSpawnEnv(),
       });
     } catch (err) {
       // dyld SIGABRT на Catalina — возвращаем что есть

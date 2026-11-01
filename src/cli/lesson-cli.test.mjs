@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 
+import { testSpawnEnv } from '../test-env.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
 const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-cli-lesson-test-'));
@@ -22,7 +24,7 @@ const backlogDir = join(testRoot, 'backlog');
 function runCli(args) {
   const res = spawnSync('node', [cliPath, ...args], {
     cwd: testRoot, encoding: 'utf-8',
-    env: { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' },
+    env: testSpawnEnv(),
   });
   return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
 }
@@ -48,7 +50,7 @@ describe('VL-153 CLI — create/view/list/search', () => {
     try {
       const res = spawnSync('node', [cliPath, 'lesson', 'list'], {
         cwd: empty, encoding: 'utf-8',
-        env: { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' },
+        env: testSpawnEnv(),
       });
       assert.notEqual(res.status, 0);
       assert.match((res.stdout ?? '') + (res.stderr ?? ''), /Backlog не найден/);

@@ -22,6 +22,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
+import { testSpawnEnv } from '../test-env.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const testDir = mkdtempSync(join(tmpdir(), 'vibelog-search-cli-'));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
@@ -41,7 +43,7 @@ function runCli(...args) {
   const r = spawnSync('node', [cliPath, ...args], {
     cwd: testDir, encoding: 'utf-8', timeout: 5000,
     // VL-132: без гарда каждый spawn CLI уходил бы npm view в реальный registry
-    env: { ...process.env, VIBELOG_SKIP_UPDATE_CHECK: 'true' },
+    env: testSpawnEnv(),
   });
   return (r.stdout || '') + (r.stderr || '');
 }

@@ -22,6 +22,7 @@ import { parseQwenResult } from '../../dist/web/qwen-result.js';
 import { parseArgs } from '../../dist/agent/cli.js';
 import { loadApiMode } from '../../dist/agent/llm-env.js';
 import { createTaskFile } from '../../dist/core/store.js';
+import { testSpawnEnv } from '../test-env.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(__dirname, '..', '..', 'dist', 'agent', 'cli.js');
@@ -64,24 +65,16 @@ function startMockLlm(finalText) {
 
 /** Полный env дочернего процесса: process.env + мок-LM на эфемерном порту. */
 function llmEnv() {
-  const env = {
-    ...process.env,
+  // VL-286: унаследованный фазовый env (VIBELOG_CWD/VIBELOG_PHASE_*/
+  // VIBELOG_RUN_*, VL-116/VL-259) снимает общий хелпер — иначе сессии/мета
+  // пишутся в реальный репозиторий, а не в /tmp-проект теста
+  return testSpawnEnv({
     VIBELOG_LLM_BASE_URL: `http://127.0.0.1:${mock.port}/v1`,
     VIBELOG_LLM_API_KEY: 'test-key',
     VIBELOG_LLM_MODEL: 'test-model',
     // VL-132: единообразный env-гард от реальной сети для всех spawn CLI
     VIBELOG_SKIP_UPDATE_CHECK: 'true',
-  };
-  // VL-116: env фазы оркестратора (branch-mode) не должен утекать в дочерние
-  // CLI-процессы — иначе сессии/мета пишутся в реальный репозиторий, а не
-  // в /tmp-проект теста (инцидент загрязнения backlog 2026-10-12)
-  delete env.VIBELOG_CWD;
-  delete env.VIBELOG_PHASE_TASK_ID;
-  delete env.VIBELOG_PHASE_NAME;
-  // VL-259: учёт фазы/времени рана не наследуем из родительской фазы
-  delete env.VIBELOG_RUN_PHASE;
-  delete env.VIBELOG_RUN_STARTED_AT;
-  return env;
+  });
 }
 
 /** Запуск CLI как дочернего процесса; возвращает {code, stdout, stderr}. */
