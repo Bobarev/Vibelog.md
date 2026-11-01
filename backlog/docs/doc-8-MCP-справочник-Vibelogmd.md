@@ -438,7 +438,11 @@ HTTP-эндпоинты карточки: `POST /api/chat/supervisor/grant-draft
 
 ## Lessons learned (lessons, VL-153)
 
-Workflow-уроки из опыта задач — предотвращают повторение ошибок. Файлы — `backlog/lessons/lesson-N-<slug>.md` (YAML-фронтматтер: id, title, status, tags, source_tasks, linked_tasks, created_date, updated_date, supersedes; тело — «Проблема / Решение / Пример»). Статусы: `active` (по умолчанию) / `outdated` / `superseded`.
+Workflow-уроки из опыта задач — предотвращают повторение ошибок. Файлы — `backlog/lessons/lesson-N-<slug>.md` (YAML-фронтматтер: id, title, status, tags, source_tasks, linked_tasks, created_date, updated_date, supersedes, last_verified, verified_by, applies_to, kind; тело — «Проблема / Решение / Пример»). Статусы: `active` (по умолчанию) / `needs-review` / `outdated` / `superseded`.
+
+Поля актуальности (VL-279, additive — старые файлы без них читаются с дефолтами): `last_verified` (YYYY-MM-DD — когда урок последний раз проверен), `verified_by` (`auto|agent|human`), `applies_to` (string[] — glob путей и/или имена символов, которые аудит валидирует механически), `kind` (`rule|workaround|fact`). Настройки аудита — секция `lessons` в `.vibelog/settings.json`: `duplicate_threshold` (0.35), `stale_days` (180), `prompt_limit` (5).
+
+`loadLessonsForTask` подставляет в промпт Plan/Code только `active`-уроки, отбрасывая `needs-review`/`outdated`/`superseded` и протухшие (`last_verified`/`updated_date` старше `stale_days`), сортирует по свежести и капит top-N — устаревшая инструкция не попадает в промпт.
 
 Отличие от других сущностей: references — внешние источники; decisions — архитектурные решения («почему X, не Y»); docs — документация проекта; **lessons — workflow-уроки**, которые эволюционируют независимо от замороженных задач. Двусторонняя связь с задачами: `lesson.linked_tasks` ↔ `task.lessons`. Plan-фаза получает активные lessons по tags/labels задачи в промпт через `{{taskLessons}}` (0 дополнительных ходов модели); Close-фаза пишет уроки автоматически (шаг 6.5), Code связывает применённые.
 
@@ -446,7 +450,7 @@ Workflow-уроки из опыта задач — предотвращают п
 
 | Параметр | Тип | Описание |
 |---|---|---|
-| `status` | string | Фильтр: active / outdated / superseded |
+| `status` | string | Фильтр: active / needs-review / outdated / superseded |
 | `tags` | string[] | Фильтр по меткам (все указанные должны совпасть) |
 
 ### lesson_create — создать lesson
@@ -471,7 +475,7 @@ id генерируется (`lesson-N`), даты — сегодня.
 | Параметр | Тип | Required | Описание |
 |---|---|---|---|
 | `id` | string | ✓ | |
-| `title`, `status`, `tags`, `sourceTasks`, `linkedTasks`, `content` | | | Только переданные поля; смена title переименовывает файл |
+| `title`, `status`, `tags`, `sourceTasks`, `linkedTasks`, `content`, `lastVerified`, `verifiedBy`, `appliesTo`, `kind` | | | Только переданные поля; смена title переименовывает файл; `lastVerified`/`verifiedBy` — отметка проверки актуальности, `appliesTo` — glob путей/имена символов, `kind` — rule/workaround/fact (VL-279) |
 
 ### lesson_search_lessons — поиск
 
@@ -493,6 +497,20 @@ id генерируется (`lesson-N`), даты — сегодня.
 |---|---|---|---|
 | `oldId` | string | ✓ | Заменяемый lesson → статус `superseded` |
 | `newId` | string | ✓ | Новый lesson → `supersedes: oldId`, статус `active` |
+
+### lesson_audit — механический аудит актуальности (VL-279)
+
+Детерминированный (без LLM) аудит корпуса уроков: возвращает `findings[]` по каждому lesson (тип + детали) и сводку по типам. **Read-only по умолчанию** — записи только по явному перечислению ID.
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `threshold` | number | | Порог схожести дублей 0..1 (дефолт — `lessons.duplicate_threshold` или 0.35) |
+| `staleDays` | number | | Порог протухания в днях (дефолт — `lessons.stale_days` или 180) |
+| `write` | boolean | | Записать отчёт в `backlog/lessons/AUDIT.md` (по умолчанию `false` — только ответ) |
+| `verified` | string[] | | ID уроков: отметить проверенными (`last_verified=today`, `verified_by=auto`) |
+| `needsReview` | string[] | | ID уроков: перевести в статус `needs-review` |
+
+Типы находок: `missing_path` (путь/`applies_to`-glob из тела урока не существует в репо), `dangling_task` (`source_tasks`/`linked_tasks` на несуществующую задачу), `broken_supersede` (`supersedes` на несуществующий ID или на себя), `supersede_cycle` (цикл замен), `duplicate_of` (кандидаты на объединение: взвешенная схожесть заголовка/tags/тела), `stale` (нет `linked_tasks` и source-задачи закрыты, либо `updated_date`/`last_verified` старше порога; уроки `superseded`/`outdated` в stale не попадают). Массовых изменений без флагов/ID инструмент не делает — путь мог исчезнуть из-за рефакторинга, а урок при этом остаётся верным по смыслу.
 
 ---
 

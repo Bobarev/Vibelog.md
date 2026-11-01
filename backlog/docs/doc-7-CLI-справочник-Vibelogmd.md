@@ -243,12 +243,13 @@ vibelog reference <subcommand> [опции]
 ```
 vibelog lesson <subcommand> [опции]
 
-  list [--status active|outdated|superseded] [--tags a,b]
+  list [--status active|outdated|superseded|needs-review] [--tags a,b]
   create <title> [--tags a,b] [--source-tasks VL-1,VL-2] [-d content]
   view <id>
   search <query>
   link <lessonId> <taskId> [--remove]
   supersede <oldId> <newId>
+  audit [--write] [--threshold N] [--stale-days N] [--json] [--verify id,…] [--needs-review id,…]
 ```
 
 Управление уроками из опыта задач (VL-153) — workflow-уроки, предотвращающие повторение ошибок. Файлы — `backlog/lessons/lesson-N-<slug>.md` (YAML-фронтматтер + markdown-тело «Проблема / Решение / Пример»).
@@ -261,6 +262,7 @@ vibelog lesson <subcommand> [опции]
 | `search` | Substring-поиск по id/title/tags/телу |
 | `link` | Двусторонняя связь lesson ↔ задача (`linked_tasks` ↔ `task.lessons`); `--remove` — разорвать |
 | `supersede` | Пометить `oldId` как заменённый `newId`: старый → `superseded`, новый получает `supersedes: oldId` |
+| `audit` | Механический аудит актуальности корпуса уроков (VL-279). Read-only: `--write` — отчёт в `backlog/lessons/AUDIT.md`, без него только stdout; `--json` — машинный вывод; `--threshold N` — порог схожести дублей (дефолт 0.35); `--stale-days N` — порог протухания (дефолт 180); `--verify id,…` и `--needs-review id,…` — единственный способ записи: пометить уроки проверенными (`verified_by=auto`, `last_verified=today`) или перевести в `needs-review` (массовых изменений без явных ID нет) |
 
 Формулировка урока — императив, конкретика, 1 предложение («Тесты со spawn медленные — запускай батчами по 10»). Close-фаза создаёт/обновляет lessons автоматически (шаг 6.5), Plan получает их в промпт через `{{taskLessons}}` по tags задачи.
 
