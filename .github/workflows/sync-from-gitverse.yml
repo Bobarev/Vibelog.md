@@ -17,10 +17,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Pull from GitVerse and push
+      - name: Pull from GitVerse and force push
         run: |
+          # 1. Настраиваем личность git для коммитов
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+          
+          # 2. Добавляем GitVerse и забираем оттуда код
           git remote add gitverse https://gitverse.ru/bobarev/Vibelog.md.git
           git fetch gitverse
-          git pull --rebase origin master
-          git merge gitverse/master --no-edit || echo "Merge conflict"
-          git push origin HEAD
+          
+          # 3. Жестко сбрасываем локальную ветку до состояния GitVerse
+          # Это очистит GitHub от любых расхождений (включая старые файлы)
+          git reset --hard gitverse/master
+          
+          # 4. Пушим с флагом --force, чтобы перезаписать историю на GitHub
+          git push origin HEAD --force
