@@ -1103,3 +1103,112 @@ describe('VL-254 — бюджет времени и запрет node -e-обх�
   });
 });
 
+// ============================================================
+// VL-312 — ревизия промптов фаз: структура эталона phase-spec и запрет дублей
+// ============================================================
+//
+// Ревизия VL-312 привела все шаблоны фаз к структуре эталона phase-spec
+// (короткий «Порядок», отдельный «Запреты», одно правило в одном месте)
+// и добавила правило параллельных вызовов. Тест — механический сторож,
+// чтобы дубли не наросли снова: (1) обязательные маркеры шагов у каждого
+// шаблона, (2) «ключевое правило встречается не более N раз в шаблоне».
+// Пустой или урезанный шаблон (без отчёта, запретов, финального маркера)
+// валит тест. Подстроки-маркеры держим короткими и стабильными (lesson-130).
+
+describe('VL-312 — структура шаблонов фаз и отсутствие дублей правил', () => {
+  const read = (file) => readFileSync(join(templatesDir, file), 'utf-8');
+  const agentPromptText = () =>
+    readFileSync(fileURLToPath(new URL('../../templates/agent-prompt.md', import.meta.url)), 'utf-8');
+
+  /**
+   * Обязательные маркеры каждого шаблона: блок порядка, блок запретов,
+   * финальный маркер. Отчётность — либо backlog_finish_phase (фазы с
+   * переходом статуса), либо backlog_add_comment (comment/reject), либо
+   * текстовый отчёт (analyze/prompt): это и есть «шаг отчёта» фазы.
+   */
+  const REQUIRED_MARKERS = [
+    ['phase-spec.md', ['## Порядок', '## Запреты', 'backlog_update_task', 'backlog_finish_phase']],
+    ['phase-plan.md', ['## Порядок', '## Запреты', 'backlog_finish_phase', 'backlog_update_task']],
+    ['phase-code.md', ['## Порядок', '## Запреты', 'backlog_finish_phase', 'backlog_manage_ac', 'backlog_manage_dod']],
+    ['phase-do.md', ['## Порядок', '## Запреты', 'backlog_finish_phase', 'backlog_manage_ac']],
+    ['phase-close.md', ['## Порядок', '## Запреты', 'backlog_finish_phase', 'DoD']],
+    ['phase-close-worktree.md', ['## Порядок', '## Запреты', 'backlog_finish_phase', 'DoD']],
+    ['phase-comment.md', ['## Порядок', '## Запреты', 'backlog_add_comment']],
+    ['phase-reject.md', ['## Порядок', '## Запреты', 'backlog_add_comment', 'git restore']],
+    ['phase-investigate.md', ['## Порядок', '## Запреты', 'backlog_finish_phase', 'document_create']],
+    ['phase-materialize.md', ['## Порядок', '## Запреты', 'backlog_finish_phase', 'backlog_create_task']],
+    ['phase-analyze.md', ['## Порядок', '## Запреты', 'backlog_search']],
+    ['prompt.md', ['## Порядок', '## Запреты', '{{prompt}}']],
+  ];
+
+  /**
+   * Ключевые правила ревизии: подстрока → максимум вхождений в ОДНОМ шаблоне.
+   * Одно правило — одно место. Для массового add максимум 0: каноническая
+   * формулировка живёт в templates/agent-prompt.md, в фазах её быть не должно
+   * (в фазах остаётся ссылка на общий промпт).
+   */
+  const RULE_MAX_IN_PHASE = {
+    'Пакетное чтение': 1,
+    'Параллельные вызовы': 1,
+    'README — витрина': 1,
+    'Упоминания инцидентов': 1,
+    '--max-tool-calls': 1,
+    'git add -A': 0,
+  };
+
+  it('обязательные маркеры шагов есть у каждого шаблона; пустой или урезанный валит тест', () => {
+    for (const [file, markers] of REQUIRED_MARKERS) {
+      const text = read(file);
+      assert.ok(text.length > 400, `${file}: шаблон не пустой и не урезан (${text.length} символов)`);
+      for (const marker of markers) {
+        assert.ok(text.includes(marker), `${file}: обязательный маркер шага «${marker}»`);
+      }
+      // Терминальный вывод фазы: «Готово» (фазы) либо текстовый отчёт (prompt)
+      assert.match(text, /«Готово»|## Формат финала|финальный текст/, `${file}: терминальный вывод фазы`);
+      // Первая строка — маркер фазы (VL-261): ран режется по нему
+      assert.match(text.split('\n')[0], /^Ты — /, `${file}: первая строка начинается с «Ты — »`);
+    }
+  });
+
+  it('ни одно ключевое правило не повторяется в шаблоне больше разрешённого', () => {
+    const files = readdirSync(templatesDir).filter((f) => f.endsWith('.md'));
+    assert.ok(files.length >= 12, `шаблоны фаз найдены (${files.length})`);
+    for (const file of files) {
+      const text = read(file);
+      for (const [rule, max] of Object.entries(RULE_MAX_IN_PHASE)) {
+        const count = text.split(rule).length - 1;
+        assert.ok(count <= max, `${file}: «${rule}» встречается ${count} раз (максимум ${max})`);
+      }
+    }
+  });
+
+  it('правило параллельных вызовов: каноническая формулировка в agent-prompt + шаблоны чтения', () => {
+    const agent = agentPromptText();
+    assert.ok(agent.includes('ОДИН ход'), 'agent-prompt.md: независимые вызовы — одним ходом');
+    assert.ok(agent.includes('assistant-сообщении'), 'agent-prompt.md: несколько tool_calls в одном assistant-сообщении');
+    // Шаблоны, где чтение кода уместно: правило есть ровно один раз
+    for (const file of ['phase-plan.md', 'phase-code.md', 'phase-do.md', 'phase-investigate.md']) {
+      const text = read(file);
+      assert.ok(text.includes('Параллельные вызовы'), `${file}: буллет «Параллельные вызовы»`);
+      assert.ok(text.includes('ОДНИМ ходом'), `${file}: формулировка «ОДНИМ ходом»`);
+      assert.ok(text.includes('assistant-сообщении'), `${file}: несколько tool_calls в одном сообщении`);
+      assert.equal(text.split('Параллельные вызовы').length - 1, 1, `${file}: правило ровно один раз`);
+    }
+  });
+
+  it('канонические формулировки правил живут в agent-prompt, а не размножены по фазам', () => {
+    const agent = agentPromptText();
+    // Два правила, которые в VL-312 сведены к одной формулировке в общем промпте
+    assert.ok(agent.includes('README — витрина'), 'agent-prompt.md: каноническое правило README');
+    assert.ok(agent.includes('git add -A'), 'agent-prompt.md: канонический запрет массового add');
+    assert.ok(agent.includes('Упоминания инцидентов'), 'agent-prompt.md: правило про упоминания инцидентов');
+    assert.ok(agent.includes('--max-tool-calls'), 'agent-prompt.md: правило про лимит tool-calls');
+    // В фазах этих правил нет (кроме ссылки), поэтому счётчик 0 допустим,
+    // а вот дублировать канон в двух шаблонах фазы — уже нет.
+    for (const file of ['phase-code.md', 'phase-do.md', 'phase-close.md', 'phase-close-worktree.md']) {
+      const text = read(file);
+      assert.equal(text.split('Упоминания инцидентов').length - 1, 0, `${file}: нет локальной копии правила об инцидентах`);
+    }
+  });
+});
+
