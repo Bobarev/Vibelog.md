@@ -24,6 +24,7 @@
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, rmSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,7 +40,18 @@ import { createLessonFile } from '../../dist/core/lesson.js';
 const cwd = mkdtempSync(join(tmpdir(), 'vibelog-write-ack-contract-'));
 const backlogDir = join(cwd, 'backlog');
 
+/**
+ * Фазовый env агентской сессии на время файла (VL-286): `VIBELOG_CWD` увёл бы
+ * `git_commit` (VL-311) в главный репозиторий вместо mkdtemp-каталога.
+ * Сохранённые значения возвращаются в afterAll.
+ */
+const savedPhaseEnv = {};
+
 beforeAll(() => {
+  for (const key of ['VIBELOG_CWD', 'VIBELOG_PHASE_TASK_ID', 'VIBELOG_PHASE_NAME', 'VIBELOG_RUN_PHASE', 'VIBELOG_RUN_STARTED_AT']) {
+    savedPhaseEnv[key] = process.env[key];
+    delete process.env[key];
+  }
   mkdirSync(join(backlogDir, 'tasks'), { recursive: true });
   writeFileSync(join(backlogDir, 'config.yml'), stringifyYaml({
     project_name: 'WriteAck Contract Test',
@@ -50,9 +62,17 @@ beforeAll(() => {
     types: ['bug', 'feature', 'chore'],
     definition_of_done: ['Тесты проходят'],
   }), 'utf-8');
+  // VL-311: git_commit проверяется на реальном репозитории (noop-сценарий)
+  execFileSync('/usr/bin/git', ['init', '-q'], { cwd });
+  execFileSync('/usr/bin/git', ['config', 'user.email', 'test@example.com'], { cwd });
+  execFileSync('/usr/bin/git', ['config', 'user.name', 'Test'], { cwd });
 });
 
 afterAll(() => {
+  for (const [key, value] of Object.entries(savedPhaseEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   rmSync(cwd, { recursive: true, force: true });
 });
 
@@ -153,6 +173,8 @@ describe('VL-306 — все write-инструменты отвечают JSON-a
       'lesson_audit',
       'lesson_classify',
       'write_file',
+      // VL-311: git_commit отвечает JSON-ack (hash/subject/paths) и noop
+      'git_commit',
     ]);
     // Явные исключения с причиной: инструменты супервизора/очереди (VL-268)
     // управляют прогоном фаз, а не данными backlog; их ответ — карточка
@@ -224,6 +246,17 @@ const NOOP_SCENARIOS = {
     const add = await handleToolCall('milestone_add', { name: 'Mnoop', description: 'd' }, cwd);
     assert.equal(JSON.parse(add).ok, true);
     return JSON.parse(await handleToolCall('milestone_rename', { from: 'Mnoop', to: 'Mnoop' }, cwd));
+  },
+  // VL-311: повторный git_commit по тем же (уже закоммиченным) путям — noop.
+  git_commit: async () => {
+    writeFileSync(join(cwd, 'gitcommit-noop.txt'), 'noop', 'utf-8');
+    const first = JSON.parse(await handleToolCall('git_commit', {
+      paths: ['gitcommit-noop.txt'], message: 'feat: noop-коммит контракта',
+    }, cwd));
+    assert.equal(first.ok, true, `первый git_commit обязан примениться — ${JSON.stringify(first)}`);
+    return JSON.parse(await handleToolCall('git_commit', {
+      paths: ['gitcommit-noop.txt'], message: 'feat: noop-коммит контракта',
+    }, cwd));
   },
 };
 

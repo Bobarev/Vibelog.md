@@ -220,9 +220,7 @@ function isInOtherWorktree(absPath: string, ownTaskId: string): boolean {
  * @param enabled — включён ли трейлер (`resolveCommitCoauthor`)
  */
 export function buildAmendMessage(originalFull: string, requested: string, enabled: boolean): string {
-  const lines = originalFull.split('\n');
-  const originalSubject = lines[0] ?? '';
-  const originalBody = lines.slice(1).join('\n').trim();
+  const originalBody = originalFull.split('\n').slice(1).join('\n').trim();
   const req = requested.trim();
   let message: string;
   if (req === '') message = originalFull;

@@ -45,6 +45,8 @@ describe('VL-219 — isWriteOperation (по природе операции)', (
       'document_create', 'document_update',
       'reference_add', 'reference_update', 'reference_remove', 'reference_sync',
       'lesson_create', 'lesson_update', 'lesson_supersede', 'reference_link',
+      // VL-311: коммит меняет историю репозитория — write по природе
+      'git_commit',
       // VL-268: супервизор — запуск фаз/очереди/прогона меняет состояние
       'backlog_trigger_phase', 'backlog_auto_queue', 'backlog_supervisor',
     ]) {

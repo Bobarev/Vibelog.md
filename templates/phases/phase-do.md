@@ -36,7 +36,7 @@ References: {{taskReferences}}
    git status --porcelain
    git_commit {"paths": [<явные пути изменённых файлов кода>], "message": "feat: {{taskId}} — <краткое описание сути>"}
    Только файлы этой задачи (код, тесты, шаблоны); файлы backlog/ НЕ коммит; не push. Если изменений нет — git_commit ответит noop (reason «Изменений нет») — пропусти шаг.
-   Трейлер Co-authored-by, запрет массового add (git add -A, «.») и отказ на пути вне modified_files задачи делаются ВНУТРИ инструмента — отдельных -m и текстовых запретов в команде не нужно. Хэш и тему бери из ответа (applied.hash/applied.subject).
+   Трейлер Co-authored-by, запрет массового add (флаг -A, «.») и отказ на пути вне modified_files задачи делаются ВНУТРИ инструмента — отдельных -m и текстовых запретов в команде не нужно. Хэш и тему бери из ответа (applied.hash/applied.subject).
 
 5. Заверши фазу ОДНЫМ вызовом backlog_finish_phase — отчёт комментарием + modifiedFiles + статус + батч-отметки AC/DoD (упомяни хэш feat-коммита из шага 4):
    backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза Do выполнена. Изменено: <файлы>, коммит <хэш>. Проверки: <список выполненных>. Что осталось: ...", "modifiedFiles": ["src/foo.ts"], "acChecks": [<индексы выполненных AC из шага 3>], "dodChecks": [<индексы выполненного DoD из шага 3>], "status": "{{producesStatus}}"}

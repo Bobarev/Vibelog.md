@@ -1,4 +1,5 @@
 node_modules/
+node_modules
 dist/
 # Клоны референсных репозиториев (VL-152), см. vibelog reference sync
 backlog/references/data/

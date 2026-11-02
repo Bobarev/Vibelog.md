@@ -15,7 +15,6 @@ import {
   COMMIT_TRAILER,
   appendCommitTrailer,
   commitMessageArgs,
-  commitTrailerText,
   resolveCommitCoauthor,
 } from '../../dist/core/commit-trailer.js';
 
@@ -86,7 +85,7 @@ describe('resolveCommitCoauthor', () => {
   });
 });
 
-describe('commitMessageArgs / commitTrailerText', () => {
+describe('commitMessageArgs', () => {
   it('аргументы git commit содержат трейлер при включённой настройке', () => {
     const args = commitMessageArgs(makeRoot(), 'docs(task): VL-1 — token_usage (close)');
     assert.deepEqual(args, ['-m', `docs(task): VL-1 — token_usage (close)\n\n${COMMIT_TRAILER}`]);
@@ -95,10 +94,5 @@ describe('commitMessageArgs / commitTrailerText', () => {
   it('аргументы без трейлера при commit_coauthor: false', () => {
     const args = commitMessageArgs(makeRoot({ commit_coauthor: false }), 'feat: VL-1');
     assert.deepEqual(args, ['-m', 'feat: VL-1']);
-  });
-
-  it('commitTrailerText: строка при включённой настройке, пусто при выключенной', () => {
-    assert.equal(commitTrailerText(makeRoot()), COMMIT_TRAILER);
-    assert.equal(commitTrailerText(makeRoot({ commit_coauthor: false })), '');
   });
 });
