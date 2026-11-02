@@ -617,6 +617,24 @@ describe('parseSetCommand (VL-94)', () => {
     }
   });
 
+  // ── VL-308: /set reset-limits-on-resume on|off ──
+
+  it('VL-308: reset-limits-on-resume on|off|true|false → boolean', () => {
+    assert.deepEqual(parseSetCommand('reset-limits-on-resume on'), { key: 'reset-limits-on-resume', value: true });
+    assert.deepEqual(parseSetCommand('reset-limits-on-resume off'), { key: 'reset-limits-on-resume', value: false });
+    assert.deepEqual(parseSetCommand('reset-limits-on-resume true'), { key: 'reset-limits-on-resume', value: true });
+    assert.deepEqual(parseSetCommand('reset-limits-on-resume false'), { key: 'reset-limits-on-resume', value: false });
+    assert.deepEqual(parseSetCommand('RESET-LIMITS-ON-RESUME ON'), { key: 'reset-limits-on-resume', value: true });
+  });
+
+  it('VL-308: reset-limits-on-resume — мусор и пустое значение → error с подсказкой', () => {
+    for (const bad of ['reset-limits-on-resume', 'reset-limits-on-resume maybe', 'reset-limits-on-resume 1']) {
+      const r = parseSetCommand(bad);
+      assert.ok('error' in r, '"' + bad + '" → error');
+      assert.match(r.error, /reset-limits-on-resume: ожидается on\|off/);
+    }
+  });
+
   it('VL-147: подсказка и перечень параметров включают code-same-session', () => {
     const unknown = parseSetCommand('foo bar');
     assert.ok('error' in unknown);
