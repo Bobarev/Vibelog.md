@@ -1,7 +1,7 @@
 ---
 id: lesson-173
 title: Возвращай no-op write-вызову маркер noop и не убивай фазу повтором уже применённого вызова — иначе модель крутит вызов до loop detection
-status: active
+status: superseded
 tags:
   - mcp
   - loop-detection
