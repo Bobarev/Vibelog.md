@@ -7,7 +7,7 @@
 <p align="center">ИИ-агенты пишут код. Вы проверяете задачи: до, во время и после.</p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/vibelog.md"><img src="https://img.shields.io/npm/v/vibelog.md.svg" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/vibelog.md"><img src="https://img.shields.io/npm/v/vibelog.md?color=blue" alt="npm version"></a>
   <a href="https://www.npmjs.com/package/vibelog.md"><img src="https://img.shields.io/npm/dm/vibelog.md" alt="npm downloads"></a>
   <a href="https://gitverse.ru/bobarev/Vibelog.md/content/master/LICENSE"><img src="https://img.shields.io/badge/license-Unlicense-blue" alt="Unlicense"></a>
 </p>
