@@ -2543,7 +2543,7 @@ process.exit(0);
     }
   });
 
-  it('startTaskPhase: без комментария — литеральный {{comment}} в промпте (VL-80)', async () => {
+  it('startTaskPhase: без комментария — в промпте «без комментария», литерала нет (VL-307)', async () => {
     resetStubEnv();
     setStubEnv({
       VL28_STUB_MARKER: join(testRoot, 'marker-taskphase-nocomment.txt'),
@@ -2556,8 +2556,34 @@ process.exit(0);
     const run = await waitDone(task.id);
     assert.equal(run.exitCode, 0, run.logTail ?? '');
     const prompt = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8')).join(' ');
-    assert.ok(prompt.includes('{{comment}}'), 'ожидался литеральный {{comment}} (контракт VL-80)');
+    // VL-307: {{comment}} подставляется всегда — литерала в промпте не бывает
+    assert.ok(!prompt.includes('{{comment}}'), 'литеральный {{comment}} не должен остаться');
+    assert.ok(prompt.includes('без комментария'), 'ожидалась подстановка «без комментария»');
     assert.equal(getTask(testRoot, task.id).comments.length, 0, 'комментариев не добавлено');
+    resetStubEnv();
+  });
+
+  it('startTaskPhase: комментарий не дублируется в промпте (VL-307)', async () => {
+    resetStubEnv();
+    setStubEnv({
+      VL28_STUB_MARKER: join(testRoot, 'marker-taskphase-dup.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+    });
+    const task = createTaskFile(testRoot, { title: 'startTaskPhase дубль', status: 'Planned' });
+    const res = startTaskPhase(testRoot, task.id, 'plan', { comment: 'уникальный-маркер-vl307' });
+    assert.equal(res.started, true, JSON.stringify(res));
+    const run = await waitDone(task.id);
+    assert.equal(run.exitCode, 0, run.logTail ?? '');
+    const prompt = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8')).join(' ');
+    // Ровно одно вхождение в строке-подстановке: раньше текст попадал и в блок
+    // комментария, и внутрь фолбэк-строки «остался неподставленный {{comment}}».
+    // (Второе вхождение в {{taskLastComment}} — ожидаемо: комментарий записан
+    // в задачу до спавна, это отдельная подстановка, а не дубль фолбэка.)
+    const occurrences = prompt.split('Дополнительный комментарий пользователя к запуску фазы: уникальный-маркер-vl307').length - 1;
+    assert.equal(occurrences, 1, `строка-подстановка комментария должна быть одна, найдено ${occurrences}`);
+    assert.ok(!prompt.includes('остался неподставленный'), 'фолбэк-строки в промпте быть не должно');
+    assert.ok(!prompt.includes('{{comment}}'), 'литеральный {{comment}} не остался');
     resetStubEnv();
   });
 });

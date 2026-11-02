@@ -154,6 +154,32 @@ describe('VL-137 — блок подстановки задачи в шабло�
     }
   });
 
+  it('VL-307: фолбэк-строка про неподставленный {{comment}} удалена из 6 шаблонов', () => {
+    // {{comment}} подставляется всегда («без комментария» при отсутствии) —
+    // фолбэк-строка не нужна и только дублировала текст комментария
+    for (const file of [
+      'phase-spec.md',
+      'phase-plan.md',
+      'phase-code.md',
+      'phase-do.md',
+      'phase-investigate.md',
+      'phase-materialize.md',
+    ]) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      assert.ok(!text.includes('остался неподставленный'), `${file}: фолбэк-строки быть не должно`);
+      assert.ok(text.includes('{{comment}}'), `${file}: подстановка {{comment}} остаётся`);
+    }
+  });
+
+  it('VL-307: comment/reject — фолбэк на сравнение с «без комментария», не на литерал', () => {
+    const comment = readFileSync(join(templatesDir, 'phase-comment.md'), 'utf-8');
+    assert.ok(comment.includes('«без комментария»'), 'phase-comment: фолбэк по строке-заглушке');
+    assert.ok(!comment.includes('если {{comment}} не подставлено'), 'phase-comment: проверки литерала нет');
+    const reject = readFileSync(join(templatesDir, 'phase-reject.md'), 'utf-8');
+    assert.ok(reject.includes('«без комментария»'), 'phase-reject: фолбэк по строке-заглушке');
+    assert.ok(!reject.includes('Если {{comment}} не подставлено'), 'phase-reject: проверки литерала нет');
+  });
+
   it('phase-code и оба close-шаблона содержат правило пакетирования shell-команд', () => {
     for (const file of ['phase-code.md', 'phase-close.md', 'phase-close-worktree.md']) {
       const text = readFileSync(join(templatesDir, file), 'utf-8');
