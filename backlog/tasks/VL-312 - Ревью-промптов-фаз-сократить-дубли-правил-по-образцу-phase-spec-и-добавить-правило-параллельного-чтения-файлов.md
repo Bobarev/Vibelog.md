@@ -5,7 +5,7 @@ status: Review
 assignee: []
 reporter: ''
 created_date: '2026-11-03 00:15'
-updated_date: '2026-11-03 02:06'
+updated_date: '2026-11-03 02:14'
 due_date: ''
 labels:
   - prompt
@@ -37,13 +37,13 @@ modified_files:
 lessons:
   - lesson-181
 token_usage:
-  input: 16543417
-  output: 368437
-  cache: 15635968
-  total: 16911854
-  requests: 160
-  duration_ms: 1204498
-  reasoning: 285244
+  input: 16580308
+  output: 368981
+  cache: 15671808
+  total: 16949289
+  requests: 161
+  duration_ms: 1209785
+  reasoning: 285496
   by_phase:
     code:
       input: 16163568
@@ -51,10 +51,10 @@ token_usage:
       cache: 15385600
       requests: 149
     close:
-      input: 379849
-      output: 3630
-      cache: 250368
-      requests: 11
+      input: 416740
+      output: 4174
+      cache: 286208
+      requests: 12
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -146,6 +146,20 @@ created: 2026-11-03 02:03
 ---
 author: @agent
 created: 2026-11-03 02:06
+---
+Фаза: авто-отчёт (comment не передан моделью)
+Статус: Done
+AC отмечено: 5 из 6
+DoD отмечено: 2 из 3
+AC не отмечены (1): 6. pnpm build и полный pnpm test зелёные; документация (doc-10 §6.3 — правило параллельного чтения вместо read_many_files, CHANGELOG)
+DoD не отмечены (1): 2. Документация обновлена
+Файлы (13): templates/agent-prompt.md, templates/phases/phase-plan.md, templates/phases/phase-code.md, templates/phases/phase-do.md, templates/phases/phase-close.md, templates/phases/phase-close-worktree.md, templates/phases/phase-investigate.md, templates/phases/phase-materialize.md, templates/phases/phase-comment.md, templates/phases/phase-reject.md, …
+Фрагмент плана/резюме: план и резюме отсутствуют.
+Отчёт собран сервером автоматически (VL-253): модель не передала comment.
+Статус не изменён: терминальный «Done» при неотмеченных пунктах (DoD: #2; AC: #6) возможен только через backlog_finish_phase с dodOverride или aborted (VL-248/VL-309). Задача оставлена в «Review».
+---
+author: @agent
+created: 2026-11-03 02:14
 ---
 Фаза: авто-отчёт (comment не передан моделью)
 Статус: Done
