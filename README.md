@@ -1,11 +1,23 @@
-# Vibelog.md
+<p align="center">
+  <img src="./.gitverse/vibelog-logo.png" alt="Backlog.md logo" width="120">
+</p>
 
-[![npm version](https://img.shields.io/npm/v/vibelog.md.svg)](https://www.npmjs.com/package/vibelog.md)
-[![license](https://img.shields.io/badge/license-Unlicense-blue)](http://unlicense.org)
-[![Node.js 20+](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen)](https://nodejs.org)
+<h1 align="center">Vibelog.md</h1>
+<p align="center"><strong>Markdown-нативный таск-менеджер для git-репозиториев, совместимый с <a href="https://github.com/MrLesk/Backlog.md">Backlog.md</a> и работающий на чистом Node.js 20+.</strong></p>
+<p align="center">ИИ-агенты пишут код. Вы проверяете задачи: до, во время и после.</p>
 
-Markdown-нативный таск-менеджер для git-репозиториев, совместимый с [Backlog.md](https://github.com/MrLesk/Backlog.md) и работающий на чистом Node.js 20+.
+<p align="center">
+  <a href="https://www.npmjs.com/package/vibelog.md"><img src="https://img.shields.io/npm/v/vibelog.md.svg" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/vibelog.md"><img src="https://img.shields.io/npm/dm/vibelog.md" alt="npm downloads"></a>
+  <a href="https://gitverse.ru/bobarev/Vibelog.md/content/master/LICENSE"><img src="https://img.shields.io/badge/license-Unlicense-blue" alt="Unlicense"></a>
+</p>
 
+<p align="center">
+<code>npm i -g vibelog.md</code>
+</p>
+
+---
+> [!NOTE]
 > Это витрина проекта, не справочник. Технические детали живут в [документации](backlog/docs/); правила — в [AGENTS.md](AGENTS.md).
 
 ## Зачем
