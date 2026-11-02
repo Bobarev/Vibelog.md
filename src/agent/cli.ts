@@ -502,7 +502,9 @@ export async function main(argv: string[]): Promise<void> {
           positionals[0],
           positionals[1],
           {
-            comment: opts.comment ?? '',
+            // VL-307: {{comment}} подставляется всегда — при отсутствии
+            // комментария строкой «без комментария» (литерала в промпте нет)
+            comment: opts.comment || 'без комментария',
             prompt: opts.comment ?? '',
             ...taskVars,
             producesStatus,

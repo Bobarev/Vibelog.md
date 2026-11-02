@@ -147,9 +147,10 @@ describe('POST /api/tasks/:id/trigger + comment (VL-172)', () => {
 
     const run = await waitDone(task.id);
     assert.equal(run.exitCode, 0);
-    // Без extraVars contract VL-80: литеральный {{comment}} + фолбэк-строка
+    // VL-307: без комментария подставляется «без комментария» — литерала нет
     const prompt = readPromptArgv().join(' ');
-    assert.ok(prompt.includes('{{comment}}'), 'ожидался литеральный {{comment}} (контракт VL-80)');
+    assert.ok(!prompt.includes('{{comment}}'), 'литеральный {{comment}} не должен остаться');
+    assert.ok(prompt.includes('без комментария'), 'ожидалась подстановка «без комментария»');
   });
 
   it('несуществующая задача → 404, ничего не пишется', () => {
