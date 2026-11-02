@@ -343,6 +343,50 @@ vibelog decision <subcommand> [опции]
 
 ---
 
+## experiment
+
+```
+vibelog experiment <subcommand> [опции]
+
+  create <title> [--dataset <name>] [--runner manual] [--status draft]
+         [--variant A:builtin:spec] [-d описание]
+  list [--status S]
+  dataset create <name> [--from-completed] [--limit N] [--force]
+  dataset list [--exp <exp-id>]
+  dataset view <name> [--exp <exp-id>] [--dataset-path <p>]
+  dataset <exp-id> [--dataset-path <p>]
+```
+
+A/B-эксперименты (спецификация — doc-21). Карточка эксперимента — `backlog/experiments/exp-<id>.md`; общие датасеты — `backlog/experiments/datasets/<name>.jsonl`, частные — `backlog/experiments/<exp-id>/datasets/<name>.jsonl`.
+
+### dataset create
+
+Создаёт **общий** датасет `backlog/experiments/datasets/<name>.jsonl`.
+
+| Флаг | Описание |
+|---|---|
+| `--from-completed` | Собрать строки из завершённых задач (`status: Done` в `backlog/tasks/**` и `backlog/completed/`): `task_id` = ID, `title`+`description` → `input`, `acceptanceCriteria[].text` → `expected_ac`, `type`/`priority` → `custom`; сортировка по `updated_date` убыв. |
+| `--limit N` | Ограничить число строк (по умолчанию 20; действует с `--from-completed`) |
+| `--force` | Перезаписать существующий файл (без флага — отказ) |
+
+Без `--from-completed` создаётся пустой файл и печатается шаблон строки (`DATASET_ROW_TEMPLATE`).
+
+### dataset list
+
+Печатает общие и частные датасеты с пометкой происхождения (`общий` / `exp-<id>`) и счётчиками валидных/битых строк. `--exp <exp-id>` — ограничить частными датасетами одного эксперимента.
+
+### dataset view
+
+Валидирует датасет и печатает число валидных и битых строк, список `task_id`, тексты ошибок (`строка N: …`). `--exp <exp-id>` — взять частный датасет эксперимента. `--dataset-path <p>` — читать указанный файл напрямую. Exit 1 при наличии ошибок.
+
+### dataset <exp-id>
+
+Показывает резолв датасета для эксперимента по порядку «частный → общий» (doc-21 §6): `backlog/experiments/<exp-id>/datasets/<name>.jsonl` → `backlog/experiments/datasets/<name>.jsonl`. Имя берётся из `<exp-id> <name>` или из поля `dataset` карточки эксперимента. При коллизии (оба файла есть) в stderr печатается warning, а в stdout — строка `resolution: {"chosen": "private"|"shared", "path": …, "shadowed": …}` для записи в `meta.json` рана. `--dataset-path <p>` перебивает резолв полностью (`chosen: "explicit"`), предупреждая, если общий файл остался в тени.
+
+**Схема строки JSONL** (doc-21 §5): `task_id` (обязателен, уникален), `expected_ac?`, `input?`, `payload?`, `custom?`, `meta?`. Синоним `expected` читается как `expected_ac` с warning'ом; одновременные `input` и `payload` — warning, выигрывает `payload`. Битые JSON-строки и дубликаты `task_id` попадают в `errors`, команда не падает.
+
+---
+
 ## doctor
 
 ```
