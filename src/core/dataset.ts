@@ -84,8 +84,12 @@ export type ResolveKind = 'dataset' | 'prompt';
 
 /** Структура резолва для `meta.json` рана (doc-21 §6). */
 export interface ResolutionInfo {
-  /** 'private' — частный файл эксперимента, 'shared' — общий, 'explicit' — по пути. */
-  chosen: 'private' | 'shared' | 'explicit';
+  /**
+   * 'private' — частный файл эксперимента, 'shared' — общий,
+   * 'explicit' — по пути, 'builtin' — встроенный промпт фазы (VL-296:
+   * файловая система не опрашивается, в meta пишется путь шаблона).
+   */
+  chosen: 'private' | 'shared' | 'explicit' | 'builtin';
   /** Путь относительно backlog-директории (не абсолютный: meta переносима). */
   path: string;
   /** Затенённый файл (есть только при коллизии частный/общий). */

@@ -4,7 +4,9 @@
  * MVP-шаг 1 (VL-294): каркас — `create` и `list`.
  * MVP-шаг 2 (VL-295): датасеты — `dataset create|list|view` и
  * `experiment dataset <exp-id>` (показ резолва «частный → общий»).
- * Логика прогонов (run/record/report/judge) появится в VL-296…VL-298.
+ * MVP-шаг 3 (VL-296): прогоны — `run` (manual, `--dry-run`, `--recover`)
+ * и `record` (upsert по (task_id, variant), `--run`, `--from-json`).
+ * Логика отчёта и judge появится в VL-297/VL-298.
  *
  * Подкоманды:
  * - create <title> [--dataset D] [--runner manual] [--status draft]
@@ -14,9 +16,15 @@
  * - dataset list [--exp <exp-id>]
  * - dataset view <name> [--exp <exp-id>] [--dataset-path <p>]
  * - dataset <exp-id> [--dataset-path <p>]   (резолв для эксперимента)
+ * - run <exp-id> [--dry-run] [--recover] [--variant A,B]
+ *                  [--variant-a-prompt-path <p>] [--variant-b-prompt-path <p>]
+ * - record <exp-id> --variant A --task <id> [--score n] [--output t] [--error t]
+ *                  [--error-kind k] [--tool-calls N] [--duration ms] [--cost n]
+ *                  [--custom '<json>'] [--run N] [--from-json <file>]
  *
  * Файлы: backlog/experiments/exp-<id>.md (YAML-фронтматтер + описание),
- *        backlog/experiments/datasets/<name>.jsonl (общие датасеты).
+ *        backlog/experiments/datasets/<name>.jsonl (общие датасеты),
+ *        backlog/experiments/exp-<id>/run-<N>/{meta.json,results.jsonl}.
  */
 
 import { getFlag, getFlagArray, hasFlag } from '../args.js';
@@ -32,6 +40,7 @@ import {
   listDatasets, writeSharedDataset, DATASET_ROW_TEMPLATE, DEFAULT_COMPLETED_LIMIT,
 } from '../../core/dataset.js';
 import type { ParsedDataset, DatasetRow } from '../../core/dataset.js';
+import { experimentRun, experimentRecord } from './experiment-run.js';
 import { join, relative } from 'node:path';
 
 /**
@@ -51,10 +60,20 @@ function parseVariantArg(raw: string): [string, Partial<VariantConfig>] | null {
   const key = value.slice(0, firstColon).trim().toUpperCase();
   const rest = value.slice(firstColon + 1).trim();
   if (!key || !rest) return null;
-  // label — после последнего двоеточия, но только если остаток не сам
-  // начинается с builtin: (иначе 'builtin:spec' был бы разрезан неверно)
+  // label — после последнего двоеточия. Для builtin:<phase>:<label> разделитель
+  // ищется ПОСЛЕ префикса: иначе 'builtin:spec' был бы разрезан неверно, а
+  // 'builtin:spec:текущий' терял бы label в самом prompt (VL-296).
+  if (rest.startsWith('builtin:')) {
+    const afterPrefix = rest.indexOf(':', 'builtin:'.length);
+    if (afterPrefix > 0) {
+      const prompt = rest.slice(0, afterPrefix).trim();
+      const label = rest.slice(afterPrefix + 1).trim();
+      if (prompt) return [key, { prompt, ...(label ? { label } : {}) }];
+    }
+    return [key, { prompt: rest }];
+  }
   const lastColon = rest.lastIndexOf(':');
-  if (lastColon > 0 && !rest.startsWith('builtin:')) {
+  if (lastColon > 0) {
     const prompt = rest.slice(0, lastColon).trim();
     const label = rest.slice(lastColon + 1).trim();
     if (prompt) return [key, { prompt, ...(label ? { label } : {}) }];
@@ -90,13 +109,17 @@ export async function runExperiment(
       return experimentList(flags, backlogDir);
     case 'dataset':
       return experimentDataset(positional, flags, backlogDir);
+    case 'run':
+      return experimentRun(positional, flags, backlogDir);
+    case 'record':
+      return experimentRecord(positional, flags, backlogDir);
     default:
       // `experiment dataset <exp-id>`: router отдаёт exp-id в subcommand (VL-295)
       if (/^exp-/i.test(subcommand)) {
         return experimentDatasetResolve([subcommand, ...positional], flags, backlogDir);
       }
       printError(`Неизвестная подкоманда: ${subcommand}`);
-      printInfo('Доступные: create, list, dataset');
+      printInfo('Доступные: create, list, dataset, run, record');
   }
 }
 

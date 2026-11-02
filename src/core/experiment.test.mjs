@@ -7,7 +7,7 @@
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, rmSync, mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -15,6 +15,8 @@ import {
   experimentFilename, createExperiment, parseExperimentMarkdown,
   experimentToMarkdown, nextExperimentId, listExperiments, getExperiment,
   writeExperiment, normalizeExperimentStatus,
+  nextRunNumber, createRunDir, listRunNumbers, latestRunNumber, runDirFor,
+  writeMetaJson, readMetaJson, detectStaleRun, recoverRun, syncExperimentStatus,
 } from '../../dist/core/experiment.js';
 import {
   experimentsDir, experimentsDatasetsDir, experimentsPromptsDir, experimentRunsDir,
@@ -206,5 +208,177 @@ describe('VL-294 — чтение и запись в backlog/experiments/', () =
     } finally {
       rmSync(emptyRoot, { recursive: true, force: true });
     }
+  });
+});
+
+/* ── Прогоны (VL-296, doc-21 §8) ── */
+
+describe('VL-296 — прогоны: номера и атомарное создание каталога', () => {
+  it('nextRunNumber = max+1, непустые имена игнорируются', () => {
+    const root = mkdtempSync(join(tmpdir(), 'vibelog-runs-next-'));
+    try {
+      const runsDir = join(root, 'exp-x');
+      assert.equal(nextRunNumber(runsDir), 1, 'нет каталога → run-1');
+      mkdirSync(join(runsDir, 'run-1'), { recursive: true });
+      mkdirSync(join(runsDir, 'run-5'), { recursive: true });
+      mkdirSync(join(runsDir, 'run-broken'), { recursive: true });
+      mkdirSync(join(runsDir, 'datasets'), { recursive: true });
+      writeFileSync(join(runsDir, 'README.md'), '# не каталог\n', 'utf-8');
+      assert.deepEqual(listRunNumbers(runsDir), [1, 5]);
+      assert.equal(nextRunNumber(runsDir), 6, 'max+1, а не count+1 (дырка run-2..4 не переиспользуется)');
+      assert.equal(latestRunNumber(backlogDir, 'exp-no-runs'), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('createRunDir: первый run-1, второй run-2, каталоги раздельные', () => {
+    const root = mkdtempSync(join(tmpdir(), 'vibelog-runs-create-'));
+    try {
+      const first = createRunDir(join(root, 'backlog'), 'exp-9');
+      assert.equal(first.run, 1);
+      assert.ok(existsSync(first.runDir));
+      const second = createRunDir(join(root, 'backlog'), 'exp-9');
+      assert.equal(second.run, 2);
+      assert.notEqual(first.runDir, second.runDir);
+      assert.ok(existsSync(join(root, 'backlog', 'experiments', 'exp-9', 'run-1')));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('createRunDir под гонкой: занятый номер пропускается (EEXIST → N+1)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'vibelog-runs-race-'));
+    try {
+      const runsDir = join(root, 'backlog', 'experiments', 'exp-3');
+      mkdirSync(join(runsDir, 'run-1'), { recursive: true });
+      // Имитация гонки: «сосед» уже занял run-2 между nextRunNumber и mkdir
+      mkdirSync(join(runsDir, 'run-2'), { recursive: true });
+      const created = createRunDir(join(root, 'backlog'), 'exp-3');
+      assert.equal(created.run, 3, 'занятые номера не переиспользуются');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('VL-296 — meta.json и stale running', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibelog-runs-meta-'));
+  const rootBacklog = join(root, 'backlog');
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function makeMeta(overrides = {}) {
+    return {
+      schema_version: 1,
+      exp_id: 'exp-1',
+      run: 1,
+      status: 'running',
+      runner: 'manual',
+      started_at: '2026-11-02T10:00:00.000Z',
+      finished_at: null,
+      pid: null,
+      resolution: {},
+      results_ignored: false,
+      n: 0,
+      dropped: 0,
+      cost_total: null,
+      pricing_missing: true,
+      rerun_of: null,
+      reason: null,
+      ...overrides,
+    };
+  }
+
+  it('writeMetaJson/readMetaJson: round-trip, без temp-файлов', () => {
+    const { runDir } = createRunDir(rootBacklog, 'exp-1');
+    writeMetaJson(runDir, makeMeta());
+    const meta = readMetaJson(runDir);
+    assert.equal(meta.status, 'running');
+    assert.equal(meta.exp_id, 'exp-1');
+    assert.deepEqual(readdirSync(runDir).filter(f => f.includes('.tmp')), []);
+  });
+
+  it('readMetaJson: битый meta → null (лечится --recover), отсутствующий → null', () => {
+    const { runDir } = createRunDir(rootBacklog, 'exp-1');
+    writeFileSync(join(runDir, 'meta.json'), '{битый', 'utf-8');
+    assert.equal(readMetaJson(runDir), null);
+    assert.equal(readMetaJson(join(root, 'нет-такого')), null);
+  });
+
+  it('detectStaleRun: manual-ран (pid null) не зависший', () => {
+    assert.deepEqual(detectStaleRun(makeMeta()), { stale: false, reason: '' });
+    assert.equal(detectStaleRun(null).stale, false);
+  });
+
+  it('detectStaleRun: не жив pid → stale с причиной; completed/finished_at — нет', () => {
+    // PID 4194303 почти гарантированно не существует (за пределами max pid)
+    const deadPid = 4194303;
+    const stale = detectStaleRun(makeMeta({ pid: deadPid }));
+    assert.equal(stale.stale, true);
+    assert.match(stale.reason, new RegExp(`процесс ${deadPid} не жив`));
+
+    assert.equal(
+      detectStaleRun(makeMeta({ pid: deadPid, finished_at: '2026-11-02T11:00:00.000Z' })).stale,
+      false
+    );
+    assert.equal(detectStaleRun(makeMeta({ pid: deadPid, status: 'failed' })).stale, false);
+  });
+
+  it('detectStaleRun: живой pid (собственный процесс теста) — не завис', () => {
+    assert.equal(detectStaleRun(makeMeta({ pid: process.pid })).stale, false);
+  });
+
+  it('recoverRun: зависший ран → failed, частичные results.jsonl сохранены', () => {
+    const { run, runDir } = createRunDir(rootBacklog, 'exp-2');
+    writeMetaJson(runDir, makeMeta({ exp_id: 'exp-2', run, pid: 4194303 }));
+    writeFileSync(join(runDir, 'results.jsonl'), '{"task_id":"t1","variant":"A","score":5}\n', 'utf-8');
+
+    const recovered = recoverRun(rootBacklog, 'exp-2', run);
+    assert.equal(recovered.status, 'failed');
+    assert.ok(recovered.finished_at, 'finished_at дописан');
+    assert.match(recovered.reason, /не жив/);
+    // Частичные результаты остались нетронутыми
+    assert.match(readFileSync(join(runDir, 'results.jsonl'), 'utf-8'), /"score":5/);
+    assert.equal(readMetaJson(runDir).status, 'failed');
+  });
+
+  it('recoverRun: не-running ран и независший pid → ошибка', () => {
+    const { run, runDir } = createRunDir(rootBacklog, 'exp-3');
+    writeMetaJson(runDir, makeMeta({
+      exp_id: 'exp-3', run, status: 'completed', finished_at: '2026-11-02T11:00:00.000Z',
+    }));
+    assert.throws(() => recoverRun(rootBacklog, 'exp-3', run), /не в статусе running/);
+
+    const second = createRunDir(rootBacklog, 'exp-3');
+    writeMetaJson(second.runDir, makeMeta({ exp_id: 'exp-3', run: second.run, pid: process.pid }));
+    assert.throws(() => recoverRun(rootBacklog, 'exp-3', second.run), /не завис/);
+  });
+
+  it('syncExperimentStatus: draft → running → failed переписывает карточку', () => {
+    const exp = writeExperiment(rootBacklog, {
+      title: 'Статусы прогонов',
+      dataset: 'ds',
+      variants: { A: { prompt: 'builtin:spec' }, B: { prompt: 'builtin:plan' } },
+    });
+    assert.equal(syncExperimentStatus(rootBacklog, exp.id), 'draft', 'без прогонов — draft');
+
+    const { run, runDir } = createRunDir(rootBacklog, exp.id);
+    writeMetaJson(runDir, makeMeta({ exp_id: exp.id, run, pid: 4194303 }));
+    assert.equal(syncExperimentStatus(rootBacklog, exp.id), 'running');
+    assert.equal(getExperiment(rootBacklog, exp.id).experiment.status, 'running');
+
+    recoverRun(rootBacklog, exp.id, run);
+    assert.equal(syncExperimentStatus(rootBacklog, exp.id), 'failed');
+    assert.equal(getExperiment(rootBacklog, exp.id).experiment.status, 'failed');
+  });
+
+  it('runDirFor: путь run-<N> внутри каталога эксперимента', () => {
+    assert.equal(
+      runDirFor(backlogDir, 'exp-1', 3),
+      join(backlogDir, 'experiments', 'exp-1', 'run-3')
+    );
   });
 });

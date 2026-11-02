@@ -20,11 +20,11 @@
  */
 
 import {
-  readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync,
+  readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, renameSync, rmSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { parseFrontmatter, serializeFrontmatter } from './frontmatter.js';
-import { experimentsDir } from './paths.js';
+import { experimentsDir, experimentRunsDir } from './paths.js';
 
 /** Версия схемы карточки эксперимента: растёт при несовместимом изменении. */
 export const SCHEMA_VERSION = 1;
@@ -435,4 +435,257 @@ export function writeExperiment(backlogDir: string, input: WriteExperimentInput)
   });
   writeFileSync(join(dir, experimentFilename(exp.id)), experimentToMarkdown(exp, input.content || ''), 'utf-8');
   return exp;
+}
+
+// ── Прогоны (VL-296, doc-21 §8) ──
+
+/** Статус прогона (`meta.json`). */
+export type RunStatus = 'running' | 'completed' | 'failed';
+
+/** `meta.json` прогона (doc-21 §8) — единственный «живой» файл каталога run-N. */
+export interface RunMeta {
+  schema_version: number;
+  exp_id: string;
+  run: number;
+  status: RunStatus;
+  runner: string;
+  started_at: string;
+  finished_at: string | null;
+  /** pid процесса, который начал прогон; null — процесс не fork-ался (manual). */
+  pid: number | null;
+  /** Структура резолва (dataset + prompts) — воспроизводимость прогона. */
+  resolution: Record<string, unknown>;
+  results_ignored: boolean;
+  /** Число валидных строк (заполняет `report`, не `record`). */
+  n: number;
+  /** Число отброшенных строк (заполняет `report`). */
+  dropped: number;
+  cost_total: number | null;
+  pricing_missing: boolean;
+  /** Номер прогона, перезапуском которого является этот (v2 `--rerun`). */
+  rerun_of: number | null;
+  /** Причина failed (обрыв, таймаут, ручной --recover). */
+  reason: string | null;
+}
+
+/** Номер прогона по имени каталога `run-<N>`; null — имя не подходит. */
+function runNumberFromName(name: string): number | null {
+  const m = /^run-(\d+)$/.exec(name);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Номера существующих прогонов эксперимента (по возрастанию).
+ *
+ * @param runsDir — каталог эксперимента (`experiments/exp-<id>/`)
+ */
+export function listRunNumbers(runsDir: string): number[] {
+  if (!existsSync(runsDir)) return [];
+  return readdirSync(runsDir, { withFileTypes: true })
+    .filter(d => d.isDirectory())
+    .map(d => runNumberFromName(d.name))
+    .filter((n): n is number => n !== null)
+    .sort((a, b) => a - b);
+}
+
+/**
+ * Следующий номер прогона: `max(существующих run-<N>) + 1`.
+ *
+ * Считается по каталогам, а не по meta.json: каталог — факт создания рана,
+ * и «дырка» после ручного rm не должна приводить к переиспользованию номера.
+ */
+export function nextRunNumber(runsDir: string): number {
+  const numbers = listRunNumbers(runsDir);
+  return numbers.length === 0 ? 1 : numbers[numbers.length - 1] + 1;
+}
+
+/**
+ * Создаёт каталог прогона атомарно.
+ *
+ * `mkdir` вызывается БЕЗ `recursive` на листовом уровне (родитель создаётся
+ * отдельно, рекурсивно): именно нерекурсивный `mkdir` даёт `EEXIST` при гонке
+ * двух процессов, и тогда номер увеличивается и попытка повторяется. С
+ * `recursive: true` ядро молча вернуло бы существующий каталог, и два прогона
+ * писали бы в один `results.jsonl` (потеря данных).
+ *
+ * @returns номер и путь созданного каталога
+ * @throws если каталог не удалось создать за 100 попыток (не EEXIST-ошибка)
+ */
+export function createRunDir(backlogDir: string, expId: string): { run: number; runDir: string } {
+  const runsDir = experimentRunsDir(backlogDir, expId);
+  mkdirSync(runsDir, { recursive: true });
+  let run = nextRunNumber(runsDir);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const runDir = join(runsDir, `run-${run}`);
+    try {
+      mkdirSync(runDir);
+      return { run, runDir };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      run += 1;
+    }
+  }
+  throw new Error(`Не удалось создать каталог прогона для ${expId}: номера run-* заняты (${run})`);
+}
+
+/** Путь к `meta.json` каталога прогона. */
+export function metaPath(runDir: string): string {
+  return join(runDir, 'meta.json');
+}
+
+/**
+ * Записывает `meta.json` атомарно (temp + rename).
+ *
+ * Атомарность нужна по той же причине, что и для results: SIGINT посреди
+ * записи не должен оставить битый JSON — иначе прогон «не читается» и
+ * `--recover` нечего восстанавливать.
+ */
+export function writeMetaJson(runDir: string, meta: RunMeta): void {
+  const path = metaPath(runDir);
+  const tmp = join(runDir, `.${process.pid}.${Date.now()}.meta.tmp`);
+  try {
+    writeFileSync(tmp, `${JSON.stringify(meta, null, 2)}\n`, 'utf-8');
+    renameSync(tmp, path);
+  } catch (err) {
+    try {
+      if (existsSync(tmp)) rmSync(tmp, { force: true });
+    } catch {
+      // Уборка temp-файла не должна заслонять исходную ошибку записи
+    }
+    throw err;
+  }
+}
+
+/**
+ * Читает `meta.json` прогона.
+ *
+ * @returns meta или null, если файла нет либо он битый
+ */
+export function readMetaJson(runDir: string): RunMeta | null {
+  const path = metaPath(runDir);
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as RunMeta;
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch {
+    // Битый meta.json — не исключение: команды чтения ранов должны показывать
+    // остальные раны, а битый лечится тем же --recover
+    return null;
+  }
+}
+
+/** Каталог прогона по номеру (без проверки существования). */
+export function runDirFor(backlogDir: string, expId: string, run: number): string {
+  return join(experimentRunsDir(backlogDir, expId), `run-${run}`);
+}
+
+/** Последний (наибольший) номер прогона эксперимента; null — прогонов нет. */
+export function latestRunNumber(backlogDir: string, expId: string): number | null {
+  const numbers = listRunNumbers(experimentRunsDir(backlogDir, expId));
+  return numbers.length === 0 ? null : numbers[numbers.length - 1];
+}
+
+/** Результат проверки «завис ли прогон». */
+export interface StaleRunInfo {
+  /** true — прогон считается зависшим. */
+  stale: boolean;
+  /** Причина/пояснение для пользователя (пусто, если не завис). */
+  reason: string;
+}
+
+/**
+ * Проверяет правило «stale running» (doc-21 §4).
+ *
+ * Прогон завис, если `meta.status === 'running'`, `finished_at` пуст и pid
+ * не жив (`process.kill(pid, 0)` бросает ESRCH). EPERM означает «процесс есть,
+ * но не наш» — это НЕ зависание (например, ран запущен другим пользователем).
+ *
+ * @param meta — `meta.json` прогона
+ */
+export function detectStaleRun(meta: RunMeta | null): StaleRunInfo {
+  if (!meta) return { stale: false, reason: '' };
+  if (meta.status !== 'running') return { stale: false, reason: '' };
+  if (meta.finished_at) return { stale: false, reason: '' };
+  if (!meta.pid) {
+    // manual-ран без процесса: «живость» определяется только данными,
+    // закрывать его может report/recover — автоматически не считаем зависшим
+    return { stale: false, reason: '' };
+  }
+  try {
+    process.kill(meta.pid, 0);
+    return { stale: false, reason: '' };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') {
+      return {
+        stale: true,
+        reason: `процесс ${meta.pid} не жив, прогон run-${meta.run} остался в статусе running`,
+      };
+    }
+    // EPERM и прочее — процесс существует, значит не завис
+    return { stale: false, reason: '' };
+  }
+}
+
+/** Опции восстановления зависшего прогона. */
+export interface RecoverRunOptions {
+  /** Причина для meta.reason (по умолчанию — текст от detectStaleRun). */
+  reason?: string;
+}
+
+/**
+ * Переводит зависший прогон в `failed`, сохраняя частичные результаты.
+ *
+ * `results.jsonl` не трогается намеренно: upsert уже записал то, что успели
+ * сделать, и эти строки валидны (doc-21 §4).
+ *
+ * @throws если прогон не зависший (status ≠ running или pid жив)
+ */
+export function recoverRun(backlogDir: string, expId: string, run: number, opts: RecoverRunOptions = {}): RunMeta {
+  const runDir = runDirFor(backlogDir, expId, run);
+  const meta = readMetaJson(runDir);
+  if (!meta) {
+    throw new Error(`meta.json прогона run-${run} не найден или битый: ${runDir}`);
+  }
+  if (meta.status !== 'running') {
+    throw new Error(`Прогон run-${run} не в статусе running (${meta.status}) — восстанавливать нечего`);
+  }
+  const stale = detectStaleRun(meta);
+  if (!stale.stale && opts.reason === undefined) {
+    throw new Error(`Прогон run-${run} не завис (pid ${meta.pid ?? '—'} жив) — --recover не требуется`);
+  }
+  const updated: RunMeta = {
+    ...meta,
+    status: 'failed',
+    finished_at: new Date().toISOString(),
+    reason: opts.reason || stale.reason || 'прогон восстановлен вручную (--recover)',
+  };
+  writeMetaJson(runDir, updated);
+  return updated;
+}
+
+/**
+ * Пересчитывает статус эксперимента по его последнему прогону (doc-21 §4).
+ *
+ * Статус производный: он дублируется в карточке, чтобы `experiment list`
+ * не читал все meta.json. Карточка без прогонов остаётся draft.
+ */
+export function syncExperimentStatus(backlogDir: string, expId: string): ExperimentStatus | null {
+  const entry = getExperiment(backlogDir, expId);
+  if (!entry) return null;
+  const last = latestRunNumber(backlogDir, expId);
+  let status: ExperimentStatus = 'draft';
+  if (last !== null) {
+    const meta = readMetaJson(runDirFor(backlogDir, expId, last));
+    if (meta) status = meta.status as ExperimentStatus;
+  }
+  if (entry.experiment.status === status) return status;
+  const updated: Experiment = {
+    ...entry.experiment,
+    status,
+    updated_date: today(),
+  };
+  writeFileSync(entry.path, experimentToMarkdown(updated, entry.body), 'utf-8');
+  return status;
 }

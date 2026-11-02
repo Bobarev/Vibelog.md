@@ -97,9 +97,10 @@ describe('VL-294 — CLI experiment', () => {
   });
 
   it('неизвестная подкоманда: понятная ошибка со списком', () => {
-    const res = runCli(['experiment', 'run']);
+    // VL-296: `run` стал настоящей подкомандой — берём заведомо неизвестную
+    const res = runCli(['experiment', 'nonsense']);
     assert.equal(res.status, 0);
-    assert.match(res.stderr, /Неизвестная подкоманда: run/);
+    assert.match(res.stderr, /Неизвестная подкоманда: nonsense/);
     // printInfo пишет в stdout
     assert.match(res.stdout, /create, list/);
   });
