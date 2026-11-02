@@ -606,7 +606,9 @@ describe('VL-310 — регресс сессии agent-1793637056809 (Code VL-12
     const args = { id: 'doc-2', type: 'guide' };
     for (let i = 0; i < 24; i++) {
       const name = i % 3 === 2 ? 'backlog_view_task' : 'document_update';
-      script.push({ text: '', toolCalls: [{ id: `c${i + 1}`, name, arguments: name === 'document_update' ? args : { id: 'VL-124' } }] });
+      // Аргументы read-вызова разные: guard повторов (VL-284) иначе блокирует
+      // серию чтений, и она перестаёт «разрывать» серию повторов.
+      script.push({ text: '', toolCalls: [{ id: `c${i + 1}`, name, arguments: name === 'document_update' ? args : { id: 'VL-124', n: i } }] });
     }
     script.push({ text: 'отчёт записан, перехожу к завершению' });
     const readSpec = {
