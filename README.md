@@ -64,7 +64,7 @@ vibelog browser
 |---|---|
 | [Руководство пользователя](backlog/docs/doc-6-Руководство-пользователя-Vibelogmd.md) | Задачи, вехи, документы, веб-интерфейс, Telegram-бот, формы файлов — обзор для пользователя |
 | [CLI-справочник](backlog/docs/doc-7-CLI-справочник-Vibelogmd.md) | Все команды, подкоманды, флаги, диагностика |
-| [MCP-справочник](backlog/docs/doc-8-MCP-справочник-Vibelogmd.md) | Все MCP-инструменты: параметры, контракт ответа (включая `noop`), примеры |
+| [MCP-справочник](backlog/docs/doc-8-MCP-справочник-Vibelogmd.md) | Все MCP-инструменты: параметры, контракт ответа (включая `noop` = `isError`), примеры |
 | [Агент Vibelog](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md) | LLM-агент: TUI, headless-фазы, лимиты и guard повторов, модели и провайдеры, учёт токенов |
 | [Супервизор](backlog/docs/doc-19-Роль-Супервизор-автозапуск-и-лечение-фаз-из-чата-спецификация.md) | Роль «Супервизор»: тик-цикл, лечение фаз, grant на прогон, шаблоны лечения, планировщик |
 | [Best practices](backlog/docs/doc-9-Best-practices-и-производительность-Vibelogmd.md) | Workflow с Qwen Code, dogfooding, производительность |
