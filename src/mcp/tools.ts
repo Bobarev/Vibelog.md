@@ -60,6 +60,7 @@ import { getWorkflowForTask, phaseStatusTransitionError, isTerminalStatus } from
 import { buildProjectMap } from '../core/project-map.js';
 import { truncateToolOutput } from '../agent/tools.js';
 import { ackOk, ackNoop, unknownFields } from './tool-result.js';
+import { buildAutoReport, uncheckedItems } from './auto-report.js';
 import type { SkippedField } from './tool-result.js';
 import { withIdempotency } from './idempotency.js';
 import { ensureWorktreeOnCreate } from '../core/worktree.js';
@@ -1339,7 +1340,7 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
         }
         return ackNoop(
           `Изменений нет: ${Object.keys(updates).join(', ')} уже имеют эти значения. ` +
-            'Не повторяй вызов — переходи к следующему шагу (backlog_finish_phase)',
+            'Следующий шаг: backlog_finish_phase (или следующий шаг плана) — повтор этого вызова ничего не изменит.',
           applied,
         );
       }
@@ -1622,43 +1623,6 @@ function toolAddComment(args: ToolArgs, cwd: string): string {
 }
 
 /**
- * Авто-отчёт фазы (VL-253): собирается сервером, когда модель не передала
- * `comment`. Причина: `description` схемы не влияет на генерацию аргументов
- * tool-calling — если поля нет в `required`, модель может его не прислать
- * никогда (инцидент VL-250/VL-252: 10+ вызовов без comment → луп).
- * Фаза не должна падать из-за дисциплины модели в необязательном по факту поле.
- *
- * @param task — задача до применения правок (источник плана/резюме/файлов)
- * @param ctx — уже вычисленные части сводки (статус, счётчики, файлы)
- */
-function buildAutoReport(
-  task: Task,
-  ctx: { status: string; acChecked: number; acTotal: number; dodChecked: number; dodTotal: number; files: string[] },
-): string {
-  const oneLine = (s: string, limit: number): string => {
-    const flat = String(s).replace(/\s+/g, ' ').trim();
-    return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
-  };
-  const planFragment = task.implementationPlan
-    ? `Фрагмент плана: ${oneLine(task.implementationPlan, 300)}`
-    : task.finalSummary
-      ? `Фрагмент резюме: ${oneLine(task.finalSummary, 300)}`
-      : 'Фрагмент плана/резюме: план и резюме отсутствуют.';
-  const files = ctx.files.length > 0
-    ? `Файлы (${ctx.files.length}): ${ctx.files.slice(0, 10).join(', ')}${ctx.files.length > 10 ? ', …' : ''}`
-    : 'Файлы: не менялись';
-  return [
-    'Фаза: авто-отчёт (comment не передан моделью)',
-    `Статус: ${ctx.status}`,
-    `AC отмечено: ${ctx.acChecked} из ${ctx.acTotal}`,
-    `DoD отмечено: ${ctx.dodChecked} из ${ctx.dodTotal}`,
-    files,
-    planFragment,
-    'Отчёт собран сервером автоматически (VL-253): модель не передала comment.',
-  ].join('\n');
-}
-
-/**
  * Фаза, которой принадлежит текущий вызов MCP-инструмента (VL-245).
  *
  * Источники — только доверенные: env рана (оркестратор/CLI) и мета сессии.
@@ -1893,6 +1857,9 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
     dodChecked: dodList.filter((c) => c.checked).length,
     dodTotal: dodList.length,
     files: Array.isArray(args.modifiedFiles) ? (args.modifiedFiles as string[]) : (task.modified_files || []),
+    // VL-304: неотмеченные пункты перечисляются явно — они не «висят молча»
+    uncheckedAc: uncheckedItems(acList),
+    uncheckedDod: uncheckedItems(dodList),
   });
   // VL-248: причина override обязательно фиксируется в комментарии-отчёте
   // фазы (AC2) — и для явного comment, и для авто-отчёта.

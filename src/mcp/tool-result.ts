@@ -16,10 +16,18 @@
  *
  * Четыре формы ответа:
  *   успех  — { ok: true, message, applied, skipped, idempotentReplay? }
- *   noop   — { ok: true, noop: true, message, applied, skipped: [] } (VL-303:
- *            переданные значения уже были в задаче, файл не переписан)
+ *   noop   — { ok: false, noop: true, reason: 'noop', message, applied,
+ *            skipped: [] } (VL-303/VL-304: переданные значения уже были в
+ *            задаче, файл не переписан)
  *   отказ  — { ok: false, denied: true, reason, applied: {}, skipped, … }
  *   ошибка — { ok: false, error }
+ *
+ * VL-304: noop — ОШИБКА, а не успех (lesson-92). До VL-304 noop отдавался как
+ * `{ok:true, noop:true}`, и модель читала первую строку JSON как «принято,
+ * продолжай»: текст «не повторяй» лежал в третьем поле и слабыми моделями не
+ * взвешивался (сессия agent-1793631554185 — 4 повтора и падение фазы кодом 1).
+ * Теперь `ok:false` + `reason:'noop'`, а MCP-сервер отдаёт такой ответ с
+ * `isError: true` (см. `isNoopAck`).
  *
  * Отказ подтверждения (веб-чат) кодируется машиночитаемо:
  *   { ok: false, denied: true, reason: 'denied' | 'not_confirmed', … }
@@ -51,13 +59,26 @@ export interface WriteAck {
   skipped: SkippedField[];
   /** true — ответ взят из кэша идемпотентности, повторного эффекта не было. */
   idempotentReplay?: true;
-  /**
-   * VL-303: вызов НЕ изменил состояние — все переданные поля уже имели
-   * запрошенные значения, файл не переписывался. Модели это сигнал «работа
-   * сделана, повтор бесполезен»: без него она видела «обновлена» и
-   * зацикливалась на том же вызове до loop detection.
-   */
-  noop?: true;
+}
+
+/**
+ * Снимок write-вызова, который НЕ изменил состояние (VL-303, форма — VL-304).
+ *
+ * Отдельный интерфейс, а не флаг `WriteAck`: noop — самостоятельная семантика
+ * («изменений нет, файл не переписан»), и её нельзя случайно получить из
+ * общего пути успеха. `ok: false` — принципиально (lesson-92): нейтральный
+ * `ok: true` модель читает как «принято, продолжай» и повторяет вызов до
+ * loop detection, хотя все изменения уже применены (инцидент VL-302).
+ */
+export interface NoopAck {
+  ok: false;
+  noop: true;
+  reason: 'noop';
+  /** Текст с перечнем полей и указанием следующего шага. */
+  message: string;
+  /** Фактическое состояние полей (из задачи, без записи). */
+  applied: Record<string, unknown>;
+  skipped: [];
 }
 
 /**
@@ -85,20 +106,38 @@ export function ackOk(
 }
 
 /**
- * Формирует ответ write-вызова, который НЕ изменил состояние (VL-303).
+ * Формирует ответ write-вызова, который НЕ изменил состояние (VL-303/VL-304).
  *
- * Отдельная функция, а не флаг `ackOk`: noop — самостоятельная семантика
- * («изменений нет, файл не переписан»), и её нельзя случайно получить из
- * общего пути успеха. Модель, увидев `noop: true`, обязана перейти к
- * следующему шагу, а не повторять вызов (иначе loop detection убивал фазу,
- * хотя все изменения уже были применены — инцидент VL-302).
+ * `ok: false` + `reason: 'noop'` — возврат к lesson-92: no-op вызов это
+ * ошибка, а не успех. MCP-сервер отдаёт такой ответ с `isError: true`
+ * (см. `isNoopAck`), поэтому модель видит ошибку в первой строке JSON, а не
+ * «принято» — и переходит к следующему шагу вместо повтора.
  *
  * @param message — текст с перечнем полей и указанием следующего шага
  * @param applied — фактическое состояние полей (из задачи, без записи)
  */
 export function ackNoop(message: string, applied: Record<string, unknown> = {}): string {
-  const ack: WriteAck = { ok: true, noop: true, message, applied, skipped: [] };
+  const ack: NoopAck = { ok: false, noop: true, reason: 'noop', message, applied, skipped: [] };
   return JSON.stringify(ack, null, 2);
+}
+
+/**
+ * Распознаёт noop-ответ write-инструмента (VL-304).
+ *
+ * Нужен MCP-серверу: noop — это `isError: true` на транспортной границе, но
+ * `handleToolCall` остаётся строковым (его используют веб-чат и десятки
+ * тестов), поэтому признак вычисляется из текста ответа.
+ *
+ * @param text — текст tool-результата
+ * @returns true, если ответ — JSON-снимок с `noop: true`
+ */
+export function isNoopAck(text: string): boolean {
+  try {
+    const parsed = JSON.parse(text) as { noop?: unknown } | null;
+    return parsed !== null && typeof parsed === 'object' && parsed.noop === true;
+  } catch {
+    return false; // не JSON — не write-ack
+  }
 }
 
 /**

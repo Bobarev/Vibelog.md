@@ -286,11 +286,12 @@ const LOOP_DETECTION_REPEAT_DEFAULT = 3;
 // памяти рана: мета хранит только сигнатуры для resume-защиты, кап — про
 // текущий ран (resume обнуляет, как и прочие счётчики).
 const MAX_BLOCKED_CALLS_PER_RUN = 5;
-// VL-303: кап повторов вызова, чей результат уже был ok/noop. Такой повтор
-// фазу не прерывает (эффект достигнут — убивать фазу бессмысленно), но и
-// крутиться вечно не должен: после N директив «уже применён» ран завершается
-// отдельным текстом (не «Loop detection» — это не луп, а игнор директивы).
-const MAX_APPLIED_REPEATS_PER_RUN = 3;
+// VL-304: кап повторов применённого вызова (MAX_APPLIED_REPEATS_PER_RUN)
+// удалён. Он существовал только чтобы ограничить круг директив «уже применён»,
+// но круг теперь невозможен: первый же повтор завершает ран штатно
+// (finishAppliedRepeat, is_error:false). Прежний кап сжигал 4 LLM-запроса и
+// затем убивал фазу кодом 1, хотя работа была сделана (сессия
+// agent-1793631554185: 3 noop + 4 повтора {id,type} → fail).
 // Фантомные tool_calls (пустые name/id, VL-215): сколько ходов ПОДРЯД модель
 // может отдавать фантомы до fail(). 3 — по образцу loop detection VL-83:
 // фантомный ход тратит LLM-запрос, но единичный случай модель исправляет
@@ -342,11 +343,15 @@ export function loopDetectionDirective(name: string, repeatLimit: number): strin
  * Отличие от `loopDetectionDirective`: вызов УЖЕ применён, поэтому фазу
  * прерывать нельзя — модели нужно лишь перейти к отчёту. Маркерная подстрока
  * «уже применён» используется тестами и разборами сессий.
+ *
+ * VL-304: директива уходит модели, но ран на ней НЕ продолжается — первый же
+ * повтор завершает его штатно (`finishAppliedRepeat`), поэтому текст говорит
+ * о завершении, а не о «следующем шаге».
  */
 export function appliedNoopDirective(name: string): string {
   return (
-    `Вызов ${name} уже применён ранее (ответ ok/noop) — повтор с теми же аргументами ничего не изменит. ` +
-    'Следующий шаг: переходи к отчёту — backlog_finish_phase (или к следующему шагу плана).'
+    `Вызов ${name} уже применён ранее (ответ noop) — повтор с теми же аргументами ничего не изменит. ` +
+    'Изменения применены, ран завершается штатно; отчёт будет записан автоматически.'
   );
 }
 
@@ -462,7 +467,6 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // (включая noop:true). Повтор такой сигнатуры фазу не прерывает: эффект
   // уже достигнут, модели уходит директива «уже применён, переходи к отчёту».
   const appliedSignatures = new Set<string>();
-  let appliedRepeatCount = 0;
   // Лимит guard'а зацикливания намерений (VL-119): N ходов подряд с одним
   // промежуточным текстом → fail штатным путём (контракт resume VL-103).
   const intentRepeatLimit = options.limits?.intentLoopRepeat ?? INTENT_LOOP_REPEAT_DEFAULT;
@@ -611,6 +615,43 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       ...(blocked.size > blockedInitial.length
         ? { blocked_signatures: [...blocked].filter((s) => !blockedInitial.includes(s)) }
         : {}),
+    };
+  };
+
+  /**
+   * Штатное завершение рана на повторе уже применённого вызова (VL-304).
+   *
+   * Работа сделана: вызов из `appliedSignatures` уже дал эффект (ok/noop).
+   * Прежнее поведение (VL-303) продолжало спрашивать модель ещё
+   * MAX_APPLIED_REPEATS_PER_RUN раз и затем вызывало fail() — терялись
+   * 4 LLM-запроса и фаза падала кодом 1, хотя терять было нечего, кроме
+   * отчёта (его теперь пишет авто-отчёт пост-рана CLI).
+   *
+   * `is_error: false` — принципиально: оркестратор по нему решает, откатывать
+   * ли статус (finalizePhaseStatus) и запускать ли авто-resume.
+   *
+   * Транскрипт обязан заканчиваться assistant-сообщением (VL-95/VL-103):
+   * иначе resume получит историю, оканчивающуюся tool-сообщением, и LLM API
+   * её отклонит.
+   */
+  const finishAppliedRepeat = (name: string): LoopResult => {
+    idleGuard.dispose();
+    const text =
+      `Изменения применены, модель зациклилась на уже применённом вызове ${name} — ` +
+      'ран завершён штатно, отчёт будет записан автоматически.';
+    pushMessage({ role: 'assistant', content: text });
+    return {
+      result: text,
+      is_error: false,
+      num_turns: numTurns,
+      tool_calls_total: toolCallsTotal,
+      duration_ms: duration(),
+      usage,
+      messages,
+      last_payload_bytes: lastPayload,
+      max_payload_bytes: maxPayload,
+      repeat_stats: analyzeToolRepeats(messages),
+      ...(repeatBlockCount > 0 ? { repeat_blocked: repeatBlockCount } : {}),
     };
   };
 
@@ -921,12 +962,11 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // VL-253: плюс per-signature счётчик и общий кап рана — иначе при
       // чередовании сигнатур серия «подряд» сбрасывалась и луп шёл кругами.
       const blockAndPush = async (): Promise<void> => {
-        // VL-303: вызов уже применён (ответ ok/noop) — фатальные счётчики НЕ
-        // растут: фаза не должна падать из-за повтора уже сделанной работы.
-        // Модели уходит директива «переходи к отчёту»; кап повторов защищает
-        // от бесконечного круга директив.
+        // VL-303/VL-304: вызов уже применён (ответ ok/noop) — фатальные
+        // счётчики НЕ растут: фаза не должна падать из-за повтора уже
+        // сделанной работы. Модели уходит директива «изменения применены»,
+        // а ран завершается штатно сразу после неё (finishAppliedRepeat).
         if (appliedSignatures.has(signature)) {
-          appliedRepeatCount++;
           await pushMessage({
             role: 'tool',
             tool_call_id: call.id,
@@ -956,15 +996,10 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         // может сменить подход — тест VL-251 AC5), повторная — фазовый отказ.
         const repeatsBefore = blockCounts.get(signature) ?? 0;
         await blockAndPush();
-        // VL-303: применённый вызов — не луп: фазу не прерываем, только кап
-        // повторов (иначе директивы крутились бы бесконечно).
+        // VL-304: применённый вызов — не луп: ран завершается штатно сразу
+        // после директивы (работа сделана, терять нечего кроме отчёта).
         if (appliedSignatures.has(signature)) {
-          if (appliedRepeatCount > MAX_APPLIED_REPEATS_PER_RUN) {
-            return fail(
-              `Модель ${appliedRepeatCount} раз повторила уже применённый вызов ${call.name} — фаза прервана (директива «переходи к отчёту» проигнорирована).`,
-            );
-          }
-          continue;
+          return finishAppliedRepeat(call.name);
         }
         if (repeatsBefore >= 1 || blockedTotal >= 2) {
           return fail(
@@ -974,18 +1009,13 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         continue;
       }
 
-      // VL-303: сигнатура уже успешно применена (ответ ok/noop) — повтор НЕ
-      // исполняется: модели сразу уходит директива «переходи к отчёту».
-      // Фатальные счётчики не растут: фаза не должна падать из-за повтора
-      // уже сделанной работы (AC2/AC3).
+      // VL-303/VL-304: сигнатура уже успешно применена (ответ ok/noop) —
+      // повтор НЕ исполняется: модели уходит директива, ран завершается
+      // штатно (is_error:false). Фатальные счётчики не растут: фаза не
+      // должна падать из-за повтора уже сделанной работы (AC2/AC3).
       if (appliedSignatures.has(signature)) {
         await blockAndPush();
-        if (appliedRepeatCount > MAX_APPLIED_REPEATS_PER_RUN) {
-          return fail(
-            `Модель ${appliedRepeatCount} раз повторила уже применённый вызов ${call.name} — фаза прервана (директива «переходи к отчёту» проигнорирована).`,
-          );
-        }
-        continue;
+        return finishAppliedRepeat(call.name);
       }
 
       if (signature === prevSignature) {
@@ -999,14 +1029,9 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       }
       if (streak >= repeatLimit) {
         await blockAndPush();
-        // VL-303: применённый вызов — не луп (см. выше).
+        // VL-304: применённый вызов — не луп: ран завершается штатно.
         if (appliedSignatures.has(signature)) {
-          if (appliedRepeatCount > MAX_APPLIED_REPEATS_PER_RUN) {
-            return fail(
-              `Модель ${appliedRepeatCount} раз повторила уже применённый вызов ${call.name} — фаза прервана (директива «переходи к отчёту» проигнорирована).`,
-            );
-          }
-          continue;
+          return finishAppliedRepeat(call.name);
         }
         // VL-253: повторная блокировка той же сигнатуры — немедленный fail,
         // без второго-третьего круга повторов (модель проигнорировала директиву)
@@ -1117,14 +1142,16 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // VL-274: tool завершён — активность; окно простоя отсчитывается заново
       // (resume делает и noteActivity: длительность инструмента не «съедает» бюджет)
       idleGuard.resume();
-      // VL-303: запоминаем сигнатуру успешно применённого write-вызова —
-      // ответ JSON с ok:true (включая noop:true). Повтор такой сигнатуры
-      // фазу не прерывает. Парсинг в try/catch: текстовые ответы внешних
-      // MCP-инструментов не должны ломать цикл.
+      // VL-303/VL-304: запоминаем сигнатуру успешно применённого write-вызова —
+      // ответ JSON с ok:true ИЛИ noop:true (noop с VL-304 приходит как
+      // ok:false + reason:'noop', но эффект тот же: состояние уже такое,
+      // как просили). Повтор такой сигнатуры завершает ран штатно.
+      // Парсинг в try/catch: текстовые ответы внешних MCP-инструментов не
+      // должны ломать цикл.
       if (!toolError) {
         try {
-          const parsed = JSON.parse(output) as { ok?: unknown };
-          if (parsed && parsed.ok === true) appliedSignatures.add(signature);
+          const parsed = JSON.parse(output) as { ok?: unknown; noop?: unknown };
+          if (parsed && (parsed.ok === true || parsed.noop === true)) appliedSignatures.add(signature);
         } catch {
           // не JSON — не write-ack, ничего не запоминаем
         }

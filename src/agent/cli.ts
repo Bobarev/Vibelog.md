@@ -33,6 +33,7 @@ import { analyzeToolRepeats } from './repeat-tracker.js';
 import { appendCommitToProgress, commitProgressChanges } from './run-progress.js';
 // VL-277: файл задачи коммитится после записи token_usage рана (перенос из шаблона close)
 import { commitTaskFile, isTaskCommitPhase } from './task-commit.js';
+import { writeAutoReportIfMissing } from './auto-report.js';
 import { taskWorktreeDir } from '../core/worktree.js';
 import { taskIdPattern } from '../core/config.js';
 import { buildSystemPrompt } from './system-prompt.js';
@@ -936,6 +937,20 @@ export async function main(argv: string[]): Promise<void> {
       // token_usage оставался единственной незакоммиченной правкой после
       // close (шаг 6 шаблона коммитил файл раньше, чем usage был известен).
       // Гейт по фазе: только close; git-ошибки глушит сам хелпер (риск R4).
+      // VL-304: авто-отчёт пишется ДО коммита — иначе файл задачи остался бы
+      // грязным после close (тест VL-277 AC1).
+      try {
+        writeAutoReportIfMissing({
+          cwd,
+          taskCwd,
+          taskId,
+          phase: runPhase ?? '',
+          runStartedAt,
+          isError: loopResult.is_error,
+        });
+      } catch (err) {
+        console.error(`Предупреждение: авто-отчёт фазы не записан — ${(err as Error).message}`);
+      }
       try {
         if (isTaskCommitPhase(runPhase)) {
           commitTaskFile(taskCwd, taskId, runPhase as string);
