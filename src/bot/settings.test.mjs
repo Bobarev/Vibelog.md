@@ -20,6 +20,7 @@ import {
   resolveMaxRequests,
   resolveIdleTimeout,
   resolveLoopDetectionRepeat,
+  resolveResetLimitsOnResume,
   resolveBranchMode,
   resolveCodeSameSession,
   botSettingsPath,
@@ -343,6 +344,37 @@ describe('code_same_session (VL-147)', () => {
     writeFileSync(botSettingsPath(root), JSON.stringify({ chats: [], code_same_session: 1 }), 'utf-8');
     assert.equal(loadBotSettings(root).code_same_session, undefined);
     assert.equal(resolveCodeSameSession(root), false);
+  });
+});
+
+describe('reset_limits_on_resume (VL-308)', () => {
+  it('roundtrip save/load: false — явный opt-out, дефолт — сброс включён', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-settings-rlor-'));
+    try {
+      // без ключа — сброс включён (per-run семантика)
+      assert.equal(loadBotSettings(dir).reset_limits_on_resume, undefined);
+      assert.equal(resolveResetLimitsOnResume(dir), true);
+      saveBotSettings(dir, { chats: [], reset_limits_on_resume: false });
+      assert.equal(loadBotSettings(dir).reset_limits_on_resume, false);
+      assert.equal(resolveResetLimitsOnResume(dir), false);
+      // сброс настройки (undefined) удаляет ключ → снова дефолт
+      saveBotSettings(dir, { chats: [] });
+      assert.equal(loadBotSettings(dir).reset_limits_on_resume, undefined);
+      assert.equal(resolveResetLimitsOnResume(dir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('битое значение (не false) игнорируется → дефолт «сброс включён»', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-settings-rlor-bad-'));
+    try {
+      mkdirSync(join(dir, '.vibelog'), { recursive: true });
+      writeFileSync(join(dir, '.vibelog', 'settings.json'), JSON.stringify({ reset_limits_on_resume: 'off' }), 'utf-8');
+      assert.equal(loadBotSettings(dir).reset_limits_on_resume, undefined);
+      assert.equal(resolveResetLimitsOnResume(dir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

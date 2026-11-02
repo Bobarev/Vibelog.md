@@ -39,6 +39,14 @@ export interface BotSettings {
    */
   loop_detection_repeat?: number;
   /**
+   * VL-308: сбрасывать накопленные лимиты loop detection при resume
+   * (`/set reset-limits-on-resume`). Дефолт — сброс включён (per-run
+   * семантика, как у max-tool-calls и wall-time): `blocked_signatures` из меты
+   * сессии не подаются в лимиты нового рана. `false` — прежнее поведение
+   * VL-251 (сигнатуры переносятся, защита от лупа после «Продолжить»).
+   */
+  reset_limits_on_resume?: boolean;
+  /**
    * VL-274: idle-таймаут фазы в секундах (/set idle-timeout). `0` — watchdog
    * выключен, ключ отсутствует — агент берёт дефолт 600 с. В отличие от
    * прочих числовых настроек 0 здесь НЕ сброс, а явное выключение.
@@ -160,6 +168,9 @@ export function loadBotSettings(cwd: string): BotSettings {
   // VL-306: порог loop detection — положительное целое, битое значение
   // игнорируется (агент возьмёт дефолт 3)
   const loopDetectionRepeat = readPositiveInt(raw.loop_detection_repeat);
+  // VL-308: сброс лимитов loop detection при resume — только строгое false
+  // (явный opt-out); true/мусор → undefined → дефолт «сброс включён»
+  const resetLimitsOnResume = raw.reset_limits_on_resume === false ? false : undefined;
   // VL-274: idle-таймаут читается терпимо, но 0 — валидное значение
   // («watchdog выключен»), поэтому нужен отдельный неотрицательный ридер.
   // Битое значение откатывается к дефолту агента (600 с) с предупреждением в
@@ -189,6 +200,8 @@ export function loadBotSettings(cwd: string): BotSettings {
     ...(maxWallTime !== undefined ? { max_wall_time: maxWallTime } : {}),
     ...(maxRequests !== undefined ? { max_requests: maxRequests } : {}),
     ...(loopDetectionRepeat !== undefined ? { loop_detection_repeat: loopDetectionRepeat } : {}),
+    // VL-308: false — явный opt-out (перенос сигнатур, поведение VL-251)
+    ...(resetLimitsOnResume !== undefined ? { reset_limits_on_resume: resetLimitsOnResume } : {}),
     // VL-274: 0 пишется явно (watchdog выключен) — undefined ключ не создаёт
     ...(idleTimeout !== undefined ? { idle_timeout_seconds: idleTimeout } : {}),
     ...(branchMode !== undefined ? { branch_mode: branchMode } : {}),
@@ -243,6 +256,8 @@ export function saveBotSettings(cwd: string, settings: BotSettings): void {
     max_requests: settings.max_requests,
     // VL-306: порог loop detection (undefined удаляет ключ — сброс к дефолту 3)
     loop_detection_repeat: settings.loop_detection_repeat,
+    // VL-308: false — явный opt-out; undefined удаляет ключ (дефолт — сброс)
+    reset_limits_on_resume: settings.reset_limits_on_resume,
     // VL-274: idle-таймаут пишется и при 0 (явное выключение watchdog)
     idle_timeout_seconds: settings.idle_timeout_seconds,
     // branch_mode пишем всегда, когда задан (в т.ч. false — /set branch-mode off
@@ -318,6 +333,16 @@ export function resolveMaxRequests(cwd: string): number | undefined {
  */
 export function resolveLoopDetectionRepeat(cwd: string): number | undefined {
   return loadBotSettings(cwd).loop_detection_repeat;
+}
+
+/**
+ * Сброс лимитов loop detection при resume из settings.json (VL-308): `false` —
+ * явный opt-out (blocked_signatures переносятся из меты, поведение VL-251);
+ * `true`/ключа нет — сброс включён (per-run семантика, как у max-tool-calls).
+ * Читается перед каждым запуском фазы — /set не требует перезапуска бота.
+ */
+export function resolveResetLimitsOnResume(cwd: string): boolean {
+  return loadBotSettings(cwd).reset_limits_on_resume !== false;
 }
 
 /**

@@ -802,6 +802,11 @@ function spawnLimitFlags(cwd: string): string[] {
     if (s.loop_detection_repeat !== undefined) {
       flags.push('--loop-detection-repeat', String(s.loop_detection_repeat));
     }
+    // VL-308: сброс лимитов loop detection при resume. Дефолт агента — сброс
+    // включён, поэтому флаг передаётся только при явном opt-out (false).
+    if (s.reset_limits_on_resume === false) {
+      flags.push('--no-reset-limits-on-resume');
+    }
     // VL-274: idle-таймаут (0 — явное выключение watchdog: флаг передаём как есть)
     if (s.idle_timeout_seconds !== undefined) {
       flags.push('--idle-timeout', String(s.idle_timeout_seconds));
