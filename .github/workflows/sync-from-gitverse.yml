@@ -3,7 +3,7 @@ name: Sync from GitVerse
 on:
   schedule:
     - cron: '0 3 * * *'   # раз в день в 03:00 UTC
-  workflow_dispatch:
+  workflow_dispatch:      # кнопка ручного запуска
 
 permissions:
   contents: write
@@ -19,13 +19,16 @@ jobs:
 
       - name: Sync and force push
         run: |
-          # Настраиваем личность
+          # Настраиваем личность git
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
           
           # Добавляем GitVerse и забираем данные
           git remote add gitverse https://gitverse.ru/bobarev/Vibelog.md.git
           git fetch gitverse
+          
+          # Используем токен из секретов, чтобы обойти блокировку workflow-файлов
+          git remote set-url origin https://x-access-token:${{ secrets.WORKFLOW_TOKEN }}@github.com/Bobarev/Vibelog.md.git
           
           # Отправляем ветку GitVerse напрямую в GitHub, минуя файловую систему
           git push origin gitverse/master:master --force
