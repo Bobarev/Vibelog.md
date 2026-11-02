@@ -79,7 +79,32 @@ describe('README соответствует Standard Readme (VL-285)', () => {
 
   it('документ начинается с H1 (badges идут сразу под ним)', () => {
     const lines = readmeLines();
-    const firstNonEmpty = lines.find((line) => line.trim() !== '');
-    assert.ok(firstNonEmpty?.startsWith('# '), 'README должен начинаться с H1');
+    // Витрина открывается логотипом и центрированным заголовком, поэтому H1 не
+    // обязан быть первой непустой строкой. Проверяем суть: первый заголовок
+    // документа — H1, а не H2. Допустимы оба варианта H1 — markdown `# Заголовок`
+    // и HTML `<h1 ...>Заголовок</h1>` (нужен для центрирования вместе с логотипом).
+    let inFence = false;
+    let firstHeading = null;
+    for (const line of lines) {
+      if (line.trimStart().startsWith('```')) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) continue;
+      const trimmed = line.trim();
+      if (trimmed.startsWith('# ') || /^<h1[\s>]/i.test(trimmed)) {
+        firstHeading = 'h1';
+        break;
+      }
+      if (trimmed.startsWith('## ') || /^<h2[\s>]/i.test(trimmed)) {
+        firstHeading = 'h2';
+        break;
+      }
+    }
+    assert.equal(
+      firstHeading,
+      'h1',
+      'README должен начинаться с H1 (markdown `# ` или HTML `<h1>`) до первого H2',
+    );
   });
 });
