@@ -32,3 +32,6 @@ jobs:
           
           # Отправляем ветку GitVerse напрямую в GitHub, минуя файловую систему
           git push origin gitverse/master:master --force
+          
+          # Принудительно пушим все теги
+          git push origin --tags --force
