@@ -466,6 +466,25 @@ export interface RunMeta {
   rerun_of: number | null;
   /** Причина failed (обрыв, таймаут, ручной --recover). */
   reason: string | null;
+  /**
+   * Сводка, которую пишет `report` при завершении прогона (VL-297, doc-21 §8).
+   *
+   * Дублирует `n`/`dropped`/`cost_total` (они остаются для чтения старыми
+   * потребителями), но сгруппированно: отчёт можно прочитать, не парся
+   * `results.jsonl` — это важно при `results_ignored: true` (файл > 10 MB).
+   * `null` — прогон ещё не закрыт.
+   */
+  summary?: RunSummary | null;
+}
+
+/** Сводка закрытого прогона (пишет `report`, VL-297). */
+export interface RunSummary {
+  /** Число валидных строк (конечный `score`). */
+  n: number;
+  /** Число отброшенных строк: ошибки и `score: null`. */
+  dropped: number;
+  /** Сумма стоимостей; null — тарифов нет. */
+  cost_total: number | null;
 }
 
 /** Номер прогона по имени каталога `run-<N>`; null — имя не подходит. */

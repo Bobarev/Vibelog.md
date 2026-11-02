@@ -21,6 +21,7 @@
  * - record <exp-id> --variant A --task <id> [--score n] [--output t] [--error t]
  *                  [--error-kind k] [--tool-calls N] [--duration ms] [--cost n]
  *                  [--custom '<json>'] [--run N] [--from-json <file>]
+ * - report <exp-id> [--run N] [--compare run-M] [--json]
  *
  * Файлы: backlog/experiments/exp-<id>.md (YAML-фронтматтер + описание),
  *        backlog/experiments/datasets/<name>.jsonl (общие датасеты),
@@ -41,6 +42,7 @@ import {
 } from '../../core/dataset.js';
 import type { ParsedDataset, DatasetRow } from '../../core/dataset.js';
 import { experimentRun, experimentRecord } from './experiment-run.js';
+import { experimentReport } from './experiment-report.js';
 import { join, relative } from 'node:path';
 
 /**
@@ -113,13 +115,15 @@ export async function runExperiment(
       return experimentRun(positional, flags, backlogDir);
     case 'record':
       return experimentRecord(positional, flags, backlogDir);
+    case 'report':
+      return experimentReport(positional, flags, backlogDir);
     default:
       // `experiment dataset <exp-id>`: router отдаёт exp-id в subcommand (VL-295)
       if (/^exp-/i.test(subcommand)) {
         return experimentDatasetResolve([subcommand, ...positional], flags, backlogDir);
       }
       printError(`Неизвестная подкоманда: ${subcommand}`);
-      printInfo('Доступные: create, list, dataset, run, record');
+      printInfo('Доступные: create, list, dataset, run, record, report');
   }
 }
 
