@@ -1410,6 +1410,15 @@ describe('vibelog-agent CLI (VL-85)', () => {
 });
 
 describe('VL-308 — сброс лимитов loop detection при resume', () => {
+  // Свой мок-LM: блок объявлен вне describe VL-85, чей afterAll уже закрыл
+  // общий сервер (иначе fetch failed вместо ответа мока).
+  beforeAll(async () => {
+    mock = await startMockLlm('Готово');
+  });
+  afterAll(async () => {
+    await mock.close();
+  });
+
   it('parseArgs: --reset-limits-on-resume / --no-reset-limits-on-resume', () => {
     assert.equal(parseArgs(['x']).resetLimitsOnResume, undefined, 'без флага — из настроек/дефолт');
     assert.equal(parseArgs(['x', '--reset-limits-on-resume']).resetLimitsOnResume, true);
