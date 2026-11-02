@@ -692,7 +692,7 @@ export function handleApi(
  * - default_agent: только 'qwen' | 'vb';
  * - max_wall_time / max_requests: положительное целое; 0 или null — явный
  *   сброс (undefined → saveBotSettings удалит ключ, дефолт агента);
- * - branch_mode / compact / code_same_session: строго boolean;
+ * - branch_mode / compact / code_same_session / reset_limits_on_resume: строго boolean;
  * - неизвестные ключи → 400: веб не пишет в settings.json то, что бот
  *   проигнорирует или сломает.
  *
@@ -780,6 +780,7 @@ function validateSettingsPatch(
       case 'branch_mode':
       case 'compact':
       case 'code_same_session':
+      case 'reset_limits_on_resume':
         // Строго boolean: строка 'true' или мусор → 400, а не молчаливый off
         if (typeof value !== 'boolean') {
           return { error: `${key}: ожидается boolean, получено ${JSON.stringify(value)}` };

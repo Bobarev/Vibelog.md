@@ -772,6 +772,20 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         );
         return;
       }
+      case 'reset-limits-on-resume': {
+        // VL-308: сброс лимитов loop detection при resume. Дефолт — включён
+        // (per-run семантика); off — перенос blocked_signatures из меты
+        // (прежнее поведение VL-251). Читается при каждом запуске фазы.
+        settings.reset_limits_on_resume = parsed.value ? undefined : false;
+        saveBotSettings(deps.cwd, settings);
+        await sendMd(
+          ctx,
+          parsed.value
+            ? '⚙️ Лимиты loop detection при resume: *сбрасываются* (дефолт, per-run).'
+            : '⚙️ Лимиты loop detection при resume: *переносятся* из меты сессии (защита от лупа после «Продолжить», VL-251).'
+        );
+        return;
+      }
       case 'max-wall-time':
       case 'max-requests':
       case 'loop-detection-repeat':

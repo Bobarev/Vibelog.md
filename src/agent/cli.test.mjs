@@ -1409,6 +1409,103 @@ describe('vibelog-agent CLI (VL-85)', () => {
   });
 });
 
+describe('VL-308 — сброс лимитов loop detection при resume', () => {
+  // Свой мок-LM: блок объявлен вне describe VL-85, чей afterAll уже закрыл
+  // общий сервер (иначе fetch failed вместо ответа мока).
+  beforeAll(async () => {
+    mock = await startMockLlm('Готово');
+  });
+  afterAll(async () => {
+    await mock.close();
+  });
+
+  it('parseArgs: --reset-limits-on-resume / --no-reset-limits-on-resume', () => {
+    assert.equal(parseArgs(['x']).resetLimitsOnResume, undefined, 'без флага — из настроек/дефолт');
+    assert.equal(parseArgs(['x', '--reset-limits-on-resume']).resetLimitsOnResume, true);
+    assert.equal(parseArgs(['x', '--no-reset-limits-on-resume']).resetLimitsOnResume, false);
+  });
+
+  /**
+   * Готовит проект с сессией, в мете которой лежит blocked_signatures, и мок-LM,
+   * который один раз просит ровно эту сигнатуру, затем отвечает финальным текстом.
+   */
+  function prepareResumeWithBlocked(projDir, signature) {
+    const sessDir = join(projDir, '.vibelog', 'agent-sessions');
+    mkdirSync(sessDir, { recursive: true });
+    const sid = 'agent-vl308-resume';
+    writeFileSync(
+      join(sessDir, `${sid}.jsonl`),
+      [
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: 'постановка' },
+        { role: 'assistant', content: 'прошлый ран' },
+      ].map((m) => JSON.stringify(m)).join('\n') + '\n',
+      'utf-8'
+    );
+    writeFileSync(
+      join(sessDir, `${sid}.meta.json`),
+      JSON.stringify({ taskId: 'VL-308', phase: 'code', blocked_signatures: [signature] }),
+      'utf-8'
+    );
+    let turn = 0;
+    llmHandler = (body, res) => {
+      turn += 1;
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      if (turn === 1) {
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'x1', function: { name: 'run_shell_command', arguments: '{"command":"echo hi"}' } }] } }] })}\n\n`);
+      } else {
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'готово' } }] })}\n\n`);
+      }
+      res.write('data: [DONE]\n\n');
+      res.end();
+    };
+    return sid;
+  }
+
+  it('AC1/AC4: сброс включён (дефолт) — ранее заблокированная сигнатура исполняется', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl308on-'));
+    try {
+      const sid = prepareResumeWithBlocked(projDir, 'run_shell_command|{"command":"echo hi"}');
+      llmRequests.length = 0;
+      const { code, stdout, stderr } = await runCli(
+        ['Продолжи', '--resume', sid, '--no-mcp'],
+        llmEnv(),
+        projDir
+      );
+      llmHandler = null;
+      assert.equal(code, 0, stdout);
+      // Вызов ИСПОЛНЕН: в stderr есть лог инструмента, блокировки нет
+      assert.match(stderr, /инструмент: run_shell_command/, 'сигнатура из меты не должна блокировать новый ран');
+      assert.doesNotMatch(stderr, /Loop detection/);
+      assert.match(stderr, /Лимиты loop detection сброшены для нового рана \(VL-308\)/);
+    } finally {
+      llmHandler = null;
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
+  it('AC3/AC4: --no-reset-limits-on-resume — сигнатура переносится и блокируется', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl308off-'));
+    try {
+      const sid = prepareResumeWithBlocked(projDir, 'run_shell_command|{"command":"echo hi"}');
+      llmRequests.length = 0;
+      const { code, stdout, stderr } = await runCli(
+        ['Продолжи', '--resume', sid, '--no-mcp', '--no-reset-limits-on-resume'],
+        llmEnv(),
+        projDir
+      );
+      llmHandler = null;
+      assert.equal(code, 0, stdout);
+      // Вызов НЕ исполнен: блокировка из меты (поведение VL-251)
+      assert.doesNotMatch(stderr, /инструмент: run_shell_command/, 'сигнатура из меты должна блокировать вызов');
+      assert.match(stderr, /Лимиты loop detection перенесены из меты \(VL-308, --no-reset-limits-on-resume\)/);
+    } finally {
+      llmHandler = null;
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('VL-306 — parseArgs --loop-detection-repeat', () => {
   it('--loop-detection-repeat 5 → loopDetectionRepeat=5', () => {
     assert.equal(parseArgs(['фаза', 'VL-1', '--loop-detection-repeat', '5']).loopDetectionRepeat, 5);

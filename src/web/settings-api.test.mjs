@@ -119,7 +119,7 @@ describe('PUT /api/settings — запись (VL-156)', () => {
     const res = handleApi(
       'PUT',
       '/api/settings',
-      { branch_mode: true, max_requests: 300, code_same_session: true },
+      { branch_mode: true, max_requests: 300, code_same_session: true, reset_limits_on_resume: false },
       cwd
     );
     assert.equal(res.status, 200);
@@ -132,6 +132,8 @@ describe('PUT /api/settings — запись (VL-156)', () => {
     assert.equal(file.branch_mode, true);
     assert.equal(file.max_requests, 300);
     assert.equal(file.code_same_session, true);
+    // VL-308: opt-out сброса лимитов loop detection при resume
+    assert.equal(file.reset_limits_on_resume, false);
     // Read-modify-write сохранил секреты и chats (VL-143)
     assert.equal(file.env.TELEGRAM_BOT_TOKEN, 'keep-me');
     assert.deepEqual(file.chats, [7]);

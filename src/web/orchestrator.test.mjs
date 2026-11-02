@@ -561,6 +561,8 @@ describe('orchestrator (VL-28)', () => {
       // VL-306: порог loop detection прокидывается из settings.json
       const iLoop = argv.indexOf('--loop-detection-repeat');
       assert.ok(iLoop !== -1 && argv[iLoop + 1] === '7', 'нет --loop-detection-repeat 7: ' + JSON.stringify(argv));
+      // VL-308: дефолт агента — сброс лимитов при resume, флаг только при opt-out
+      assert.ok(!argv.includes('--no-reset-limits-on-resume'), 'флаг opt-out не должен передаваться по умолчанию: ' + JSON.stringify(argv));
     } finally {
       rmSync(join(testRoot, '.vibelog', 'settings.json'), { force: true });
       allowAllPhases(testRoot);
@@ -578,6 +580,35 @@ describe('orchestrator (VL-28)', () => {
     // VL-274: без ключа idle_timeout_seconds флаг не передаётся — поведение прежнее
     assert.ok(!argv2.includes('--idle-timeout'), 'неожиданный --idle-timeout: ' + JSON.stringify(argv2));
     setStubEnv({ VIBELOG_QWEN_BIN: stubBin, });
+  });
+
+  it('VL-308: reset_limits_on_resume: false → --no-reset-limits-on-resume в argv', async () => {
+    setStubEnv({
+      VL28_STUB_MARKER: join(testRoot, 'marker-reset-limits.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+    });
+    mkdirSync(join(testRoot, '.vibelog'), { recursive: true });
+    writeFileSync(
+      join(testRoot, '.vibelog', 'settings.json'),
+      JSON.stringify({ chats: [], reset_limits_on_resume: false }),
+      'utf-8',
+    );
+    allowAllPhases(testRoot);
+    try {
+      const res = startPhase(testRoot, task1.id, 'code', undefined, undefined, 'vb');
+      assert.equal(res.started, true);
+      const run = await waitDone(task1.id);
+      assert.equal(run.exitCode, 0);
+      const argv = JSON.parse(readFileSync(stubEnvGet('VL28_STUB_MARKER'), 'utf-8'));
+      assert.ok(
+        argv.includes('--no-reset-limits-on-resume'),
+        'нет --no-reset-limits-on-resume при reset_limits_on_resume: false: ' + JSON.stringify(argv),
+      );
+    } finally {
+      rmSync(join(testRoot, '.vibelog', 'settings.json'), { force: true });
+      allowAllPhases(testRoot);
+    }
   });
 
   it('VL-274: --idle-timeout не передаётся агенту qwen (флаг только для vb)', async () => {

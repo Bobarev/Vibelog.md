@@ -25,6 +25,8 @@ import type { ApiMode, ChatMessage } from './llm.js';
 import { ensureLlmEnv, modelLogLine, resolveRunModel } from './llm-env.js';
 import type { ResolvedRunModel } from './llm-env.js';
 import { loadProjectEnv } from '../bot/env.js';
+// VL-308: настройка reset_limits_on_resume — сброс лимитов loop detection при resume
+import { resolveResetLimitsOnResume } from '../bot/settings.js';
 import { runLoop } from './loop.js';
 import type { LoopResult } from './loop.js';
 import { agentSessionsDir, appendSessionMessage, appendSessionRun, countToolCallsInMessages, createSessionId, latestSession, loadSession, loadSessionMetaSync, saveSession, saveSessionMeta, sumUsageFromMessages, updateSessionMeta } from './session.js';
@@ -107,6 +109,15 @@ export interface CliOptions {
    * VL-83, но не прокидывалось — порог нельзя было изменить без правки кода.
    */
   loopDetectionRepeat?: number;
+  /**
+   * --reset-limits-on-resume / --no-reset-limits-on-resume (VL-308): сбрасывать
+   * накопленные лимиты loop detection при resume. Дефолт — сброс включён
+   * (per-run семантика, как у max-tool-calls и wall-time): сигнатуры из меты
+   * сессии НЕ подаются в лимиты нового рана. `--no-reset-limits-on-resume`
+   * возвращает прежнее поведение VL-251 (перенос сигнатур — защита от лупа
+   * после «Продолжить»).
+   */
+  resetLimitsOnResume?: boolean;
   /** --compact-tail N: хвост истории для LLM-запроса при компакшне (VL-122, дефолт 50). */
   compactTail?: number;
   /** --compact-at-tokens N: порог компакшна по usage-токенам (VL-122, дефолт 850000). */
@@ -153,6 +164,8 @@ const USAGE = `Использование:
   --max-requests <N>       — лимит LLM-запросов фазы (ходов; без лимита)
   --idle-timeout <сек>     — idle-таймаут фазы: максимум тишины (нет токенов/tool-вызовов; дефолт 600, 0 — выключено, VL-274)
   --loop-detection-repeat <N> — сколько одинаковых подряд вызовов считать зацикливанием (дефолт 3, VL-306)
+  --reset-limits-on-resume — сбросить накопленные лимиты loop detection при resume (дефолт, VL-308)
+  --no-reset-limits-on-resume — переносить blocked_signatures из меты сессии в новый ран (прежнее поведение VL-251)
   --compact-tail <N>       — компакшн истории: хвост LLM-запроса (дефолт 50, VL-122)
   --compact-at-tokens <N>  — компакшн истории: порог по usage-токенам (дефолт 850000, VL-122)
   --no-compact             — отключить компакшн истории (VL-122; по умолчанию включён)
@@ -240,6 +253,12 @@ export function parseArgs(argv: string[]): CliOptions {
         throw new Error(`--loop-detection-repeat: ожидается положительное целое, получено: ${raw}`);
       }
       opts.loopDetectionRepeat = n;
+    } else if (arg === '--reset-limits-on-resume') {
+      // VL-308: явное включение сброса лимитов при resume (дефолт и так true)
+      opts.resetLimitsOnResume = true;
+    } else if (arg === '--no-reset-limits-on-resume') {
+      // VL-308: прежнее поведение VL-251 — blocked_signatures переносятся
+      opts.resetLimitsOnResume = false;
     } else if (arg === '--compact-tail') {
       const raw = takeValue(arg, argv[++i]);
       const n = Number(raw);
@@ -541,7 +560,25 @@ export async function main(argv: string[]): Promise<void> {
       return null; // битая мета — не повод ронять фазу
     }
   })();
-  const resumedBlockedSignatures = sessionMeta?.blocked_signatures ?? [];
+  // VL-308: лимиты loop detection — PER-RUN, как max-tool-calls и wall-time.
+  // Раньше blocked_signatures переносились из меты в новый ран (VL-251), и
+  // первая же попытка повторить вызов из прошлого рана блокировалась без
+  // исполнения, а вторая давала fail — «Продолжить» падало на ровном месте.
+  // С VL-304/VL-306 корневая причина лупа устранена (модель получает
+  // isError/noop и штатный выход), поэтому перенос стал страховкой, которая
+  // мешает легитимной работе. Дефолт — сброс; `--no-reset-limits-on-resume`
+  // или `reset_limits_on_resume: false` в settings.json возвращают VL-251.
+  const resetLimitsOnResume = opts.resetLimitsOnResume ?? resolveResetLimitsOnResume(settingsCwd);
+  const resumedBlockedSignatures = resetLimitsOnResume
+    ? []
+    : (sessionMeta?.blocked_signatures ?? []);
+  if ((opts.resume !== undefined || opts.continue) && (sessionMeta?.blocked_signatures?.length ?? 0) > 0) {
+    log(
+      resetLimitsOnResume
+        ? `Лимиты loop detection сброшены для нового рана (VL-308): ${sessionMeta?.blocked_signatures?.length} сигнатур из меты не переносятся`
+        : `Лимиты loop detection перенесены из меты (VL-308, --no-reset-limits-on-resume): ${resumedBlockedSignatures.length} сигнатур`,
+    );
+  }
 
   // VL-239: модель ЭТОГО рана резолвится из меты сессии (фиксация модели на
   // сессии), а не из текущего models.default — иначе смена default между
