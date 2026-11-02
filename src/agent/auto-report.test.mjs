@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { stringifyYaml } from '../../dist/core/yaml.js';
-import { createTaskFile, getTask, addComment } from '../../dist/core/store.js';
+import { createTaskFile, getTask, addComment, updateTaskFile } from '../../dist/core/store.js';
 import { writeAutoReportIfMissing } from '../../dist/agent/auto-report.js';
 
 const cwd = mkdtempSync(join(tmpdir(), 'vibelog-auto-report-'));
@@ -129,5 +129,60 @@ describe('VL-304 — авто-отчёт фазы без backlog_finish_phase', 
       isError: false,
     });
     assert.equal(written, false);
+  });
+
+  it('VL-309 (AC2): терминальный статус при неотмеченном DoD не ставится, причина в отчёте', () => {
+    // Регресс на Close VL-307: авто-отчёт двигал статус по getStatusAfterPhase
+    // без проверки неотмеченных пунктов и ставил Done незакрытой задаче.
+    const t = createTaskFile(cwd, {
+      title: 'Close без DoD',
+      status: 'Review',
+      acceptanceCriteria: ['Первый пункт'],
+      definitionOfDone: ['Тесты проходят', 'Документация обновлена'],
+    });
+    updateTaskFile(cwd, t.id, {
+      definitionOfDone: [{ text: 'Тесты проходят', checked: true }, { text: 'Документация обновлена', checked: false }],
+    });
+    const written = writeAutoReportIfMissing({
+      cwd,
+      taskCwd: cwd,
+      taskId: t.id,
+      phase: 'close',
+      runStartedAt: RUN_STARTED_AT,
+      isError: false,
+    });
+    assert.equal(written, true, 'отчёт пишется');
+    const task = getTask(cwd, t.id);
+    assert.equal(task.status, 'Review', 'терминальный Done при неотмеченном DoD не ставится');
+    const last = task.comments[task.comments.length - 1];
+    assert.equal(last.author, '@agent');
+    assert.match(last.text, /Статус не изменён/);
+    assert.match(last.text, /DoD: #2/);
+    assert.match(last.text, /backlog_finish_phase с dodOverride или aborted/);
+  });
+
+  it('VL-309 (AC2): все пункты отмечены → статус по workflow ставится', () => {
+    const t = createTaskFile(cwd, {
+      title: 'Close с DoD',
+      status: 'Review',
+      acceptanceCriteria: ['Первый пункт'],
+      definitionOfDone: ['Тесты проходят'],
+    });
+    updateTaskFile(cwd, t.id, {
+      acceptanceCriteria: [{ text: 'Первый пункт', checked: true }],
+      definitionOfDone: [{ text: 'Тесты проходят', checked: true }],
+    });
+    const written = writeAutoReportIfMissing({
+      cwd,
+      taskCwd: cwd,
+      taskId: t.id,
+      phase: 'close',
+      runStartedAt: RUN_STARTED_AT,
+      isError: false,
+    });
+    assert.equal(written, true);
+    const task = getTask(cwd, t.id);
+    assert.equal(task.status, 'Done', 'Review + close → Done, когда всё отмечено');
+    assert.doesNotMatch(task.comments[task.comments.length - 1].text, /Статус не изменён/);
   });
 });

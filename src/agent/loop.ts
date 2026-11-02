@@ -315,6 +315,11 @@ const MAX_BLOCKED_CALLS_PER_RUN = 5;
 // (finishAppliedRepeat, is_error:false). Прежний кап сжигал 4 LLM-запроса и
 // затем убивал фазу кодом 1, хотя работа была сделана (сессия
 // agent-1793631554185: 3 noop + 4 повтора {id,type} → fail).
+// VL-309: но у noop-повтора штатного выхода НЕТ (noop ≠ работа сделана) —
+// поэтому круг директив «изменений нет» ограничен отдельным капом. После
+// исчерпания — честный fail(): оркестратор откатит статус и запустит
+// авто-resume, вместо ложного «ран завершён штатно» (инцидент Close VL-307).
+const MAX_NOOP_REPEATS_PER_RUN = 3;
 // Фантомные tool_calls (пустые name/id, VL-215): сколько ходов ПОДРЯД модель
 // может отдавать фантомы до fail(). 3 — по образцу loop detection VL-83:
 // фантомный ход тратит LLM-запрос, но единичный случай модель исправляет
@@ -375,6 +380,23 @@ export function appliedNoopDirective(name: string): string {
   return (
     `Вызов ${name} уже применён ранее (ответ noop) — повтор с теми же аргументами ничего не изменит. ` +
     'Изменения применены, ран завершается штатно; отчёт будет записан автоматически.'
+  );
+}
+
+/**
+ * Текст директивы для повтора вызова, чей ответ был noop (VL-309).
+ *
+ * Отличие от `appliedNoopDirective`: noop означает «изменений нет», а не
+ * «работа сделана». Поэтому ран НЕ завершается — модели напоминают, что
+ * повтор бесполезен, и направляют к следующему шагу фазы. Маркерная
+ * подстрока «Изменений нет» используется тестами и разборами сессий.
+ *
+ * @param name — имя повторённого инструмента
+ */
+export function noopRepeatDirective(name: string): string {
+  return (
+    `Изменений нет: вызов ${name} с теми же аргументами уже был выполнен и ничего не изменил — повтор НЕ выполнен. ` +
+    'Следующий шаг: переходи к следующему пункту фазы (правки/проверки/документация), не повторяя этот вызов.'
   );
 }
 
@@ -486,10 +508,24 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // фазу надо завершать сразу, а не ждать второго круга повторов.
   const blockCounts = new Map<string, number>();
   let blockedTotal = 0;
-  // VL-303: сигнатуры, чей вызов УСПЕШНО выполнен и вернул JSON с ok:true
-  // (включая noop:true). Повтор такой сигнатуры фазу не прерывает: эффект
-  // уже достигнут, модели уходит директива «уже применён, переходи к отчёту».
+  // VL-303: сигнатуры, чей вызов УСПЕШНО выполнен и вернул JSON с ok:true.
+  // Повтор такой сигнатуры фазу не прерывает: эффект уже достигнут, модели
+  // уходит директива «уже применён, переходи к отчёту».
   const appliedSignatures = new Set<string>();
+  // VL-309: сигнатуры, чей вызов вернул noop (ok:false + reason:'noop').
+  // Noop — это «изменений нет», а НЕ «работа сделана» (VL-304 ошибочно
+  // складывал noop в appliedSignatures): повтор такого вызова не должен
+  // завершать ран. Вместо finishAppliedRepeat модели уходит директива
+  // «изменений нет — переходи к следующему шагу», и цикл продолжается.
+  // Инцидент: сессия agent-1793647788155 (Close VL-307) — повтор
+  // lesson_update (noop) оборвал ран, документация не была написана, а
+  // задача получила Done через авто-отчёт.
+  const noopSignatures = new Set<string>();
+  // VL-309: сколько раз за ран модели напоминали «изменений нет». Страховка
+  // от вечного круга «директива → повтор»: при превышении — честный fail()
+  // (is_error:true → оркестратор откатит статус и запустит авто-resume), а не
+  // ложный «успех» с невыполненной работой.
+  let noopRepeatCount = 0;
   // Лимит guard'а зацикливания намерений (VL-119): N ходов подряд с одним
   // промежуточным текстом → fail штатным путём (контракт resume VL-103).
   const intentRepeatLimit = options.limits?.intentLoopRepeat ?? INTENT_LOOP_REPEAT_DEFAULT;
@@ -985,7 +1021,20 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // VL-253: плюс per-signature счётчик и общий кап рана — иначе при
       // чередовании сигнатур серия «подряд» сбрасывалась и луп шёл кругами.
       const blockAndPush = async (): Promise<void> => {
-        // VL-303/VL-304: вызов уже применён (ответ ok/noop) — фатальные
+        // VL-309: noop — «изменений нет», а не «работа сделана». Ран НЕ
+        // завершается: модели уходит директива «переходи к следующему шагу»,
+        // фатальные счётчики не растут. Кап повторов — против вечного круга.
+        if (noopSignatures.has(signature)) {
+          noopRepeatCount++;
+          await pushMessage({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: noopRepeatDirective(call.name),
+          });
+          console.error(`[vibelog-agent] повтор noop-вызова: ${call.name}`);
+          return;
+        }
+        // VL-303/VL-304: вызов уже применён (ответ ok) — фатальные
         // счётчики НЕ растут: фаза не должна падать из-за повтора уже
         // сделанной работы. Модели уходит директива «изменения применены»,
         // а ран завершается штатно сразу после неё (finishAppliedRepeat).
@@ -1012,6 +1061,21 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         // Диагностика в точке срабатывания → logTail оркестратора (lesson-77)
         console.error(`[vibelog-agent] loop detection: ${call.name} заблокирован`);
       };
+
+      // VL-309: повтор noop-вызова («изменений нет») — вызов НЕ исполняется,
+      // но и ран НЕ завершается: модели уходит директива «переходи к
+      // следующему шагу», цикл продолжается. Кап повторов — против вечного
+      // круга; после исчерпания — честный fail() (работа не завершена),
+      // чтобы оркестратор откатил статус и запустил авто-resume.
+      if (noopSignatures.has(signature)) {
+        await blockAndPush();
+        if (noopRepeatCount > MAX_NOOP_REPEATS_PER_RUN) {
+          return fail(
+            `Модель ${noopRepeatCount} раз повторила вызов ${call.name}, вернувший «изменений нет», — вызов не исполнялся, фаза прервана (работа не завершена). ${NEXT_STEP_HINT}`,
+          );
+        }
+        continue;
+      }
 
       if (blocked.has(signature)) {
         // AC5: сигнатура отклонена в прошлом ране (resume) — не исполняем.
@@ -1165,17 +1229,19 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // VL-274: tool завершён — активность; окно простоя отсчитывается заново
       // (resume делает и noteActivity: длительность инструмента не «съедает» бюджет)
       idleGuard.resume();
-      // VL-303/VL-304: запоминаем сигнатуру успешно применённого write-вызова —
-      // ответ JSON с ok:true ИЛИ noop:true (noop с VL-304 приходит как
-      // ok:false + reason:'noop', но эффект тот же: состояние уже такое,
-      // как просили). Повтор такой сигнатуры завершает ран штатно.
+      // VL-303/VL-304/VL-309: классифицируем ответ write-вызова:
+      // ok:true → appliedSignatures (повтор завершает ран штатно),
+      // noop:true → noopSignatures (повтор НЕ завершает ран, см. VL-309).
       // Парсинг в try/catch: текстовые ответы внешних MCP-инструментов не
       // должны ломать цикл.
       if (!toolError) {
         let applied = false;
+        let noop = false;
         try {
           const parsed = JSON.parse(output) as { ok?: unknown; noop?: unknown } | null;
-          if (parsed && typeof parsed === 'object' && (parsed.ok === true || parsed.noop === true)) {
+          if (parsed && typeof parsed === 'object' && parsed.noop === true) {
+            noop = true;
+          } else if (parsed && typeof parsed === 'object' && parsed.ok === true) {
             applied = true;
           }
         } catch {
@@ -1194,10 +1260,13 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         // - только write по природе операции (isWriteOperation, VL-219);
         // - текст-ошибка («Ошибка …») не считается применённой — иначе повтор
         //   упавшего вызова закрывал бы фазу как успешную.
-        if (!applied && spec && isMcpWriteTool(call.name) && !/^\s*Ошибка/.test(output)) {
+        // VL-309: noop-JSON страховкой НЕ перекрывается — noop означает
+        // «изменений нет», его нельзя превращать в «применён».
+        if (!applied && !noop && spec && isMcpWriteTool(call.name) && !/^\s*Ошибка/.test(output)) {
           applied = true;
         }
         if (applied) appliedSignatures.add(signature);
+        if (noop) noopSignatures.add(signature);
       }
       // VL-178: единый ingestion-cap ВСЕХ tool-выводов, включая внешние MCP
       // (chrome_devtools__take_snapshot приносил 624 КБ целиком — VL-110-cap

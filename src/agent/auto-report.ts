@@ -19,7 +19,7 @@
  */
 
 import { addComment, getTask, updateTaskFile } from '../core/store.js';
-import { getStatusAfterPhase, getWorkflowForTask, SERVICE_PHASES } from '../core/workflow.js';
+import { getStatusAfterPhase, getWorkflowForTask, isTerminalStatus, SERVICE_PHASES } from '../core/workflow.js';
 import { getPhaseTransientStatus } from '../core/phase-transient.js';
 import { buildAutoReport, uncheckedItems } from '../mcp/auto-report.js';
 
@@ -93,7 +93,7 @@ export function writeAutoReportIfMissing(opts: AutoReportOptions): boolean {
     const dodList = task.definitionOfDone || [];
     const isChecked = (c: string | { checked?: boolean }): boolean =>
       typeof c === 'string' ? false : c.checked === true;
-    const report = buildAutoReport(task, {
+    let report = buildAutoReport(task, {
       status: nextStatus ?? task.status,
       acChecked: acList.filter(isChecked).length,
       acTotal: acList.length,
@@ -104,10 +104,45 @@ export function writeAutoReportIfMissing(opts: AutoReportOptions): boolean {
       uncheckedDod: uncheckedItems(dodList),
     });
 
+    // VL-309: терминальный статус при неотмеченных пунктах DoD авто-отчёт НЕ
+    // ставит. Правило VL-248 («Done при невыполненном DoD требует явного
+    // dodOverride/aborted») живёт внутри backlog_finish_phase, а этот путь его
+    // обходил: Close VL-307 получил Done с неотмеченными AC5/DoD2, хотя
+    // документация не была написана. Статус остаётся прежним (откат делает
+    // finalizePhaseStatus/человек), причина перечисляется в отчёте.
+    const uncheckedDodNumbers = dodList
+      .map((c, i) => ({ n: i + 1, checked: isChecked(c) }))
+      .filter((x) => !x.checked)
+      .map((x) => x.n);
+    const uncheckedAcNumbers = acList
+      .map((c, i) => ({ n: i + 1, checked: isChecked(c) }))
+      .filter((x) => !x.checked)
+      .map((x) => x.n);
+    const targetStatus = nextStatus ?? task.status;
+    const terminalAtRisk =
+      nextStatus !== null
+      && isTerminalStatus(workflow, targetStatus)
+      && (uncheckedDodNumbers.length > 0 || uncheckedAcNumbers.length > 0);
+    let effectiveStatus = targetStatus;
+    if (terminalAtRisk) {
+      effectiveStatus = prevStatus;
+      const parts: string[] = [];
+      if (uncheckedDodNumbers.length > 0) {
+        parts.push(`DoD: ${uncheckedDodNumbers.map((n) => `#${n}`).join(', ')}`);
+      }
+      if (uncheckedAcNumbers.length > 0) {
+        parts.push(`AC: ${uncheckedAcNumbers.map((n) => `#${n}`).join(', ')}`);
+      }
+      report +=
+        `\nСтатус не изменён: терминальный «${targetStatus}» при неотмеченных пунктах (${parts.join('; ')}) ` +
+        'возможен только через backlog_finish_phase с dodOverride или aborted (VL-248/VL-309). ' +
+        `Задача оставлена в «${prevStatus}».`;
+    }
+
     addComment(taskCwd, taskId, report, '@agent');
     // Статус двигаем только при валидном переходе и только если задача ещё
     // не зафиксирована агентом (иначе перетёрли бы его решение).
-    if (nextStatus && nextStatus !== task.status && task.status === prevStatus) {
+    if (nextStatus && nextStatus !== task.status && task.status === prevStatus && !terminalAtRisk) {
       updateTaskFile(taskCwd, taskId, { status: nextStatus });
     }
     console.error(`[vibelog-agent] авто-отчёт фазы ${phase} записан в ${taskId} (VL-304)`);

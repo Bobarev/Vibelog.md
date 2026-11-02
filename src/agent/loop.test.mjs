@@ -440,11 +440,13 @@ describe('runLoop loop detection (VL-83)', () => {
     assert.match(res.result, /Loop detection/);
   });
 
-  it('VL-304 (AC2/AC4): повтор уже применённого вызова завершает ран штатно (сессия agent-1793631554185)', async () => {
-    // Регресс на реальную сессию: 3 noop-вызова backlog_update_task, затем
-    // 4 повтора {id,type}. До VL-304 ран падал кодом 1 после 4 LLM-запросов
-    // («Модель 4 раз повторила уже применённый вызов»), хотя работа была
-    // сделана. Теперь первый же повтор завершает ран с is_error:false.
+  it('VL-309 (AC1): повтор noop-вызова не обрывает ран — директива «Изменений нет», цикл продолжается (сессия agent-1793647788155)', async () => {
+    // Регресс на реальную сессию Close VL-307: модель повторяла
+    // lesson_update с теми же аргументами, ответ был noop («изменений нет»),
+    // а VL-304 складывал noop в appliedSignatures → первый же повтор
+    // завершал ран «штатно» и Close не доходил до документации, хотя задача
+    // получила Done через авто-отчёт. Теперь повтор noop-вызова НЕ
+    // исполняется, ран продолжается и модель работает дальше.
     const state = { calls: 0 };
     const spec = {
       name: 'backlog_update_task',
@@ -459,23 +461,73 @@ describe('runLoop loop detection (VL-83)', () => {
     const same = { id: 'VL-302', type: 'feature' };
     const { llm } = fakeLlm([
       { text: '', toolCalls: [{ id: 'c1', name: 'backlog_update_task', arguments: { id: 'VL-302', title: 'T' } }] },
-      { text: '', toolCalls: [{ id: 'c2', name: 'backlog_update_task', arguments: { id: 'VL-302', priority: 'High' } }] },
-      { text: '', toolCalls: [{ id: 'c3', name: 'backlog_update_task', arguments: { id: 'VL-302', labels: ['a'] } }] },
-      { text: '', toolCalls: [{ id: 'c4', name: 'backlog_update_task', arguments: same }] },
-      { text: '', toolCalls: [{ id: 'c5', name: 'backlog_update_task', arguments: same }] },
-      { text: '', toolCalls: [{ id: 'c6', name: 'backlog_update_task', arguments: same }] },
-      { text: 'перехожу к отчёту' },
+      { text: '', toolCalls: [{ id: 'c2', name: 'backlog_update_task', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'backlog_update_task', arguments: same }] },
+      { text: 'перехожу к документации' },
     ]);
     const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
-    assert.equal(res.is_error, false, `фаза не должна падать: ${res.result}`);
-    assert.match(res.result, /зациклилась на уже применённом вызове/);
-    assert.equal(state.calls, 4, 'повторы уже применённого вызова не исполняются (c1-c4 исполнены, c5/c6 — нет)');
-    const directive = res.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'c5');
-    assert.ok(directive, 'модель получает директиву на повтор применённого вызова');
-    assert.match(String(directive.content), /уже применён/);
-    // Контракт VL-103: транскрипт обязан заканчиваться assistant-сообщением
+    assert.equal(res.is_error, false, `ран не должен падать: ${res.result}`);
+    assert.equal(res.result, 'перехожу к документации', 'ран продолжается до финального текста модели');
+    assert.equal(state.calls, 2, 'исполнены c1 и первый c2; повтор c3 с noop-сигнатурой — нет');
+    const directive = res.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'c3');
+    assert.ok(directive, 'модель получает директиву на повтор noop-вызова');
+    assert.match(String(directive.content), /Изменений нет/);
+    assert.match(String(directive.content), /Следующий шаг/);
     assert.equal(res.messages[res.messages.length - 1].role, 'assistant');
-    assert.equal(res.blocked_signatures, undefined, 'применённая сигнатура не попадает в блокировки');
+  });
+
+  it('VL-309 (AC1): вечный повтор noop-вызова → честный fail, а не «успех»', async () => {
+    // Кап MAX_NOOP_REPEATS_PER_RUN: если модель игнорирует директиву и
+    // повторяет noop-вызов бесконечно, ран завершается is_error:true —
+    // оркестратор откатит статус и запустит авто-resume, вместо ложного
+    // «ран завершён штатно» при невыполненной работе.
+    const state = { calls: 0 };
+    const spec = {
+      name: 'backlog_update_task',
+      description: 'write-заглушка',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => {
+        state.calls++;
+        return JSON.stringify({ ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [] });
+      },
+    };
+    const same = { id: 'VL-302', type: 'feature' };
+    const repeated = Array.from({ length: 10 }, (_, i) => ({
+      text: '',
+      toolCalls: [{ id: `c${i + 1}`, name: 'backlog_update_task', arguments: same }],
+    }));
+    const { llm } = fakeLlm(repeated);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, true, 'вечный повтор noop-вызова должен честно прерывать фазу');
+    assert.match(res.result, /повторила вызов backlog_update_task/);
+    assert.equal(state.calls, 1, 'вызов исполнялся только один раз');
+    assert.equal(res.messages[res.messages.length - 1].role, 'assistant');
+  });
+
+  it('VL-304 (AC2): повтор применённого (ok:true) вызова по-прежнему завершает ран штатно', async () => {
+    // VL-309 не откатывает VL-304: для РЕАЛЬНО применённого вызова
+    // (ok:true) штатный выход остаётся — работа сделана, терять нечего.
+    const state = { calls: 0 };
+    const spec = {
+      name: 'backlog_update_task',
+      description: 'write-заглушка',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => {
+        state.calls++;
+        return JSON.stringify({ ok: true, message: 'обновлено' });
+      },
+    };
+    const same = { id: 'VL-302', type: 'feature' };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'backlog_update_task', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'backlog_update_task', arguments: same }] },
+      { text: 'не должно дойти' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false);
+    assert.match(res.result, /зациклилась на уже применённом вызове/);
+    assert.equal(state.calls, 1, 'повтор применённого вызова не исполняется');
+    assert.equal(res.messages[res.messages.length - 1].role, 'assistant');
   });
 
   it('разные аргументы — не loop detection', async () => {
