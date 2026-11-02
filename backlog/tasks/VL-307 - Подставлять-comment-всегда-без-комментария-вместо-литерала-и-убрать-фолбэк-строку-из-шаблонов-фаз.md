@@ -1,11 +1,11 @@
 ---
 id: VL-307
 title: 'Подставлять {{comment}} всегда («без комментария» вместо литерала) и убрать фолбэк-строку из шаблонов фаз'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-02 20:50'
-updated_date: '2026-11-02 22:32'
+updated_date: '2026-11-02 23:40'
 due_date: ''
 labels:
   - agent
@@ -82,13 +82,13 @@ token_usage:
 - [x] #2 Фолбэк-строка «Если вместо комментария остался неподставленный {{comment}}…» удалена из phase-spec/plan/code/do/investigate/materialize
 - [x] #3 phase-comment.md и phase-reject.md: фолбэк переписан на сравнение с «без комментария» (модель не пытается выполнить запрос «без комментария»)
 - [x] #4 Регресс-тест: startPhase без комментария → в промпте нет литерала {{comment}} и нет дублирования текста комментария; startPhase с комментарием → текст встречается ровно один раз
-- [ ] #5 Тесты проходят (pnpm test), документация обновлена (README/doc-10 — контракт {{comment}}; CHANGELOG)
+- [x] #5 Тесты проходят (pnpm test), документация обновлена (README/doc-10 — контракт {{comment}}; CHANGELOG)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -122,5 +122,10 @@ DoD не отмечены (1): 2. Документация обновлена
 Файлы (13): src/web/orchestrator.ts, src/agent/cli.ts, src/web/orchestrator.test.mjs, src/web/trigger-api.test.mjs, src/web/phase-prompt.test.mjs, templates/phases/phase-spec.md, templates/phases/phase-plan.md, templates/phases/phase-code.md, templates/phases/phase-do.md, templates/phases/phase-investigate.md, …
 Фрагмент плана/резюме: план и резюме отсутствуют.
 Отчёт собран сервером автоматически (VL-253): модель не передала comment.
+---
+author: @agent
+created: 2026-11-02 23:40
+---
+Документация VL-307 фактически написана в фазе Close VL-309 (коммит `4f603ee`): CHANGELOG.md — запись VL-307 в разделе Unreleased; doc-10 (`backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md`) — §3 (строка о контракте подстановки `{{comment}}`), §4 — новый подраздел «Контракт `{{comment}}` (VL-307)» (подставляется всегда, «без комментария» при отсутствии, литерала в промпте не бывает, фолбэк-строки удалены из 6 шаблонов, comment/reject сравнивают со строкой «без комментария», тот же контракт в CLI `src/agent/cli.ts`). После фактической записи отмечены AC5 и DoD «Документация обновлена» (lesson-140/VL-248 — отмечать до записи было бы ложным заявлением).
 ---
 <!-- COMMENTS:END -->
