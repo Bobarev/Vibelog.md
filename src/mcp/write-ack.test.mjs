@@ -158,6 +158,47 @@ describe('VL-262 — idempotencyKey', () => {
   });
 });
 
+describe('VL-303 — no-op update_task не пишет файл и отвечает noop', () => {
+  it('AC1: повтор с уже применёнными полями → {ok:true, noop:true}, файл не переписан', async () => {
+    const t = createTaskFile(cwd, { title: 'Noop-задача', type: 'bug' });
+    const first = JSON.parse(await handleToolCall('backlog_update_task', { id: t.id, type: 'feature' }, cwd));
+    assert.equal(first.ok, true);
+    assert.ok(!first.noop, 'первый вызов — обычный успех');
+    const updatedAfterFirst = getTask(cwd, t.id).updated_date;
+    const second = JSON.parse(await handleToolCall('backlog_update_task', { id: t.id, type: 'feature' }, cwd));
+    assert.equal(second.ok, true);
+    assert.equal(second.noop, true, `ожидался noop: ${JSON.stringify(second)}`);
+    assert.match(second.message, /Изменений нет/);
+    assert.match(second.message, /backlog_finish_phase/);
+    assert.equal(second.applied.type, 'feature');
+    assert.equal(getTask(cwd, t.id).updated_date, updatedAfterFirst, 'файл не переписан');
+  });
+
+  it('частичное совпадение → обычный успех без noop', async () => {
+    const t = createTaskFile(cwd, { title: 'Частично', priority: 'Low' });
+    const ack = JSON.parse(
+      await handleToolCall('backlog_update_task', { id: t.id, title: 'Частично', priority: 'High' }, cwd),
+    );
+    assert.ok(!ack.noop, 'есть реальное изменение — noop быть не должно');
+    assert.equal(ack.applied.title, 'Частично');
+    assert.equal(ack.applied.priority, 'High');
+  });
+
+  it('labels в другом порядке → noop (сравнение как множеств)', async () => {
+    const t = createTaskFile(cwd, { title: 'Метки', labels: ['a', 'b'] });
+    const ack = JSON.parse(await handleToolCall('backlog_update_task', { id: t.id, labels: ['b', 'a'] }, cwd));
+    assert.equal(ack.noop, true, `порядок меток не изменение: ${JSON.stringify(ack)}`);
+  });
+
+  it('append_notes никогда не noop — файл дописывается', async () => {
+    const t = createTaskFile(cwd, { title: 'Заметки' });
+    await handleToolCall('backlog_update_task', { id: t.id, append_notes: 'строка' }, cwd);
+    const ack = JSON.parse(await handleToolCall('backlog_update_task', { id: t.id, append_notes: 'строка' }, cwd));
+    assert.ok(!ack.noop, 'дописывание всегда меняет файл');
+    assert.match(getTask(cwd, t.id).implementationNotes, /строка\nстрока/);
+  });
+});
+
 describe('VL-262 — applied у остальных write-инструментов', () => {
   it('update_status → applied.status; add_comment → applied.comment', async () => {
     const t = createTaskFile(cwd, { title: 'Статус и коммент' });
