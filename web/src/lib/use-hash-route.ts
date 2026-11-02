@@ -26,6 +26,7 @@ export type Route =
   | 'chat'
   | 'settings'
   | 'config'
+  | 'setup'
   | 'references'
   | 'reference'
   | 'documents'
@@ -38,6 +39,8 @@ function parseHash(hash: string): Route {
   const path = hash.replace(/^#/, '').replace(/^\//, '');
   if (path === 'settings') return 'settings';
   if (path === 'config') return 'config';
+  // Мастер настройки проекта (VL-210): #/setup — точное совпадение
+  if (path === 'setup') return 'setup';
   if (path === 'tasks') return 'tasks';
   // Чат с LLM (VL-204): точное совпадение до детальных префиксов
   if (path === 'chat') return 'chat';

@@ -18,6 +18,7 @@ import type { Server } from 'node:http';
 import { exec } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { handleApi } from './api.js';
+import { handleSetupCheckBot, handleSetupPing } from './setup-api.js';
 import { runChat } from './chat.js';
 import { getAssetsHtml } from './assets.js';
 import { serveStatic } from './static.js';
@@ -39,6 +40,8 @@ const webDistDir = fileURLToPath(new URL('../../web/dist', import.meta.url));
  * @param staticDir — каталог статики React UI
  * @param host — адрес прослушивания (VL-266): '127.0.0.1' по умолчанию,
  *   '0.0.0.0' — доступ из локальной сети
+ * @param openHash — хеш-маршрут, который открыть в браузере (VL-210:
+ *   `#/setup` при `vibelog init --web`); undefined — корень (канбан)
  */
 export function startWebServer(
   cwd: string,
@@ -46,6 +49,7 @@ export function startWebServer(
   openBrowser = true,
   staticDir: string = webDistDir,
   host: string = DEFAULT_WEB_HOST,
+  openHash?: string,
 ): Server {
   // VL-196: recovery «зависших» транзиентных In Progress после рестарта
   // процесса (AC3) — сбой recovery не должен мешать подъёму сервера
@@ -85,6 +89,25 @@ export function startWebServer(
         }
 
         const queryString = rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?') + 1) : '';
+
+        // Async-эндпоинты wizard-а (VL-210): ping LLM и getMe Telegram ходят
+        // в сеть, поэтому не могут жить в синхронном handleApi. Ветка ДО
+        // общего вызова — иначе POST /api/setup/ping ушёл бы в handleApi.
+        if (method === 'POST' && (url === '/api/setup/ping' || url === '/api/setup/check-bot')) {
+          const handler = url === '/api/setup/ping' ? handleSetupPing : handleSetupCheckBot;
+          handler(parsed, cwd)
+            .then((result) => {
+              if (res.destroyed || res.writableEnded) return;
+              res.writeHead(result.status, { 'Content-Type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify(result.body));
+            })
+            .catch((err) => {
+              if (res.destroyed || res.writableEnded) return;
+              res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify({ error: (err as Error)?.message ?? String(err) }));
+            });
+          return;
+        }
 
         // POST /api/chat — SSE-стриминг чата (VL-204): ответ не JSON,
         // поэтому ветка ДО handleApi (он синхронный и всегда отдаёт JSON).
@@ -160,7 +183,8 @@ export function startWebServer(
       // Открываем браузер на macOS / Linux — всегда local-URL:
       // `open http://0.0.0.0:3030` на части систем не срабатывает
       const cmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
-      exec(`${cmd} ${local}`, () => {});
+      // VL-210: openHash — открыть конкретный хеш-маршрут (#/setup при init --web)
+      exec(`${cmd} ${local}${openHash ?? ''}`, () => {});
     }
 
     // VL-270 (doc-19 §5): тик супервизора живёт в процессе vibelog browser.

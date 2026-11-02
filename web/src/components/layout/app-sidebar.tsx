@@ -20,7 +20,7 @@
 
 import * as React from "react";
 
-import { Command, FileText, FolderCog, Kanban, Library, Lightbulb, MessageSquare, PlusCircle, Settings, SlidersHorizontal } from "lucide-react";
+import { Command, FileText, FolderCog, Kanban, Library, Lightbulb, MessageSquare, PlusCircle, Settings, SlidersHorizontal, Wand2 } from "lucide-react";
 
 import { Sidebar, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarRail } from "@/components/ui/sidebar";
 import { NavMain, type NavGroup } from "@/components/layout/nav-main";
@@ -84,6 +84,8 @@ const NAV_GROUPS: NavGroup[] = [
         subItems: [
           { id: "bot", title: "Бот", url: "settings", icon: SlidersHorizontal },
           { id: "config", title: "Конфиг проекта", url: "config", icon: FolderCog },
+          // Мастер настройки проекта (VL-210): #/setup — агенты, LLM, секреты, бот, MCP
+          { id: "setup", title: "Мастер настройки", url: "setup", icon: Wand2 },
         ],
       },
     ],
