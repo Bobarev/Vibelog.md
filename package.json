@@ -32,6 +32,22 @@
     "type": "git",
     "url": "https://gitverse.ru/bobarev/Vibelog.md"
   },
+  "bugs": {
+    "url": "https://gitverse.ru/bobarev/Vibelog.md/tasktracker"
+  },
+  "keywords": [
+    "markdown",
+    "task",
+    "project-management",
+    "backlog",
+    "agents",
+    "developer-tools",
+    "ai-agent",
+    "mcp",
+    "ai-coding",
+    "coding-agent",
+    "kanban"
+  ],
   "devDependencies": {
     "@types/node": "^26.6.3",
     "typescript": "^7.0.2",
