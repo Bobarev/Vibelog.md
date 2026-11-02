@@ -440,6 +440,39 @@ describe('runLoop loop detection (VL-83)', () => {
     assert.match(res.result, /Loop detection/);
   });
 
+  it('VL-303 (AC3): повтор уже применённого вызова не убивает фазу (сессия agent-1793628348682)', async () => {
+    // Заглушка write-инструмента: отвечает JSON-снимком ok/noop, как
+    // backlog_update_task после VL-303.
+    const state = { calls: 0 };
+    const spec = {
+      name: 'backlog_update_task',
+      description: 'write-заглушка',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => {
+        state.calls++;
+        return JSON.stringify({ ok: true, noop: true, message: 'Изменений нет', applied: {}, skipped: [] });
+      },
+    };
+    const same = { id: 'VL-302', type: 'feature' };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'backlog_update_task', arguments: { id: 'VL-302', title: 'T' } }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'backlog_update_task', arguments: { id: 'VL-302', priority: 'High' } }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'backlog_update_task', arguments: { id: 'VL-302', labels: ['a'] } }] },
+      { text: '', toolCalls: [{ id: 'c4', name: 'backlog_update_task', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c5', name: 'backlog_update_task', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c6', name: 'backlog_update_task', arguments: same }] },
+      { text: 'перехожу к отчёту' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false, `фаза не должна падать: ${res.result}`);
+    assert.equal(res.result, 'перехожу к отчёту');
+    assert.equal(state.calls, 4, 'повторы уже применённого вызова не исполняются (c1-c4 исполнены, c5/c6 — нет)');
+    const directive = res.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'c5');
+    assert.ok(directive, 'модель получает директиву на повтор применённого вызова');
+    assert.match(String(directive.content), /уже применён/);
+    assert.equal(res.blocked_signatures, undefined, 'применённая сигнатура не попадает в блокировки');
+  });
+
   it('разные аргументы — не loop detection', async () => {
     const { spec, state: toolState } = countingTool('t');
     const { llm } = fakeLlm([

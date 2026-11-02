@@ -59,7 +59,7 @@ import { markPhaseAborted, getPhaseTransientStatus } from '../core/phase-transie
 import { getWorkflowForTask, phaseStatusTransitionError, isTerminalStatus } from '../core/workflow.js';
 import { buildProjectMap } from '../core/project-map.js';
 import { truncateToolOutput } from '../agent/tools.js';
-import { ackOk, unknownFields } from './tool-result.js';
+import { ackOk, ackNoop, unknownFields } from './tool-result.js';
 import type { SkippedField } from './tool-result.js';
 import { withIdempotency } from './idempotency.js';
 import { ensureWorktreeOnCreate } from '../core/worktree.js';
@@ -1317,6 +1317,35 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
     throw new Error('Не указаны поля для обновления.');
   }
 
+  // VL-303: no-op вызов — все переданные значения уже есть в задаче. Раньше
+  // файл переписывался и ответ был «обновлена», модель не получала сигнала
+  // «работа сделана» и повторяла вызов до loop detection (инцидент VL-302:
+  // фаза падала, хотя title/type/priority/labels уже были записаны).
+  // append_notes исключён: дописывание всегда меняет файл.
+  if (args.append_notes === undefined) {
+    const current = getTask(cwd, args.id as string);
+    if (current) {
+      const currentRaw = current as unknown as Record<string, unknown>;
+      const unchanged = Object.keys(updates).every(key =>
+        sameValue(key, (updates as Record<string, unknown>)[key], currentRaw[key]),
+      );
+      if (unchanged) {
+        // applied — фактическое состояние (как в обычном пути), но без записи:
+        // updated_date и файл не трогаются (AC1).
+        const applied: Record<string, unknown> = {};
+        for (const key of Object.keys(updates)) {
+          const value = currentRaw[key];
+          applied[key] = Array.isArray(value) && key === 'acceptanceCriteria' ? value.length : value;
+        }
+        return ackNoop(
+          `Изменений нет: ${Object.keys(updates).join(', ')} уже имеют эти значения. ` +
+            'Не повторяй вызов — переходи к следующему шагу (backlog_finish_phase)',
+          applied,
+        );
+      }
+    }
+  }
+
   // VL-262: единственная запись — все валидации выше (parentTaskId, parseAcList)
   // прошли до неё, поэтому «полуприменённого» состояния файла не бывает.
   const task = updateTaskFile(cwd, args.id as string, updates);
@@ -1338,6 +1367,43 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
   }
 
   return ackOk(`Задача ${task.id} обновлена: ${Object.keys(updates).join(', ')}`, applied, skipped);
+}
+
+/**
+ * Сравнивает переданное значение поля с текущим значением задачи (VL-303).
+ *
+ * Нужен для no-op детекта: если все переданные поля уже имеют запрошенные
+ * значения, файл не переписывается. Правила сравнения:
+ * - массивы-множества (`labels`, `assignee`, `references`, `lessons`,
+ *   `modified_files`, `dependencies`) — порядок не значим: модель может
+ *   перечислить те же метки в другом порядке, это не изменение;
+ * - `acceptanceCriteria` — по текстам в порядке + все текущие пункты
+ *   неотмечены (переданный чеклист всегда создаётся неотмеченным, VL-219);
+ * - остальное (строки, числа, `parent_task_id`, секции тела) — строгое `===`.
+ *   `type` приходит уже нормализованным через `normalizeTaskType`.
+ */
+function sameValue(field: string, next: unknown, current: unknown): boolean {
+  const SET_FIELDS = ['labels', 'assignee', 'references', 'lessons', 'modified_files', 'dependencies'];
+  if (SET_FIELDS.includes(field)) {
+    const a = Array.isArray(next) ? next.map(String) : [];
+    const b = Array.isArray(current) ? current.map(String) : [];
+    if (a.length !== b.length) return false;
+    const setB = new Set(b);
+    return a.every(v => setB.has(v));
+  }
+  if (field === 'acceptanceCriteria') {
+    const nextItems = Array.isArray(next) ? next : [];
+    const curItems = Array.isArray(current) ? current : [];
+    if (nextItems.length !== curItems.length) return false;
+    return nextItems.every((item, i) => {
+      const nextText = typeof item === 'string' ? item : String((item as { text?: unknown }).text ?? '');
+      const cur = curItems[i];
+      const curText = typeof cur === 'string' ? cur : String((cur as { text?: unknown }).text ?? '');
+      const curChecked = typeof cur === 'string' ? false : Boolean((cur as { checked?: unknown }).checked);
+      return nextText === curText && !curChecked;
+    });
+  }
+  return next === current;
 }
 
 /**

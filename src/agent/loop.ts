@@ -286,6 +286,11 @@ const LOOP_DETECTION_REPEAT_DEFAULT = 3;
 // памяти рана: мета хранит только сигнатуры для resume-защиты, кап — про
 // текущий ран (resume обнуляет, как и прочие счётчики).
 const MAX_BLOCKED_CALLS_PER_RUN = 5;
+// VL-303: кап повторов вызова, чей результат уже был ok/noop. Такой повтор
+// фазу не прерывает (эффект достигнут — убивать фазу бессмысленно), но и
+// крутиться вечно не должен: после N директив «уже применён» ран завершается
+// отдельным текстом (не «Loop detection» — это не луп, а игнор директивы).
+const MAX_APPLIED_REPEATS_PER_RUN = 3;
 // Фантомные tool_calls (пустые name/id, VL-215): сколько ходов ПОДРЯД модель
 // может отдавать фантомы до fail(). 3 — по образцу loop detection VL-83:
 // фантомный ход тратит LLM-запрос, но единичный случай модель исправляет
@@ -328,6 +333,20 @@ export function loopDetectionDirective(name: string, repeatLimit: number): strin
   return (
     `Loop detection: инструмент ${name} вызван ${repeatLimit} раза подряд с одинаковыми аргументами — вызов НЕ выполнен и заблокирован. ` +
     `Повтор с теми же аргументами бесполезен. ${NEXT_STEP_HINT}`
+  );
+}
+
+/**
+ * Текст директивы для повтора вызова, чей результат уже был ok/noop (VL-303).
+ *
+ * Отличие от `loopDetectionDirective`: вызов УЖЕ применён, поэтому фазу
+ * прерывать нельзя — модели нужно лишь перейти к отчёту. Маркерная подстрока
+ * «уже применён» используется тестами и разборами сессий.
+ */
+export function appliedNoopDirective(name: string): string {
+  return (
+    `Вызов ${name} уже применён ранее (ответ ok/noop) — повтор с теми же аргументами ничего не изменит. ` +
+    'Следующий шаг: переходи к отчёту — backlog_finish_phase (или к следующему шагу плана).'
   );
 }
 
@@ -439,6 +458,11 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // фазу надо завершать сразу, а не ждать второго круга повторов.
   const blockCounts = new Map<string, number>();
   let blockedTotal = 0;
+  // VL-303: сигнатуры, чей вызов УСПЕШНО выполнен и вернул JSON с ok:true
+  // (включая noop:true). Повтор такой сигнатуры фазу не прерывает: эффект
+  // уже достигнут, модели уходит директива «уже применён, переходи к отчёту».
+  const appliedSignatures = new Set<string>();
+  let appliedRepeatCount = 0;
   // Лимит guard'а зацикливания намерений (VL-119): N ходов подряд с одним
   // промежуточным текстом → fail штатным путём (контракт resume VL-103).
   const intentRepeatLimit = options.limits?.intentLoopRepeat ?? INTENT_LOOP_REPEAT_DEFAULT;
@@ -897,6 +921,20 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // VL-253: плюс per-signature счётчик и общий кап рана — иначе при
       // чередовании сигнатур серия «подряд» сбрасывалась и луп шёл кругами.
       const blockAndPush = async (): Promise<void> => {
+        // VL-303: вызов уже применён (ответ ok/noop) — фатальные счётчики НЕ
+        // растут: фаза не должна падать из-за повтора уже сделанной работы.
+        // Модели уходит директива «переходи к отчёту»; кап повторов защищает
+        // от бесконечного круга директив.
+        if (appliedSignatures.has(signature)) {
+          appliedRepeatCount++;
+          await pushMessage({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: appliedNoopDirective(call.name),
+          });
+          console.error(`[vibelog-agent] повтор применённого вызова: ${call.name}`);
+          return;
+        }
         blockedStreak++;
         blocked.add(signature);
         blockCounts.set(signature, (blockCounts.get(signature) ?? 0) + 1);
@@ -918,9 +956,33 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         // может сменить подход — тест VL-251 AC5), повторная — фазовый отказ.
         const repeatsBefore = blockCounts.get(signature) ?? 0;
         await blockAndPush();
+        // VL-303: применённый вызов — не луп: фазу не прерываем, только кап
+        // повторов (иначе директивы крутились бы бесконечно).
+        if (appliedSignatures.has(signature)) {
+          if (appliedRepeatCount > MAX_APPLIED_REPEATS_PER_RUN) {
+            return fail(
+              `Модель ${appliedRepeatCount} раз повторила уже применённый вызов ${call.name} — фаза прервана (директива «переходи к отчёту» проигнорирована).`,
+            );
+          }
+          continue;
+        }
         if (repeatsBefore >= 1 || blockedTotal >= 2) {
           return fail(
             `Loop detection: инструмент ${call.name} вызван ${repeatLimit} раза подряд с одинаковыми аргументами — вызов повторно заблокирован (та же сигнатура уже отклонялась в этой сессии), фаза прервана. ${NEXT_STEP_HINT}`,
+          );
+        }
+        continue;
+      }
+
+      // VL-303: сигнатура уже успешно применена (ответ ok/noop) — повтор НЕ
+      // исполняется: модели сразу уходит директива «переходи к отчёту».
+      // Фатальные счётчики не растут: фаза не должна падать из-за повтора
+      // уже сделанной работы (AC2/AC3).
+      if (appliedSignatures.has(signature)) {
+        await blockAndPush();
+        if (appliedRepeatCount > MAX_APPLIED_REPEATS_PER_RUN) {
+          return fail(
+            `Модель ${appliedRepeatCount} раз повторила уже применённый вызов ${call.name} — фаза прервана (директива «переходи к отчёту» проигнорирована).`,
           );
         }
         continue;
@@ -937,6 +999,15 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       }
       if (streak >= repeatLimit) {
         await blockAndPush();
+        // VL-303: применённый вызов — не луп (см. выше).
+        if (appliedSignatures.has(signature)) {
+          if (appliedRepeatCount > MAX_APPLIED_REPEATS_PER_RUN) {
+            return fail(
+              `Модель ${appliedRepeatCount} раз повторила уже применённый вызов ${call.name} — фаза прервана (директива «переходи к отчёту» проигнорирована).`,
+            );
+          }
+          continue;
+        }
         // VL-253: повторная блокировка той же сигнатуры — немедленный fail,
         // без второго-третьего круга повторов (модель проигнорировала директиву)
         if (blockedStreak >= 2 || (blockCounts.get(signature) ?? 0) >= 2) {
@@ -1046,6 +1117,18 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // VL-274: tool завершён — активность; окно простоя отсчитывается заново
       // (resume делает и noteActivity: длительность инструмента не «съедает» бюджет)
       idleGuard.resume();
+      // VL-303: запоминаем сигнатуру успешно применённого write-вызова —
+      // ответ JSON с ok:true (включая noop:true). Повтор такой сигнатуры
+      // фазу не прерывает. Парсинг в try/catch: текстовые ответы внешних
+      // MCP-инструментов не должны ломать цикл.
+      if (!toolError) {
+        try {
+          const parsed = JSON.parse(output) as { ok?: unknown };
+          if (parsed && parsed.ok === true) appliedSignatures.add(signature);
+        } catch {
+          // не JSON — не write-ack, ничего не запоминаем
+        }
+      }
       // VL-178: единый ingestion-cap ВСЕХ tool-выводов, включая внешние MCP
       // (chrome_devtools__take_snapshot приносил 624 КБ целиком — VL-110-cap
       // работал только для встроенных инструментов, MCP шёл мимо). Обрезка

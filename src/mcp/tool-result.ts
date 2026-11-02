@@ -14,6 +14,13 @@
  * «Задача X обновлена: …»): на них завязаны существующие проверки в тестах и
  * в промптах фаз — формат ответа меняется, привычные подстроки остаются.
  *
+ * Четыре формы ответа:
+ *   успех  — { ok: true, message, applied, skipped, idempotentReplay? }
+ *   noop   — { ok: true, noop: true, message, applied, skipped: [] } (VL-303:
+ *            переданные значения уже были в задаче, файл не переписан)
+ *   отказ  — { ok: false, denied: true, reason, applied: {}, skipped, … }
+ *   ошибка — { ok: false, error }
+ *
  * Отказ подтверждения (веб-чат) кодируется машиночитаемо:
  *   { ok: false, denied: true, reason: 'denied' | 'not_confirmed', … }
  * Различие принципиально для агента: `denied` — пользователь явно отказал
@@ -44,6 +51,13 @@ export interface WriteAck {
   skipped: SkippedField[];
   /** true — ответ взят из кэша идемпотентности, повторного эффекта не было. */
   idempotentReplay?: true;
+  /**
+   * VL-303: вызов НЕ изменил состояние — все переданные поля уже имели
+   * запрошенные значения, файл не переписывался. Модели это сигнал «работа
+   * сделана, повтор бесполезен»: без него она видела «обновлена» и
+   * зацикливалась на том же вызове до loop detection.
+   */
+  noop?: true;
 }
 
 /**
@@ -67,6 +81,23 @@ export function ackOk(
     skipped,
     ...(idempotentReplay ? { idempotentReplay: true as const } : {}),
   };
+  return JSON.stringify(ack, null, 2);
+}
+
+/**
+ * Формирует ответ write-вызова, который НЕ изменил состояние (VL-303).
+ *
+ * Отдельная функция, а не флаг `ackOk`: noop — самостоятельная семантика
+ * («изменений нет, файл не переписан»), и её нельзя случайно получить из
+ * общего пути успеха. Модель, увидев `noop: true`, обязана перейти к
+ * следующему шагу, а не повторять вызов (иначе loop detection убивал фазу,
+ * хотя все изменения уже были применены — инцидент VL-302).
+ *
+ * @param message — текст с перечнем полей и указанием следующего шага
+ * @param applied — фактическое состояние полей (из задачи, без записи)
+ */
+export function ackNoop(message: string, applied: Record<string, unknown> = {}): string {
+  const ack: WriteAck = { ok: true, noop: true, message, applied, skipped: [] };
   return JSON.stringify(ack, null, 2);
 }
 
