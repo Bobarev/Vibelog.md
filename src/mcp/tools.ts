@@ -72,6 +72,7 @@ import {
   agentSessionsDir, loadSessionMetaSync, sumUsageFromJsonlSync, updateSessionMeta,
 } from '../agent/session.js';
 import { SUPERVISOR_TOOL_DEFS, handleSupervisorTool } from './supervisor.js';
+import { commitFiles } from './git-commit.js';
 
 // completeTaskFile импортирован для паритета с оригинальным модулем;
 // в текущей логике инструментов не вызывается (оставлено без изменений).
@@ -753,6 +754,31 @@ export function listTools(): ToolDefinition[] {
         required: [],
       },
     },
+    // === Git: детерминированный коммит (VL-311) ===
+    {
+      name: 'git_commit',
+      description:
+        'Коммит явными путями с трейлером Co-authored-by. Делает `git add -- <paths>` и `git commit` ' +
+        'детерминированно: трейлер дописывается кодом (настройка commit_coauthor), пути вне проекта и ' +
+        'массовый add (git add -A, ".") отклоняются, пути вне modified_files задачи отклоняются с ' +
+        'подсказкой allowForeign. Нечего коммитить по переданным путям → noop. ' +
+        'Используй его вместо `git commit` в run_shell_command; status/log/diff/merge — по-прежнему shell. ' +
+        'Аргументы: paths (обязательный непустой массив), message, amend?, allowForeign?.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          paths: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Обязательный непустой массив явных путей (файлы задачи); git add -A, "." и пути вне проекта отклоняются',
+          },
+          message: { type: 'string', description: 'Сообщение коммита: тема (тело — отдельным абзацем после пустой строки)' },
+          amend: { type: 'boolean', description: 'true — переписать последний коммит (--amend) с сохранением тела исходного сообщения' },
+          allowForeign: { type: 'boolean', description: 'true — разрешить пути вне modified_files задачи (осознанное исключение)' },
+        },
+        required: ['paths', 'message'],
+      },
+    },
     // === Супервизор: запуск фаз, очередь, прогон (VL-268) ===
     ...SUPERVISOR_TOOL_DEFS,
   ];
@@ -861,6 +887,17 @@ export async function handleToolCall(
       return toolLessonClassify(args, cwd);
     case 'project_map':
       return toolProjectMap(args, cwd);
+    // VL-311: коммит явными путями с трейлером — детерминированная замена
+    // шагов `git commit -m` в шаблонах фаз (инструкция модели → проверка в коде).
+    // Идемпотентность by-key не нужна: повторный вызов по тем же путям без
+    // изменений отвечает noop (VL-310), а не создаёт пустой коммит.
+    case 'git_commit':
+      return commitFiles(cwd, {
+        paths: (args.paths as string[]) ?? [],
+        message: (args.message as string) ?? '',
+        amend: args.amend === true,
+        allowForeign: args.allowForeign === true,
+      });
     // VL-268: инструменты супервизора (фазы, очередь, прогон). Идемпотентность
     // by-key здесь не применяется: они не пишут поля задачи, а запускают фазы
     // и прогоны (дедуп add-очереди и «фаза уже идёт» даёт ядро/оркестратор).

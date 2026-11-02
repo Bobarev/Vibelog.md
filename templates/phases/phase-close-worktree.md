@@ -20,10 +20,11 @@ Definition of Done (DoD): {{taskDoD}}
 
 2. Проверь worktree ветки:
    git -C {{worktreeDir}} status --porcelain
-   - Грязный worktree (есть незакоммиченные файлы) — закоммичи их в ветку {{branch}} ИЗ worktree (это единственные git-команды с -C):
+   - Грязный worktree (есть незакоммиченные файлы) — закоммичи их в ветку {{branch}} ИЗ worktree (это единственные git-команды с -C; MCP-инструмент git_commit здесь не подходит: в фазе close он коммитит в ГЛАВНОМ репозитории — сюда возвращайся только командами с -C):
+     git -C {{worktreeDir}} status --porcelain
      git -C {{worktreeDir}} add <явные пути затронутых файлов>
      git -C {{worktreeDir}} commit -m "feat: {{taskId}} — <кратко>"
-     Только явные пути файлов задачи; никогда git add -A.
+     Только явные пути файлов задачи.
    - Worktree отсутствует (директории нет) — пропусти шаги 3–5 и продолжай с шага 6: код либо уже слит в master, либо фазы не меняли файлы.
 
 3. Покажи состав ветки относительно master:
@@ -72,16 +73,14 @@ Definition of Done (DoD): {{taskDoD}}
    - Получи ID: backlog_view_task {"id": "{{taskId}}", "fields": ["references", "lessons"]} + refs/lessons, созданные/обновлённые в этой фазе (references ставили Spec/Plan/Code через MCP в главный репо; lessons — шаг 7.5).
    - Точные пути через ls backlog/references/<ref-N>* backlog/lessons/lesson-N* — используй выведенные пути, не угадывай slug.
    - Сверь git status --porcelain -- <пути>; backlog/references/data/ НЕ коммити (.gitignore).
-   - Незакоммиченное — явные пути, один коммит: git add <явные пути> && git commit -m "docs(task): {{taskId}} — refs и lessons"
-   - Трейлер Co-authored-by: при непустом `{{commitTrailer}}` — вторым `-m "{{commitTrailer}}"`.
-   - Нечего коммитить — пропусти (пустой коммит запрещён).
+   - Незакоммиченное — явные пути, один коммит: git_commit {"paths": [<явные пути>], "message": "docs(task): {{taskId}} — refs и lessons", "allowForeign": true}
+   - (allowForeign: true — refs/lessons не входят в modified_files задачи; иначе инструмент откажет сверкой.)
+   - Нечего коммитить — пропусти (git_commit ответит noop «Изменений нет»; пустой коммит запрещён).
 
 8. Обнови итоговую документацию в ГЛАВНОМ репо:
    - CHANGELOG.md: запись в разделе Unreleased — что сделано (из отчётов Фаз 3 и merge). Если ничего пользовательского не менялось — пропусти.
    - Если менялось поведение/форматы/CLI/промпты — обнови соответствующие документы backlog/docs.
-   git add CHANGELOG.md <путь к обновлённому документу>
-   git commit -m "docs: {{taskId}} — документация и CHANGELOG"
-   Трейлер Co-authored-by: при непустом `{{commitTrailer}}` — вторым `-m "{{commitTrailer}}"`.
+   git_commit {"paths": ["CHANGELOG.md", <путь к обновлённому документу>], "message": "docs: {{taskId}} — документация и CHANGELOG"}
 
 9. Оставь отчёт, смени статус и отметь DoD ОДНИМ вызовом backlog_finish_phase — ДО коммита файлов задач, чтобы комментарий попал в docs(task)-коммит (упомяни хэш docs-коммита из шага 8):
    backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза Close выполнена. Ветка {{branch}} слита в master (<N> коммитов), worktree удалена, ветка удалена. DoD: <честный итог>.", "status": "{{producesStatus}}", "dodChecks": [<индексы выполненных DoD из шага 7>]}

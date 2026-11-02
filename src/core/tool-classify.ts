@@ -25,6 +25,9 @@ const WRITE_MARKERS = [
   'manage', 'finish', 'supersede', 'link', 'sync', 'cache',
   'write', 'edit', 'delete', 'set', 'put', 'run', 'spawn',
   'promote', 'reject', 'complete', 'append', 'mkdir',
+  // VL-311: git_commit — побочный эффект по природе (меняет историю репозитория;
+  // явный маркер вместо fail-safe «имя неизвестно → write»)
+  'commit',
   // VL-268: запуск фаз/очереди/прогона — побочный эффект по природе
   'trigger', 'start', 'stop', 'queue',
 ] as const;
