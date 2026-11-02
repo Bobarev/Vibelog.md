@@ -1,11 +1,11 @@
 ---
 id: VL-303
 title: 'backlog_update_task: no-op вызов возвращает ok и зацикливает модель → loop detection убивает фазу'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-02 17:31'
-updated_date: '2026-11-02 17:47'
+updated_date: '2026-11-02 17:57'
 due_date: ''
 labels:
   - mcp
@@ -26,15 +26,16 @@ modified_files:
   - src/agent/loop.ts
   - src/mcp/write-ack.test.mjs
   - src/agent/loop.test.mjs
-lessons: []
+lessons:
+  - lesson-173
 token_usage:
-  input: 5783789
-  output: 47618
-  cache: 5629440
-  total: 5831407
-  requests: 91
-  duration_ms: 821112
-  reasoning: 26064
+  input: 8816485
+  output: 60729
+  cache: 8488448
+  total: 8877214
+  requests: 146
+  duration_ms: 1015555
+  reasoning: 31290
   by_phase:
     plan:
       input: 749921
@@ -47,10 +48,10 @@ token_usage:
       cache: 4194816
       requests: 56
     close:
-      input: 753504
-      output: 3084
-      cache: 731648
-      requests: 20
+      input: 3786200
+      output: 16195
+      cache: 3590656
+      requests: 75
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -80,13 +81,13 @@ token_usage:
 - [x] #1 backlog_update_task при вызове, где все переданные поля уже имеют запрошенные значения, НЕ пишет файл и возвращает {ok: true, noop: true} с сообщением «Изменений нет: <поля> уже имеют эти значения. Не повторяй вызов — переходи к следующему шагу (backlog_finish_phase)»
 - [x] #2 Loop detection не прерывает фазу (fail) на повторной блокировке сигнатуры, чей предыдущий результат был ok/noop: модели уходит директива «вызов уже применён, переходи к отчёту», фатальный счётчик не растёт
 - [x] #3 Регресс-тест: сессия agent-1793628348682 (Spec VL-302, 6× backlog_update_task с повтором {id, type}) воспроизводится в тесте — фаза завершается без fail, лишние вызовы не исполняются
-- [ ] #4 Тесты проходят (pnpm test), документация обновлена (README — контракт ответа write-инструментов: noop; doc-10 §6 loop detection)
+- [x] #4 Тесты проходят (pnpm test), документация обновлена (README — контракт ответа write-инструментов: noop; doc-10 §6 loop detection)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -199,5 +200,23 @@ created: 2026-11-02 17:43
 - `npx vitest run src/mcp/write-ack.test.mjs src/agent/loop.test.mjs src/mcp/tool-result.test.mjs` — 123 passed.
 - Полный `pnpm test` — 144 файла passed, 1 failed: `src/web/readme-standard.test.mjs` («README должен начинаться с H1»). **Падение предсуществующее**: проверено прогоном того же теста на родительском коммите `281f790` (master tip) — падает так же; README начинается с `<p align="center">`, мой diff README не касается. Исключённых/пропущенных тест-файлов нет, прогон полный (2700 passed, 4 skipped).
 Что осталось (для фазы Close): документация — по правилам фазы Code `backlog/docs/*` и README в Code не правятся. Нужно в Close: doc-8 §«Контракт ответа write-инструментов» — пункт `noop: true` + пример JSON; doc-10 §6 — «повтор сигнатуры, чей вызов уже вернул `ok:true`/`noop:true`, фазу не прерывает: директива «уже применён, переходи к отчёту», фатальный счётчик не растёт, кап `MAX_APPLIED_REPEATS_PER_RUN = 3`»; README — только правка существующей строки/ссылки (расширять нельзя, лимит 150 строк). AC4 поэтому не отмечен (тесты — да, документация — нет). DoD «Тесты проходят» не отмечен: полный прогон содержит предсуществующее падение README-теста (не регресс этой задачи).
+---
+author: @agent
+created: 2026-11-02 17:47
+---
+Фаза close не удалась (код выхода 1): т, блокировок=0, payload последнего запроса=169207 байт (макс 169207), usage={"input_tokens":753504,"output_tokens":3084,"cache_read_input_tokens":731648,"total_tokens":756588,"reasoning_tokens":1321} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-02 17:57
+---
+Фаза Close выполнена. Ветка `vb/vl-303` слита в master коммитом merge `badd20d` (1 коммит кода `0197c9f`), worktree `.vibelog/worktrees/vl-303` удалён (force — только untracked симлинк `backlog/references/data` и ignored `dist/`/`node_modules/`), ветка `vb/vl-303` удалена.
+**Документация (шаг 8, коммит `b8ee8bb` «docs: VL-303 — контракт noop в doc-8, loop detection в doc-10, CHANGELOG»):**
+- `backlog/docs/doc-8-MCP-справочник-Vibelogmd.md` §«Контракт ответа write-инструментов (VL-262)» — новый пункт `noop: true` (файл не переписан, `updated_date` не сдвинулся, что делать модели) + пример JSON и описание семантического сравнения полей (`labels`-множества, AC по текстам, `append_notes` из noop исключён).
+- `backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md` §6 — новый буллет «Повтор уже применённого вызова фазу не прерывает (VL-303)»: `appliedSignatures`, директива «уже применён — переходи к отчёту», фатальные счётчики не растут, кап `MAX_APPLIED_REPEATS_PER_RUN = 3`, не-JSON ответы внешних MCP применёнными не считаются.
+- `CHANGELOG.md` (Unreleased → Исправлено) — запись VL-303 с причиной, правками и тестами.
+- `README.md` — правка одной существующей строки таблицы документации (упоминание `noop` в описании MCP-справочника); витрина не расширялась (90 строк, лимит 150).
+**Lessons:** создан `lesson-173` («Возвращай no-op write-вызову маркер noop и не убивай фазу повтором уже применённого вызова»), связан с задачей; коммит `437bb5a`.
+**Проверки после merge:** `pnpm build` — OK. Точечный фильтр по diff'у (`src/mcp/write-ack.test.mjs`, `src/agent/loop.test.mjs`, `src/mcp/tool-result.test.mjs`, `src/mcp/server.test.mjs`) — 160 passed. Полный `pnpm test` — 145 файлов: 144 passed, 1 failed — `src/web/readme-standard.test.mjs` («README должен начинаться с H1»). Падение **предсуществующее, не регрессия**: README на родительском коммите `HEAD^1` (`281f790`) начинается с `<p align="center">` так же, diff merge файла `README.md` не касается (`git diff --name-only HEAD^1..HEAD` — только 5 файлов src); параллельного vitest не было (`ps aux | grep vitest` — 0). Итого 2700 passed, 4 skipped, исключённых/пропущенных тест-файлов нет, повторный полный прогон не требовался.
+DoD: «Тесты проходят» отмечен по полному прогону (единственное падение — предсуществующий README-тест, воспроизведён на родительском коммите); «Документация обновлена» — doc-8, doc-10, README, CHANGELOG; «Нет регрессий» — новых падений 0. AC4 отмечен (тесты + документация).
 ---
 <!-- COMMENTS:END -->
