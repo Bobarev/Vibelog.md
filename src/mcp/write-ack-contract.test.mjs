@@ -169,3 +169,113 @@ describe('VL-306 — все write-инструменты отвечают JSON-a
     assert.deepEqual(missing, [], `write-инструменты без JSON-ack в таблице: ${missing.join(', ')}`);
   });
 });
+
+/**
+ * VL-310: таблица noop-способных write-инструментов.
+ *
+ * Каждый вход — сценарий «первый вызов применяет, второй с ТЕМИ ЖЕ
+ * аргументами обязан ответить noop». Сценарий сам готовит данные и
+ * возвращает второй ack — так таблица остаётся данными, а не копипастой.
+ */
+const NOOP_SCENARIOS = {
+  backlog_update_task: async () => {
+    const t = createTaskFile(cwd, { title: 'Noop-задача контракта', type: 'bug' });
+    await handleToolCall('backlog_update_task', { id: t.id, type: 'feature' }, cwd);
+    return JSON.parse(await handleToolCall('backlog_update_task', { id: t.id, type: 'feature' }, cwd));
+  },
+  backlog_update_status: async () => {
+    const t = createTaskFile(cwd, { title: 'Noop-статус контракта' });
+    await handleToolCall('backlog_update_status', { id: t.id, status: 'In Progress' }, cwd);
+    return JSON.parse(await handleToolCall('backlog_update_status', { id: t.id, status: 'In Progress' }, cwd));
+  },
+  backlog_update_dependencies: async () => {
+    const base = createTaskFile(cwd, { title: 'Noop-база контракта' });
+    const t = createTaskFile(cwd, { title: 'Noop-зависимая контракта' });
+    await handleToolCall('backlog_update_dependencies', { id: t.id, add: [base.id] }, cwd);
+    return JSON.parse(await handleToolCall('backlog_update_dependencies', { id: t.id, add: [base.id] }, cwd));
+  },
+  document_update: async () => {
+    const doc = writeDocument(backlogDir, { title: 'Noop-док контракта', type: 'guide' });
+    return JSON.parse(await handleToolCall('document_update', { id: doc.id, type: 'guide' }, cwd));
+  },
+  reference_update: async () => {
+    const ref = writeReference(cwd, { title: 'Noop-ref контракта', type: 'url', url: 'https://example.net', tags: ['a'] });
+    await handleToolCall('reference_update', { id: ref.id, tags: ['a'] }, cwd);
+    return JSON.parse(await handleToolCall('reference_update', { id: ref.id, tags: ['a'] }, cwd));
+  },
+  lesson_update: async () => {
+    const l = createLessonFile(cwd, { title: 'Noop-урок контракта', tags: ['a'] });
+    await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd);
+    return JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+  },
+  lesson_link: async () => {
+    const l = createLessonFile(cwd, { title: 'Noop-связь урока' });
+    const t = createTaskFile(cwd, { title: 'Noop-задача урока' });
+    await handleToolCall('lesson_link', { lessonId: l.id, taskId: t.id }, cwd);
+    return JSON.parse(await handleToolCall('lesson_link', { lessonId: l.id, taskId: t.id }, cwd));
+  },
+  reference_link: async () => {
+    const ref = writeReference(cwd, { title: 'Noop-связь ref', type: 'url', url: 'https://example.com/x' });
+    const t = createTaskFile(cwd, { title: 'Noop-задача ref' });
+    await handleToolCall('reference_link', { referenceId: ref.id, taskId: t.id }, cwd);
+    return JSON.parse(await handleToolCall('reference_link', { referenceId: ref.id, taskId: t.id }, cwd));
+  },
+  milestone_rename: async () => {
+    const add = await handleToolCall('milestone_add', { name: 'Mnoop', description: 'd' }, cwd);
+    assert.equal(JSON.parse(add).ok, true);
+    return JSON.parse(await handleToolCall('milestone_rename', { from: 'Mnoop', to: 'Mnoop' }, cwd));
+  },
+};
+
+/**
+ * VL-310: write-инструменты, для которых noop НЕПРИМЕНИМ по природе
+ * операции. Причина обязательна — «пятый случай» не должен проскочить молча.
+ */
+const NOOP_NOT_APPLICABLE = {
+  backlog_create_task: 'создание: повтор создаёт новую сущность, состояние «до» не существует',
+  backlog_add_comment: 'дописывание: каждый вызов добавляет запись, тело не хранится как поле',
+  backlog_finish_phase: 'фаза: смена статуса + отчёт; повтор отклоняется сервером (already_finished)',
+  backlog_manage_ac: 'add/check/uncheck/remove — операции над списком, идемпотентность решает сервер',
+  backlog_manage_dod: 'add/check/uncheck/remove — операции над списком, идемпотентность решает сервер',
+  milestone_add: 'создание вехи: повтор упадёт «уже существует»',
+  milestone_archive: 'удаление/перемещение: повтор упадёт «не найдена»',
+  milestone_remove: 'удаление вехи: повтор упадёт «не найдена»',
+  document_create: 'создание документа: каждый вызов даёт новый doc-N',
+  reference_add: 'создание reference: каждый вызов даёт новый ref-N',
+  reference_remove: 'удаление: повтор упадёт «не найден»',
+  reference_sync: 'синхронизация: читает внешние источники, ответ — отчёт о скачивании',
+  lesson_create: 'создание урока: каждый вызов даёт новый lesson-N',
+  lesson_supersede: 'переход статусов: повтор отклоняется ядром (уже superseded)',
+  lesson_audit: 'аудит read-only по умолчанию, отчёт, а не снимок состояния',
+  lesson_classify: 'LLM-классификация: отчёт по умолчанию, записи только по явному подтверждению',
+  write_file: 'запись файла: сравнение содержимого вне домена backlog (отдельный инструмент)',
+};
+
+describe('VL-310 — инвариант «каждый write-инструмент умеет noop»', () => {
+  it('AC2: каждый noop-способный инструмент отвечает {ok:false, noop:true} на повторной идентичной записи', async () => {
+    for (const [name, scenario] of Object.entries(NOOP_SCENARIOS)) {
+      const ack = await scenario();
+      assert.equal(ack.noop, true, `${name}: повтор с теми же аргументами обязан быть noop — ${JSON.stringify(ack).slice(0, 300)}`);
+      assert.equal(ack.ok, false, `${name}: noop — ошибка, а не успех (lesson-92/lesson-174)`);
+      assert.equal(ack.reason, 'noop', `${name}: reason должен быть 'noop'`);
+      assert.match(String(ack.message), /Изменений нет/, `${name}: маркер «Изменений нет» обязателен`);
+    }
+  });
+
+  it('AC2/AC3: новый write-инструмент без noop-детекции валит тест', () => {
+    const missing = listTools()
+      .map(t => t.name)
+      .filter(name => isWriteOperation(name))
+      .filter(name => !(name in NOOP_SCENARIOS)
+        && !(name in NOOP_NOT_APPLICABLE)
+        // Инструменты прогона фаз/очереди — вне домена данных backlog (VL-268).
+        && !['backlog_trigger_phase', 'backlog_auto_queue', 'backlog_supervisor'].includes(name));
+    assert.deepEqual(
+      missing,
+      [],
+      `write-инструменты без noop-семантики и без документированного исключения: ${missing.join(', ')}. ` +
+        'Добавь сценарий в NOOP_SCENARIOS (если операция идемпотентна по значениям) ' +
+        'или строку с причиной в NOOP_NOT_APPLICABLE.',
+    );
+  });
+});
