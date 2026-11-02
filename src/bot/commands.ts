@@ -103,6 +103,11 @@ export type SetCommand =
    * `blocked_signatures` из меты (прежнее поведение VL-251).
    */
   | { key: 'reset-limits-on-resume'; value: boolean }
+  /**
+   * VL-302: трейлер `Co-authored-by` в сообщениях коммитов. По умолчанию
+   * включён; off — коммиты без трейлера.
+   */
+  | { key: 'commit-coauthor'; value: boolean }
   /** Активная LLM-модель (id из models.available, VL-209); регистр id сохраняется. */
   | { key: 'model'; value: string };
 
@@ -363,7 +368,7 @@ export function parseCloseCommand(
  */
 export function parseSetCommand(text: string): SetCommand | { error: string } {
   const hint =
-    'Синтаксис: /set agent <qwen|vb> | model <id> | max-wall-time <сек> | max-requests <N> | loop-detection-repeat <N> | idle-timeout <сек> | branch-mode <on|off> | compact <on|off> | code-same-session <on|off> | reset-limits-on-resume <on|off> (0/пусто — сброс у числовых, кроме idle-timeout: там 0 — выключить watchdog)';
+    'Синтаксис: /set agent <qwen|vb> | model <id> | max-wall-time <сек> | max-requests <N> | loop-detection-repeat <N> | idle-timeout <сек> | branch-mode <on|off> | compact <on|off> | code-same-session <on|off> | reset-limits-on-resume <on|off> | commit-coauthor <on|off> (0/пусто — сброс у числовых, кроме idle-timeout: там 0 — выключить watchdog)';
   const trimmed = text.trim();
   if (!trimmed) return { error: hint };
   const spaceIdx = trimmed.indexOf(' ');
@@ -382,10 +387,11 @@ export function parseSetCommand(text: string): SetCommand | { error: string } {
     key !== 'branch-mode' &&
     key !== 'compact' &&
     key !== 'code-same-session' &&
-    key !== 'reset-limits-on-resume'
+    key !== 'reset-limits-on-resume' &&
+    key !== 'commit-coauthor'
   ) {
     return {
-      error: `Неизвестный параметр: ${key}. Доступные: agent, model, max-wall-time, max-requests, loop-detection-repeat, idle-timeout, branch-mode, compact, code-same-session, reset-limits-on-resume. ${hint}`,
+      error: `Неизвестный параметр: ${key}. Доступные: agent, model, max-wall-time, max-requests, loop-detection-repeat, idle-timeout, branch-mode, compact, code-same-session, reset-limits-on-resume, commit-coauthor. ${hint}`,
     };
   }
   // VL-209: id модели — как ввёл пользователь (регистр не трогаем)
@@ -403,19 +409,27 @@ export function parseSetCommand(text: string): SetCommand | { error: string } {
   }
   // Булевы on/off-параметры (VL-107 branch-mode, VL-122 compact, VL-147
   // code-same-session): on/true → true, off/false → false
-  if (key === 'branch-mode' || key === 'compact' || key === 'code-same-session' || key === 'reset-limits-on-resume') {
+  if (
+    key === 'branch-mode' ||
+    key === 'compact' ||
+    key === 'code-same-session' ||
+    key === 'reset-limits-on-resume' ||
+    key === 'commit-coauthor'
+  ) {
     // Явные литералы ключа — дискриминированный union SetCommand не принимает
     // суженный `key: 'branch-mode' | 'compact' | 'code-same-session'` без приведения
     if (value === 'on' || value === 'true') {
       if (key === 'compact') return { key: 'compact', value: true };
       if (key === 'code-same-session') return { key: 'code-same-session', value: true };
       if (key === 'reset-limits-on-resume') return { key: 'reset-limits-on-resume', value: true };
+      if (key === 'commit-coauthor') return { key: 'commit-coauthor', value: true };
       return { key: 'branch-mode', value: true };
     }
     if (value === 'off' || value === 'false') {
       if (key === 'compact') return { key: 'compact', value: false };
       if (key === 'code-same-session') return { key: 'code-same-session', value: false };
       if (key === 'reset-limits-on-resume') return { key: 'reset-limits-on-resume', value: false };
+      if (key === 'commit-coauthor') return { key: 'commit-coauthor', value: false };
       return { key: 'branch-mode', value: false };
     }
     return {

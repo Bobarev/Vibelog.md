@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { getTask } from '../core/store.js';
 import { DEFAULT_TASK_TYPES, loadConfig } from '../core/config.js';
 import { loadLessonsForTask } from '../core/lesson.js';
+import { commitTrailerText } from '../core/commit-trailer.js';
 import type { ChecklistItem, Task } from '../core/task.js';
 
 /**
@@ -219,6 +220,9 @@ export function taskExtraVars(cwd: string, taskId: string): Record<string, strin
     taskAC: formatChecklist(task.acceptanceCriteria),
     taskDoD: formatChecklist(task.definitionOfDone),
     taskModifiedFiles: task.modified_files.length > 0 ? task.modified_files.join(', ') : '(нет)',
+    // VL-302: трейлер Co-authored-by для шагов git commit в шаблонах фаз;
+    // пустая строка — настройка commit_coauthor выключена (второй -m не нужен)
+    commitTrailer: commitTrailerText(cwd),
     taskLastComment: last ? `${last.author} (${last.created}): ${last.text}` : '(нет комментариев)',
     // VL-152: references задачи (внешние источники) — Plan читает их, Code дописывает
     taskReferences: task.references && task.references.length > 0 ? task.references.join(', ') : '(нет)',

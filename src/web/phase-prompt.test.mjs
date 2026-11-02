@@ -51,6 +51,8 @@ const TASK_VARS = {
   taskAC: '(нет)',
   taskDoD: '(нет)',
   taskModifiedFiles: '(нет)',
+  // VL-302: трейлер Co-authored-by для шагов git commit в шаблонах фаз
+  commitTrailer: 'Co-authored-by: vibelog-agent <vb@xw2.ru>',
   taskLastComment: '(нет комментариев)',
   taskReferences: '(нет)',
   taskTitle: 'Тестовая задача',
@@ -210,12 +212,12 @@ describe('VL-137 — taskExtraVars/taskBlockText', () => {
     return root;
   };
 
-  it('taskExtraVars: задача читается → 14 подстановок с нумерованными AC и последним комментарием', () => {
+  it('taskExtraVars: задача читается → 15 подстановок с нумерованными AC и последним комментарием', () => {
     const root = makeRoot();
     try {
       const vars = taskExtraVars(root, 'VL-901');
       assert.ok(vars, 'vars должны подобраться');
-      assert.equal(Object.keys(vars).length, 14, 'ровно 14 подстановок');
+      assert.equal(Object.keys(vars).length, 15, 'ровно 15 подстановок');
       assert.equal(vars.taskTitle, 'Заголовок VL-901');
       assert.equal(vars.taskType, 'task');
       assert.equal(vars.taskStatus, 'Planned');

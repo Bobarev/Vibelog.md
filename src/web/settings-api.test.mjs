@@ -139,6 +139,16 @@ describe('PUT /api/settings — запись (VL-156)', () => {
     assert.deepEqual(file.chats, [7]);
   });
 
+  it('VL-302: commit_coauthor — boolean пишется, не-boolean → 400', () => {
+    writeSettingsFile({ chats: [7] });
+    const ok = handleApi('PUT', '/api/settings', { commit_coauthor: false }, cwd);
+    assert.equal(ok.status, 200);
+    assert.equal(readSettingsFile().commit_coauthor, false);
+    const bad = handleApi('PUT', '/api/settings', { commit_coauthor: 'no' }, cwd);
+    assert.equal(bad.status, 400);
+    assert.equal(readSettingsFile().commit_coauthor, false, 'файл не изменился');
+  });
+
   it('0/null сбрасывает лимит — ключ удаляется из файла', () => {
     writeSettingsFile({ max_requests: 300, max_wall_time: 600 });
     const res = handleApi('PUT', '/api/settings', { max_requests: 0, max_wall_time: null }, cwd);

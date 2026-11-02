@@ -28,6 +28,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { findBacklogDir, tasksDir, completedDir } from '../core/paths.js';
+import { appendCommitTrailer, commitMessageArgs, resolveCommitCoauthor } from '../core/commit-trailer.js';
 
 /**
  * Фазы, в которых framework коммитит файл задачи после записи usage.
@@ -125,11 +126,20 @@ export function commitTaskFile(cwd: string, taskId: string, phase: string): stri
       (subject.includes('закрытие задачи') || subject.includes('token_usage'));
     if (isOwnDocsCommit && !isHeadPushed(cwd)) {
       // Комментарий/статус из finish_phase и token_usage сливаются в ОДИН
-      // docs(task)-коммит; тема сохраняется (--no-edit).
-      git(cwd, ['commit', '--amend', '--no-edit', '--no-verify']);
+      // docs(task)-коммит; тема сохраняется. VL-302: `--no-edit` больше не
+      // годится — трейлер дописывается в сообщение, поэтому берём полное
+      // сообщение (`%B`, не `%s`: тело коммита терять нельзя) и передаём его
+      // через `-m` (риск R1 плана).
+      const fullMessage = git(cwd, ['log', '-1', '--pretty=%B']);
+      const amended = appendCommitTrailer(fullMessage, resolveCommitCoauthor(cwd));
+      git(cwd, ['commit', '--amend', '--no-verify', '-m', amended]);
     } else {
       // Чужой HEAD (refs/lessons, docs, feat) не переписываем — новый коммит.
-      git(cwd, ['commit', '--no-verify', '-m', `docs(task): ${taskId} — token_usage (${phase})`]);
+      git(cwd, [
+        'commit',
+        '--no-verify',
+        ...commitMessageArgs(cwd, `docs(task): ${taskId} — token_usage (${phase})`),
+      ]);
     }
     return git(cwd, ['rev-parse', '--short', 'HEAD']);
   } catch (err) {

@@ -73,6 +73,7 @@ Definition of Done (DoD): {{taskDoD}}
    - Точные пути через ls backlog/references/<ref-N>* backlog/lessons/lesson-N* — используй выведенные пути, не угадывай slug.
    - Сверь git status --porcelain -- <пути>; backlog/references/data/ НЕ коммити (.gitignore).
    - Незакоммиченное — явные пути, один коммит: git add <явные пути> && git commit -m "docs(task): {{taskId}} — refs и lessons"
+   - Трейлер Co-authored-by: при непустом `{{commitTrailer}}` — вторым `-m "{{commitTrailer}}"`.
    - Нечего коммитить — пропусти (пустой коммит запрещён).
 
 8. Обнови итоговую документацию в ГЛАВНОМ репо:
@@ -80,6 +81,7 @@ Definition of Done (DoD): {{taskDoD}}
    - Если менялось поведение/форматы/CLI/промпты — обнови соответствующие документы backlog/docs.
    git add CHANGELOG.md <путь к обновлённому документу>
    git commit -m "docs: {{taskId}} — документация и CHANGELOG"
+   Трейлер Co-authored-by: при непустом `{{commitTrailer}}` — вторым `-m "{{commitTrailer}}"`.
 
 9. Оставь отчёт, смени статус и отметь DoD ОДНИМ вызовом backlog_finish_phase — ДО коммита файлов задач, чтобы комментарий попал в docs(task)-коммит (упомяни хэш docs-коммита из шага 8):
    backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза Close выполнена. Ветка {{branch}} слита в master (<N> коммитов), worktree удалена, ветка удалена. DoD: <честный итог>.", "status": "{{producesStatus}}", "dodChecks": [<индексы выполненных DoD из шага 7>]}
@@ -93,6 +95,7 @@ Definition of Done (DoD): {{taskDoD}}
    git status --short
    ls backlog/tasks/<ID-дочерней-задачи>* — получи точное имя файла подзадачи и используй его в git add. Не угадывай slug по заголовку («fatal: pathspec did not match» при угадывании).
    git add <выведенный путь файла подзадачи> && git commit -m "docs(task): <ID-дочерней-задачи> — файл подзадачи (батч {{taskId}})"
+   Трейлер Co-authored-by: при непустом `{{commitTrailer}}` — вторым `-m "{{commitTrailer}}"`.
    Только файлы подзадач; никогда git add -A; никакого кода в этот коммит; пустой коммит запрещён. Подзадач нет — шаг пропусти.
 
 ## Правила

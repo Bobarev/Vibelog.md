@@ -131,4 +131,12 @@ describe('VL-254 — commitProgressChanges (git в tmp)', () => {
     // повторный вызов не создаёт коммит (коммитимых путей нет)
     assert.equal(commitProgressChanges(dir, 'VL-254', 'wall-time'), null);
   });
+
+  it('VL-302: WIP-коммит содержит трейлер Co-authored-by', () => {
+    writeFileSync(join(dir, 'src', 'b.ts'), 'export const b = 2;\n', 'utf-8');
+    assert.ok(commitProgressChanges(dir, 'VL-302', 'max-requests'));
+    const body = git(dir, 'log', '-1', '--pretty=%B');
+    assert.match(body, /wip\(VL-302\): прогресс фазы code до обрыва \(max-requests\)/);
+    assert.match(body, /Co-authored-by: vibelog-agent <vb@xw2\.ru>/);
+  });
 });

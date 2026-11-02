@@ -16,6 +16,11 @@ export interface SettingsData {
   /** undefined = включён (VL-122): ключ пишется только для explicit off. */
   compact?: boolean;
   code_same_session?: boolean;
+  /**
+   * VL-302: трейлер `Co-authored-by` в коммитах. undefined = включён;
+   * ключ пишется только при явном off.
+   */
+  commit_coauthor?: boolean;
   /** Лимиты веб-чата (VL-269): секция `chat` settings.json. */
   chat?: ChatSettings;
 }
@@ -34,7 +39,7 @@ export interface ChatSettings {
 
 /** Числовые лимиты: undefined — не заданы (сброс, дефолт агента). */
 export type SettingsPatch = {
-  [K in "default_agent" | "branch_mode" | "compact" | "code_same_session"]?: SettingsData[K];
+  [K in "default_agent" | "branch_mode" | "compact" | "code_same_session" | "commit_coauthor"]?: SettingsData[K];
 } & {
   max_wall_time?: number | null;
   max_requests?: number | null;
