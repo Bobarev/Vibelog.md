@@ -10,7 +10,7 @@ tags:
 ---
 # MCP-справочник Vibelog.md
 
-38 инструментов MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
+45 инструментов MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
 Автоматическое подключение: `vibelog init` пишет `mcpServers` в `.qwen/settings.json`
 (ручная настройка — в [MCP-SETUP.md](../MCP-SETUP.md)).
 
@@ -554,6 +554,45 @@ LLM-путь, **opt-in**: не входит ни в один автоматич�
 lesson_classify {"tags":["tests"], "limit":10}
 lesson_classify {"ids":["lesson-113","lesson-120"], "apply":true,
                  "createClusters":["tag:env"]}
+```
+
+---
+
+## Git
+
+### git_commit — детерминированный коммит явными путями (VL-311)
+
+Узкий write-инструмент: коммит только переданных путей, с автоматическим трейлером `Co-authored-by` и сверкой с задачей. Заменил текстовые правила шаблонов фаз («никогда `git add -A`», «передай трейлер вторым `-m`»), которые держались только на дисциплине модели.
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `paths` | string[] | ✓ | Явные пути коммита относительно проекта; непустой массив. Выполняется только `git add -- <paths>` |
+| `message` | string | ✓ | Сообщение коммита: тема и (опционально) тело |
+| `amend` | boolean | | `true` — переписать последний коммит: сообщение собирается из полного тела `git log -1 --pretty=%B`, тело сохраняется, трейлер не дублируется |
+| `allowForeign` | boolean | | Разрешить пути вне `modified_files` задачи (осознанный случай) |
+
+Что делает: (1) резолвит пути внутри проекта коммита — абсолютный путь, `.`, `-A`/`--all`, маски и выход за пределы проекта отклоняются до любых git-команд; (2) сверяет пути с `modified_files` задачи — чужие отклоняются с перечислением и подсказкой `allowForeign: true` (пустой список задачи сверку не блокирует, вне фазовой сессии она пропускается); (3) проверяет индекс — посторонние staged-файлы чужих процессов дают отказ; (4) ставит трейлер через `appendCommitTrailer`/`resolveCommitCoauthor` (`src/core/commit-trailer.ts`, настройка `commit_coauthor`, по умолчанию включена); (5) отвечает JSON-ack.
+
+Ответ — контракт write-инструментов (VL-306/VL-310):
+
+```json
+{ "ok": true, "message": "Коммит a1b2c3d создан: feat: VL-42 — суть",
+  "applied": { "hash": "a1b2c3d…", "subject": "feat: VL-42 — суть", "paths": ["src/core/foo.ts"] } }
+```
+
+- нет изменений по переданным путям → `{ "ok": false, "noop": true, "reason": "noop", "applied": { "paths": [...] } }` — коммит **не создан**, это сигнал «переходи к следующему шагу» (совместимо с `appliedSignatures`/`noopSignatures` из VL-310);
+- отказ (чужой путь, посторонний staged, путь вне проекта, ошибка git) → `ackError` с русским текстом и готовым следующим шагом;
+- `applied.warnings` — файлы чужого worktree с mtime позже `VIBELOG_RUN_STARTED_AT` (предупреждение о возможной гонке, не блокировка);
+- `applied.amended: true` — коммит был amend'ом.
+
+Все git-вызовы — `spawnSync('git', args, { cwd })` без shell: `message` и пути передаются аргументами, инъекция невозможна. Необязательный параметр `cwd` (путь внутри проекта) нужен шагу 2 шаблона `phase-close-worktree.md`, который коммитит worktree задачи из фазы close.
+
+Граница: инструмент узкий — только commit. `status`, `log`, `diff`, `merge`, `worktree remove`, `branch -d`, `stash` остаются `run_shell_command` (чтение и редкие операции, обёртка не даёт выигрыша).
+
+`isWriteOperation('git_commit') === true` (маркер `commit` в `WRITE_MARKERS`, `src/core/tool-classify.ts`); в `GRANTABLE_TOOLS` супервизора инструмент не входит.
+
+```
+git_commit {"paths": ["src/mcp/git-commit.ts","src/mcp/tools.ts"], "message": "feat: VL-311 — инструмент git_commit"}
 ```
 
 ---
