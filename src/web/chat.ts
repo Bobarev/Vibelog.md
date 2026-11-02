@@ -37,6 +37,7 @@ import { ackDenied } from '../mcp/tool-result.js';
 import { chatToolDefs, isWriteOperation, loadChatSystemTemplate } from './tool-policy.js';
 import type { ChatLocalTool } from './tool-policy.js';
 import { createCallGuard, formatChatLimitsErrors, resolveChatLimits } from './chat-limits.js';
+import { recordThreadUsage, describeThreadUsage, type ThreadUsageView } from './chat-usage.js';
 import {
   createTurnToolGuard,
   duplicateCallResult,
@@ -66,6 +67,12 @@ export type ChatEvent =
   | { type: 'approval'; toolCallId: string; name: string; args: Record<string, unknown>; grant?: SupervisorGrantPreview }
   | { type: 'done' }
   | { type: 'error'; message: string }
+  /**
+   * VL-313: расход токенов треда после очередного вызова модели. Клиент
+   * обновляет панель без перезагрузки страницы; view — уже посчитанные
+   * суммы, рубли и процент контекста (см. `ThreadUsageView`).
+   */
+  | { type: 'usage'; usage: ThreadUsageView }
   /**
    * VL-269: ход остановлен лимитом, но история сохранена — клиент сам
    * продолжает ход (`continue: true`), пользователю не нужно писать «Продолжи».
@@ -890,6 +897,15 @@ async function produce(
   };
   const started = Date.now();
 
+  /**
+   * Модель, которой идут запросы треда (VL-313): переопределение из body
+   * (валидировано выше) либо models.default. Нужна для тарифа и окна
+   * контекста в панели; undefined — env-fallback (тариф/окно неизвестны,
+   * панель покажет только токены).
+   */
+  const usageModelId: string | undefined =
+    typeof body.model === 'string' && body.model !== '' ? body.model : loadModels(cwd).default;
+
   // --- подготовка истории ---------------------------------------------------
   if (hasApprovalOf(body)) {
     // Resume: отвечаем на первый неотвеченный create, остальные закрываем ниже.
@@ -1043,6 +1059,24 @@ async function produce(
       return;
     } finally {
       callGuard.dispose();
+    }
+
+    // --- учёт расхода токенов треда (VL-313) -------------------------------
+    // Каждый вызов модели уже включает в input весь промпт, поэтому пик
+    // контекста считается по запросам, а суммы — кумулятивно (см. chat-usage).
+    // Модель треда: переопределение из body, иначе models.default. Деньги
+    // считаются по тарифу ИМЕННО этой модели — прошлые ходы не пересчитаются
+    // по чужому тарифу после смены модели в пикере.
+    if (resp.usage) {
+      const recorded = recordThreadUsage(cwd, threadId, {
+        ...(usageModelId ? { modelId: usageModelId } : {}),
+        input: resp.usage.input_tokens,
+        output: resp.usage.output_tokens,
+        cache: resp.usage.cache_read_input_tokens,
+        reasoning: resp.usage.reasoning_tokens,
+      });
+      const view = describeThreadUsage(cwd, recorded);
+      if (view !== null) queue.push({ type: 'usage', usage: view });
     }
 
     if (resp.toolCalls.length === 0) {

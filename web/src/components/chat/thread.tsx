@@ -58,6 +58,7 @@ import {
 import { MarkdownView } from "@/lib/markdown"
 import { Button } from "@/components/ui/button"
 import { historyToMessages } from "@/lib/chat-threads"
+import type { ThreadUsageView } from "@/lib/chat-usage"
 import { useChatThreadId } from "@/lib/use-hash-route"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { ApprovalCard } from "./approval-card"
@@ -68,6 +69,7 @@ import { StoppedRun } from "./stopped-run"
 import { ToolCall, ToolGroup, type ToolPart } from "./tool-call"
 import { isWriteTool } from "./tool-meta"
 import { ThreadSidebar, ThreadSidebarSheet, type ThreadSummary } from "./thread-sidebar"
+import { UsageBar } from "./usage-bar"
 
 /** Ответ GET /api/chat/threads/:id (VL-264: + allowList, VL-283: + persona). */
 interface ThreadHistoryResponse {
@@ -76,6 +78,8 @@ interface ThreadHistoryResponse {
   allowList?: string[]
   /** Роль, зафиксированная за тредом (null — тред ещё пуст). */
   persona?: string | null
+  /** Расход токенов треда (VL-313, null — тред без ходов). */
+  usage?: ThreadUsageView | null
 }
 
 /**
@@ -522,7 +526,14 @@ function EmptyState() {
  * историю не перезагружала), клиент показывает роль первого хода из
  * module-state — она и есть зафиксированная сервером.
  */
-function ChatThread({ threadPersona }: { threadPersona: string | null }) {
+function ChatThread({
+  threadPersona,
+  threadId,
+}: {
+  threadPersona: string | null
+  /** id треда — resetKey панели расхода (VL-313). */
+  threadId?: string
+}) {
   return (
     <ThreadPrimitive.Root
       className="flex h-full min-h-0 flex-col"
@@ -532,6 +543,8 @@ function ChatThread({ threadPersona }: { threadPersona: string | null }) {
         <EmptyState />
       </ThreadPrimitive.If>
       <ThreadPrimitive.If empty={false}>
+        {/* VL-313: панель расхода — только для непустого треда (AC7) */}
+        <UsageBar threadId={threadId} />
         <ThreadPrimitive.Viewport
           className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-4 pt-6"
           // автоскролл вниз при новом контенте и при восстановлении истории
@@ -612,11 +625,12 @@ interface ChatLoadState {
   runtimeThreadId?: string
   /** Allow-list треда (VL-264): инструменты, разрешённые «Always allow». */
   allowList?: string[]
-  /**
-   * Роль, зафиксированная за тредом (VL-283), из `GET /api/chat/threads/:id`.
+  /** Роль, зафиксированная за тредом (VL-283), из `GET /api/chat/threads/:id`.
    * null — тред новый/пустой (клиент показывает пикер роли).
    */
   persona?: string | null
+  /** Расход токенов треда (VL-313): панель восстанавливает цифры после reload. */
+  usage?: ThreadUsageView | null
 }
 
 /**
@@ -720,6 +734,8 @@ export function ChatPage() {
           allowList: data.allowList ?? [],
           // VL-283: роль, зафиксированная за тредом (null — тред без ходов)
           persona: data.persona ?? null,
+          // VL-313: расход треда — панель восстановит те же цифры (AC2)
+          usage: data.usage ?? null,
         })
         setRuntimeKey(k => k + 1)
       } catch (err) {
@@ -798,9 +814,10 @@ export function ChatPage() {
               threadId={load.runtimeThreadId}
               initialMessages={load.messages}
               allowList={load.allowList}
+              initialUsage={load.usage}
               onThreadCreated={handleThreadCreated}
             >
-              <ChatThread threadPersona={load.persona ?? null} />
+              <ChatThread threadPersona={load.persona ?? null} threadId={load.runtimeThreadId} />
             </ChatRuntimeProvider>
           )}
         </div>

@@ -48,6 +48,18 @@ import {
 const TRIGGER_CLASS =
   "flex h-8 items-center gap-1 rounded-full px-2.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
 
+/**
+ * Классы кнопки выбора модели (VL-313, AC10).
+ *
+ * Раньше пикер модели был скрыт на узком экране (`hidden sm:flex`), а роль
+ * оставалась — на мобильном не было видно, какой моделью идёт чат. Теперь
+ * наоборот: модель видна всегда (label усечён сильнее на узком экране),
+ * роль на мобильном скрыта — она зафиксирована за тредом и в нижней строке
+ * композера отнимала место у ленты.
+ */
+const MODEL_TRIGGER_CLASS = cn(TRIGGER_CLASS, "max-w-[9.5rem] sm:max-w-40")
+const PERSONA_TRIGGER_CLASS = cn(TRIGGER_CLASS, "border border-border bg-transparent")
+
 /** Иконки ролей по id (встроенные + типовые проектные); неизвестная — Bot. */
 const PERSONA_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   helper: Sparkles,
@@ -96,7 +108,7 @@ export function ModelPicker() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        className={cn(TRIGGER_CLASS, "hidden sm:flex")}
+        className={MODEL_TRIGGER_CLASS}
         aria-label={`Модель: ${current.label}`}
       >
         <span className="max-w-40 truncate">{current.label}</span>
@@ -195,7 +207,7 @@ export function PersonaPicker() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        className={cn(TRIGGER_CLASS, "border border-border bg-transparent")}
+        className={cn(PERSONA_TRIGGER_CLASS, "hidden sm:flex")}
         aria-label={`Роль ассистента: ${current.label}`}
       >
         <PersonaIcon id={current.id} className="size-3.5" />
@@ -255,7 +267,11 @@ export function PersonaBadge({ personaId }: { personaId: string }) {
   const iconId = current?.id ?? fallbackId
   return (
     <span
-      className={cn(TRIGGER_CLASS, "border border-border bg-transparent", "cursor-default")}
+      className={cn(
+        PERSONA_TRIGGER_CLASS,
+        // VL-313 (AC10): на узком экране роль скрыта — место отдано модели
+        "hidden cursor-default sm:flex",
+      )}
       title="Роль зафиксирована при создании треда — переключение недоступно"
       aria-label={`Роль треда: ${label} (зафиксирована)`}
     >

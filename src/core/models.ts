@@ -53,6 +53,13 @@ export interface ModelConfig {
   api_mode?: ApiMode;
   /** Тарифы для billing (VL-198) — теперь внутри модели. */
   pricing?: ModelPricing;
+  /**
+   * Размер контекстного окна модели в токенах (VL-313): знаменатель для
+   * процента занятого контекста в панели веб-чата. Необязателен — у модели
+   * без поля панель показывает токены и рубли, но БЕЗ процента (0% вводил
+   * бы в заблуждение: «контекст свободен» при неизвестном окне).
+   */
+  context_window?: number;
 }
 
 /** Секция models settings.json. */
@@ -81,6 +88,8 @@ export interface ActiveModel {
   apiKey: string;
   /** Имя env-переменной ключа (для текстов ошибок валидации). */
   apiKeyEnv?: string;
+  /** Размер контекстного окна (VL-313); undefined — неизвестен. */
+  contextWindow?: number;
 }
 
 /**
@@ -132,6 +141,15 @@ export function loadModels(cwd: string): ModelsConfig {
         conf.description = mm.description;
       }
       if (mm.api_mode === 'chat' || mm.api_mode === 'responses') conf.api_mode = mm.api_mode;
+      // context_window (VL-313): терпимый парсинг, как у pricing — только
+      // положительное конечное число; «1e6»-строка и мусор отбрасываются.
+      if (
+        typeof mm.context_window === 'number' &&
+        Number.isFinite(mm.context_window) &&
+        mm.context_window > 0
+      ) {
+        conf.context_window = Math.round(mm.context_window);
+      }
       if (typeof mm.pricing === 'object' && mm.pricing !== null && !Array.isArray(mm.pricing)) {
         const p = mm.pricing as Record<string, unknown>;
         const num = (x: unknown): number =>
@@ -172,6 +190,7 @@ function buildActiveModel(cwd: string, id: string, conf: ModelConfig): ActiveMod
     model: conf.model,
     apiMode: conf.api_mode ?? 'chat',
     pricing: conf.pricing,
+    ...(conf.context_window !== undefined ? { contextWindow: conf.context_window } : {}),
     baseUrl: provider.base_url,
     apiKey,
     apiKeyEnv: provider.api_key_env,
