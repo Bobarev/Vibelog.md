@@ -166,10 +166,12 @@ describe('VL-303 — no-op update_task не пишет файл и отвеча�
     assert.ok(!first.noop, 'первый вызов — обычный успех');
     const updatedAfterFirst = getTask(cwd, t.id).updated_date;
     const second = JSON.parse(await handleToolCall('backlog_update_task', { id: t.id, type: 'feature' }, cwd));
-    assert.equal(second.ok, true);
+    // VL-304: noop — ошибка, а не успех (lesson-92): ok:false + reason:'noop'
+    assert.equal(second.ok, false, `noop не должен быть успехом: ${JSON.stringify(second)}`);
     assert.equal(second.noop, true, `ожидался noop: ${JSON.stringify(second)}`);
+    assert.equal(second.reason, 'noop');
     assert.match(second.message, /Изменений нет/);
-    assert.match(second.message, /backlog_finish_phase/);
+    assert.match(second.message, /Следующий шаг: backlog_finish_phase/);
     assert.equal(second.applied.type, 'feature');
     assert.equal(getTask(cwd, t.id).updated_date, updatedAfterFirst, 'файл не переписан');
   });

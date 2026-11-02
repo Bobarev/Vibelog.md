@@ -65,6 +65,22 @@ const REQUEST_TIMEOUT_MS_DEFAULT = 60_000;
 const KILL_DELAY_MS = 2_000;
 
 /**
+ * Структурный write-ack (VL-304): JSON-объект с булевым `ok`.
+ *
+ * Такой ответ несёт машиночитаемый снимок (`ok`/`noop`/`reason`/`applied`),
+ * и префикс «Ошибка MCP-инструмента …» сломал бы его разбор в loop: noop
+ * приходит с `isError: true`, но остаётся данными, а не текстом ошибки.
+ */
+function isStructuredAck(text: string): boolean {
+  try {
+    const parsed = JSON.parse(text) as { ok?: unknown } | null;
+    return parsed !== null && typeof parsed === 'object' && typeof parsed.ok === 'boolean';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * stdio JSON-RPC 2.0 клиент MCP-сервера Vibelog.
  *
  * Создание выполняет полный handshake; дальше — listTools/callTool/close.
@@ -190,6 +206,11 @@ export class McpClient {
   /**
    * Вызов инструмента: возвращает текст для модели. isError=true сервера —
    * тоже tool-результат с пометкой, не исключение (AC#2 VL-84).
+   *
+   * VL-304: структурный write-ack (`{ok:…}`) возвращается БЕЗ префикса даже
+   * при isError — иначе `JSON.parse` в loop не сработает, `appliedSignatures`
+   * не пополнится и повтор уже применённого вызова снова убьёт фазу. Текст
+   * ошибки (не JSON) префиксуется как раньше.
    */
   async callTool(name: string, args: Record<string, unknown> = {}): Promise<string> {
     const result = await this.request<ToolsCallResult>('tools/call', { name, arguments: args });
@@ -197,7 +218,8 @@ export class McpClient {
       .filter((c) => (c.type ?? 'text') === 'text' && typeof c.text === 'string')
       .map((c) => c.text)
       .join('\n');
-    return result.isError ? `Ошибка MCP-инструмента ${name}: ${text}` : text;
+    if (!result.isError) return text;
+    return isStructuredAck(text) ? text : `Ошибка MCP-инструмента ${name}: ${text}`;
   }
 
   /**

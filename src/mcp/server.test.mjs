@@ -603,6 +603,31 @@ describe('MCP-сервер', () => {
       assert.equal(byPhase.plan, undefined, 'фаза сессии не подменяет фазу рана');
     });
 
+    it('VL-304: noop write-вызов → isError:true с JSON-снимком (ok:false, reason:noop)', async () => {
+      const id = await createTask('Noop isError VL-304');
+      // Первый вызов применяет type, второй — noop (значение уже такое).
+      await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_update_task', arguments: { id, type: 'feature' } } },
+      ]);
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_update_task', arguments: { id, type: 'feature' } } },
+        { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_update_task', arguments: { id, title: 'Noop isError VL-304 (renamed)' } } },
+      ]);
+      const noop = responses.find(r => r.id === 2);
+      assert.equal(noop.result.isError, true, `noop должен быть isError: ${noop.result.content[0].text}`);
+      const ack = JSON.parse(noop.result.content[0].text);
+      assert.equal(ack.ok, false);
+      assert.equal(ack.noop, true);
+      assert.equal(ack.reason, 'noop');
+      assert.match(ack.message, /Изменений нет/);
+      assert.match(ack.message, /Следующий шаг: backlog_finish_phase/);
+      // Обычный успех — без isError
+      const ok = responses.find(r => r.id === 3);
+      assert.ok(!ok.result.isError, `успех не должен быть isError: ${ok.result.content[0].text}`);
+    });
+
     it('VL-251: no-op статус (равен текущему) → isError already_finished с датой отчёта', async () => {
       const id = await createTask('Finish: already finished');
       // Первый вызов — легитимное завершение фазы (статус To Do → In Progress)

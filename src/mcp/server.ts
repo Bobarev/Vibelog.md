@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { handleToolCall, listTools } from './tools.js';
+import { isNoopAck } from './tool-result.js';
 import type { ToolArgs } from './tools.js';
 
 // Версия из package.json — чтобы не дублировать при релизах
@@ -209,13 +210,20 @@ async function handleToolsCall(
 
   try {
     const result = await handleToolCall(name, args || {}, cwd);
+    const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+    // VL-304: noop write-вызов — это ОШИБКА, а не успех (lesson-92). Модель
+    // читает первую строку JSON: `ok:true` означало «принято, продолжай» и
+    // давало луп повторов уже применённого вызова (сессия agent-1793631554185).
+    // isError ставится здесь, на транспортной границе: handleToolCall остаётся
+    // строковым (его используют веб-чат и десятки тестов).
     send(id, {
       content: [
         {
           type: 'text',
-          text: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+          text,
         },
       ],
+      ...(isNoopAck(text) ? { isError: true } : {}),
     });
   } catch (err) {
     send(id, {

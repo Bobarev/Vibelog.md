@@ -113,8 +113,23 @@ describe('MCP-клиент: tools/call (VL-84)', () => {
     assert.match(text, /не найдена/);
   });
 
-  it("manage_dod: index '2.5' → isError с подсказкой формата (VL-120)", async () => {
-    // Дробный индекс не должен «срезаться» до 2 — ошибка с форматом и лимитом.
+  it('VL-304: noop-ack приходит с isError, но БЕЗ префикса — JSON остаётся разбираемым', async () => {
+    // noop write-вызов сервер отдаёт с isError:true (lesson-92), но это
+    // структурный снимок: префикс «Ошибка MCP-инструмента …» сломал бы
+    // JSON.parse в loop, appliedSignatures не пополнился бы и повтор
+    // применённого вызова снова убил бы фазу.
+    const created = await client.callTool('backlog_create_task', { title: 'Noop ack VL-304', type: 'bug' });
+    const taskId = created.match(/mcpcli-\d+/)[0];
+    await client.callTool('backlog_update_task', { id: taskId, type: 'feature' });
+    const text = await client.callTool('backlog_update_task', { id: taskId, type: 'feature' });
+    assert.ok(!text.startsWith('Ошибка MCP-инструмента'), `префикс сломал бы JSON: ${text}`);
+    const ack = JSON.parse(text);
+    assert.equal(ack.ok, false);
+    assert.equal(ack.noop, true);
+    assert.equal(ack.reason, 'noop');
+  });
+
+  it("manage_dod: index '2.5' → isError с подсказкой формата (VL-120)", async () => {    // Дробный индекс не должен «срезаться» до 2 — ошибка с форматом и лимитом.
     const created = await client.callTool('backlog_create_task', { title: 'DoD validation' });
     const taskId = created.match(/mcpcli-\d+/)[0];
     await client.callTool('backlog_manage_dod', { id: taskId, action: 'add', text: 'D1' });

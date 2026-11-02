@@ -440,9 +440,11 @@ describe('runLoop loop detection (VL-83)', () => {
     assert.match(res.result, /Loop detection/);
   });
 
-  it('VL-303 (AC3): повтор уже применённого вызова не убивает фазу (сессия agent-1793628348682)', async () => {
-    // Заглушка write-инструмента: отвечает JSON-снимком ok/noop, как
-    // backlog_update_task после VL-303.
+  it('VL-304 (AC2/AC4): повтор уже применённого вызова завершает ран штатно (сессия agent-1793631554185)', async () => {
+    // Регресс на реальную сессию: 3 noop-вызова backlog_update_task, затем
+    // 4 повтора {id,type}. До VL-304 ран падал кодом 1 после 4 LLM-запросов
+    // («Модель 4 раз повторила уже применённый вызов»), хотя работа была
+    // сделана. Теперь первый же повтор завершает ран с is_error:false.
     const state = { calls: 0 };
     const spec = {
       name: 'backlog_update_task',
@@ -450,7 +452,8 @@ describe('runLoop loop detection (VL-83)', () => {
       inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
       handler: async () => {
         state.calls++;
-        return JSON.stringify({ ok: true, noop: true, message: 'Изменений нет', applied: {}, skipped: [] });
+        // VL-304: noop — ошибка, а не успех (ok:false + reason:'noop')
+        return JSON.stringify({ ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [] });
       },
     };
     const same = { id: 'VL-302', type: 'feature' };
@@ -465,11 +468,13 @@ describe('runLoop loop detection (VL-83)', () => {
     ]);
     const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
     assert.equal(res.is_error, false, `фаза не должна падать: ${res.result}`);
-    assert.equal(res.result, 'перехожу к отчёту');
+    assert.match(res.result, /зациклилась на уже применённом вызове/);
     assert.equal(state.calls, 4, 'повторы уже применённого вызова не исполняются (c1-c4 исполнены, c5/c6 — нет)');
     const directive = res.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'c5');
     assert.ok(directive, 'модель получает директиву на повтор применённого вызова');
     assert.match(String(directive.content), /уже применён/);
+    // Контракт VL-103: транскрипт обязан заканчиваться assistant-сообщением
+    assert.equal(res.messages[res.messages.length - 1].role, 'assistant');
     assert.equal(res.blocked_signatures, undefined, 'применённая сигнатура не попадает в блокировки');
   });
 
