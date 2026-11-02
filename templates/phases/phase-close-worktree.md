@@ -20,11 +20,10 @@ Definition of Done (DoD): {{taskDoD}}
 
 2. Проверь worktree ветки:
    git -C {{worktreeDir}} status --porcelain
-   - Грязный worktree (есть незакоммиченные файлы) — закоммичи их в ветку {{branch}} ИЗ worktree (это единственные git-команды с -C; MCP-инструмент git_commit здесь не подходит: в фазе close он коммитит в ГЛАВНОМ репозитории — сюда возвращайся только командами с -C):
+   - Грязный worktree (есть незакоммиченные файлы) — закоммичи их в ветку {{branch}} ИЗ worktree. MCP-инструмент git_commit принимает `cwd` worktree задачи, поэтому коммит делается так (без git -C):
      git -C {{worktreeDir}} status --porcelain
-     git -C {{worktreeDir}} add <явные пути затронутых файлов>
-     git -C {{worktreeDir}} commit -m "feat: {{taskId}} — <кратко>"
-     Только явные пути файлов задачи.
+     git_commit {"paths": [<явные пути затронутых файлов>], "message": "feat: {{taskId}} — <кратко>", "cwd": "{{worktreeDir}}"}
+     Только явные пути файлов задачи. (`git -C {{worktreeDir}} status --porcelain` — чтение, его оставляй в shell.)
    - Worktree отсутствует (директории нет) — пропусти шаги 3–5 и продолжай с шага 6: код либо уже слит в master, либо фазы не меняли файлы.
 
 3. Покажи состав ветки относительно master:

@@ -775,6 +775,10 @@ export function listTools(): ToolDefinition[] {
           message: { type: 'string', description: 'Сообщение коммита: тема (тело — отдельным абзацем после пустой строки)' },
           amend: { type: 'boolean', description: 'true — переписать последний коммит (--amend) с сохранением тела исходного сообщения' },
           allowForeign: { type: 'boolean', description: 'true — разрешить пути вне modified_files задачи (осознанное исключение)' },
+          cwd: {
+            type: 'string',
+            description: 'Каталог коммита (путь внутри проекта) — только для шага close-worktree, который коммитит чужой worktree; по умолчанию worktree задачи (или главный репо в close)',
+          },
         },
         required: ['paths', 'message'],
       },
@@ -897,6 +901,7 @@ export async function handleToolCall(
         message: (args.message as string) ?? '',
         amend: args.amend === true,
         allowForeign: args.allowForeign === true,
+        cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
       });
     // VL-268: инструменты супервизора (фазы, очередь, прогон). Идемпотентность
     // by-key здесь не применяется: они не пишут поля задачи, а запускают фазы

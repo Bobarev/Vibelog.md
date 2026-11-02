@@ -263,4 +263,32 @@ describe('VL-311 — git_commit: коммит явными путями с тр�
     assert.deepEqual(foreignPaths(root, task.id, ['src/web/chat.ts']), ['src/web/chat.ts']);
     assert.deepEqual(foreignPaths(root, 'VL-999', ['src/web/chat.ts']), [], 'задача не читается — сверка пропускается');
   });
+
+  it('AC6: явный cwd — коммит в поддерево проекта (шаг close-worktree); наружу — отказ', () => {
+    // Имитация worktree: подкаталог внутри проекта со своим репозиторием
+    const worktree = join(root, '.vibelog', 'worktrees', 'vl-703');
+    mkdirSync(worktree, { recursive: true });
+    execFileSync('/usr/bin/git', ['init', '-q'], { cwd: worktree });
+    execFileSync('/usr/bin/git', ['config', 'user.email', 'test@example.com'], { cwd: worktree });
+    execFileSync('/usr/bin/git', ['config', 'user.name', 'Test'], { cwd: worktree });
+    writeFileSync(join(worktree, 'w.txt'), 'one\n', 'utf-8');
+    git(worktree, 'add', 'w.txt');
+    git(worktree, 'commit', '-q', '-m', 'init worktree');
+
+    const mainBefore = commitCount(root);
+    writeFileSync(join(worktree, 'w.txt'), 'two\n', 'utf-8');
+    const ack = parseAck(commitFiles(root, {
+      paths: ['w.txt'],
+      message: 'feat: коммит в worktree',
+      cwd: '.vibelog/worktrees/vl-703',
+    }));
+    assert.equal(ack.ok, true, JSON.stringify(ack));
+    assert.equal(git(worktree, 'log', '-1', '--pretty=%s'), 'feat: коммит в worktree');
+    assert.match(git(worktree, 'log', '-1', '--pretty=%B'), /Co-authored-by: vibelog-agent/);
+    assert.equal(commitCount(root), mainBefore, 'главный репозиторий не тронут');
+
+    const outside = parseAck(commitFiles(root, { paths: ['w.txt'], message: 'feat: наружу', cwd: '../outside' }));
+    assert.equal(outside.ok, false, JSON.stringify(outside));
+    assert.match(outside.error, /cwd — Путь выходит за пределы проекта/);
+  });
 });

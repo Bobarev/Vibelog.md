@@ -62,6 +62,13 @@ export interface GitCommitOptions {
    * (VL-112, шаблон `phase-close-worktree.md` снимает ветку из главного cwd).
    */
   phase?: string;
+  /**
+   * Каталог коммита (абсолютный путь внутри проекта). Задаётся явно там, где
+   * default-резолв не может выбрать дерево: шаг 2 шаблона `phase-close-worktree.md`
+   * коммитит ЧУЖОЙ worktree ({{worktreeDir}}) в фазе close, когда инструмент по
+   * умолчанию работал бы в главном репозитории. Вне проекта — отказ.
+   */
+  cwd?: string;
 }
 
 /** Запрещённые элементы `paths`: всё, что превращает выборочный add в массовый. */
@@ -260,15 +267,25 @@ export function commitFiles(cwd: string, opts: GitCommitOptions): string {
   const taskId = (opts.taskId ?? process.env.VIBELOG_PHASE_TASK_ID ?? '').trim();
   const phase = (opts.phase ?? process.env.VIBELOG_PHASE_NAME ?? process.env.VIBELOG_RUN_PHASE ?? '').trim();
   const projectCwd = process.env.VIBELOG_CWD ? resolve(process.env.VIBELOG_CWD) : cwd;
-  const commitCwd = resolveCommitCwd(cwd, taskId, phase);
+  // Явный cwd (шаг 2 шаблона close-worktree: чужой worktree, созданный из
+  // главного репо) резолвится ВНУТРИ проекта — выход наружу отклоняется.
+  const explicit = typeof opts.cwd === 'string' && opts.cwd.trim() !== '' ? opts.cwd.trim() : '';
+  let commitCwd = resolveCommitCwd(cwd, taskId, phase);
+  if (explicit !== '') {
+    const resolvedDir = resolveInProject(projectCwd, explicit, { allowRoot: true });
+    if (!resolvedDir.ok) return ackError(`git_commit: cwd — ${resolvedDir.error}`);
+    if (!existsSync(resolvedDir.path)) return ackError(`git_commit: cwd не найден: ${explicit}`);
+    commitCwd = resolvedDir.path;
+  }
+  const pathsBase = commitCwd;
 
   // 1. Резолв путей внутри проекта коммита (выход за пределы — отказ).
   const absPaths: string[] = [];
   const relPaths: string[] = [];
   for (const entry of rawPaths) {
-    const resolved = resolveInProject(commitCwd, entry.trim());
+    const resolved = resolveInProject(pathsBase, entry.trim());
     if (!resolved.ok) return ackError(`git_commit: ${resolved.error}`);
-    const rel = relative(commitCwd, resolved.path).split(sep).join('/');
+    const rel = relative(pathsBase, resolved.path).split(sep).join('/');
     if (rel === '' || isAbsolute(rel)) {
       return ackError(`git_commit: "${entry}" не указывает на файл внутри проекта`);
     }
