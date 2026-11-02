@@ -1371,6 +1371,13 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
 }
 
 /**
+ * Поля задачи, сравниваемые как множества (порядок не значим) — VL-303.
+ * VL-306: вынесено в константу модуля, чтобы `sameValue` принимал свой набор
+ * для других сущностей (уроки: `tags`, `source_tasks`, `linked_tasks`, `applies_to`).
+ */
+const SET_FIELDS = ['labels', 'assignee', 'references', 'lessons', 'modified_files', 'dependencies'];
+
+/**
  * Сравнивает переданное значение поля с текущим значением задачи (VL-303).
  *
  * Нужен для no-op детекта: если все переданные поля уже имеют запрошенные
@@ -1383,9 +1390,13 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
  * - остальное (строки, числа, `parent_task_id`, секции тела) — строгое `===`.
  *   `type` приходит уже нормализованным через `normalizeTaskType`.
  */
-function sameValue(field: string, next: unknown, current: unknown): boolean {
-  const SET_FIELDS = ['labels', 'assignee', 'references', 'lessons', 'modified_files', 'dependencies'];
-  if (SET_FIELDS.includes(field)) {
+function sameValue(
+  field: string,
+  next: unknown,
+  current: unknown,
+  setFields: readonly string[] = SET_FIELDS,
+): boolean {
+  if (setFields.includes(field)) {
     const a = Array.isArray(next) ? next.map(String) : [];
     const b = Array.isArray(current) ? current.map(String) : [];
     if (a.length !== b.length) return false;
@@ -2146,7 +2157,13 @@ function toolMilestoneAdd(args: ToolArgs, cwd: string): string {
     description: (args.description as string) || '',
     due_date: (args.due_date as string) || '',
   });
-  return `Веха "${milestone.name}" создана.`;
+  // VL-306: единый JSON-контракт write-инструментов (как backlog_update_task).
+  // message сохраняет прежнюю формулировку — substring-проверки не ломаются.
+  return ackOk(`Веха "${milestone.name}" создана.`, {
+    name: milestone.name,
+    description: milestone.description,
+    due_date: milestone.due_date,
+  });
 }
 
 function toolMilestoneRename(args: ToolArgs, cwd: string): string {
@@ -2167,7 +2184,12 @@ function toolMilestoneRename(args: ToolArgs, cwd: string): string {
       }
     }
   }
-  return `Веха переименована: ${args.from} → ${args.to}. Задач обновлено: ${updatedCount}`;
+  // VL-306: JSON-ack; прежняя формулировка сохранена в message.
+  return ackOk(`Веха переименована: ${args.from} → ${args.to}. Задач обновлено: ${updatedCount}`, {
+    from,
+    to,
+    updated_tasks: updatedCount,
+  });
 }
 
 function toolMilestoneRemove(args: ToolArgs, cwd: string): string {
@@ -2199,7 +2221,8 @@ function toolMilestoneArchive(args: ToolArgs, cwd: string): string {
   if (!backlogDir) throw new Error('Backlog не найден.');
   const archived = archiveMilestone(backlogDir, args.name as string);
   if (!archived) throw new Error(`Веха "${args.name}" не найдена.`);
-  return `Веха "${args.name}" архивирована.`;
+  // VL-306: JSON-ack; прежняя формулировка сохранена в message.
+  return ackOk(`Веха "${args.name}" архивирована.`, { name: args.name as string, status: 'archived' });
 }
 
 // ============================================================
@@ -2255,7 +2278,13 @@ function toolDocumentUpdate(args: ToolArgs, cwd: string): string {
   }
   const updated = updateDocument(backlogDir, args.id as string, updates);
   if (!updated) throw new Error(`Документ ${args.id} не найден.`);
-  return `Документ ${updated.document.id} обновлён: ${updated.document.title}`;
+  // VL-306: JSON-ack; applied — значения из документа ПОСЛЕ записи.
+  return ackOk(`Документ ${updated.document.id} обновлён: ${updated.document.title}`, {
+    id: updated.document.id,
+    title: updated.document.title,
+    type: updated.document.type,
+    tags: updated.document.tags,
+  });
 }
 
 function toolDocumentSearch(args: ToolArgs, cwd: string): string {
@@ -2368,7 +2397,13 @@ function toolReferenceUpdate(args: ToolArgs, cwd: string): string {
   }
   const entry = updateReference(cwd, args.id as string, updates);
   if (!entry) throw new Error(`Reference ${args.id} не найден.`);
-  return `Reference ${entry.reference.id} обновлён: ${Object.keys(updates).join(', ')}`;
+  // VL-306: JSON-ack; applied — значения из reference ПОСЛЕ записи.
+  return ackOk(`Reference ${entry.reference.id} обновлён: ${Object.keys(updates).join(', ')}`, {
+    id: entry.reference.id,
+    tags: entry.reference.tags,
+    url: entry.reference.url,
+    urls: entry.reference.urls,
+  });
 }
 
 function toolReferenceLink(args: ToolArgs, cwd: string): string {
@@ -2461,9 +2496,48 @@ function toolLessonUpdate(args: ToolArgs, cwd: string): string {
   if (Object.keys(updates).length === 0) {
     throw new Error('Не указаны поля для обновления.');
   }
+  // VL-306: no-op детект для уроков (симметрия с backlog_update_task, VL-303).
+  // Раньше файл переписывался всегда, ответ был «обновлён: …», и модель не
+  // получала сигнала «работа сделана» — сессия agent-1793634687751 (Close
+  // VL-304) сделала 10 дословных повторов lesson_update и упала кодом 1.
+  // Сравнение — по фактическим значениям из файла; `content` — против тела.
+  const current = getLesson(cwd, args.id as string);
+  if (current) {
+    const LESSON_SET_FIELDS = ['tags', 'source_tasks', 'linked_tasks', 'applies_to'];
+    const currentRaw = current.lesson as unknown as Record<string, unknown>;
+    const unchanged = Object.keys(updates).every(key =>
+      key === 'content'
+        ? updates.content === current.body
+        : sameValue(key, (updates as Record<string, unknown>)[key], currentRaw[key], LESSON_SET_FIELDS),
+    );
+    if (unchanged) {
+      // applied — фактическое состояние (как в обычном пути), но без записи:
+      // updated_date и файл не трогаются.
+      const applied: Record<string, unknown> = {};
+      for (const key of Object.keys(updates)) {
+        applied[key] = key === 'content' ? current.body.length : currentRaw[key];
+      }
+      return ackNoop(
+        `Изменений нет: ${Object.keys(updates).join(', ')} уже имеют эти значения. ` +
+          'Следующий шаг: backlog_finish_phase (или следующий шаг плана) — повтор этого вызова ничего не изменит.',
+        applied,
+      );
+    }
+  }
+
   const entry = updateLesson(cwd, args.id as string, updates);
   if (!entry) throw new Error(`Lesson ${args.id} не найден.`);
-  return `Lesson ${entry.lesson.id} обновлён: ${Object.keys(updates).join(', ')} (updated_date: ${entry.lesson.updated_date})`;
+  // VL-306: JSON-ack; applied — значения из урока ПОСЛЕ записи (тело — длиной,
+  // чтобы не раздувать ответ).
+  const applied: Record<string, unknown> = {};
+  const entryRaw = entry.lesson as unknown as Record<string, unknown>;
+  for (const key of Object.keys(updates)) {
+    applied[key] = key === 'content' ? entry.body.length : entryRaw[key];
+  }
+  return ackOk(
+    `Lesson ${entry.lesson.id} обновлён: ${Object.keys(updates).join(', ')} (updated_date: ${entry.lesson.updated_date})`,
+    applied,
+  );
 }
 
 function toolLessonSearch(args: ToolArgs, cwd: string): string {
@@ -2474,14 +2548,22 @@ function toolLessonSearch(args: ToolArgs, cwd: string): string {
 function toolLessonLink(args: ToolArgs, cwd: string): string {
   const action = (args.action as 'add' | 'remove') || 'add';
   linkLesson(cwd, args.lessonId as string, args.taskId as string, action);
-  return action === 'add'
-    ? `Lesson ${args.lessonId} связан с задачей ${args.taskId} (linked_tasks ↔ task.lessons).`
-    : `Связь Lesson ${args.lessonId} ↔ задача ${args.taskId} удалена.`;
+  // VL-306: JSON-ack; прежняя формулировка сохранена в message.
+  return ackOk(
+    action === 'add'
+      ? `Lesson ${args.lessonId} связан с задачей ${args.taskId} (linked_tasks ↔ task.lessons).`
+      : `Связь Lesson ${args.lessonId} ↔ задача ${args.taskId} удалена.`,
+    { lessonId: args.lessonId as string, taskId: args.taskId as string, action },
+  );
 }
 
 function toolLessonSupersede(args: ToolArgs, cwd: string): string {
   supersedeLesson(cwd, args.oldId as string, args.newId as string);
-  return `Lesson ${args.newId} заменяет ${args.oldId} (${args.oldId} → superseded, ${args.newId} → active).`;
+  // VL-306: JSON-ack; прежняя формулировка сохранена в message.
+  return ackOk(
+    `Lesson ${args.newId} заменяет ${args.oldId} (${args.oldId} → superseded, ${args.newId} → active).`,
+    { oldId: args.oldId as string, newId: args.newId as string, old_status: 'superseded', new_status: 'active' },
+  );
 }
 
 /**

@@ -774,6 +774,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       }
       case 'max-wall-time':
       case 'max-requests':
+      case 'loop-detection-repeat':
       case 'idle-timeout': {
         // Числовые лимиты (VL-104): 0 — сброс (удаление ключа из settings.json),
         // иначе — запись; применяются при следующем запуске фазы (агент vb).
@@ -785,7 +786,9 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
             ? 'max_wall_time'
             : key === 'max-requests'
               ? 'max_requests'
-              : 'idle_timeout_seconds';
+              : key === 'loop-detection-repeat'
+                ? 'loop_detection_repeat'
+                : 'idle_timeout_seconds';
         if (key !== 'idle-timeout' && parsed.value === 0) {
           settings[field] = undefined;
           saveBotSettings(deps.cwd, settings);
@@ -803,6 +806,13 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
             parsed.value === 0
               ? '⚙️ Idle-таймаут *выключен* — фаза прерывается только по wall-time/max-requests.'
               : `⚙️ Idle-таймаут: *${parsed.value} с* без активности (дефолт 600). Передаётся при запуске фаз (агент vb).`
+          );
+          return;
+        }
+        if (key === 'loop-detection-repeat') {
+          await sendMd(
+            ctx,
+            `⚙️ Порог loop detection: *${parsed.value}* одинаковых вызовов подряд (дефолт 3). Передаётся при запуске фаз (агент vb). Сброс: \`/set loop-detection-repeat 0\`.`
           );
           return;
         }

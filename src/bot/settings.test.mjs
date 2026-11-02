@@ -19,6 +19,7 @@ import {
   resolveMaxWallTime,
   resolveMaxRequests,
   resolveIdleTimeout,
+  resolveLoopDetectionRepeat,
   resolveBranchMode,
   resolveCodeSameSession,
   botSettingsPath,
@@ -342,5 +343,36 @@ describe('code_same_session (VL-147)', () => {
     writeFileSync(botSettingsPath(root), JSON.stringify({ chats: [], code_same_session: 1 }), 'utf-8');
     assert.equal(loadBotSettings(root).code_same_session, undefined);
     assert.equal(resolveCodeSameSession(root), false);
+  });
+});
+
+describe('loop_detection_repeat (VL-306)', () => {
+  it('roundtrip save/load: порог loop detection', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-settings-ldr-'));
+    try {
+      saveBotSettings(dir, { chats: [], loop_detection_repeat: 5 });
+      assert.equal(loadBotSettings(dir).loop_detection_repeat, 5);
+      assert.equal(resolveLoopDetectionRepeat(dir), 5);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('битое значение игнорируется → undefined (дефолт агента 3)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-settings-ldr-bad-'));
+    try {
+      mkdirSync(join(dir, '.vibelog'), { recursive: true });
+      writeFileSync(join(dir, '.vibelog', 'settings.json'), JSON.stringify({ loop_detection_repeat: 'abc' }), 'utf-8');
+      assert.equal(loadBotSettings(dir).loop_detection_repeat, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('без файла → undefined', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-settings-ldr-none-'));
+    try {
+      assert.equal(resolveLoopDetectionRepeat(dir), undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

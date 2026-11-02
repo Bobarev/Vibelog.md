@@ -2190,3 +2190,75 @@ describe('VL-254: бюджет wall-time и прогресс до обрыва (
     assert.equal(seen, 6_000, 'остаток бюджета передан в handler (10 с − 4 с)');
   });
 });
+
+describe('VL-306 — страховка appliedSignatures для не-JSON ответов write-инструментов', () => {
+  it('AC3/AC4: регресс сессии agent-1793634687751 — 14× lesson_update с текстовым ответом завершают ран штатно', async () => {
+    // Реальная сессия Close VL-304: 4 разных вызова lesson_update + 10
+    // дословных повторов. Инструмент отвечал ПЛОСКИМ ТЕКСТОМ, appliedSignatures
+    // не пополнялся, срабатывал обычный loop detection → fail, код 1.
+    const state = { calls: 0 };
+    const spec = {
+      name: 'lesson_update',
+      description: 'write-заглушка с текстовым ответом',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => {
+        state.calls++;
+        return 'Lesson lesson-174 обновлён: verified_by (updated_date: 2026-11-02)';
+      },
+    };
+    const a = { id: 'lesson-174', tags: ['x'], title: 'T', verifiedBy: 'agent' };
+    const b = { id: 'lesson-174', sourceTasks: ['VL-304'], supersedes: 'lesson-173', tags: ['x'], title: 'T', verifiedBy: 'agent' };
+    const c = { id: 'lesson-174', sourceTasks: ['VL-304'], supersedes: 'lesson-173', verifiedBy: 'agent' };
+    const d = { id: 'lesson-174', title: 'T', verifiedBy: 'agent' };
+    const script = [];
+    let n = 0;
+    for (const args of [a, b, c, c, c, d, d, d, d, d, d, d, d, d]) {
+      script.push({ text: '', toolCalls: [{ id: `c${++n}`, name: 'lesson_update', arguments: args }] });
+    }
+    const { llm } = fakeLlm(script);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false, `фаза не должна падать: ${res.result}`);
+    assert.match(res.result, /зациклилась на уже применённом вызове/);
+    // Первый повтор уже применённой сигнатуры завершает ран штатно (VL-304):
+    // исполнены a, b, c — второй c" — это повтор, он не исполняется.
+    assert.equal(state.calls, 3, 'исполнены только 3 разных вызова, повторы не исполняются');
+    assert.equal(res.blocked_signatures, undefined, 'сигнатуры не попали в блок-лист');
+  });
+
+  it('AC3: текст-ошибка не считается применённой — обычный loop detection', async () => {
+    const spec = {
+      name: 'lesson_update',
+      description: 'write-заглушка с ошибкой',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => 'Ошибка: Lesson lesson-999 не найден.',
+    };
+    const same = { id: 'lesson-999', verifiedBy: 'agent' };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'lesson_update', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'lesson_update', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'lesson_update', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c4', name: 'lesson_update', arguments: same }] },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, true, 'текст-ошибка не должна закрывать фазу как успешную');
+    assert.match(res.result, /Loop detection/);
+  });
+
+  it('AC3: read-инструмент с текстовым ответом не пополняет appliedSignatures', async () => {
+    const spec = {
+      name: 'backlog_list_tasks',
+      description: 'read-заглушка',
+      inputSchema: { type: 'object', properties: {} },
+      handler: async () => '[]',
+    };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'backlog_list_tasks', arguments: {} }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'backlog_list_tasks', arguments: {} }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'backlog_list_tasks', arguments: {} }] },
+      { text: '', toolCalls: [{ id: 'c4', name: 'backlog_list_tasks', arguments: {} }] },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, true, 'read-инструмент не должен закрывать ран по повтору');
+    assert.match(res.result, /Loop detection/);
+  });
+});

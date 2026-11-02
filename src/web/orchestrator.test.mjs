@@ -543,7 +543,7 @@ describe('orchestrator (VL-28)', () => {
     // settings.json с лимитами + выключенным компакшном — оркестратор прокидывает
     // все флага (только vb): --no-compact появляется только при явном off (VL-122)
     mkdirSync(join(testRoot, '.vibelog'), { recursive: true });
-    writeFileSync(join(testRoot, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], max_wall_time: 1800, max_requests: 50, idle_timeout_seconds: 900, compact: false }), 'utf-8');
+    writeFileSync(join(testRoot, '.vibelog', 'settings.json'), JSON.stringify({ chats: [], max_wall_time: 1800, max_requests: 50, loop_detection_repeat: 7, idle_timeout_seconds: 900, compact: false }), 'utf-8');
     allowAllPhases(testRoot);
     try {
       const res = startPhase(testRoot, task1.id, 'code', undefined, undefined, 'vb');
@@ -558,6 +558,9 @@ describe('orchestrator (VL-28)', () => {
       assert.ok(iReq !== -1 && argv[iReq + 1] === '50', 'нет --max-requests 50: ' + JSON.stringify(argv));
       assert.ok(iIdle !== -1 && argv[iIdle + 1] === '900', 'нет --idle-timeout 900 (VL-274): ' + JSON.stringify(argv));
       assert.ok(argv.includes('--no-compact'), 'нет --no-compact при compact: false: ' + JSON.stringify(argv));
+      // VL-306: порог loop detection прокидывается из settings.json
+      const iLoop = argv.indexOf('--loop-detection-repeat');
+      assert.ok(iLoop !== -1 && argv[iLoop + 1] === '7', 'нет --loop-detection-repeat 7: ' + JSON.stringify(argv));
     } finally {
       rmSync(join(testRoot, '.vibelog', 'settings.json'), { force: true });
       allowAllPhases(testRoot);

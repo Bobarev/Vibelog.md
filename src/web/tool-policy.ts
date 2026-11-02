@@ -54,61 +54,10 @@ export const CHAT_DISALLOWED_TOOLS: readonly string[] = [
   'milestone_remove',
 ];
 
-/**
- * Маркеры write-операции в имени инструмента (природа операции: есть
- * побочный эффект). Проверяются по токенам имени (split по не-буквам),
- * поэтому `backlog_manage_ac` матчит `manage`, `reference_link` — `link`.
- */
-const WRITE_MARKERS = [
-  'create', 'update', 'add', 'remove', 'rename', 'archive',
-  'manage', 'finish', 'supersede', 'link', 'sync', 'cache',
-  'write', 'edit', 'delete', 'set', 'put', 'run', 'spawn',
-  'promote', 'reject', 'complete', 'append', 'mkdir',
-  // VL-268: запуск фаз/очереди/прогона — побочный эффект по природе
-  'trigger', 'start', 'stop', 'queue',
-] as const;
-
-/**
- * Маркеры read-операции в имени инструмента. Проверяются ПОСЛЕ write —
- * если в имени оба (теоретически), write приоритетнее (безопаснее).
- */
-const READ_MARKERS = [
-  'list', 'view', 'search', 'get', 'read', 'ready', 'glob', 'grep', 'help', 'map',
-  // VL-268: состояние запуска фазы — чистый read
-  'status',
-  // VL-279: lesson_audit — по умолчанию read-only (записи только при явных
-  // verified/needsReview); природа по умолчанию — чтение отчёта
-  'audit',
-  // VL-280: lesson_classify — тоже отчёт по умолчанию (kind пишется только
-  // при apply/confirmIds, задачи — только по createClusters)
-  'classify',
-] as const;
-
-/** Токенизует имя инструмента: lowercase + split по не-буквенно-цифровым. */
-function tokenize(name: string): string[] {
-  return name.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-}
-
-/**
- * Классифицирует операцию: true — write (нужно подтверждение Allow/Deny),
- * false — read (исполняется сразу). Побочный эффект — свойство операции,
- * не аргументов. Фолбэк для неизвестных имён — write (fail-safe: защита от
- * молчаливой записи; новые MCP-инструменты подключаются без правки
- * инструкции чата — их классификация выводится из имени).
- *
- * @param name — имя инструмента (MCP-реестр или локальный файловый)
- */
-export function isWriteOperation(name: string): boolean {
-  const tokens = tokenize(name);
-  // Локальные файловые инструменты агента — явная ветка (ясность + не
-  // зависит от порядка маркеров)
-  if (tokens.includes('write') || tokens.includes('edit') || tokens.includes('run')) return true;
-  if (tokens.includes('read') || tokens.includes('grep') || tokens.includes('glob')) return false;
-  if (tokens.some(t => WRITE_MARKERS.includes(t as (typeof WRITE_MARKERS)[number]))) return true;
-  if (tokens.some(t => READ_MARKERS.includes(t as (typeof READ_MARKERS)[number]))) return false;
-  // Неизвестное имя → write (fail-safe)
-  return true;
-}
+// VL-306: классификатор вынесен в core (`src/core/tool-classify.ts`) — он нужен
+// и веб-чату (approval-gate), и агентскому циклу (страховка appliedSignatures).
+// Реэкспорт сохраняет публичный API этого модуля: импортёры и тесты не меняются.
+export { isWriteOperation } from '../core/tool-classify.js';
 
 /**
  * Инструмент read_file чата: чтение файла проекта БЕЗ подтверждения
