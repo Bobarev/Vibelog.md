@@ -244,7 +244,7 @@ function checkSourcesMatch(): CheckResult {
  */
 function checkMcpToolsCount(): CheckResult {
   const tools = listTools();
-  const expected = 44;
+  const expected = 45;
   const ok = tools.length === expected;
   return {
     name: 'mcp_tools_count',
@@ -298,6 +298,7 @@ function checkMcpToolsList(): CheckResult {
     'backlog_phase_status',
     'backlog_auto_queue',
     'backlog_supervisor',
+    'git_commit',
   ].sort();
 
   const missing = expected.filter(e => !actual.includes(e));

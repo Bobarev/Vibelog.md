@@ -51,8 +51,6 @@ const TASK_VARS = {
   taskAC: '(нет)',
   taskDoD: '(нет)',
   taskModifiedFiles: '(нет)',
-  // VL-302: трейлер Co-authored-by для шагов git commit в шаблонах фаз
-  commitTrailer: 'Co-authored-by: vibelog-agent <vb@xw2.ru>',
   taskLastComment: '(нет комментариев)',
   taskReferences: '(нет)',
   taskTitle: 'Тестовая задача',
@@ -212,12 +210,12 @@ describe('VL-137 — taskExtraVars/taskBlockText', () => {
     return root;
   };
 
-  it('taskExtraVars: задача читается → 15 подстановок с нумерованными AC и последним комментарием', () => {
+  it('taskExtraVars: задача читается → 14 подстановок с нумерованными AC и последним комментарием', () => {
     const root = makeRoot();
     try {
       const vars = taskExtraVars(root, 'VL-901');
       assert.ok(vars, 'vars должны подобраться');
-      assert.equal(Object.keys(vars).length, 15, 'ровно 15 подстановок');
+      assert.equal(Object.keys(vars).length, 14, 'ровно 14 подстановок');
       assert.equal(vars.taskTitle, 'Заголовок VL-901');
       assert.equal(vars.taskType, 'task');
       assert.equal(vars.taskStatus, 'Planned');
@@ -803,11 +801,46 @@ describe('VL-170 — close коммитит refs и lessons', () => {
       assert.ok(text.includes('backlog/lessons'), `${file}: путь lessons`);
       assert.ok(text.includes('backlog/references'), `${file}: путь references`);
       assert.ok(text.includes('git status --porcelain'), `${file}: проверка статуса перед коммитом`);
-      assert.ok(text.includes('git add <явные пути>'), `${file}: коммит только явными путями`);
-      // «никогда git add -A» — запрет в правилах; как коммит-шаг использоваться не должен
-      assert.ok(!text.replaceAll('никогда git add -A', '').includes('git add -A'), `${file}: git add -A только в запретах`);
+      assert.ok(text.includes('git_commit'), `${file}: коммит только через git_commit (VL-311)`);
+      assert.ok(!text.includes('git commit -m'), `${file}: шагов git commit -m быть не должно — коммит делает git_commit`);
+      assert.ok(!text.includes('git add -A'), `${file}: массовый add не упоминается (проверка внутри git_commit)`);
     });
   }
+});
+
+// ── VL-311: коммит шагов фаз — через git_commit, без текстовых запретов ──
+
+describe('VL-311 — шаги коммитов в шаблонах используют git_commit', () => {
+  const COMMIT_TEMPLATES = ['phase-code.md', 'phase-do.md', 'phase-close.md', 'phase-close-worktree.md'];
+
+  // Инвариант осознанно — не удалять при рефакторинге (паттерн VL-142):
+  // коммит перестал быть инструкцией модели (трейлер вторым -m, «никогда
+  // git add -A») и стал проверкой в коде — шаблон обязан вызывать git_commit.
+  it('во всех шаблонах с коммитами нет `git commit -m` и подстановки {{commitTrailer}}', () => {
+    for (const file of COMMIT_TEMPLATES) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      assert.ok(!text.includes('git commit -m'), `${file}: шаг git commit -m заменён на git_commit`);
+      assert.ok(!text.includes('{{commitTrailer}}'), `${file}: подстановка трейлера удалена (VL-311)`);
+      assert.ok(!text.includes('git add -A'), `${file}: текстовый запрет «git add -A» не нужен — проверка в коде`);
+    }
+  });
+
+  it('шаги коммитов вызывают git_commit с paths и message', () => {
+    for (const file of COMMIT_TEMPLATES) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      assert.ok(text.includes('git_commit'), `${file}: инструмент git_commit упомянут`);
+      assert.ok(text.includes('"paths"'), `${file}: paths передаётся явно`);
+      assert.ok(text.includes('"message"'), `${file}: message передаётся явно`);
+    }
+  });
+
+  it('phase-code/phase-do: коммит кода — git_commit с путями файлов задачи', () => {
+    for (const file of ['phase-code.md', 'phase-do.md']) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      assert.ok(text.includes('git_commit {"paths"'), `${file}: вызов git_commit с paths`);
+      assert.ok(text.includes('feat: {{taskId}}'), `${file}: тема feat-коммита с ID задачи`);
+    }
+  });
 });
 
 // ── VL-157: переносимость промптов — без внутренних ID задач репозитория ──

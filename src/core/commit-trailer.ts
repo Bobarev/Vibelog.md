@@ -63,13 +63,3 @@ export function appendCommitTrailer(message: string, enabled: boolean): string {
 export function commitMessageArgs(cwd: string, message: string): string[] {
   return ['-m', appendCommitTrailer(message, resolveCommitCoauthor(cwd))];
 }
-
-/**
- * Текст трейлера для подстановки в промпт фазы: строка либо `''`.
- *
- * Пустая строка при выключенной настройке — шаблон обязан требовать второй
- * `-m` только при непустом значении, иначе git создаст пустой абзац.
- */
-export function commitTrailerText(cwd: string): string {
-  return resolveCommitCoauthor(cwd) ? COMMIT_TRAILER : '';
-}

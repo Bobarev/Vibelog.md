@@ -230,6 +230,8 @@ describe('VL-268 — write_file и файловые операции не granta
     assert.ok(!GRANTABLE_TOOLS.includes('write_file'));
     assert.ok(!GRANTABLE_TOOLS.includes('edit'));
     assert.ok(!GRANTABLE_TOOLS.includes('run_shell_command'));
+    // VL-311: git_commit меняет историю репозитория — в grant супервизора не входит
+    assert.ok(!GRANTABLE_TOOLS.includes('git_commit'), 'git_commit не должен быть в GRANTABLE_TOOLS');
   });
 
   it('sanitizeTools отбрасывает write_file и edit из пользовательского ввода', () => {
