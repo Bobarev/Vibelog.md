@@ -81,6 +81,11 @@ export type SetCommand =
   /** Лимит LLM-запросов фазы (ходов модели); 0 — сброс (VL-104). */
   | { key: 'max-requests'; value: number }
   /**
+   * VL-306: порог loop detection — сколько одинаковых подряд вызовов считать
+   * зацикливанием; 0 — сброс к дефолту агента (3).
+   */
+  | { key: 'loop-detection-repeat'; value: number }
+  /**
    * VL-274: idle-таймаут фазы в секундах. Семантика 0 здесь иная, чем у
    * остальных числовых (VL-274, doc-19 §8): 0 = watchdog ВЫКЛЮЧЕН, а не сброс
    * — как `HERMES_CRON_TIMEOUT=0` в hermes (ref-10).
@@ -352,7 +357,7 @@ export function parseCloseCommand(
  */
 export function parseSetCommand(text: string): SetCommand | { error: string } {
   const hint =
-    'Синтаксис: /set agent <qwen|vb> | model <id> | max-wall-time <сек> | max-requests <N> | idle-timeout <сек> | branch-mode <on|off> | compact <on|off> | code-same-session <on|off> (0/пусто — сброс у числовых, кроме idle-timeout: там 0 — выключить watchdog)';
+    'Синтаксис: /set agent <qwen|vb> | model <id> | max-wall-time <сек> | max-requests <N> | loop-detection-repeat <N> | idle-timeout <сек> | branch-mode <on|off> | compact <on|off> | code-same-session <on|off> (0/пусто — сброс у числовых, кроме idle-timeout: там 0 — выключить watchdog)';
   const trimmed = text.trim();
   if (!trimmed) return { error: hint };
   const spaceIdx = trimmed.indexOf(' ');
@@ -366,13 +371,14 @@ export function parseSetCommand(text: string): SetCommand | { error: string } {
     key !== 'model' &&
     key !== 'max-wall-time' &&
     key !== 'max-requests' &&
+    key !== 'loop-detection-repeat' &&
     key !== 'idle-timeout' &&
     key !== 'branch-mode' &&
     key !== 'compact' &&
     key !== 'code-same-session'
   ) {
     return {
-      error: `Неизвестный параметр: ${key}. Доступные: agent, model, max-wall-time, max-requests, idle-timeout, branch-mode, compact, code-same-session. ${hint}`,
+      error: `Неизвестный параметр: ${key}. Доступные: agent, model, max-wall-time, max-requests, loop-detection-repeat, idle-timeout, branch-mode, compact, code-same-session. ${hint}`,
     };
   }
   // VL-209: id модели — как ввёл пользователь (регистр не трогаем)

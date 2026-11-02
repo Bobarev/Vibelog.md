@@ -101,6 +101,12 @@ export interface CliOptions {
    * выключено (в отличие от остальных числовых лимитов 0 здесь не «сброс»).
    */
   idleTimeoutSec?: number;
+  /**
+   * --loop-detection-repeat N: сколько одинаковых подряд вызовов считать
+   * зацикливанием (VL-306; дефолт агента 3). Поле LoopLimits существовало с
+   * VL-83, но не прокидывалось — порог нельзя было изменить без правки кода.
+   */
+  loopDetectionRepeat?: number;
   /** --compact-tail N: хвост истории для LLM-запроса при компакшне (VL-122, дефолт 50). */
   compactTail?: number;
   /** --compact-at-tokens N: порог компакшна по usage-токенам (VL-122, дефолт 850000). */
@@ -146,6 +152,7 @@ const USAGE = `Использование:
   --max-wall-time <сек>    — лимит времени фазы (дефолт 900)
   --max-requests <N>       — лимит LLM-запросов фазы (ходов; без лимита)
   --idle-timeout <сек>     — idle-таймаут фазы: максимум тишины (нет токенов/tool-вызовов; дефолт 600, 0 — выключено, VL-274)
+  --loop-detection-repeat <N> — сколько одинаковых подряд вызовов считать зацикливанием (дефолт 3, VL-306)
   --compact-tail <N>       — компакшн истории: хвост LLM-запроса (дефолт 50, VL-122)
   --compact-at-tokens <N>  — компакшн истории: порог по usage-токенам (дефолт 850000, VL-122)
   --no-compact             — отключить компакшн истории (VL-122; по умолчанию включён)
@@ -224,6 +231,15 @@ export function parseArgs(argv: string[]): CliOptions {
         throw new Error(`--idle-timeout: ожидается неотрицательное целое (0 — выключено), получено: ${raw}`);
       }
       opts.idleTimeoutSec = n;
+    } else if (arg === '--loop-detection-repeat') {
+      // VL-306: порог loop detection (положительное целое; 0 недопустим —
+      // нулевой порог блокировал бы первый же вызов)
+      const raw = takeValue(arg, argv[++i]);
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new Error(`--loop-detection-repeat: ожидается положительное целое, получено: ${raw}`);
+      }
+      opts.loopDetectionRepeat = n;
     } else if (arg === '--compact-tail') {
       const raw = takeValue(arg, argv[++i]);
       const n = Number(raw);
@@ -803,6 +819,7 @@ export async function main(argv: string[]): Promise<void> {
       ...(opts.maxWallTimeSec !== undefined ? { maxWallTimeMs: opts.maxWallTimeSec * 1000 } : {}),
       ...(opts.idleTimeoutSec !== undefined ? { idleTimeoutMs: opts.idleTimeoutSec * 1000 } : {}),
       ...(opts.maxRequests !== undefined ? { maxRequests: opts.maxRequests } : {}),
+      ...(opts.loopDetectionRepeat !== undefined ? { loopDetectionRepeat: opts.loopDetectionRepeat } : {}),
       ...(opts.compactTail !== undefined ? { compactTailMessages: opts.compactTail } : {}),
       ...(opts.compactAtTokens !== undefined ? { compactAtTokens: opts.compactAtTokens } : {}),
       ...(opts.noCompact ? { compactDisabled: true } : {}),

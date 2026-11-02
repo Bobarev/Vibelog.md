@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { handleToolCall } from '../../dist/mcp/tools.js';
 import { createTaskFile, getTask, listTasks } from '../../dist/core/store.js';
+import { createLessonFile, getLesson } from '../../dist/core/lesson.js';
 
 const cwd = mkdtempSync(join(tmpdir(), 'vibelog-write-ack-'));
 const backlogDir = join(cwd, 'backlog');
@@ -217,5 +218,37 @@ describe('VL-262 — applied у остальных write-инструменто�
     const t = createTaskFile(cwd, { title: 'Зависимая' });
     const out = JSON.parse(await handleToolCall('backlog_update_dependencies', { id: t.id, add: [base.id] }, cwd));
     assert.deepEqual(out.applied.dependencies, [base.id]);
+  });
+});
+
+describe('VL-306 — noop-детекция lesson_update', () => {
+  it('AC2: повтор с теми же аргументами → ackNoop, файл и updated_date не тронуты', async () => {
+    const l = createLessonFile(cwd, { title: 'Урок noop', tags: ['a'] });
+    const first = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+    assert.equal(first.ok, true, `первый вызов — успех: ${JSON.stringify(first)}`);
+    const afterFirst = getLesson(cwd, l.id);
+    const second = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+    assert.equal(second.ok, false, `noop не успех: ${JSON.stringify(second)}`);
+    assert.equal(second.noop, true);
+    assert.equal(second.reason, 'noop');
+    assert.match(second.message, /Изменений нет/);
+    assert.match(second.message, /Следующий шаг: backlog_finish_phase/);
+    assert.equal(second.applied.verified_by, 'agent');
+    const afterSecond = getLesson(cwd, l.id);
+    assert.equal(afterSecond.lesson.updated_date, afterFirst.lesson.updated_date, 'updated_date не сдвинут');
+    assert.equal(afterSecond.path, afterFirst.path, 'файл не переименован');
+  });
+
+  it('AC2: теги в другом порядке → noop (сравнение как множества)', async () => {
+    const l = createLessonFile(cwd, { title: 'Урок теги', tags: ['a', 'b'] });
+    const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, tags: ['b', 'a'] }, cwd));
+    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
+  });
+
+  it('AC2: реальное изменение поля → обычный успех без noop', async () => {
+    const l = createLessonFile(cwd, { title: 'Урок сброс', tags: ['a'] });
+    const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, tags: ['a', 'c'] }, cwd));
+    assert.equal(ack.ok, true);
+    assert.ok(!ack.noop, 'есть реальное изменение — noop быть не должно');
   });
 });

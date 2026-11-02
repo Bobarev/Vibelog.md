@@ -1408,3 +1408,15 @@ describe('vibelog-agent CLI (VL-85)', () => {
     }
   });
 });
+
+describe('VL-306 — parseArgs --loop-detection-repeat', () => {
+  it('--loop-detection-repeat 5 → loopDetectionRepeat=5', () => {
+    assert.equal(parseArgs(['фаза', 'VL-1', '--loop-detection-repeat', '5']).loopDetectionRepeat, 5);
+  });
+  it('--loop-detection-repeat 0 → throw (нулевой порог блокировал бы первый вызов)', () => {
+    assert.throws(() => parseArgs(['фаза', 'VL-1', '--loop-detection-repeat', '0']), /положительное целое/);
+  });
+  it('--loop-detection-repeat abc → throw', () => {
+    assert.throws(() => parseArgs(['фаза', 'VL-1', '--loop-detection-repeat', 'abc']), /положительное целое/);
+  });
+});

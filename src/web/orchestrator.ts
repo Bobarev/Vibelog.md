@@ -798,6 +798,10 @@ function spawnLimitFlags(cwd: string): string[] {
     const s = loadBotSettings(cwd);
     if (s.max_wall_time !== undefined) flags.push('--max-wall-time', String(s.max_wall_time));
     if (s.max_requests !== undefined) flags.push('--max-requests', String(s.max_requests));
+    // VL-306: порог loop detection (поле LoopLimits было мёртвым — не читалось)
+    if (s.loop_detection_repeat !== undefined) {
+      flags.push('--loop-detection-repeat', String(s.loop_detection_repeat));
+    }
     // VL-274: idle-таймаут (0 — явное выключение watchdog: флаг передаём как есть)
     if (s.idle_timeout_seconds !== undefined) {
       flags.push('--idle-timeout', String(s.idle_timeout_seconds));

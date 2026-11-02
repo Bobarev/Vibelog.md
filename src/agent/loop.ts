@@ -30,6 +30,9 @@ import {
 } from './llm.js';
 import type { ToolSpec } from './tools.js';
 import { truncateToolOutput } from './tools.js';
+// VL-306: классификатор read/write — общий с веб-слоем (src/core/tool-classify.ts)
+import { isWriteOperation } from '../core/tool-classify.js';
+import { listTools } from '../mcp/tools.js';
 import {
   REPEAT_BLOCK_MAX_PER_RUN,
   REPEAT_READ_LIMIT_DEFAULT,
@@ -279,6 +282,26 @@ const MAX_WALL_TIME_MS_DEFAULT = 900_000;
  */
 const IDLE_TIMEOUT_MS_DEFAULT = 600_000;
 const LOOP_DETECTION_REPEAT_DEFAULT = 3;
+
+/**
+ * VL-306: имена write-инструментов MCP-реестра (ленивый кэш).
+ *
+ * Страховка `appliedSignatures` для не-JSON ответов применяется ТОЛЬКО к
+ * инструментам из этого набора. Причина: `isWriteOperation` — fail-safe
+ * классификатор (неизвестное имя → write), и без ограничения по реестру
+ * страховка ловила бы любые тестовые/внешние инструменты с произвольным
+ * именем, ломая обычный loop detection (проверено: заглушка `t` в
+ * src/agent/loop.test.mjs перестала падать по loop detection).
+ */
+let mcpWriteToolsCache: Set<string> | null = null;
+function isMcpWriteTool(name: string): boolean {
+  if (mcpWriteToolsCache === null) {
+    mcpWriteToolsCache = new Set(
+      listTools().filter(t => isWriteOperation(t.name)).map(t => t.name),
+    );
+  }
+  return mcpWriteToolsCache.has(name);
+}
 // VL-253: жёсткий кап заблокированных вызовов за ран. Второй блок той же
 // сигнатуры — уже фазовый отказ (модель проигнорировала директиву), но
 // разные сигнатуры могли бы копиться до лимита tool-calls, раздувая контекст
@@ -1149,12 +1172,32 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // Парсинг в try/catch: текстовые ответы внешних MCP-инструментов не
       // должны ломать цикл.
       if (!toolError) {
+        let applied = false;
         try {
-          const parsed = JSON.parse(output) as { ok?: unknown; noop?: unknown };
-          if (parsed && (parsed.ok === true || parsed.noop === true)) appliedSignatures.add(signature);
+          const parsed = JSON.parse(output) as { ok?: unknown; noop?: unknown } | null;
+          if (parsed && typeof parsed === 'object' && (parsed.ok === true || parsed.noop === true)) {
+            applied = true;
+          }
         } catch {
-          // не JSON — не write-ack, ничего не запоминаем
+          // не JSON — решает страховка ниже
         }
+        // VL-306: страховка для write-инструментов, чей ответ пришёл не-JSON
+        // (текст). Раньше appliedSignatures пополнялся ТОЛЬКО по JSON-ack, и
+        // механизм VL-304 работал ровно для одного инструмента из десяти:
+        // lesson_update отвечал «Lesson X обновлён: …», повтор не опознавался,
+        // срабатывал обычный loop detection → fail (сессия
+        // agent-1793634687751, Close VL-304: 10 дословных повторов).
+        // Ограничения страховки:
+        // - только ВСТРОЕННЫЕ инструменты (spec !== undefined): внешние MCP
+        //   (chrome-devtools и пр.) не классифицируются и не должны завершать
+        //   ран по повтору;
+        // - только write по природе операции (isWriteOperation, VL-219);
+        // - текст-ошибка («Ошибка …») не считается применённой — иначе повтор
+        //   упавшего вызова закрывал бы фазу как успешную.
+        if (!applied && spec && isMcpWriteTool(call.name) && !/^\s*Ошибка/.test(output)) {
+          applied = true;
+        }
+        if (applied) appliedSignatures.add(signature);
       }
       // VL-178: единый ingestion-cap ВСЕХ tool-выводов, включая внешние MCP
       // (chrome_devtools__take_snapshot приносил 624 КБ целиком — VL-110-cap

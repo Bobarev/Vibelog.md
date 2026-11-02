@@ -32,6 +32,13 @@ export interface BotSettings {
   /** Лимит LLM-запросов фазы, ходов модели (VL-104, /set max-requests). */
   max_requests?: number;
   /**
+   * VL-306: порог loop detection — сколько одинаковых подряд вызовов считать
+   * зацикливанием (/set loop-detection-repeat). Ключ отсутствует — агент берёт
+   * дефолт 3. Поле LoopLimits.loopDetectionRepeat существовало с VL-83, но
+   * никто его не передавал: порог нельзя было изменить без правки кода.
+   */
+  loop_detection_repeat?: number;
+  /**
    * VL-274: idle-таймаут фазы в секундах (/set idle-timeout). `0` — watchdog
    * выключен, ключ отсутствует — агент берёт дефолт 600 с. В отличие от
    * прочих числовых настроек 0 здесь НЕ сброс, а явное выключение.
@@ -150,6 +157,9 @@ export function loadBotSettings(cwd: string): BotSettings {
   // агент получит флаг только при валидной настройке
   const maxWallTime = readPositiveInt(raw.max_wall_time);
   const maxRequests = readPositiveInt(raw.max_requests);
+  // VL-306: порог loop detection — положительное целое, битое значение
+  // игнорируется (агент возьмёт дефолт 3)
+  const loopDetectionRepeat = readPositiveInt(raw.loop_detection_repeat);
   // VL-274: idle-таймаут читается терпимо, но 0 — валидное значение
   // («watchdog выключен»), поэтому нужен отдельный неотрицательный ридер.
   // Битое значение откатывается к дефолту агента (600 с) с предупреждением в
@@ -178,6 +188,7 @@ export function loadBotSettings(cwd: string): BotSettings {
     ...(defaultAgent ? { default_agent: defaultAgent } : {}),
     ...(maxWallTime !== undefined ? { max_wall_time: maxWallTime } : {}),
     ...(maxRequests !== undefined ? { max_requests: maxRequests } : {}),
+    ...(loopDetectionRepeat !== undefined ? { loop_detection_repeat: loopDetectionRepeat } : {}),
     // VL-274: 0 пишется явно (watchdog выключен) — undefined ключ не создаёт
     ...(idleTimeout !== undefined ? { idle_timeout_seconds: idleTimeout } : {}),
     ...(branchMode !== undefined ? { branch_mode: branchMode } : {}),
@@ -230,6 +241,8 @@ export function saveBotSettings(cwd: string, settings: BotSettings): void {
     default_agent: settings.default_agent,
     max_wall_time: settings.max_wall_time,
     max_requests: settings.max_requests,
+    // VL-306: порог loop detection (undefined удаляет ключ — сброс к дефолту 3)
+    loop_detection_repeat: settings.loop_detection_repeat,
     // VL-274: idle-таймаут пишется и при 0 (явное выключение watchdog)
     idle_timeout_seconds: settings.idle_timeout_seconds,
     // branch_mode пишем всегда, когда задан (в т.ч. false — /set branch-mode off
@@ -296,6 +309,15 @@ export function resolveMaxWallTime(cwd: string): number | undefined {
  */
 export function resolveMaxRequests(cwd: string): number | undefined {
   return loadBotSettings(cwd).max_requests;
+}
+
+/**
+ * Порог loop detection из settings.json (VL-306): сколько одинаковых подряд
+ * вызовов считать зацикливанием; undefined — настройка не задана (оркестратор
+ * не передаёт --loop-detection-repeat, агент берёт дефолт 3).
+ */
+export function resolveLoopDetectionRepeat(cwd: string): number | undefined {
+  return loadBotSettings(cwd).loop_detection_repeat;
 }
 
 /**
