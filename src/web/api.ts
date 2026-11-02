@@ -781,6 +781,7 @@ function validateSettingsPatch(
       case 'compact':
       case 'code_same_session':
       case 'reset_limits_on_resume':
+      case 'commit_coauthor':
         // Строго boolean: строка 'true' или мусор → 400, а не молчаливый off
         if (typeof value !== 'boolean') {
           return { error: `${key}: ожидается boolean, получено ${JSON.stringify(value)}` };

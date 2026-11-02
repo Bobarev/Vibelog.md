@@ -21,6 +21,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { parsePorcelain } from '../core/git.js';
+import { commitMessageArgs } from '../core/commit-trailer.js';
 import { isValidToolCall, type ChatMessage } from './llm.js';
 
 /**
@@ -163,7 +164,12 @@ export function commitProgressChanges(cwd: string, taskId: string, reason: strin
     });
     execFileSync(
       '/usr/bin/git',
-      ['commit', '--no-verify', '-m', `wip(${taskId}): прогресс фазы code до обрыва (${reason})`],
+      [
+        'commit',
+        '--no-verify',
+        // VL-302: трейлер Co-authored-by дописывается и в WIP-коммит
+        ...commitMessageArgs(cwd, `wip(${taskId}): прогресс фазы code до обрыва (${reason})`),
+      ],
       { cwd, encoding: 'utf8', timeout: 120_000 },
     );
     return execFileSync('/usr/bin/git', ['rev-parse', '--short', 'HEAD'], {

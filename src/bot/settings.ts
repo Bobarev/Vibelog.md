@@ -70,6 +70,13 @@ export interface BotSettings {
    */
   code_same_session?: boolean;
   /**
+   * VL-302: трейлер `Co-authored-by: vibelog-agent <vb@xw2.ru>` в сообщениях
+   * коммитов (framework-коммиты и шаги `git commit` в шаблонах фаз). Ключа
+   * нет — включено; выключение только явным `false` (битая настройка не
+   * должна молча отключать функцию).
+   */
+  commit_coauthor?: boolean;
+  /**
    * Лимиты веб-чата (VL-269): секция `chat` settings.json. Значения — в
    * секундах/штуках, как их видит пользователь; ключ отсутствует, если
    * пользователь его не задавал (тогда чат берёт дефолт из chat-limits.ts).
@@ -192,6 +199,9 @@ export function loadBotSettings(cwd: string): BotSettings {
   // Code в сессии Plan (VL-147): только строгое true; любое другое значение
   // (false, строка, мусор) → undefined → resolveCodeSameSession даст false
   const codeSameSession = raw.code_same_session === true ? true : undefined;
+  // VL-302: трейлер Co-authored-by — только строгое false выключает
+  // (нет ключа/мусор → undefined → resolveCommitCoauthor даст true)
+  const commitCoauthor = raw.commit_coauthor === false ? false : undefined;
   // Лимиты веб-чата (VL-269): секция chat, только положительные целые
   const chat = readChatSection(raw.chat);
   return {
@@ -207,6 +217,7 @@ export function loadBotSettings(cwd: string): BotSettings {
     ...(branchMode !== undefined ? { branch_mode: branchMode } : {}),
     ...(compact !== undefined ? { compact } : {}),
     ...(codeSameSession !== undefined ? { code_same_session: codeSameSession } : {}),
+    ...(commitCoauthor !== undefined ? { commit_coauthor: commitCoauthor } : {}),
     ...(chat !== undefined ? { chat } : {}),
     // Пользовательские записи перекрывают дефолты; поле всегда объект —
     // handlers не пишет ?? {} (VL-82)
@@ -268,6 +279,8 @@ export function saveBotSettings(cwd: string, settings: BotSettings): void {
     // code_same_session пишем всегда, когда задан (в т.ч. false — /set
     // code-same-session off должен оставить явный ключ в settings.json)
     code_same_session: settings.code_same_session,
+    // VL-302: трейлер Co-authored-by; undefined удаляет ключ (дефолт — включено)
+    commit_coauthor: settings.commit_coauthor,
     // VL-269: секция лимитов веб-чата; undefined удаляет ключ (сброс к дефолту)
     chat: settings.chat,
     task_type_styles: Object.keys(userStyles).length > 0 ? userStyles : undefined,

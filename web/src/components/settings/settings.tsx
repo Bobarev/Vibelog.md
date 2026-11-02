@@ -48,6 +48,8 @@ interface FormState {
   branch_mode: boolean;
   compact: boolean;
   code_same_session: boolean;
+  /** VL-302: трейлер Co-authored-by в коммитах (undefined = включён). */
+  commit_coauthor: boolean;
   /* VL-269: лимиты веб-чата — текст числовых полей (пусто/0 = сброс) */
   chat_max_iterations: string;
   chat_max_wall_time: string;
@@ -67,6 +69,8 @@ function toFormState(s: SettingsData): FormState {
     // compact: undefined = ВКЛ (VL-122) — читаем только строгое false
     compact: s.compact !== false,
     code_same_session: s.code_same_session === true,
+    // VL-302: трейлер Co-authored-by — undefined = ВКЛ, читаем строгое false
+    commit_coauthor: s.commit_coauthor !== false,
     // VL-269: числа секции chat → строки; отсутствие ключа = дефолт чата
     chat_max_iterations: s.chat?.max_iterations != null ? String(s.chat.max_iterations) : "",
     chat_max_wall_time: s.chat?.max_wall_time != null ? String(s.chat.max_wall_time) : "",
@@ -150,6 +154,8 @@ export function SettingsPage() {
         branch_mode: form.branch_mode,
         compact: form.compact,
         code_same_session: form.code_same_session,
+        // VL-302: трейлер Co-authored-by (true — дефолт, ключ не нужен)
+        commit_coauthor: form.commit_coauthor,
         // VL-269: секция chat передаётся целиком (полная замена, как в API);
         // пустое/0 → null — сервер удаляет ключ, чат берёт дефолт
         chat: {
@@ -358,6 +364,24 @@ export function SettingsPage() {
               id="code-same-session"
               checked={form.code_same_session}
               onCheckedChange={(v) => update("code_same_session", v)}
+            />
+          </div>
+
+          <Separator />
+
+          {/* VL-302: трейлер Co-authored-by в сообщениях коммитов */}
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <Label htmlFor="commit-coauthor">Co-authored-by в коммитах</Label>
+              <p className="text-muted-foreground text-xs">
+                Добавлять строку «Co-authored-by: vibelog-agent &lt;vb@xw2.ru&gt;» в
+                сообщения коммитов. По умолчанию включено.
+              </p>
+            </div>
+            <Switch
+              id="commit-coauthor"
+              checked={form.commit_coauthor}
+              onCheckedChange={(v) => update("commit_coauthor", v)}
             />
           </div>
         </CardContent>

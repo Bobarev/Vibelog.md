@@ -37,6 +37,7 @@ References: {{taskReferences}}
    git add <явные пути изменённых файлов кода>
    git commit -m "feat: {{taskId}} — <краткое описание сути>"
    Только файлы этой задачи (код, тесты, шаблоны); файлы backlog/ НЕ коммит; никогда git add -A; не push. Если изменений нет — пропусти шаг.
+   Трейлер Co-authored-by: если `{{commitTrailer}}` не пусто — передай его ВТОРЫМ `-m` (git сделает из него отдельный абзац после пустой строки): `git commit -m "feat: {{taskId}} — <суть>" -m "{{commitTrailer}}"`. Если `{{commitTrailer}}` пусто — второй `-m` НЕ передавай (иначе пустой абзац).
 
 5. Заверши фазу ОДНЫМ вызовом backlog_finish_phase — отчёт комментарием + modifiedFiles + статус + батч-отметки AC/DoD (упомяни хэш feat-коммита из шага 4):
    backlog_finish_phase {"id": "{{taskId}}", "comment": "Фаза Do выполнена. Изменено: <файлы>, коммит <хэш>. Проверки: <список выполненных>. Что осталось: ...", "modifiedFiles": ["src/foo.ts"], "acChecks": [<индексы выполненных AC из шага 3>], "dodChecks": [<индексы выполненного DoD из шага 3>], "status": "{{producesStatus}}"}

@@ -155,4 +155,45 @@ describe('VL-277 — автокоммит файла задачи после clo
   it('несуществующий ID → null (ничего не коммитится)', () => {
     assert.equal(commitTaskFile(root, 'VL-999', 'close'), null);
   });
+
+  // ── VL-302: трейлер Co-authored-by ──
+  it('новый коммит содержит трейлер Co-authored-by (VL-302)', () => {
+    addTaskTokenUsage(root, 'VL-500', 'close', { input: 1, output: 1, total: 2, requests: 1 }, 100);
+    assert.ok(commitTaskFile(root, 'VL-500', 'close'));
+    const body = git(root, 'log', '-1', '--pretty=%B');
+    assert.match(body, /^docs\(task\): VL-500 — token_usage \(close\)\n\nCo-authored-by: vibelog-agent <vb@xw2\.ru>\n?$/);
+  });
+
+  it('amend сохраняет тело коммита и дописывает трейлер (VL-302, риск R1)', () => {
+    writeFileSync(taskPath, `${readFileSync(taskPath, 'utf-8')}\nКомментарий фазы.\n`, 'utf-8');
+    git(root, 'add', '--', relPath);
+    git(root, 'commit', '-q', '-m', 'docs(task): VL-500 — закрытие задачи (Done)', '-m', 'Тело коммита.');
+    addTaskTokenUsage(root, 'VL-500', 'close', { input: 7, output: 3, total: 10, requests: 1 }, 500);
+    assert.ok(commitTaskFile(root, 'VL-500', 'close'));
+    const body = git(root, 'log', '-1', '--pretty=%B');
+    assert.match(body, /^docs\(task\): VL-500 — закрытие задачи \(Done\)/, 'тема сохранена');
+    assert.match(body, /Тело коммита\./, 'тело коммита не потеряно');
+    assert.match(body, /Co-authored-by: vibelog-agent <vb@xw2\.ru>/, 'трейлер добавлен');
+  });
+
+  it('commit_coauthor: false → коммит без трейлера (VL-302)', () => {
+    mkdirSync(join(root, '.vibelog'), { recursive: true });
+    writeFileSync(join(root, '.vibelog', 'settings.json'), '{"commit_coauthor": false}\n', 'utf-8');
+    addTaskTokenUsage(root, 'VL-500', 'close', { input: 1, output: 1, total: 2, requests: 1 }, 100);
+    assert.ok(commitTaskFile(root, 'VL-500', 'close'));
+    assert.doesNotMatch(git(root, 'log', '-1', '--pretty=%B'), /Co-authored-by/);
+  });
+
+  it('повторный amend не дублирует трейлер (VL-302, риск R2)', () => {
+    writeFileSync(taskPath, `${readFileSync(taskPath, 'utf-8')}\nКомментарий фазы.\n`, 'utf-8');
+    git(root, 'add', '--', relPath);
+    git(root, 'commit', '-q', '-m', 'docs(task): VL-500 — закрытие задачи (Done)');
+    addTaskTokenUsage(root, 'VL-500', 'close', { input: 7, output: 3, total: 10, requests: 1 }, 500);
+    assert.ok(commitTaskFile(root, 'VL-500', 'close'));
+    // Вторая правка файла задачи → снова amend того же docs(task)-коммита
+    addTaskTokenUsage(root, 'VL-500', 'close', { input: 1, output: 1, total: 2, requests: 1 }, 200);
+    assert.ok(commitTaskFile(root, 'VL-500', 'close'));
+    const body = git(root, 'log', '-1', '--pretty=%B');
+    assert.equal(body.split('Co-authored-by:').length - 1, 1, 'трейлер ровно один раз');
+  });
 });

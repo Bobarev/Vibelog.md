@@ -408,3 +408,31 @@ describe('loop_detection_repeat (VL-306)', () => {
     }
   });
 });
+
+describe('commit_coauthor (VL-302)', () => {
+  it('roundtrip: false пишется явным ключом, undefined удаляет ключ', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-bot-coauthor-'));
+    try {
+      saveBotSettings(dir, { chats: [111], commit_coauthor: false });
+      assert.equal(loadBotSettings(dir).commit_coauthor, false);
+      assert.ok(readFileSync(botSettingsPath(dir), 'utf-8').includes('"commit_coauthor": false'));
+      // undefined → ключ удаляется (дефолт «включено»)
+      saveBotSettings(dir, { chats: [111] });
+      assert.equal(loadBotSettings(dir).commit_coauthor, undefined);
+      assert.ok(!readFileSync(botSettingsPath(dir), 'utf-8').includes('commit_coauthor'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('мусор в файле → undefined (дефолт «включено»)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-bot-coauthor-bad-'));
+    try {
+      mkdirSync(join(dir, '.vibelog'), { recursive: true });
+      writeFileSync(botSettingsPath(dir), JSON.stringify({ chats: [], commit_coauthor: 'no' }), 'utf-8');
+      assert.equal(loadBotSettings(dir).commit_coauthor, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

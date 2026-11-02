@@ -617,6 +617,24 @@ describe('parseSetCommand (VL-94)', () => {
     }
   });
 
+  // ── VL-302: /set commit-coauthor on|off ──
+
+  it('VL-302: commit-coauthor on|off|true|false → boolean', () => {
+    assert.deepEqual(parseSetCommand('commit-coauthor on'), { key: 'commit-coauthor', value: true });
+    assert.deepEqual(parseSetCommand('commit-coauthor off'), { key: 'commit-coauthor', value: false });
+    assert.deepEqual(parseSetCommand('commit-coauthor true'), { key: 'commit-coauthor', value: true });
+    assert.deepEqual(parseSetCommand('commit-coauthor false'), { key: 'commit-coauthor', value: false });
+    assert.deepEqual(parseSetCommand('COMMIT-COAUTHOR OFF'), { key: 'commit-coauthor', value: false });
+  });
+
+  it('VL-302: commit-coauthor — мусор и пустое значение → error с подсказкой', () => {
+    for (const bad of ['commit-coauthor', 'commit-coauthor maybe', 'commit-coauthor 1']) {
+      const r = parseSetCommand(bad);
+      assert.ok('error' in r, '"' + bad + '" → error');
+      assert.match(r.error, /commit-coauthor: ожидается on\|off/);
+    }
+  });
+
   // ── VL-308: /set reset-limits-on-resume on|off ──
 
   it('VL-308: reset-limits-on-resume on|off|true|false → boolean', () => {
