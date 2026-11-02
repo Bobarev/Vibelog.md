@@ -1,7 +1,7 @@
 ---
 id: exp-1
 title: 'Фаза plan: deepseek-v4.1-flash vs mimo-v2.6-flash'
-status: draft
+status: running
 schema_version: 1
 dataset: plan-vl111
 runner: manual
@@ -13,11 +13,11 @@ metrics:
 variants:
   A:
     prompt: 'builtin:plan'
-    label: 'deepseek-v4.1-flash'
+    label: deepseek-v4.1-flash
     model: 'routerai/deepseek/deepseek-v4.1-flash@morph'
   B:
     prompt: 'builtin:plan'
-    label: 'mimo-v2.6-flash'
+    label: mimo-v2.6-flash
     model: 'routerai/xiaomi/mimo-v2.6-flash@makora'
 created_date: 2026-11-02
 updated_date: 2026-11-02

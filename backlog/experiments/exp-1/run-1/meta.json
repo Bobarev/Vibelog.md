@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "exp_id": "exp-1",
+  "run": 1,
+  "status": "running",
+  "runner": "manual",
+  "started_at": "2026-11-02T07:08:29.332Z",
+  "finished_at": null,
+  "pid": null,
+  "resolution": {
+    "dataset": {
+      "chosen": "shared",
+      "path": "experiments/datasets/plan-vl111.jsonl"
+    },
+    "prompts": {
+      "A": {
+        "chosen": "builtin",
+        "path": "templates/phases/phase-plan.md"
+      },
+      "B": {
+        "chosen": "builtin",
+        "path": "templates/phases/phase-plan.md"
+      }
+    }
+  },
+  "results_ignored": false,
+  "n": 0,
+  "dropped": 0,
+  "cost_total": null,
+  "pricing_missing": true,
+  "rerun_of": null,
+  "reason": null
+}
