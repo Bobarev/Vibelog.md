@@ -355,6 +355,8 @@ vibelog experiment <subcommand> [опции]
   dataset list [--exp <exp-id>]
   dataset view <name> [--exp <exp-id>] [--dataset-path <p>]
   dataset <exp-id> [--dataset-path <p>]
+  run <exp-id> [--dry-run] [--variant A,B] [--recover [--reason <text>]]
+  record <exp-id> --variant A --task <id> [--score n] [--run N] [--from-json <f>]
 ```
 
 A/B-эксперименты (спецификация — doc-21). Карточка эксперимента — `backlog/experiments/exp-<id>.md`; общие датасеты — `backlog/experiments/datasets/<name>.jsonl`, частные — `backlog/experiments/<exp-id>/datasets/<name>.jsonl`.
@@ -384,6 +386,48 @@ A/B-эксперименты (спецификация — doc-21). Карточ
 Показывает резолв датасета для эксперимента по порядку «частный → общий» (doc-21 §6): `backlog/experiments/<exp-id>/datasets/<name>.jsonl` → `backlog/experiments/datasets/<name>.jsonl`. Имя берётся из `<exp-id> <name>` или из поля `dataset` карточки эксперимента. При коллизии (оба файла есть) в stderr печатается warning, а в stdout — строка `resolution: {"chosen": "private"|"shared", "path": …, "shadowed": …}` для записи в `meta.json` рана. `--dataset-path <p>` перебивает резолв полностью (`chosen: "explicit"`), предупреждая, если общий файл остался в тени.
 
 **Схема строки JSONL** (doc-21 §5): `task_id` (обязателен, уникален), `expected_ac?`, `input?`, `payload?`, `custom?`, `meta?`. Синоним `expected` читается как `expected_ac` с warning'ом; одновременные `input` и `payload` — warning, выигрывает `payload`. Битые JSON-строки и дубликаты `task_id` попадают в `errors`, команда не падает.
+
+### run
+
+```
+vibelog experiment run <exp-id> [--dry-run] [--variant A,B]
+  [--variant-a-prompt-path <p>] [--variant-b-prompt-path <p>]
+  [--recover [--reason <text>]]
+```
+
+Manual runner (doc-21 §4/§7/§10). Без `--dry-run` создаёт очередной каталог `backlog/experiments/<exp-id>/run-<N>/` с `meta.json` (`status: running`, `pid`, `started_at`, `resolution` датасета и промптов) и печатает инструкцию + список задач датасета. Manual-прогон **сам не завершается**: статус закрывает `experiment report` (VL-297). Номер прогона — `max+1` по существующим каталогам (дырка не переиспользуется), создание каталога атомарное (`mkdir` без `recursive`, при `EEXIST` — следующий номер).
+
+| Флаг | Описание |
+|---|---|
+| `--dry-run` | Напечатать матрицу «строки датасета × варианты» и резолвнутые промпты (пометка `частный`/`общий`/`builtin`/`по пути`), ран не создавать |
+| `--variant A,B` | Ограничить набор вариантов (по умолчанию — все из карточки) |
+| `--variant-<k>-prompt-path <p>` | Escape hatch: подставить файл промпта для варианта `<k>`, минуя резолв |
+| `--recover` | Перевести зависший ран в `failed`: сохраняет частичные `results.jsonl`, дописывает `finished_at` и `reason` (по умолчанию «зависший ран») |
+
+**Резолв промпта варианта** (doc-21 §6): значение `variant.prompt` — либо имя файла, ищущееся по правилу «частный → общий» (`backlog/experiments/<exp-id>/prompts/<name>.md` → `backlog/experiments/prompts/<name>.md`) с warning при затенении, либо `builtin:<phase>` — файловая система **не ищется**: отдаётся текст шаблона фазы (приоритет `.vibelog/prompts/phases/phase-<phase>.md`, затем `templates/phases/phase-<phase>.md`), неизвестная фаза — ошибка со списком доступных.
+
+**Правило «stale running»**: если у рана `status: running`, пуст `finished_at` и `pid` не жив (`process.kill(pid, 0)` → ESRCH), команды печатают предупреждение с подсказкой `experiment run <exp-id> --recover`. Manual-ран с `pid: null` зависшим не считается — его закрывает `report`. Статус карточки эксперимента — производная от последнего рана (`draft → running → completed|failed`).
+
+### record
+
+```
+vibelog experiment record <exp-id> --variant A --task <id>
+  [--score <n>] [--output <text>] [--error <text>] [--error-kind <k>]
+  [--tool-calls N] [--duration <ms>] [--cost <n>] [--custom '<json>']
+  [--run N] [--from-json <file>]
+```
+
+Пишет строку результата в `run-<N>/results.jsonl` **upsert-ом по ключу `(task_id, variant)`** — повторная запись той же пары перезаписывает строку на её позиции, а не добавляет дубликат. Запись атомарна (temp-файл в том же каталоге + `rename`), поэтому прерывание не оставляет половину строки.
+
+| Флаг | Описание |
+|---|---|
+| `--variant` | Ключ варианта из карточки (`A`, `B`, …) |
+| `--task` | `task_id` из датасета |
+| `--score / --output / --error / --error-kind` | Оценка, сырой вывод, текст ошибки, вид ошибки (`timeout`, `api`, `runner`, `judge`, `interrupted`) |
+| `--tool-calls / --duration / --cost` | Доп. метрики строки |
+| `--custom '<json>'` | Произвольные метрики (объект JSON) |
+| `--run N` | Целевой прогон; без флага — последний. Если ранов больше одного и `--run` не задан, в stderr печатается предупреждение |
+| `--from-json <file>` | Массив results-строк: upsert пачкой за один вызов |
 
 ---
 
