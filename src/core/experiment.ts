@@ -475,6 +475,25 @@ export interface RunMeta {
    * `null` — прогон ещё не закрыт.
    */
   summary?: RunSummary | null;
+  /**
+   * Usage судейских вызовов (VL-298, doc-21 §11) — ОТДЕЛЬНО от usage вариантов.
+   *
+   * Пишет `experiment judge`. Примешивать к `cost` строк нельзя: вариант стал бы
+   * «дороже» из-за оценки, а не из-за работы (сравнение по цене врало бы).
+   */
+  judge_usage?: {
+    input?: number;
+    output?: number;
+    cache?: number;
+    total?: number;
+    requests?: number;
+  };
+  /** Стоимость судейских вызовов; `null` — тарифа модели судьи нет (не 0). */
+  cost_judge?: number | null;
+  /** У модели судьи отсутствовал pricing (`cost_judge: null` — «неизвестно»). */
+  judge_pricing_missing?: boolean;
+  /** id модели судьи из models.available (для воспроизводимости оценки). */
+  judge_model?: string;
 }
 
 /** Сводка закрытого прогона (пишет `report`, VL-297). */

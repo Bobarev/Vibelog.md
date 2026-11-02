@@ -6,7 +6,9 @@
  * `experiment dataset <exp-id>` (показ резолва «частный → общий»).
  * MVP-шаг 3 (VL-296): прогоны — `run` (manual, `--dry-run`, `--recover`)
  * и `record` (upsert по (task_id, variant), `--run`, `--from-json`).
- * Логика отчёта и judge появится в VL-297/VL-298.
+ * MVP-шаг 4 (VL-297): отчёт — `report` (метрики, `--compare`, `--json`).
+ * MVP-шаг 5 (VL-298): LLM-judge — `judge` (upsert `score` в существующие
+ * строки, `judge_usage`/`cost_judge` в meta отдельно от cost варианта).
  *
  * Подкоманды:
  * - create <title> [--dataset D] [--runner manual] [--status draft]
@@ -22,6 +24,7 @@
  *                  [--error-kind k] [--tool-calls N] [--duration ms] [--cost n]
  *                  [--custom '<json>'] [--run N] [--from-json <file>]
  * - report <exp-id> [--run N] [--compare run-M] [--json]
+ * - judge <exp-id> [--run N]
  *
  * Файлы: backlog/experiments/exp-<id>.md (YAML-фронтматтер + описание),
  *        backlog/experiments/datasets/<name>.jsonl (общие датасеты),
@@ -43,6 +46,7 @@ import {
 import type { ParsedDataset, DatasetRow } from '../../core/dataset.js';
 import { experimentRun, experimentRecord } from './experiment-run.js';
 import { experimentReport } from './experiment-report.js';
+import { experimentJudge } from './experiment-judge.js';
 import { join, relative } from 'node:path';
 
 /**
@@ -117,13 +121,16 @@ export async function runExperiment(
       return experimentRecord(positional, flags, backlogDir);
     case 'report':
       return experimentReport(positional, flags, backlogDir);
+    case 'judge':
+      // VL-298: judge — асинхронный (LLM-вызовы), остальные подкоманды синхронные
+      return experimentJudge(positional, flags, backlogDir, cwd);
     default:
       // `experiment dataset <exp-id>`: router отдаёт exp-id в subcommand (VL-295)
       if (/^exp-/i.test(subcommand)) {
         return experimentDatasetResolve([subcommand, ...positional], flags, backlogDir);
       }
       printError(`Неизвестная подкоманда: ${subcommand}`);
-      printInfo('Доступные: create, list, dataset, run, record, report');
+      printInfo('Доступные: create, list, dataset, run, record, report, judge');
   }
 }
 
