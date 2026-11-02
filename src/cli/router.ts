@@ -141,7 +141,7 @@ function showHelp(): void {
 ${colorize('Vibelog.md', colors.bold)} — markdown-нативный таск-менеджер
 
 ${colorize('Команды:', colors.bold)}
-  ${colorize('init', colors.cyan)} [name] [--prefix LB]          Инициализировать backlog
+  ${colorize('init', colors.cyan)} [name] [--yes] [--mode fresh|upgrade]  Wizard настройки проекта
   ${colorize('task', colors.cyan)} create|list|view|edit|...     Управление задачами
   ${colorize('board', colors.cyan)} [--export]                   Канбан-доска
   ${colorize('browser', colors.cyan)} [--port N] [--host ADDR]   Веб-интерфейс
@@ -187,13 +187,38 @@ ${colorize('Подробнее:', colors.dim)} vibelog <command> --help`);
 function showCommandHelp(command: string): void {
   const helpTexts: Record<string, string> = {
     init: `
-vibelog init [name] [--prefix LB] [--no-mcp] [--force]
+vibelog init [name] [--prefix LB] [--mode fresh|upgrade] [--yes] [--web]
 
-Инициализирует backlog-директорию и конфиг.
-  name        — имя проекта (по умолчанию "My Project")
-  --prefix    — префикс ID задач (по умолчанию "LB")
-  --no-mcp    — не настраивать MCP-сервер (.qwen/settings.json)
-  --force     — перезаписать существующие настройки`,
+Интерактивный wizard настройки проекта (VL-210). Без TTY и без --yes
+работает как прежний init: создаёт backlog/ и настраивает MCP.
+
+Режимы:
+  --mode fresh|upgrade  — явный режим (по умолчанию автоопределение по backlog/)
+  --yes                 — все дефолты без вопросов (агенты — по папкам .qwen/.opencode)
+  --web                 — открыть браузер на веб-мастере #/setup
+
+Проект:
+  name                  — имя проекта (по умолчанию из config.yml или директория)
+  --project-name <name> — имя проекта флагом
+  --prefix <P>          — префикс ID задач (по умолчанию из config.yml или VL)
+
+Агенты:
+  --agents vb,qwen,opencode  — список через запятую; пустая строка — без агента
+  --default-agent <id>       — агент по умолчанию (если выбрано больше одного)
+  --no-mcp                   — не настраивать MCP-сервер (.qwen/.opencode settings.json)
+
+Секреты и бот:
+  --secrets-location env|settings|both  — где хранить ключи (по умолчанию env)
+  --bot, --bot-token <t>, --bot-chats <ids>  — настройка Telegram-бота
+
+LLM (только если выбран vb):
+  --provider <id> --base-url <url> --api-key-env <VAR>
+  --model <id> --api-mode chat|responses
+
+Проверки и запись:
+  --skip-llm-check, --skip-bot-check  — не проверять LLM/бота
+  --force                             — перезаписать существующие настройки
+  --no-wizard                         — не запускать интерактив даже в TTY`,
 
     'qwen-debug': `
 vibelog qwen-debug

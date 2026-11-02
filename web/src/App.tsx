@@ -22,6 +22,7 @@ import { usePreferences } from "@/components/preferences"
 import { ReferencesPage } from "@/components/references/references-page"
 import { ReferenceDetail } from "@/components/references/reference-detail"
 import { SettingsPage } from "@/components/settings/settings"
+import { SetupPage } from "@/components/setup/setup-page"
 import { TasksPage } from "@/components/tasks/tasks-page"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { useHashRoute, useReferenceId, useDocumentId, useLessonId } from "@/lib/use-hash-route"
@@ -85,6 +86,8 @@ export function App() {
             <SettingsPage />
           ) : route === "config" ? (
             <ConfigPage />
+          ) : route === "setup" ? (
+            <SetupPage />
           ) : route === "references" ? (
             <ReferencesPage />
           ) : route === "reference" ? (

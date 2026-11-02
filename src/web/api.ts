@@ -33,6 +33,9 @@
  * - GET  /api/lessons        — список lessons без тел (VL-182)
  * - GET  /api/lessons/:id    — детали lesson (метаданные + body + path)
  * - PATCH /api/lessons/:id   — обновление title/tags/status/content (VL-182)
+ * - GET  /api/setup          — состояние wizard-а настройки проекта (VL-210)
+ * - POST /api/setup          — применить ответы wizard-а (VL-210)
+ *   (async-эндпоинты /api/setup/ping и /api/setup/check-bot — в server.ts)
  */
 
 import { listTasks, getTask, createTaskFile, updateTaskFile, archiveTaskFile } from '../core/store.js';
@@ -83,6 +86,7 @@ import { CHAT_SECTION_KEYS, loadBotSettings, saveBotSettings } from '../bot/sett
 import type { BotSettings } from '../bot/settings.js';
 import { CHAT_LIMITS_CEILING } from './chat-limits.js';
 import { startTaskPhase, getRun, rejectTask } from './orchestrator.js';
+import { handleSetupApi } from './setup-api.js';
 
 /** HTTP-ответ API. */
 export interface ApiResponse {
@@ -108,6 +112,12 @@ export function handleApi(
   queryString: string = ''
 ): ApiResponse {
   try {
+    // Wizard настройки проекта (VL-210): GET/POST /api/setup. Async-эндпоинты
+    // (/api/setup/ping, /api/setup/check-bot) живут в server.ts — handleApi
+    // синхронный. null — URL не наш, продолжаем обычную маршрутизацию.
+    const setupResponse = handleSetupApi(method, url, body, cwd);
+    if (setupResponse !== null) return setupResponse;
+
     // GET /api/tasks — с availablePhases по workflow (VL-188): веб-клиент
     // рендерит кнопки фаз и валидирует drop на канбане без импорта fs-модуля
     if (method === 'GET' && url === '/api/tasks') {
