@@ -71,7 +71,9 @@ describe('VL-283: выбор роли только для нового тред�
   it('роль треда приходит из GET /api/chat/threads/:id, а не из module-state', () => {
     assert.match(thread, /persona\?: string \| null/, 'поле в ThreadHistoryResponse');
     assert.match(thread, /persona: data\.persona \?\? null/);
-    assert.match(thread, /<ChatThread threadPersona=\{load\.persona \?\? null\} \/>/);
+    // VL-313 добавил второй пропс (threadId — resetKey панели расхода),
+    // поэтому проверяем наличие пропса, а не дословный тег
+    assert.match(thread, /<ChatThread threadPersona=\{load\.persona \?\? null\}/);
   });
 });
 

@@ -712,6 +712,8 @@ export function ChatPage() {
       messages: [],
       runtimeThreadId: prev.runtimeThreadId,
       persona: null,
+      // VL-313: пока грузится история, панель не показывает расход прежнего треда
+      usage: null,
     }))
     void (async () => {
       try {
