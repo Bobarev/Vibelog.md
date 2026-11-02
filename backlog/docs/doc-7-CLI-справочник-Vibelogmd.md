@@ -430,6 +430,20 @@ vibelog experiment record <exp-id> --variant A --task <id>
 | `--run N` | Целевой прогон; без флага — последний. Если ранов больше одного и `--run` не задан, в stderr печатается предупреждение |
 | `--from-json <file>` | Массив results-строк: upsert пачкой за один вызов |
 
+### judge
+
+```
+vibelog experiment judge <exp-id> [--run N]
+```
+
+LLM-judge (doc-21 §4/§11): оценивает **существующие** строки `results.jsonl` по тексту вывода, используя `expected_ac` из датасета рана и `input`/`output` строки. Новых строк не добавляет — `score` upsert-ится по ключу `(task_id, variant)`; строки без `output` не оцениваются (путь `score: null` работает и без судьи).
+
+Конфигурация — секция `judge` карточки эксперимента (парсер VL-294): `enabled`, `model?`, `prompt?`, `scale: 'numeric' | 'pass_fail'`, `score_min`, `score_max`. Валидация: числа конечны, `score_min < score_max`, для `pass_fail` шкала фиксирована 0..1; `enabled: false` — неблокирующее предупреждение. Модель — `judge.model` через `resolveModelById` → `models.default`; неизвестный явный id — ошибка (тихий откат на default исказил бы сравнение прогонов).
+
+Парс ответа устойчив к форматам: «7/10» при шкале 1..10 → 7, «0.7» и «0,7» при 0..1 → 0.7, «85%» → 0.85; `pass_fail` понимает PASS/FAIL/passed/failed/да/нет/соответствует/не соответствует и пишет **числом** 1/0; значение вне шкалы → `null` (без обрезки). Ошибка клиента или неразборчивый ответ не роняют прогон: строка остаётся, ставится `error_kind: judge`.
+
+**Стоимость судьи — отдельно от варианта** (doc-21 §11): в `meta.json` пишутся `judge_usage`, `cost_judge`, `judge_model`, `judge_pricing_missing`; поле `cost` результатов и агрегаты `report` не меняются. При отсутствии тарифа `cost_judge: null` (не 0).
+
 ### report
 
 ```
