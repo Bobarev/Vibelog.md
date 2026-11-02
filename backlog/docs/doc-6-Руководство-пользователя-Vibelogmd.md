@@ -45,10 +45,25 @@ pnpm link --global   # команда vibelog в PATH
 Инициализация backlog-а в корне git-репозитория:
 
 ```bash
-vibelog init "Мой проект"            # префикс задач по умолчанию LB
+vibelog init "Мой проект"            # интерактивный wizard (в TTY)
 vibelog init "API" --prefix api      # свой префикс: api-1, api-2, ...
+vibelog init --yes                   # без вопросов, все дефолты
+vibelog init --web                   # веб-мастер настройки #/setup
 vibelog init "X" --no-mcp            # без автонастройки MCP-сервера
 ```
+
+### Мастер настройки (VL-210)
+
+В терминале `vibelog init` запускает интерактивный wizard: имя проекта и prefix → агенты (vb / qwen / opencode — галочками, ни одна не обязательна) → где хранить API-ключи (`.env`, секция `env` в `.vibelog/settings.json` или оба) → Telegram-бот → LLM-провайдер и модель (только если выбран `vb`) → MCP → проверки (ping LLM, `which qwen`/`opencode`, `getMe` бота). Каждый вопрос с дефолтом: Enter — оставить.
+
+Два режима, режим определяется автоматически по наличию `backlog/` (или флагом `--mode fresh|upgrade`):
+
+- **fresh** — проект новый: создаётся `backlog/`, `config.yml`, `AGENTS.md`, `.vibelog/settings.json`, `.env` (если выбрано).
+- **upgrade** — `backlog/` уже есть (проект на Backlog.md или Vibelog.md): текущие настройки показываются как дефолты, дописывается только недостающее. Задачи, документы, lessons, references, decisions, milestones и `completed/` не изменяются.
+
+Без TTY (скрипты, CI) wizard не запускается — работает прежний неинтерактивный init; полный набор флагов (`--yes`, `--agents`, `--secrets-location`, `--provider`, `--model`, `--bot-token` и др.) — в [CLI-справочнике](cli-reference.md#init).
+
+Веб-мастер: `vibelog init --web` открывает браузер на `#/setup`; та же страница доступна позже из бокового меню («Мастер настройки») и работает в upgrade-режиме.
 
 Что создаёт `init`:
 
@@ -57,7 +72,7 @@ vibelog init "X" --no-mcp            # без автонастройки MCP-с�
 - `.qwen/settings.json` — секция `mcpServers.vibelog` (автонастройка MCP для Qwen Code; отключение `--no-mcp`)
 - `.vibelog/settings.json` — единый файл настроек (VL-143): кэш `git_user_name` (VL-44), настройки бота и секция `env` с секретами. Имя автора комментариев берётся из кэша, без спавна `git config` на каждый комментарий. При `--force` кэш перечитывается из git config. Файл в `.gitignore` — машинная настройка (секция `env` содержит секреты), не коммитится. Если кэша нет или он пуст — используется текущий каскад `git config user.name` → `@agent`
 
-Повторный `init` на инициализированном проекте отклоняется; перезапись — `--force`.
+Повторный `init` на инициализированном проекте в TTY запускает wizard в режиме upgrade (не ошибка); без TTY — прежнее сообщение об отказе с подсказкой `vibelog init --mode upgrade`. Перезапись существующих настроек — `--force`.
 
 CLI при запуске проверяет npm registry на новую версию (не чаще раза в сутки) и при наличии обновления печатает в stderr уведомление `npm install -g vibelog.md` — без автоустановки. Отключение: `VIBELOG_SKIP_UPDATE_CHECK=true`. Для `vb bot` и `vb browser` проверка выполняется при запуске (до старта сервиса), уведомление печатается в stderr сразу после старта. Подробнее: [CLI — Автообновление](cli-reference.md#автообновление).
 

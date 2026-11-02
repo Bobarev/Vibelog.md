@@ -19,20 +19,51 @@ tags:
 ## init
 
 ```
-vibelog init [name] [--prefix LB] [--skills[=qwen]] [--no-skills] [--no-mcp] [--force]
+vibelog init [name] [--prefix LB] [--mode fresh|upgrade] [--yes] [--web]
+  [--project-name N] [--agents vb,qwen,opencode] [--default-agent ID]
+  [--secrets-location env|settings|both] [--bot] [--bot-token T] [--bot-chats IDS]
+  [--provider ID] [--base-url URL] [--api-key-env VAR] [--model ID] [--api-mode chat|responses]
+  [--no-mcp] [--skip-llm-check] [--skip-bot-check] [--force] [--no-wizard]
 ```
 
-Инициализирует backlog-директорию и конфиг.
+Инициализирует backlog-директорию и конфиг. В TTY запускает интерактивный wizard настройки проекта (VL-210): имя/prefix → агенты → где хранить секреты → Telegram-бот → LLM (если выбран `vb`) → MCP → проверки. Без TTY (или с `--yes`/`--no-wizard`) работает как прежний init: создаёт `backlog/` и настраивает MCP.
+
+Два режима (автоопределение по наличию `backlog/`, переопределение — `--mode`):
+
+- **fresh** — `backlog/` нет: создаёт `backlog/` (tasks, completed, drafts, docs, decisions, milestones, lessons, references), `config.yml`, `AGENTS.md` (если файла нет), `.vibelog/settings.json`, `.env` (если выбрано).
+- **upgrade** — `backlog/` уже есть: читает текущие `config.yml` и `.vibelog/settings.json`, показывает их как дефолты (Enter — оставить) и **дополняет недостающее** (providers, models, workflows, mcpServers, env). Существующие задачи, docs, lessons, references, decisions, milestones, completed/ не трогаются; в `config.yml` меняются только `project_name`/`task_prefix` и только при явном изменении. Битый `config.yml` → ошибка с подсказкой `--force`.
 
 | Флаг | Описание |
 |---|---|
-| `name` | Имя проекта (по умолчанию "My Project") |
-| `--prefix` | Префикс ID задач (по умолчанию "LB") |
-| `--skills` | Создать команды /vibelog:* для Qwen Code (.qwen/commands/) |
-| `--skills=qwen` | Явно указать агента (claude пока не поддерживается) |
-| `--no-skills` | Не создавать команды |
-| `--no-mcp` | Не настраивать MCP-сервер (.qwen/settings.json) |
-| `--force` | Перезаписать существующие команды |
+| `name` | Имя проекта (по умолчанию из config.yml или имя каталога) |
+| `--project-name` | Имя проекта флагом (то же, что позиционный `name`) |
+| `--prefix` | Префикс ID задач (по умолчанию из config.yml или `VL`) |
+| `--mode fresh\|upgrade` | Явный режим (по умолчанию автоопределение по `backlog/`) |
+| `--yes` | Все дефолты без вопросов: агенты — по папкам `.qwen/`/`.opencode/` (vb не добавляется), без бота, секреты в `.env`, MCP при qwen/opencode |
+| `--web` | Открыть браузер на веб-мастере `#/setup` |
+| `--agents vb,qwen,opencode` | Список агентов через запятую; пустая строка — без агента (только таск-менеджер) |
+| `--default-agent` | Агент по умолчанию (спрашивается, только если выбрано больше одного) |
+| `--secrets-location env\|settings\|both` | Где хранить ключи: `.env` (по умолчанию), секция `env` в `.vibelog/settings.json`, оба |
+| `--bot`, `--bot-token`, `--bot-chats` | Настройка Telegram-бота (токен и чаты) |
+| `--provider`, `--base-url`, `--api-key-env` | LLM-провайдер (только если выбран `vb`) |
+| `--model`, `--api-mode chat\|responses` | Модель и режим API |
+| `--no-mcp` | Не настраивать MCP-сервер (`.qwen/settings.json`, `.opencode/settings.json`) |
+| `--skip-llm-check`, `--skip-bot-check` | Не проверять LLM (ping) / бота (getMe) |
+| `--force` | Перезаписать существующие настройки |
+| `--no-wizard` | Не запускать интерактив даже в TTY |
+
+Проверки после записи: ping LLM (модель, задержка, usage), `which qwen` + версия (требуется 0.24+), `which opencode`, Telegram `getMe`. Ошибки печатаются понятным текстом без стектрейса.
+
+Примеры:
+
+```bash
+vibelog init --yes                          # неинтерактивно, дефолты
+vibelog init "API" --prefix api --agents qwen --no-mcp
+vibelog init --mode upgrade --yes           # дополнить существующий проект
+vibelog init --web                          # веб-мастер #/setup
+```
+
+Веб-мастер `#/setup` доступен и после инициализации — пункт «Мастер настройки» в боковом меню; он работает в том же upgrade-режиме и не перезаписывает существующие данные.
 
 ---
 
