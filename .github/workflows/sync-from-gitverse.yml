@@ -1,0 +1,22 @@
+name: Sync from GitVerse
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # каждые 6 часов (можно чаще)
+  workflow_dispatch:          # плюс кнопка ручного запуска
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pull from GitVerse and push
+        run: |
+          git remote add gitverse https://gitverse.ru/bobarev/Vibelog.md.git
+          git fetch gitverse
+          git merge --ff-only gitverse/main || echo "No changes or diverged"
+          git push origin HEAD
