@@ -19,6 +19,9 @@ import { join } from 'node:path';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { handleToolCall } from '../../dist/mcp/tools.js';
 import { createTaskFile, getTask, listTasks } from '../../dist/core/store.js';
+import { statSync } from 'node:fs';
+import { writeDocument, getDocument } from '../../dist/core/document.js';
+import { writeReference } from '../../dist/core/reference.js';
 import { createLessonFile, getLesson } from '../../dist/core/lesson.js';
 
 const cwd = mkdtempSync(join(tmpdir(), 'vibelog-write-ack-'));
@@ -250,5 +253,73 @@ describe('VL-306 — noop-детекция lesson_update', () => {
     const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, tags: ['a', 'c'] }, cwd));
     assert.equal(ack.ok, true);
     assert.ok(!ack.noop, 'есть реальное изменение — noop быть не должно');
+  });
+});
+
+describe('VL-310 — noop-детекция общая для write-инструментов', () => {
+  it('AC1: document_update {id, type} дважды → noop, файл не перезаписан', async () => {
+    const doc = writeDocument(backlogDir, { title: 'Док noop', type: 'guide', content: 'тело' });
+    const before = statSync(getDocument(backlogDir, doc.id).path).mtimeMs;
+    const first = JSON.parse(await handleToolCall('document_update', { id: doc.id, type: 'guide' }, cwd));
+    assert.equal(first.ok, false, `type уже guide — noop ожидался: ${JSON.stringify(first)}`);
+    assert.equal(first.noop, true);
+    assert.equal(first.reason, 'noop');
+    assert.match(first.message, /Изменений нет/);
+    assert.match(first.message, /Следующий шаг/);
+    assert.equal(first.applied.type, 'guide');
+    const after = statSync(getDocument(backlogDir, doc.id).path).mtimeMs;
+    assert.equal(after, before, 'файл не перезаписан');
+    const second = JSON.parse(await handleToolCall('document_update', { id: doc.id, type: 'guide' }, cwd));
+    assert.equal(second.noop, true, 'повтор тоже noop');
+  });
+
+  it('AC1: document_update с реальным изменением → обычный успех', async () => {
+    const doc = writeDocument(backlogDir, { title: 'Док смена', type: 'guide' });
+    const ack = JSON.parse(await handleToolCall('document_update', { id: doc.id, type: 'specification' }, cwd));
+    assert.equal(ack.ok, true);
+    assert.ok(!ack.noop);
+    assert.equal(ack.applied.type, 'specification');
+  });
+
+  it('AC1: document_update с тем же телом → noop (сравнение тела)', async () => {
+    const doc = writeDocument(backlogDir, { title: 'Док тело', content: '# Тело\nтекст' });
+    const ack = JSON.parse(await handleToolCall('document_update', { id: doc.id, content: '# Тело\nтекст' }, cwd));
+    assert.equal(ack.noop, true, `тело не изменилось: ${JSON.stringify(ack)}`);
+  });
+
+  it('AC3: reference_update с теми же тегами (другой порядок) → noop', async () => {
+    const ref = writeReference(cwd, { title: 'Ref noop', type: 'url', url: 'https://example.com', tags: ['a', 'b'] });
+    const ack = JSON.parse(await handleToolCall('reference_update', { id: ref.id, tags: ['b', 'a'] }, cwd));
+    assert.equal(ack.noop, true, `порядок тегов не изменение: ${JSON.stringify(ack)}`);
+    const real = JSON.parse(await handleToolCall('reference_update', { id: ref.id, tags: ['a', 'c'] }, cwd));
+    assert.equal(real.ok, true);
+    assert.ok(!real.noop);
+  });
+
+  it('AC3: backlog_update_status с тем же статусом → noop', async () => {
+    const t = createTaskFile(cwd, { title: 'Статус noop' });
+    await handleToolCall('backlog_update_status', { id: t.id, status: 'In Progress' }, cwd);
+    const ack = JSON.parse(await handleToolCall('backlog_update_status', { id: t.id, status: 'In Progress' }, cwd));
+    assert.equal(ack.noop, true, `статус не изменился: ${JSON.stringify(ack)}`);
+  });
+
+  it('AC3: backlog_update_dependencies с уже существующей зависимостью → noop', async () => {
+    const base = createTaskFile(cwd, { title: 'База noop' });
+    const t = createTaskFile(cwd, { title: 'Зависимая noop' });
+    await handleToolCall('backlog_update_dependencies', { id: t.id, add: [base.id] }, cwd);
+    const ack = JSON.parse(await handleToolCall('backlog_update_dependencies', { id: t.id, add: [base.id] }, cwd));
+    assert.equal(ack.noop, true, `набор зависимостей тот же: ${JSON.stringify(ack)}`);
+  });
+
+  it('AC3: lesson_link и reference_link на уже установленной связи → noop', async () => {
+    const t = createTaskFile(cwd, { title: 'Связи noop' });
+    const l = createLessonFile(cwd, { title: 'Урок связи noop' });
+    const ref = writeReference(cwd, { title: 'Ref связи noop', type: 'url', url: 'https://example.org' });
+    await handleToolCall('lesson_link', { lessonId: l.id, taskId: t.id }, cwd);
+    const lessonAck = JSON.parse(await handleToolCall('lesson_link', { lessonId: l.id, taskId: t.id }, cwd));
+    assert.equal(lessonAck.noop, true, `связь уже есть: ${JSON.stringify(lessonAck)}`);
+    await handleToolCall('reference_link', { referenceId: ref.id, taskId: t.id }, cwd);
+    const refAck = JSON.parse(await handleToolCall('reference_link', { referenceId: ref.id, taskId: t.id }, cwd));
+    assert.equal(refAck.noop, true, `связь уже есть: ${JSON.stringify(refAck)}`);
   });
 });

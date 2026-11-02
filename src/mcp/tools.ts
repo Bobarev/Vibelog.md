@@ -59,7 +59,7 @@ import { markPhaseAborted, getPhaseTransientStatus } from '../core/phase-transie
 import { getWorkflowForTask, phaseStatusTransitionError, isTerminalStatus } from '../core/workflow.js';
 import { buildProjectMap } from '../core/project-map.js';
 import { truncateToolOutput } from '../agent/tools.js';
-import { ackOk, ackNoop, unknownFields } from './tool-result.js';
+import { ackOk, ackNoop, unknownFields, sameValue, sameFieldsUpToDate, SET_FIELDS, BODY_FIELD } from './tool-result.js';
 import { buildAutoReport, uncheckedItems } from './auto-report.js';
 import type { SkippedField } from './tool-result.js';
 import { withIdempotency } from './idempotency.js';
@@ -1228,6 +1228,17 @@ function toolViewTask(args: ToolArgs, cwd: string): string {
  * Обновляет статус задачи.
  */
 function toolUpdateStatus(args: ToolArgs, cwd: string): string {
+  const current = getTask(cwd, args.id as string);
+  // VL-310: noop-детекция — статус уже такой, файл не переписываем (симметрия
+  // с backlog_update_task). Раньше ответ был ackOk всегда: модель, повторяя
+  // `backlog_update_status {status:'In Progress'}`, не получала «изменений нет».
+  if (current && current.status === args.status) {
+    return ackNoop(
+      `Изменений нет: status задачи ${current.id} уже «${current.status}». ` +
+        'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.',
+      { status: current.status },
+    );
+  }
   const task = updateTaskFile(cwd, args.id as string, { status: args.status as string });
   return ackOk(`Статус задачи ${task.id} обновлён: ${task.status}`, { status: task.status });
 }
@@ -1368,54 +1379,6 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
   }
 
   return ackOk(`Задача ${task.id} обновлена: ${Object.keys(updates).join(', ')}`, applied, skipped);
-}
-
-/**
- * Поля задачи, сравниваемые как множества (порядок не значим) — VL-303.
- * VL-306: вынесено в константу модуля, чтобы `sameValue` принимал свой набор
- * для других сущностей (уроки: `tags`, `source_tasks`, `linked_tasks`, `applies_to`).
- */
-const SET_FIELDS = ['labels', 'assignee', 'references', 'lessons', 'modified_files', 'dependencies'];
-
-/**
- * Сравнивает переданное значение поля с текущим значением задачи (VL-303).
- *
- * Нужен для no-op детекта: если все переданные поля уже имеют запрошенные
- * значения, файл не переписывается. Правила сравнения:
- * - массивы-множества (`labels`, `assignee`, `references`, `lessons`,
- *   `modified_files`, `dependencies`) — порядок не значим: модель может
- *   перечислить те же метки в другом порядке, это не изменение;
- * - `acceptanceCriteria` — по текстам в порядке + все текущие пункты
- *   неотмечены (переданный чеклист всегда создаётся неотмеченным, VL-219);
- * - остальное (строки, числа, `parent_task_id`, секции тела) — строгое `===`.
- *   `type` приходит уже нормализованным через `normalizeTaskType`.
- */
-function sameValue(
-  field: string,
-  next: unknown,
-  current: unknown,
-  setFields: readonly string[] = SET_FIELDS,
-): boolean {
-  if (setFields.includes(field)) {
-    const a = Array.isArray(next) ? next.map(String) : [];
-    const b = Array.isArray(current) ? current.map(String) : [];
-    if (a.length !== b.length) return false;
-    const setB = new Set(b);
-    return a.every(v => setB.has(v));
-  }
-  if (field === 'acceptanceCriteria') {
-    const nextItems = Array.isArray(next) ? next : [];
-    const curItems = Array.isArray(current) ? current : [];
-    if (nextItems.length !== curItems.length) return false;
-    return nextItems.every((item, i) => {
-      const nextText = typeof item === 'string' ? item : String((item as { text?: unknown }).text ?? '');
-      const cur = curItems[i];
-      const curText = typeof cur === 'string' ? cur : String((cur as { text?: unknown }).text ?? '');
-      const curChecked = typeof cur === 'string' ? false : Boolean((cur as { checked?: unknown }).checked);
-      return nextText === curText && !curChecked;
-    });
-  }
-  return next === current;
 }
 
 /**
@@ -2052,6 +2015,18 @@ function toolUpdateDependencies(args: ToolArgs, cwd: string): string {
     throw new Error(`Обнаружен цикл зависимостей: ${validation.cycle.join(' → ')}`);
   }
 
+  // VL-310: noop-детекция — итоговый набор совпал с текущим (например,
+  // `add` уже существующей зависимости). Раньше файл переписывался и ответ был
+  // «обновлены», модель повторяла вызов в надежде на эффект.
+  const before = [...(task.dependencies || [])];
+  const unchanged = before.length === deps.length && before.every(d => deps.includes(d));
+  if (unchanged) {
+    return ackNoop(
+      `Изменений нет: зависимости задачи ${args.id} уже [${deps.join(', ')}]. ` +
+        'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.',
+      { dependencies: deps },
+    );
+  }
   updateTaskFile(cwd, args.id as string, { dependencies: deps });
   // VL-262: applied — итоговый набор зависимостей из записи
   return ackOk(`Зависимости задачи ${args.id} обновлены: [${deps.join(', ')}]`, { dependencies: deps });
@@ -2171,6 +2146,19 @@ function toolMilestoneRename(args: ToolArgs, cwd: string): string {
   if (!backlogDir) throw new Error('Backlog не найден.');
   const from = args.from as string;
   const to = args.to as string;
+  // VL-310: noop-детекция — переименование в то же имя ничего не меняет.
+  // Сравнение без регистра: renameMilestone ищет веху по lowercase.
+  // Для остальных milestone-инструментов noop неприменим по природе: add
+  // создаёт файл (повтор упадёт «уже существует»), archive/remove удаляют
+  // (повтор упадёт «не найдена») — явный список-исключение в
+  // write-ack-contract.test.mjs.
+  if (String(from).toLowerCase() === String(to).toLowerCase()) {
+    return ackNoop(
+      `Изменений нет: веха «${from}» уже называется «${to}». ` +
+        "Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.",
+      { from, to, updated_tasks: 0 },
+    );
+  }
   const updated = renameMilestone(backlogDir, from, to);
   if (!updated) throw new Error(`Веха "${args.from}" не найдена.`);
 
@@ -2265,6 +2253,11 @@ function toolDocumentCreate(args: ToolArgs, cwd: string): string {
   return `Документ ${doc.id} создан: ${doc.title} (тип: ${doc.type})`;
 }
 
+/**
+ * Поля документа, сравниваемые как множества (VL-310): порядок тегов не значим.
+ */
+const DOC_SET_FIELDS = ['tags'] as const;
+
 function toolDocumentUpdate(args: ToolArgs, cwd: string): string {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) throw new Error('Backlog не найден.');
@@ -2276,9 +2269,44 @@ function toolDocumentUpdate(args: ToolArgs, cwd: string): string {
   if (Object.keys(updates).length === 0) {
     throw new Error('Не указаны поля для обновления (title, content, type, tags).');
   }
+  const current = getDocument(backlogDir, args.id as string);
+  if (!current) throw new Error(`Документ ${args.id} не найден.`);
+
+  // VL-310: noop-детекция (симметрия с backlog_update_task/lesson_update).
+  // Раньше toolDocumentUpdate отвечал ackOk ВСЕГДА, поэтому вызов
+  // `document_update {id, type:'guide'}`, где type уже был 'guide', выглядел
+  // как успешная запись: модель не получала сигнала «изменений нет» и
+  // повторяла его десятки раз, раздувая payload (сессия
+  // agent-1793637056809, Code VL-124 — 20+ вызовов, payload 267→394 КБ).
+  // Сравнение по фактическим значениям файла; тело (`content`) — через
+  // BODY_FIELD: в метаданных документа его нет, оно лежит в `entry.body`.
+  const currentRaw: Record<string, unknown> = {
+    ...(current.document as unknown as Record<string, unknown>),
+    [BODY_FIELD]: current.body,
+  };
+  // content сравнивается как тело документа: в аргументах поле называется
+  // content, в снимке — BODY_FIELD (см. sameValue/BODY_FIELD).
+  const comparable: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(updates)) {
+    comparable[key === 'content' ? BODY_FIELD : key] = value;
+  }
+  if (sameFieldsUpToDate(currentRaw, comparable, DOC_SET_FIELDS)) {
+    // applied — фактическое состояние (как в обычном пути), но без записи:
+    // файл и его mtime/updated-поля не трогаются (AC1).
+    const applied: Record<string, unknown> = { id: current.document.id };
+    for (const key of Object.keys(updates)) {
+      applied[key] = key === 'content' ? current.body.length : currentRaw[key];
+    }
+    return ackNoop(
+      `Изменений нет: ${Object.keys(updates).join(', ')} документа ${current.document.id} уже имеют эти значения. ` +
+        'Следующий шаг: переходи к следующему пункту фазы (правки/проверки) или к backlog_finish_phase — ' +
+        'повтор этого вызова ничего не изменит.',
+      applied,
+    );
+  }
+
   const updated = updateDocument(backlogDir, args.id as string, updates);
   if (!updated) throw new Error(`Документ ${args.id} не найден.`);
-  // VL-306: JSON-ack; applied — значения из документа ПОСЛЕ записи.
   return ackOk(`Документ ${updated.document.id} обновлён: ${updated.document.title}`, {
     id: updated.document.id,
     title: updated.document.title,
@@ -2395,6 +2423,60 @@ function toolReferenceUpdate(args: ToolArgs, cwd: string): string {
   if (Object.keys(updates).length === 0) {
     throw new Error('Не указаны поля для обновления (tags, description, url, urls).');
   }
+
+  // VL-310: noop-детекция (симметрия с backlog_update_task/lesson_update/
+  // document_update). Раньше ответ был ackOk всегда, и повтор
+  // `reference_update {id, tags:[...]}` с уже записанными тегами выглядел
+  // успехом — модель крутила вызов. Сравнение:
+  // - tags — как множество (порядок не значим);
+  // - description — против тела записи (BODY_FIELD);
+  // - url/urls — по полному упорядоченному списку ссылок (url — первая,
+  //   urls — дополнительные; порядок важен: он же порядок секций кэша).
+  const current = getReference(cwd, args.id as string);
+  if (current) {
+    const currentRaw: Record<string, unknown> = {
+      ...(current.reference as unknown as Record<string, unknown>),
+      [BODY_FIELD]: current.body,
+    };
+    // Поля, которые сверяются не «как есть»:
+    // - description → тело записи (BODY_FIELD);
+    // - url/urls → полный упорядоченный набор ссылок: после нормализации
+    //   первый url выкидывается из urls (normalizeExtraUrls), а порядок
+    //   набора значим (порядок секций склеенного кэша).
+    const comparable: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(updates)) {
+      if (key === 'url' || key === 'urls') continue;
+      comparable[key === 'content' ? BODY_FIELD : key] = value;
+    }
+    if (updates.url !== undefined || updates.urls !== undefined) {
+      const baseUrl = updates.url !== undefined ? updates.url : current.reference.url;
+      const rest = updates.urls !== undefined ? updates.urls : current.reference.urls;
+      const seen = new Set<string>();
+      const merged: string[] = [];
+      if (baseUrl) { merged.push(baseUrl); seen.add(baseUrl); }
+      for (const raw of rest || []) {
+        const value = String(raw ?? '').trim();
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        merged.push(value);
+      }
+      comparable.__urls = merged;
+    }
+    const currentRawWithUrls = { ...currentRaw, __urls: referenceUrls(current.reference) };
+    const REFERENCE_SET_FIELDS = ['tags', 'linked_tasks'];
+    if (sameFieldsUpToDate(currentRawWithUrls, comparable, REFERENCE_SET_FIELDS)) {
+      const applied: Record<string, unknown> = { id: current.reference.id };
+      for (const key of Object.keys(updates)) {
+        applied[key] = key === 'content' ? current.body.length : currentRaw[key];
+      }
+      return ackNoop(
+        `Изменений нет: ${Object.keys(updates).join(', ')} reference ${current.reference.id} уже имеют эти значения. ` +
+          'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.',
+        applied,
+      );
+    }
+  }
+
   const entry = updateReference(cwd, args.id as string, updates);
   if (!entry) throw new Error(`Reference ${args.id} не найден.`);
   // VL-306: JSON-ack; applied — значения из reference ПОСЛЕ записи.
@@ -2408,7 +2490,28 @@ function toolReferenceUpdate(args: ToolArgs, cwd: string): string {
 
 function toolReferenceLink(args: ToolArgs, cwd: string): string {
   const action = (args.action as 'add' | 'remove') || 'add';
-  linkReferenceTask(cwd, args.referenceId as string, args.taskId as string, action);
+  const referenceId = args.referenceId as string;
+  const taskId = args.taskId as string;
+  // VL-310: noop-детекция — связь уже есть (add) или уже удалена (remove).
+  // Связь живёт в ДВУХ местах (reference.linked_tasks ↔ task.references),
+  // поэтому сверяются обе стороны: расхождение означает, что запись реально
+  // что-то чинит, и noop был бы ложью.
+  const refEntry = getReference(cwd, referenceId);
+  const taskEntry = getTask(cwd, taskId);
+  if (refEntry && taskEntry) {
+    const inRef = (refEntry.reference.linked_tasks || []).includes(taskId);
+    const inTask = (taskEntry.references || []).includes(referenceId);
+    const upToDate = action === 'add' ? inRef && inTask : !inRef && !inTask;
+    if (upToDate) {
+      return ackNoop(
+        `Изменений нет: связь Reference ${referenceId} ↔ задача ${taskId} уже ` +
+          `${action === 'add' ? 'установлена' : 'удалена'}. ` +
+          'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.',
+        { referenceId, taskId, action },
+      );
+    }
+  }
+  linkReferenceTask(cwd, referenceId, taskId, action);
   return action === 'add'
     ? `Reference ${args.referenceId} связан с задачей ${args.taskId} (linked_tasks ↔ task.references).`
     : `Связь Reference ${args.referenceId} ↔ задача ${args.taskId} удалена.`;
@@ -2547,7 +2650,26 @@ function toolLessonSearch(args: ToolArgs, cwd: string): string {
 
 function toolLessonLink(args: ToolArgs, cwd: string): string {
   const action = (args.action as 'add' | 'remove') || 'add';
-  linkLesson(cwd, args.lessonId as string, args.taskId as string, action);
+  const lessonId = args.lessonId as string;
+  const taskId = args.taskId as string;
+  // VL-310: noop-детекция (симметрия с reference_link): связь живёт в двух
+  // местах (lesson.linked_tasks ↔ task.lessons), сверяются обе стороны.
+  const lessonEntry = getLesson(cwd, lessonId);
+  const taskEntry = getTask(cwd, taskId);
+  if (lessonEntry && taskEntry) {
+    const inLesson = (lessonEntry.lesson.linked_tasks || []).includes(taskId);
+    const inTask = (taskEntry.lessons || []).includes(lessonId);
+    const upToDate = action === 'add' ? inLesson && inTask : !inLesson && !inTask;
+    if (upToDate) {
+      return ackNoop(
+        `Изменений нет: связь Lesson ${lessonId} ↔ задача ${taskId} уже ` +
+          `${action === 'add' ? 'установлена' : 'удалена'}. ` +
+          'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.',
+        { lessonId, taskId, action },
+      );
+    }
+  }
+  linkLesson(cwd, lessonId, taskId, action);
   // VL-306: JSON-ack; прежняя формулировка сохранена в message.
   return ackOk(
     action === 'add'

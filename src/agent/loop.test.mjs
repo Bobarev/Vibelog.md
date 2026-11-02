@@ -504,9 +504,12 @@ describe('runLoop loop detection (VL-83)', () => {
     assert.equal(res.messages[res.messages.length - 1].role, 'assistant');
   });
 
-  it('VL-304 (AC2): повтор применённого (ok:true) вызова по-прежнему завершает ран штатно', async () => {
-    // VL-309 не откатывает VL-304: для РЕАЛЬНО применённого вызова
-    // (ok:true) штатный выход остаётся — работа сделана, терять нечего.
+  it('VL-310 (AC4): повтор применённого (ok:true) вызова не терминален — директива, цикл продолжается', async () => {
+    // VL-304 завершал ран на ПЕРВОМ повторе применённого вызова; это обрывало
+    // фазу на середине работы (сессия agent-1793637056809, Code VL-124:
+    // 4 tool-calls, 5 LLM-запросов, «ран завершён штатно», задача не доработана).
+    // Теперь модели уходит директива, исполнение повтора пропускается, а цикл
+    // продолжается до финального текста/отчёта.
     const state = { calls: 0 };
     const spec = {
       name: 'backlog_update_task',
@@ -524,9 +527,40 @@ describe('runLoop loop detection (VL-83)', () => {
       { text: 'не должно дойти' },
     ]);
     const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
-    assert.equal(res.is_error, false);
-    assert.match(res.result, /зациклилась на уже применённом вызове/);
+    assert.equal(res.is_error, false, `ран не должен падать: ${res.result}`);
+    assert.equal(res.result, 'не должно дойти', 'модель дошла до финального текста');
     assert.equal(state.calls, 1, 'повтор применённого вызова не исполняется');
+    const directive = res.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'c2');
+    assert.ok(directive, 'модель получает директиву на повтор');
+    assert.match(String(directive.content), /уже применён/);
+    assert.equal(res.messages[res.messages.length - 1].role, 'assistant');
+  });
+
+  it('VL-310 (AC4): исчерпание капа повторов применённого вызова → честный fail', async () => {
+    // Кап MAX_APPLIED_REPEATS_PER_RUN = 3: если модель игнорирует директивы и
+    // дословно повторяет уже применённый вызов, ран завершается is_error:true —
+    // оркестратор откатит статус и запустит авто-resume (а не «успех» с
+    // невыполненной работой).
+    const state = { calls: 0 };
+    const spec = {
+      name: 'backlog_update_task',
+      description: 'write-заглушка',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => {
+        state.calls++;
+        return JSON.stringify({ ok: true, message: 'обновлено' });
+      },
+    };
+    const same = { id: 'VL-302', type: 'feature' };
+    const script = Array.from({ length: 10 }, (_, i) => ({
+      text: '',
+      toolCalls: [{ id: `c${i + 1}`, name: 'backlog_update_task', arguments: same }],
+    }));
+    const { llm } = fakeLlm(script);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, true, 'вечный повтор применённого вызова — честный fail');
+    assert.match(res.result, /повторила уже применённый вызов/);
+    assert.equal(state.calls, 1, 'вызов исполнялся только один раз');
     assert.equal(res.messages[res.messages.length - 1].role, 'assistant');
   });
 
@@ -542,6 +576,56 @@ describe('runLoop loop detection (VL-83)', () => {
     assert.equal(res.is_error, false);
     assert.equal(res.result, 'нормально');
     assert.equal(toolState.calls, 3);
+  });
+});
+
+describe('VL-310 — регресс сессии agent-1793637056809 (Code VL-124)', () => {
+  it('AC5: 20+ повторов document_update не обрывают ран на 4-м вызове — директива и финальный текст', async () => {
+    // Реальная сессия: 20+ дословных document_update {id, type:'guide'}, где
+    // type уже был 'guide'. Инструмент отвечал ackOk, appliedSignatures
+    // пополнялся, и первый же повтор завершал ран «штатно» на 4-м вызове.
+    // После VL-310 такой вызов возвращает noop (инструмент), повтор не
+    // исполняется, модели уходит директива, и она доходит до отчёта/финала.
+    const state = { calls: 0 };
+    const spec = {
+      name: 'document_update',
+      description: 'write-заглушка документа',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => {
+        state.calls++;
+        return JSON.stringify({
+          ok: false, noop: true, reason: 'noop',
+          message: 'Изменений нет: type уже имеют эти значения. Следующий шаг: переходи к следующему пункту фазы',
+          applied: { id: 'doc-2', type: 'guide' }, skipped: [],
+        });
+      },
+    };
+    // Ключевое: повторы ПЕРЕМЕЖАЮТСЯ реальной работой — серия сбрасывается,
+    // ран не должен умирать ни на 4-м вызове, ни на 20-м.
+    const script = [];
+    const args = { id: 'doc-2', type: 'guide' };
+    for (let i = 0; i < 24; i++) {
+      const name = i % 3 === 2 ? 'backlog_view_task' : 'document_update';
+      script.push({ text: '', toolCalls: [{ id: `c${i + 1}`, name, arguments: name === 'document_update' ? args : { id: 'VL-124' } }] });
+    }
+    script.push({ text: 'отчёт записан, перехожу к завершению' });
+    const readSpec = {
+      name: 'backlog_view_task',
+      description: 'read-заглушка',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => JSON.stringify({ id: 'VL-124' }),
+    };
+    const { llm } = fakeLlm(script);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec, readSpec] });
+    assert.equal(res.is_error, false, `ран не должен падать: ${res.result}`);
+    assert.equal(res.result, 'отчёт записан, перехожу к завершению');
+    assert.equal(state.calls, 1, 'документный вызов исполнен ровно один раз');
+    // Payload не растёт линейно: директивы короткие (< 400 байт каждая).
+    const directives = res.messages.filter((m) => m.role === 'tool' && String(m.content).includes('Изменений нет'));
+    assert.ok(directives.length >= 10, `директивы на повторы получены (${directives.length})`);
+    for (const d of directives) {
+      assert.ok(String(d.content).length < 400, 'директива короткая — payload не раздувается');
+    }
   });
 });
 
@@ -2269,11 +2353,13 @@ describe('VL-306 — страховка appliedSignatures для не-JSON от�
     }
     const { llm } = fakeLlm(script);
     const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
-    assert.equal(res.is_error, false, `фаза не должна падать: ${res.result}`);
-    assert.match(res.result, /зациклилась на уже применённом вызове/);
-    // Первый повтор уже применённой сигнатуры завершает ран штатно (VL-304):
-    // исполнены a, b, c — второй c" — это повтор, он не исполняется.
-    assert.equal(state.calls, 3, 'исполнены только 3 разных вызова, повторы не исполняются');
+    // VL-310: повторы больше не терминальны, но и не бесконечны — серия
+    // дословных повторов исчерпывает кап и даёт честный fail (статус
+    // откатит оркестратор), а не ложный «успех» с недоделанной работой.
+    assert.equal(res.is_error, true, `вечный повтор обязан прерывать ран: ${res.result}`);
+    assert.match(res.result, /повторила уже применённый вызов|Loop detection/);
+    // Исполнены только разные вызовы (a, b, c, d): повторы не исполнялись.
+    assert.equal(state.calls, 4, 'исполнены только 4 разных вызова, повторы не исполняются');
     assert.equal(res.blocked_signatures, undefined, 'сигнатуры не попали в блок-лист');
   });
 

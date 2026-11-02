@@ -141,6 +141,95 @@ export function isNoopAck(text: string): boolean {
 }
 
 /**
+ * Поля, сравниваемые как множества (порядок не значим) — VL-303/VL-310.
+ *
+ * Общий набор для Super-сущностей с одинаковыми именами полей: задача
+ * (`labels`, `assignee`, …), урок (`tags`, `source_tasks`, …). Сущности со
+ * своим набором (документ/веб-страница, reference) передают его явно —
+ * см. `DOC_SET_FIELDS`/`REFERENCE_SET_FIELDS` в `tools.ts`.
+ */
+export const SET_FIELDS = ['labels', 'assignee', 'references', 'lessons', 'modified_files', 'dependencies'];
+
+/**
+ * Поле-псевдоним тела документа в объекте сверки (VL-310).
+ *
+ * У документа (и reference) тело лежит НЕ в метаданных, а отдельным полем
+ * `body` записи (`DocumentEntry`/`ReferenceEntry`), тогда как в аргументах
+ * вызова оно называется `content`/`description`. Чтобы сверка «всё уже так»
+ * работала единым `sameValue`, тело передаётся в объекте-снимке под этим
+ * ключом и не может совпасть с реальным именем frontmatter-поля.
+ */
+export const BODY_FIELD = '__body';
+
+/**
+ * Сравнивает переданное значение поля с текущим (VL-303, вынесено в VL-310).
+ *
+ * Нужен для noop-детекта: если все переданные поля уже имеют запрошенные
+ * значения, файл не переписывается. Правила сравнения:
+ * - массивы-множества (`setFields`) — порядок не значим: модель может
+ *   перечислить те же метки в другом порядке, это не изменение;
+ * - `acceptanceCriteria` — по текстам в порядке + все текущие пункты
+ *   неотмечены (переданный чеклист всегда создаётся неотмеченным, VL-219);
+ * - тело сущности (`BODY_FIELD`) — строковое `===`: сравнение двух строк
+ *   (даже 100 КБ) движок делает без создания копий и прерывается на первом
+ *   различии, поэтому выделенный хэш не нужен (риск «длинного сравнения» в
+ *   плане VL-310 снят замером семантики: `===` на строках не копирует тело).
+ * - остальное (строки, числа, `parent_task_id`, секции тела) — строгое `===`.
+ *   `type` приходит уже нормализованным через `normalizeTaskType`.
+ */
+export function sameValue(
+  field: string,
+  next: unknown,
+  current: unknown,
+  setFields: readonly string[] = SET_FIELDS,
+): boolean {
+  if (setFields.includes(field)) {
+    const a = Array.isArray(next) ? next.map(String) : [];
+    const b = Array.isArray(current) ? current.map(String) : [];
+    if (a.length !== b.length) return false;
+    const setB = new Set(b);
+    return a.every(v => setB.has(v));
+  }
+  if (field === 'acceptanceCriteria') {
+    const nextItems = Array.isArray(next) ? next : [];
+    const curItems = Array.isArray(current) ? current : [];
+    if (nextItems.length !== curItems.length) return false;
+    return nextItems.every((item, i) => {
+      const nextText = typeof item === 'string' ? item : String((item as { text?: unknown }).text ?? '');
+      const cur = curItems[i];
+      const curText = typeof cur === 'string' ? cur : String((cur as { text?: unknown }).text ?? '');
+      const curChecked = typeof cur === 'string' ? false : Boolean((cur as { checked?: unknown }).checked);
+      return nextText === curText && !curChecked;
+    });
+  }
+  if (field === BODY_FIELD) {
+    return typeof next === 'string' && typeof current === 'string' && next === current;
+  }
+  return next === current;
+}
+
+/**
+ * Проверяет, что ВСЕ переданные значения уже равны текущим (VL-310).
+ *
+ * Общая точка noop-детекции для write-инструментов (lesson-37: одна
+ * реализация вместо копий): инструмент собирает `updates` из аргументов и
+ * передаёт снимок текущего состояния сущности (`current`) вместе со своим
+ * набором полей-множеств.
+ *
+ * @param current — текущее состояние полей (для тела — `BODY_FIELD`)
+ * @param updates — переданные поля (что модель просит записать)
+ * @param setFields — поля, сравниваемые как множества
+ * @returns true — запись ничего не изменит (можно отвечать noop)
+ */
+export function sameFieldsUpToDate(
+  current: Record<string, unknown>,
+  updates: Record<string, unknown>,
+  setFields: readonly string[] = SET_FIELDS,
+): boolean {
+  return Object.keys(updates).every(key => sameValue(key, updates[key], current[key], setFields));
+}
+
+/**
  * Формирует ответ отказа подтверждения.
  *
  * `applied` всегда пуст (отказ = ни одного изменения), `skipped` перечисляет
