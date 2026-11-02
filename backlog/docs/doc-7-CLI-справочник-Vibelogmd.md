@@ -357,6 +357,7 @@ vibelog experiment <subcommand> [опции]
   dataset <exp-id> [--dataset-path <p>]
   run <exp-id> [--dry-run] [--variant A,B] [--recover [--reason <text>]]
   record <exp-id> --variant A --task <id> [--score n] [--run N] [--from-json <f>]
+  report <exp-id> [--run N] [--compare run-M] [--json]
 ```
 
 A/B-эксперименты (спецификация — doc-21). Карточка эксперимента — `backlog/experiments/exp-<id>.md`; общие датасеты — `backlog/experiments/datasets/<name>.jsonl`, частные — `backlog/experiments/<exp-id>/datasets/<name>.jsonl`.
@@ -428,6 +429,26 @@ vibelog experiment record <exp-id> --variant A --task <id>
 | `--custom '<json>'` | Произвольные метрики (объект JSON) |
 | `--run N` | Целевой прогон; без флага — последний. Если ранов больше одного и `--run` не задан, в stderr печатается предупреждение |
 | `--from-json <file>` | Массив results-строк: upsert пачкой за один вызов |
+
+### report
+
+```
+vibelog experiment report <exp-id> [--run N] [--compare run-M] [--json]
+```
+
+Отчёт по прогону (doc-21 §8–§9): агрегаты по каждому варианту, `report.md` в каталог прогона и **завершение** manual-прогона.
+
+| Флаг | Описание |
+|---|---|
+| `--run N` | Целевой прогон; без флага — последний |
+| `--compare run-M` | Добавить таблицу дельт метрик между прогонами (например, до/после правки промпта) — в stdout и в `report.md` |
+| `--json` | Напечатать ту же структуру в stdout для машинной обработки (с `--compare` — `{report, compare}`) |
+
+По каждому варианту печатаются: `n` (валидные строки — `score` конечное число), `dropped` (исключённые из средних: `error` есть или `score: null`, с разбивкой по `error_kind`), `mean`, `median`, `delta` к baseline-варианту (`metrics.baseline`, по умолчанию `A`) в абсолютных и процентах с учётом `metrics.higher_is_better`, `win_rate` (доля пар, где вариант строго лучше baseline), средние по `row.custom` строго для метрик из `metrics.custom`, число ошибок по `error_kind`. `n` и `dropped` печатаются всегда; при `n = 0` метрики — `—`, не `NaN`.
+
+**Завершение прогона.** Если для всех строк датасета × всех вариантов есть строка с `score` или `error`, прогон переводится в `completed` (заполняются `finished_at`, `n`, `dropped`, `cost_total` и `meta.summary = {n, dropped, cost_total}`), статус эксперимента пересчитывается (`draft` без прогонов | `running` | `completed` | `failed`). Если данных не хватает — печатается список недостающих пар `(task_id, variant)`, статус **не меняется**. `report.md` — производный файл: перегенерируется при каждом запуске (единственное исключение из «прогон неизменяем»), `results.jsonl` не трогается.
+
+**Правило `results.jsonl > 10 MB`** (doc-21 §15): файл всё равно парсится локально для отчёта, но в `meta.json` ставится `results_ignored: true` и в stderr печатается warning.
 
 ---
 
