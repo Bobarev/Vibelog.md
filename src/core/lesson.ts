@@ -340,7 +340,22 @@ export interface WriteLessonInput extends LessonInput {
 }
 
 /**
+ * Скелет тела урока (VL-319).
+ *
+ * Зачем: шаблоны Close вызывали `lesson_create` без `content`, и
+ * `createLessonFile` писал пустое тело — рождались уроки-пустышки (lesson-191),
+ * которые потом нельзя было «дополнить» через `lesson_update` без явного
+ * `content` (noop → повтор → кап → fail → авто-resume, сессия
+ * agent-1793712738536). Скелет даёт осмысленную структуру и CLI
+ * (`vibelog lesson create` без `-d`), и MCP-вызову без `content`.
+ */
+export const LESSON_BODY_SKELETON = '## Проблема\n\n## Решение\n\n## Пример\n';
+
+/**
  * Создаёт lesson-файл (id генерируется lesson-N, даты — сегодня, если не заданы).
+ *
+ * VL-319: пустой/пробельный `content` заменяется скелетом
+ * `LESSON_BODY_SKELETON` — урок без тела больше не создаётся.
  *
  * @returns созданный lesson
  */
@@ -357,9 +372,10 @@ export function createLessonFile(cwd: string, input: WriteLessonInput): Lesson {
     created_date: input.created_date || todayStr,
     updated_date: input.updated_date || todayStr,
   });
+  const body = String(input.content ?? '').trim() === '' ? LESSON_BODY_SKELETON : String(input.content);
   writeFileSync(
     join(dir, lessonFilename(lesson.id, lesson.title)),
-    lessonToMarkdown(lesson, input.content || ''),
+    lessonToMarkdown(lesson, body),
     'utf-8',
   );
   return lesson;

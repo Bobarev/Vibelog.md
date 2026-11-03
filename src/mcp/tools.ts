@@ -59,7 +59,7 @@ import { markPhaseAborted, getPhaseTransientStatus } from '../core/phase-transie
 import { getWorkflowForTask, phaseStatusTransitionError, isTerminalStatus } from '../core/workflow.js';
 import { buildProjectMap } from '../core/project-map.js';
 import { truncateToolOutput } from '../agent/tools.js';
-import { ackOk, ackNoop, unknownFields, sameValue, sameFieldsUpToDate, SET_FIELDS, BODY_FIELD } from './tool-result.js';
+import { ackOk, ackNoop, ackNoopDetailed, ackError, ackErrorDetailed, unknownFields, sameValue, sameFieldsUpToDate, SET_FIELDS, BODY_FIELD } from './tool-result.js';
 import { buildAutoReport, uncheckedItems } from './auto-report.js';
 import type { SkippedField } from './tool-result.js';
 import { withIdempotency } from './idempotency.js';
@@ -2611,7 +2611,14 @@ function toolLessonCreate(args: ToolArgs, cwd: string): string {
     source_tasks: (args.sourceTasks as string[] | undefined) || [],
     content: args.content as string | undefined,
   });
-  return `Lesson ${lesson.id} создан: ${lesson.title} (${lesson.status})`;
+  // VL-319: JSON-ack с длиной фактического тела. Пустой `content` больше не
+  // даёт урок-пустышку — createLessonFile подставляет скелет
+  // «Проблема/Решение/Пример», и applied.content показывает его длину.
+  const entry = getLesson(cwd, lesson.id);
+  return ackOk(
+    `Lesson ${lesson.id} создан: ${lesson.title} (${lesson.status})`,
+    { id: lesson.id, title: lesson.title, status: lesson.status, content: entry ? entry.body.length : 0 },
+  );
 }
 
 function toolLessonView(args: ToolArgs, cwd: string): string {
@@ -2648,6 +2655,37 @@ function toolLessonUpdate(args: ToolArgs, cwd: string): string {
   // Сравнение — по фактическим значениям из файла; `content` — против тела.
   const current = getLesson(cwd, args.id as string);
   if (current) {
+    // VL-319: урок с ПУСТЫМ телом — не «изменений нет», а незавершённая
+    // сущность. Раньше такой вызов без `content` уходил в noop, модель
+    // читала «изменений нет» и повторяла дословно (сессия
+    // agent-1793712738536, Close VL-318: 4 повтора → кап → fail → авто-resume
+    // → тот же урок снова пустой). Теперь это ackError: сигнатура НЕ попадает
+    // в noopSignatures (ok:false без noop:true → failed), поэтому повтор
+    // ИСПОЛНЯЕТСЯ заново и снова возвращает текст ошибки — модель видит, чего
+    // не хватает, а не «изменений нет».
+    if (updates.content === undefined && current.body.trim() === '') {
+      return ackErrorDetailed(
+        `Тело урока ${current.lesson.id} пустое — в вызове нет \`content\`. ` +
+          'Передай непустой markdown (Проблема / Решение / Пример): ' +
+          'lesson_update {"id": "...", "content": "## Проблема\\n\\n…\\n\\n## Решение\\n\\n…\\n\\n## Пример\\n\\n…"}.',
+        {
+          missing: [{ field: 'content', reason: 'тело урока пустое — не заполнено' }],
+          hint: 'Добавь в вызов `content` с непустым markdown (Проблема/Решение/Пример) — без него урок остаётся пустым.',
+          applied: Object.fromEntries(Object.keys(updates).map(k => [k, (updates as Record<string, unknown>)[k]])),
+        },
+      );
+    }
+    // VL-319: явно переданное пустое тело — ошибка, файл не перезаписывается.
+    if (updates.content !== undefined && String(updates.content).trim() === '') {
+      return ackErrorDetailed(
+        `Пустое тело урока недопустимо: \`content\` пустой (или только пробелы). ` +
+          'Передай Проблему/Решение/Пример — файл урока не изменён.',
+        {
+          missing: [{ field: 'content', reason: 'передан пустой content — тело урока не может быть пустым' }],
+          hint: 'Передай непустой markdown: ## Проблема / ## Решение / ## Пример.',
+        },
+      );
+    }
     const LESSON_SET_FIELDS = ['tags', 'source_tasks', 'linked_tasks', 'applies_to'];
     const currentRaw = current.lesson as unknown as Record<string, unknown>;
     const unchanged = Object.keys(updates).every(key =>
@@ -2662,10 +2700,24 @@ function toolLessonUpdate(args: ToolArgs, cwd: string): string {
       for (const key of Object.keys(updates)) {
         applied[key] = key === 'content' ? current.body.length : currentRaw[key];
       }
-      return ackNoop(
+      // VL-319: noop обязан назвать, чего в вызове не хватает. Для урока
+      // обязательное по смыслу поле — тело: пустое тело означает, что урок
+      // создан шаблоном без `content` (phase-close.md до VL-319).
+      const missing: SkippedField[] = [];
+      if (current.body.trim() === '') {
+        missing.push({ field: 'content', reason: 'тело урока пустое — не заполнено' });
+      }
+      return ackNoopDetailed(
         `Изменений нет: ${Object.keys(updates).join(', ')} уже имеют эти значения. ` +
+          (missing.length > 0
+            ? 'ВНИМАНИЕ: тело урока пустое — передай непустой `content` (Проблема/Решение/Пример). '
+            : '') +
           'Следующий шаг: backlog_finish_phase (или следующий шаг плана) — повтор этого вызова ничего не изменит.',
         applied,
+        missing,
+        missing.length > 0
+          ? 'Добавь в вызов `content` с непустым markdown (Проблема/Решение/Пример) — без него урок остаётся пустым.'
+          : 'Переходи к следующему шагу фазы: повтор с теми же аргументами ничего не изменит.',
       );
     }
   }
@@ -2781,11 +2833,20 @@ function toolLessonAudit(args: ToolArgs, cwd: string): string {
   const compactFindings = report.findings.map(f => ({
     type: f.type, lessonId: f.lessonId, details: f.details,
   }));
+  // VL-319: byLesson тоже компактим (без message — он дублирует details):
+  // новые находки empty_body раздували payload, и byLesson выпадал из ответа
+  // целиком, хотя группировка нужна потребителям (CLI/веб-чат).
+  const compactByLesson = report.byLesson.map(group => ({
+    id: group.id,
+    title: group.title,
+    status: group.status,
+    findings: group.findings.map(f => ({ type: f.type, details: f.details })),
+  }));
   const buildPayload = (includeByLesson: boolean): string => JSON.stringify({
     total: report.total,
     config: report.config,
     summary: report.summary,
-    ...(includeByLesson ? { byLesson: report.byLesson } : {}),
+    ...(includeByLesson ? { byLesson: compactByLesson } : {}),
     findings: compactFindings,
     ...(auditPath ? { written_to: auditPath } : {}),
     ...(applied ? { applied } : {}),

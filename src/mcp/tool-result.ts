@@ -79,6 +79,15 @@ export interface NoopAck {
   /** Фактическое состояние полей (из задачи, без записи). */
   applied: Record<string, unknown>;
   skipped: [];
+  /**
+   * VL-319: поля, которые по смыслу обязательны, но НЕ заполнены в сущности
+   * и НЕ переданы в вызове. Без этого списка модель видела только «изменений
+   * нет» и повторяла вызов дословно (сессия agent-1793712738536: урок с
+   * пустым телом, 4 повтора `lesson_update` без `content` → кап → fail).
+   */
+  missing?: SkippedField[];
+  /** VL-319: следующий шаг для модели (что именно поменять в аргументах). */
+  hint?: string;
 }
 
 /**
@@ -117,7 +126,41 @@ export function ackOk(
  * @param applied — фактическое состояние полей (из задачи, без записи)
  */
 export function ackNoop(message: string, applied: Record<string, unknown> = {}): string {
-  const ack: NoopAck = { ok: false, noop: true, reason: 'noop', message, applied, skipped: [] };
+  return ackNoopDetailed(message, applied);
+}
+
+/**
+ * Формирует noop-ответ с перечнем НЕЗАПОЛНЕННЫХ обязательных полей (VL-319).
+ *
+ * Зачем отдельный хелпер: noop-ответ «изменений нет» не сообщает, ЧЕГО в
+ * вызове не хватает. Модель читает `applied` (переданные поля) как «всё
+ * применено» и повторяет вызов дословно — сессия agent-1793712738536
+ * (Close VL-318) сделала 4 повтора `lesson_update` без `content` на уроке с
+ * пустым телом, кап `MAX_NOOP_REPEATS_PER_RUN` уронил ран, авто-resume
+ * перезапустил фазу, и цикл повторился. `missing` называет пропуск прямо,
+ * `hint` — что именно поменять в аргументах.
+ *
+ * @param message — текст с перечнем полей и указанием следующего шага
+ * @param applied — фактическое состояние полей (из задачи, без записи)
+ * @param missing — обязательные по смыслу, но не заполненные поля
+ * @param hint — следующий шаг для модели
+ */
+export function ackNoopDetailed(
+  message: string,
+  applied: Record<string, unknown> = {},
+  missing: SkippedField[] = [],
+  hint?: string,
+): string {
+  const ack: NoopAck = {
+    ok: false,
+    noop: true,
+    reason: 'noop',
+    message,
+    applied,
+    skipped: [],
+    ...(missing.length > 0 ? { missing } : {}),
+    ...(hint ? { hint } : {}),
+  };
   return JSON.stringify(ack, null, 2);
 }
 
@@ -282,6 +325,35 @@ export function ackDenied(
  */
 export function ackError(message: string): string {
   return JSON.stringify({ ok: false, error: message }, null, 2);
+}
+
+/**
+ * Формирует ответ-ошибку с перечнем незаполненных полей (VL-319).
+ *
+ * Зачем: ошибка «тело урока пустое» должна не только назвать проблему, но и
+ * дать машиночитаемый список пропусков (`missing`) и следующий шаг (`hint`) —
+ * иначе модель видит текст и повторяет вызов дословно. `applied` перечисляет
+ * переданные поля, чтобы модель не приняла их за записанные.
+ *
+ * @param message — текст ошибки
+ * @param extra — missing/hint/applied (все опциональны)
+ */
+export function ackErrorDetailed(
+  message: string,
+  extra: { missing?: SkippedField[]; hint?: string; applied?: Record<string, unknown> } = {},
+): string {
+  const missing = extra.missing ?? [];
+  return JSON.stringify(
+    {
+      ok: false,
+      error: message,
+      ...(extra.applied && Object.keys(extra.applied).length > 0 ? { applied: extra.applied } : {}),
+      ...(missing.length > 0 ? { missing } : {}),
+      ...(extra.hint ? { hint: extra.hint } : {}),
+    },
+    null,
+    2,
+  );
 }
 
 /**
