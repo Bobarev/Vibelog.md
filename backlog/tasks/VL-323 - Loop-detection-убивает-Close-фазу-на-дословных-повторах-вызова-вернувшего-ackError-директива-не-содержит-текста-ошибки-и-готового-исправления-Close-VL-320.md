@@ -1,11 +1,11 @@
 ---
 id: VL-323
 title: 'Loop detection убивает Close-фазу на дословных повторах вызова, вернувшего ackError — директива не содержит текста ошибки и готового исправления (Close VL-320)'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-03 19:20'
-updated_date: '2026-11-03 20:06'
+updated_date: '2026-11-03 20:10'
 due_date: ''
 labels:
   - agent
@@ -26,15 +26,16 @@ modified_files:
   - templates/phases/phase-close.md
   - templates/phases/phase-close-worktree.md
   - src/web/phase-prompt.test.mjs
-lessons: []
+lessons:
+  - lesson-198
 token_usage:
-  input: 6084610
-  output: 58441
-  cache: 5577216
-  total: 6143051
-  requests: 112
-  duration_ms: 1920760
-  reasoning: 35298
+  input: 7425122
+  output: 65385
+  cache: 6788096
+  total: 7490507
+  requests: 136
+  duration_ms: 2076613
+  reasoning: 37933
   by_phase:
     code:
       input: 4101879
@@ -42,10 +43,10 @@ token_usage:
       cache: 3762176
       requests: 61
     close:
-      input: 1982731
-      output: 6928
-      cache: 1815040
-      requests: 51
+      input: 3323243
+      output: 13872
+      cache: 3025920
+      requests: 75
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -96,7 +97,7 @@ VL-318 (классификация `ackError` — сделана, ошибка �
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -176,5 +177,13 @@ author: @agent
 created: 2026-11-03 20:05
 ---
 Фаза close не удалась (код выхода 1): ет, блокировок=0, payload последнего запроса=174134 байт (макс 174134), usage={"input_tokens":842538,"output_tokens":2920,"cache_read_input_tokens":767488,"total_tokens":845458,"reasoning_tokens":726} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-03 20:10
+---
+Фаза Close выполнена. Ветка vb/vl-323 слита в master (1 коммит e3007ea, merge 739d265), worktree удалена (force — только untracked-симлинк backlog/references/data), ветка vb/vl-323 удалена.
+Проверки после merge: `pnpm build` — успешно; ранний точечный фильтр по diff'у (src/agent/loop.test.mjs 115, src/web/phase-prompt.test.mjs 95) — зелёный; полный `npx vitest run` — 162 файла, 3062 passed, 4 skipped, 0 failed (пропуски — штатные it.skip проекта).
+DoD: 1 «Тесты проходят» — выполнен (полный прогон после merge); 2 «Документация обновлена» — выполнен: doc-10 §6 (новый пункт «Директива блокировки при ackError несёт текст ошибки, серия отказов не фатальна на 3-м повторе (VL-323)») и CHANGELOG.md (Unreleased → Исправлено), коммит ae50dab; 3 «Нет регрессий» — выполнен (полный прогон зелёный, кейсы VL-306/VL-309 и обычный read-луп на 3-м повторе покрыты тестами).
+Lessons: создан lesson-198 (тело заполнено, связан с VL-323), закоммичен в 9a20d6a. Refs у задачи нет.
 ---
 <!-- COMMENTS:END -->
