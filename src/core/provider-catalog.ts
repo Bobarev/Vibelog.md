@@ -429,10 +429,12 @@ function ageMs(entry: CacheEntry, now: number): number {
 export async function listCatalogModels(
   cwd: string,
   gatewayId: string,
-  opts: { query?: string; force?: boolean } & CatalogDeps = {},
+  opts: { query?: string; force?: boolean; full?: boolean; gatewayConfig?: GatewayConfig } &
+    CatalogDeps = {},
 ): Promise<CatalogResult<CatalogModel[]>> {
-  const gateways = loadGateways(cwd);
-  const gateway = gateways[gatewayId];
+  // VL-328: мастер настройки #/setup спрашивает каталог ДО записи шлюза в
+  // settings.json (fresh-проект) — тогда конфиг пресета приходит снаружи.
+  const gateway = opts.gatewayConfig ?? loadGateways(cwd)[gatewayId];
   if (!gateway) throw new Error(`Неизвестный шлюз: ${gatewayId}`);
   const deps: CatalogDeps = { fetchFn: opts.fetchFn, timeoutMs: opts.timeoutMs, now: opts.now };
   const now = (opts.now ?? Date.now)();
@@ -455,7 +457,12 @@ export async function listCatalogModels(
     const fetchedAt = new Date(now).toISOString();
     cache.entries[key] = { ...(cached ?? { vendors: {} }), fetchedAt, models };
     writeCache(cwd, cache);
-    return { gateway: gatewayId, stale: false, fetchedAt, items: filterAndLimit(models, opts.query) };
+    return {
+      gateway: gatewayId,
+      stale: false,
+      fetchedAt,
+      items: filterAndLimit(models, opts.query, opts.full),
+    };
   } catch (err) {
     // Риск R2: каталог без аутентификации ≠ гарантия доступности.
     // Протухший кэш лучше ошибки — цены могли измениться, но работать можно.
@@ -464,7 +471,7 @@ export async function listCatalogModels(
         gateway: gatewayId,
         stale: true,
         fetchedAt: cached.fetchedAt,
-        items: filterAndLimit(cached.models, opts.query),
+        items: filterAndLimit(cached.models, opts.query, opts.full),
       };
     }
     throw err;
@@ -472,10 +479,13 @@ export async function listCatalogModels(
 }
 
 /** Фильтр по запросу + лимит выдачи (каталог RouterAI — 582 модели). */
-function filterAndLimit(models: CatalogModel[], query?: string): CatalogModel[] {
+function filterAndLimit(models: CatalogModel[], query?: string, full?: boolean): CatalogModel[] {
   const q = (query ?? '').trim();
   const filtered = q === '' ? models : models.filter((m) => matchesQuery(m, q));
-  return filtered.slice(0, CATALOG_SEARCH_LIMIT);
+  // VL-328: мастеру настройки нужен ПОЛНЫЙ список моделей автора (двухступенчатый
+  // выбор: автор → модели автора). Обрезка по CATALOG_SEARCH_LIMIT — защита
+  // страницы «Модели», а не контракт каталога.
+  return full === true ? filtered : filtered.slice(0, CATALOG_SEARCH_LIMIT);
 }
 
 // ── Сверка цен: settings.json vs каталог (AC15) ──
@@ -574,10 +584,9 @@ export async function listCatalogVendors(
   cwd: string,
   gatewayId: string,
   modelId: string,
-  opts: { force?: boolean } & CatalogDeps = {},
+  opts: { force?: boolean; gatewayConfig?: GatewayConfig } & CatalogDeps = {},
 ): Promise<CatalogResult<CatalogVendor[]>> {
-  const gateways = loadGateways(cwd);
-  const gateway = gateways[gatewayId];
+  const gateway = opts.gatewayConfig ?? loadGateways(cwd)[gatewayId];
   if (!gateway) throw new Error(`Неизвестный шлюз: ${gatewayId}`);
   if (modelId.trim() === '') throw new Error('Пустое имя модели');
   const deps: CatalogDeps = { fetchFn: opts.fetchFn, timeoutMs: opts.timeoutMs, now: opts.now };

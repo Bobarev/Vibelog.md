@@ -29,6 +29,8 @@ import {
 } from '../core/models.js';
 import type { ModelInput } from '../core/models.js';
 import { loadSettings } from '../core/settings.js';
+import { LLM_GATEWAY_PRESETS } from '../core/llm-presets.js';
+import type { GatewayConfig } from '../core/models.js';
 import {
   listCatalogModels,
   listCatalogVendors,
@@ -77,12 +79,21 @@ function parseQuery(queryString: string): Record<string, string> {
 function resolveGateway(
   cwd: string,
   gatewayId: string,
-): { id: string; baseUrl: string } | { error: string } {
+  opts: { allowPreset?: boolean } = {},
+): { id: string; baseUrl: string; config?: GatewayConfig } | { error: string } {
   if (gatewayId.trim() === '') {
     return { error: 'gateway: обязательный параметр — id шлюза из settings.gateways' };
   }
   const gateways = loadGateways(cwd);
   const gateway = gateways[gatewayId];
+  // VL-328: мастер #/setup спрашивает каталог ДО сохранения шлюза (fresh).
+  // Пресет ядра с фиксированным base_url — достаточный конфиг для запроса.
+  if (!gateway && opts.allowPreset === true) {
+    const preset = LLM_GATEWAY_PRESETS.find((p) => p.id === gatewayId && p.base_url !== undefined);
+    if (preset && preset.base_url !== undefined) {
+      return { id: gatewayId, baseUrl: preset.base_url, config: { base_url: preset.base_url } };
+    }
+  }
   if (!gateway) {
     const known = Object.keys(gateways);
     return {
@@ -119,12 +130,16 @@ export async function handleCatalogApi(
   // Терпимость к таймауту апстрима: каталог отдаёт кэш, а без кэша —
   // понятную ошибку 503 (чат и фазы от каталога не зависят).
   if (method === 'GET' && url === '/api/catalog/models') {
-    const gw = resolveGateway(cwd, query.gateway ?? '');
+    const gw = resolveGateway(cwd, query.gateway ?? '', { allowPreset: true });
     if ('error' in gw) return { status: 400, body: { error: gw.error } };
     try {
       const result = await listCatalogModels(cwd, gw.id, {
         query: query.query,
         force: query.force === '1' || query.force === 'true',
+        // VL-328: мастер настройки просит полный список моделей автора —
+        // двухступенчатый выбор «автор → модели автора» без обрезки
+        full: query.full === '1' || query.full === 'true',
+        ...('config' in gw && gw.config !== undefined ? { gatewayConfig: gw.config } : {}),
         ...deps,
       });
       return {
@@ -143,7 +158,7 @@ export async function handleCatalogApi(
 
   // GET /api/catalog/vendors — вендоры модели с их ценами (AC3).
   if (method === 'GET' && url === '/api/catalog/vendors') {
-    const gw = resolveGateway(cwd, query.gateway ?? '');
+    const gw = resolveGateway(cwd, query.gateway ?? '', { allowPreset: true });
     if ('error' in gw) return { status: 400, body: { error: gw.error } };
     const modelId = (query.model ?? '').trim();
     if (modelId === '') {
@@ -152,6 +167,7 @@ export async function handleCatalogApi(
     try {
       const result = await listCatalogVendors(cwd, gw.id, modelId, {
         force: query.force === '1' || query.force === 'true',
+        ...('config' in gw && gw.config !== undefined ? { gatewayConfig: gw.config } : {}),
         ...deps,
       });
       return {

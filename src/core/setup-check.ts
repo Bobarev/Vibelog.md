@@ -264,10 +264,12 @@ export function checkAgentBinary(
  * всегда ходила через `globalThis.fetch`, который системный прокси macOS не
  * читает: при заблокированном напрямую api.telegram.org пользователь видел
  * «Telegram не ответил за 10000 мс», хотя бот потом работал через прокси.
+ * VL-328 (AC8): это же поведение нужно веб-мастеру `#/setup` — проверка
+ * токена там идёт тем же путём (прокси из TELEGRAM_PROXY).
  *
  * @param token — токен бота
  * @param opts.fetchImpl — подмена fetch (тесты; приоритетнее прокси)
- * @param opts.proxy — URL прокси (TELEGRAM_PROXY), пусто — напрямую
+ * @param opts.proxy — URL прокси (http://host:port, TELEGRAM_PROXY), пусто — напрямую
  * @param opts.timeoutMs — таймаут запроса (дефолт 10 с)
  */
 export async function checkTelegramToken(
