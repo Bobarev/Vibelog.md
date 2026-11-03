@@ -73,13 +73,60 @@ function stableSerialize(value: unknown): string {
 }
 
 /**
+ * Служебные аргументы вызова, НЕ входящие в сигнатуру дедупликации (VL-326).
+ *
+ * `idempotencyKey` — маркер повтора, а не семантика вызова: он описывает «это
+ * тот же самый вызов, что и раньше», а не «что именно делает вызов». Пока
+ * ключ входил в сигнатуру, новый ключ на каждый повтор делал сигнатуры
+ * разными, и guard возвращал `execute` вместо `duplicate` — дедупликация
+ * обходилась сменой служебного поля (инцидент VL-324: модель 12 раз подряд
+ * вызвала `backlog_update_task` с уже применёнными полями, каждый раз с новым
+ * ключом).
+ *
+ * Список вынесен в одну константу: новое служебное поле добавляется здесь и
+ * НЕ требует правок в `callSignature`/guard'е.
+ */
+export const NON_SEMANTIC_ARGS: readonly string[] = ['idempotencyKey'];
+
+/**
+ * Копия аргументов без служебных полей (входной объект модели не мутируется).
+ *
+ * Возвращает исходную ссылку, если служебных ключей нет — лишний объект на
+ * каждый вызов не нужен. `undefined` пробрасывается как есть: `callSignature`
+ * трактует его как пустой объект.
+ */
+function stripNonSemanticArgs(
+  args: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (args === undefined) return undefined;
+  let hasNonSemantic = false;
+  for (const key of NON_SEMANTIC_ARGS) {
+    if (key in args) {
+      hasNonSemantic = true;
+      break;
+    }
+  }
+  if (!hasNonSemantic) return args;
+  const copy: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (NON_SEMANTIC_ARGS.includes(key)) continue;
+    copy[key] = value;
+  }
+  return copy;
+}
+
+/**
  * Ключ вызова: имя инструмента + стабильная сериализация аргументов.
+ *
+ * VL-326: служебные аргументы (`NON_SEMANTIC_ARGS`, напр. `idempotencyKey`)
+ * вырезаются ДО сериализации — два вызова с одинаковыми содержательными
+ * аргументами и разными ключами идемпотентности дают одинаковую сигнатуру.
  *
  * @param name — имя инструмента (MCP-реестр или локальный файловый)
  * @param args — аргументы вызова; undefined трактуется как пустой объект
  */
 export function callSignature(name: string, args: Record<string, unknown> | undefined): string {
-  return `${name}|${stableSerialize(args ?? {})}`;
+  return `${name}|${stableSerialize(stripNonSemanticArgs(args) ?? {})}`;
 }
 
 /** Вердикт guard'а для конкретного вызова. */
@@ -89,7 +136,27 @@ export type ToolCallVerdict =
   /** Дословный дубль уже исполненного вызова — не исполнять. */
   | 'duplicate'
   /** Лимит вызовов текущего ответа исчерпан — не исполнять. */
-  | 'limit';
+  | 'limit'
+  /**
+   * VL-326: серия вызовов, вернувших noop, исчерпала кап — не исполнять.
+   *
+   * Отдельный вердикт, а не `duplicate`: сигнатура может быть НОВОЙ (модель
+   * меняет служебные аргументы или порядок полей), но ответ снова будет
+   * «изменений нет» — смысла исполнять вызов нет, модели нужен другой сигнал.
+   */
+  | 'noop_repeat';
+
+/**
+ * VL-326: сколько подряд идущих noop-вызовов допускается до блокировки.
+ *
+ * По образцу `MAX_NOOP_REPEATS_PER_RUN` (`src/agent/loop.ts`): 3 — модели
+ * хватает двух-трёх «изменений нет», чтобы понять «поля уже такие»; на
+ * четвёртом ответ становится бесполезным шумом, и ход надо разворачивать
+ * директивой, а не ждать лимита в 16 вызовов на ответ (лимит сбрасывается
+ * `beginTurn()` на каждом ответе модели, поэтому вечный цикл ничто не
+ * останавливало — инцидент VL-324).
+ */
+export const MAX_NOOP_REPEATS_PER_TURN = 3;
 
 /** Счётчики guard'а для диагностики (пишутся в `<threadId>.repeat.json`). */
 export interface ToolGuardStats {
@@ -99,6 +166,10 @@ export interface ToolGuardStats {
   deduped: number;
   /** Заблокированные по лимиту вызовы на ответ. */
   limit_hits: number;
+  /** VL-326: сколько исполненных вызовов вернули noop-ответ. */
+  noop: number;
+  /** VL-326: сколько вызовов заблокировано исчерпанием noop-серии. */
+  noop_blocked: number;
 }
 
 /** Guard tool-вызовов одного хода веб-чата. */
@@ -109,23 +180,36 @@ export interface TurnToolGuard {
    * весь ход (все итерации одного POST), а лимит — на каждый ответ отдельно.
    */
   beginTurn(): void;
-  /** Вердикт для вызова: исполнять / дубль / лимит. */
+  /** Вердикт для вызова: исполнять / дубль / лимит / исчерпана noop-серия. */
   check(name: string, args: Record<string, unknown> | undefined): ToolCallVerdict;
   /**
    * Зафиксировать РЕАЛЬНО исполненный вызов: write инкрементит epoch своего
    * ресурса (последующее чтение после записи не считается дублем).
    */
   noteExecuted(name: string, args: Record<string, unknown> | undefined): void;
+  /**
+   * VL-326: зафиксировать noop-ответ исполненного вызова.
+   *
+   * Считается СЕРИЯ подряд идущих noop-вызовов (по сигнатуре, как в
+   * `src/agent/loop.ts`): любой реально исполненный вызов, вернувший не-noop,
+   * серию сбрасывает (`noteExecuted`). Возвращает true, если серия исчерпала
+   * `MAX_NOOP_REPEATS_PER_TURN` — вызывающий отдаёт модели `noop_repeat`.
+   */
+  noteNoop(name: string, args: Record<string, unknown> | undefined): boolean;
   /** Текущие счётчики (копия — менять снаружи бесполезно). */
   stats(): ToolGuardStats;
   /** Лимит вызовов на ответ, с которым создан guard (для текста ошибки). */
   maxPerResponse(): number;
+  /** VL-326: кап noop-серии, с которым создан guard (для текста ошибки). */
+  maxNoopRepeats(): number;
 }
 
 /** Опции guard'а. */
 export interface TurnToolGuardOptions {
   /** Лимит вызовов на один ответ модели (дефолт CHAT_MAX_TOOL_CALLS_DEFAULT). */
   maxPerResponse?: number;
+  /** VL-326: кап подряд идущих noop-вызовов (дефолт MAX_NOOP_REPEATS_PER_TURN). */
+  maxNoopRepeats?: number;
 }
 
 /**
@@ -141,6 +225,13 @@ export function createTurnToolGuard(options: TurnToolGuardOptions = {}): TurnToo
     Number.isFinite(rawMax) && rawMax >= 1
       ? Math.min(Math.floor(rawMax), CHAT_MAX_TOOL_CALLS_CEILING)
       : CHAT_MAX_TOOL_CALLS_DEFAULT;
+  // VL-326: кап noop-серии — терпимая валидация как у лимита вызовов
+  // (мусор/0/дробное → дефолт): битая настройка не должна отключать защиту.
+  const rawNoopMax = options.maxNoopRepeats ?? MAX_NOOP_REPEATS_PER_TURN;
+  const maxNoopRepeats =
+    Number.isFinite(rawNoopMax) && rawNoopMax >= 1
+      ? Math.floor(rawNoopMax)
+      : MAX_NOOP_REPEATS_PER_TURN;
 
   /** Исполненные сигнатуры → epoch ресурса на момент исполнения. */
   const executed = new Map<string, number>();
@@ -148,7 +239,13 @@ export function createTurnToolGuard(options: TurnToolGuardOptions = {}): TurnToo
   const epochs = new Map<string, number>();
   /** Число вызовов в текущем ответе модели. */
   let responseCalls = 0;
-  const counters: ToolGuardStats = { executed: 0, deduped: 0, limit_hits: 0 };
+  /** VL-326: длина текущей серии подряд идущих noop-вызовов. */
+  let noopRepeatCount = 0;
+  /** VL-326: имена инструментов, чей исполненный вызов вернул noop-ответ. */
+  const noopTools = new Set<string>();
+  /** VL-326: серия исчерпана — повторы известных noop-вызовов блокируются. */
+  let noopExhausted = false;
+  const counters: ToolGuardStats = { executed: 0, deduped: 0, limit_hits: 0, noop: 0, noop_blocked: 0 };
 
   const epochOf = (resource: string | null): number =>
     resource === null ? 0 : epochs.get(resource) ?? 0;
@@ -166,6 +263,18 @@ export function createTurnToolGuard(options: TurnToolGuardOptions = {}): TurnToo
       // иначе повтор одной и той же пары не упирался бы в лимит никогда.
       responseCalls++;
       const signature = callSignature(name, args);
+      // VL-326: серия исчерпана — вызовы ТОГО ЖЕ инструмента не исполняем:
+      // он уже отвечал «изменений нет», и смена аргументов на другой набор
+      // уже применённых полей прогресса не даст (инцидент VL-324: модель
+      // меняла только idempotencyKey/набор полей). Проверяется ДО дедупа,
+      // чтобы модель получила noop_repeat с требованием сменить аргументы,
+      // а не безликий duplicate. Выход из серии — ДРУГОЙ инструмент
+      // (read_file/backlog_view_task/отчёт): он исполняется и сбрасывает
+      // серию в noteExecuted.
+      if (noopExhausted && noopTools.has(name)) {
+        counters.noop_blocked++;
+        return 'noop_repeat';
+      }
       const recorded = executed.get(signature);
       if (recorded === undefined) return 'execute';
       const resource = toolRepeatTarget(name, (args ?? {}) as Record<string, unknown>);
@@ -184,12 +293,46 @@ export function createTurnToolGuard(options: TurnToolGuardOptions = {}): TurnToo
       }
       executed.set(callSignature(name, actual), epochOf(resource));
       counters.executed++;
+      // VL-326: реально исполненный вызов, вернувший НЕ noop, сбрасывает
+      // серию — модель продолжила работу, кап к ней больше не относится.
+      noopRepeatCount = 0;
+      noopExhausted = false;
+      noopTools.clear();
+    },
+    noteNoop(name: string, args: Record<string, unknown> | undefined): boolean {
+      counters.noop++;
+      const actual = (args ?? {}) as Record<string, unknown>;
+      // Сигнатуру тоже фиксируем: вызов ИСПОЛНЕН (инструмент отработал), просто
+      // без изменений. Поэтому дословный повтор получает `duplicate`, а не
+      // исполняется заново — иначе модель тратила бы бюджет ответа на те же
+      // «изменений нет» (AC7: второй и последующие вызовы не исполняются).
+      executed.set(callSignature(name, actual), epochOf(toolRepeatTarget(name, actual)));
+      // Инструмент запоминается как noop-способный: после исчерпания серии
+      // именно его вызовы блокируются вердиктом noop_repeat.
+      noopTools.add(name);
+      // noop-вызов — тоже исполнение (инструмент отработал, файл не изменён):
+      // в диагностике он учитывается и как executed, и как noop.
+      counters.executed++;
+      // VL-326: серия считается по ФАКТУ noop-ответа, а не по сигнатуре.
+      // Дедуп отсекает дословные повторы первым слоем; второй слой нужен для
+      // обхода дедупа (модель меняет служебные аргументы, порядок полей или
+      // передаёт другой набор уже применённых полей) — любой noop-ответ
+      // означает «прогресса нет», и после капа ход надо разворачивать.
+      noopRepeatCount++;
+      if (noopRepeatCount > maxNoopRepeats) {
+        noopExhausted = true;
+        return true;
+      }
+      return false;
     },
     stats(): ToolGuardStats {
       return { ...counters };
     },
     maxPerResponse(): number {
       return maxPerResponse;
+    },
+    maxNoopRepeats(): number {
+      return maxNoopRepeats;
     },
   };
 }
@@ -225,5 +368,26 @@ export function limitCallResult(maxPerResponse: number): string {
     ok: false,
     limit: true,
     message: `Лимит tool-вызовов на один ответ исчерпан (${maxPerResponse}) — заверши ход и продолжи следующим.`,
+  });
+}
+
+/**
+ * JSON-ответ модели при исчерпании noop-серии (VL-326).
+ *
+ * Инцидент VL-324: модель 12 раз подряд вызвала `backlog_update_task`,
+ * передавая только уже применённые поля (`priority`, `type`). Инструмент
+ * честно отвечал `noop`, но ответ слабыми моделями не взвешивался — а лимит
+ * вызовов на ответ (16) сбрасывался `beginTurn()` на каждом новом ответе,
+ * поэтому ничто не останавливало круг. Теперь на 4-м дословном noop-повторе
+ * модели уходит этот ответ: он называет причину («поля уже такие») и требует
+ * ИЗМЕНИТЬ аргументы, а не повторять вызов.
+ */
+export function noopRepeatCallResult(maxNoopRepeats: number): string {
+  return JSON.stringify({
+    ok: false,
+    noop_repeat: true,
+    message:
+      `Подряд ${maxNoopRepeats} вызова вернули «Изменений нет» — передаваемые значения уже такие, повтор с теми же аргументами бесполезен. ` +
+      'Передай недостающие поля в этом же вызове (например, description/acceptanceCriteria/plan) или переходи к отчёту.',
   });
 }
