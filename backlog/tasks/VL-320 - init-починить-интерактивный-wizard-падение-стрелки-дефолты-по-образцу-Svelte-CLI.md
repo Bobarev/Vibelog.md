@@ -1,11 +1,11 @@
 ---
 id: VL-320
 title: 'init: починить интерактивный wizard (падение, стрелки, дефолты) по образцу Svelte CLI'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-03 17:33'
-updated_date: '2026-11-03 18:58'
+updated_date: '2026-11-03 19:00'
 due_date: ''
 labels:
   - cli
@@ -38,13 +38,13 @@ lessons:
   - lesson-171
   - lesson-195
 token_usage:
-  input: 9028492
-  output: 97682
-  cache: 8217600
-  total: 9126174
-  requests: 134
-  duration_ms: 2854896
-  reasoning: 60397
+  input: 11175525
+  output: 110337
+  cache: 10122752
+  total: 11285862
+  requests: 175
+  duration_ms: 2922245
+  reasoning: 67056
   by_phase:
     plan:
       input: 2421903
@@ -57,10 +57,10 @@ token_usage:
       cache: 4621824
       requests: 67
     close:
-      input: 1632978
-      output: 10829
-      cache: 1415680
-      requests: 33
+      input: 3780011
+      output: 23484
+      cache: 3320832
+      requests: 74
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -112,7 +112,7 @@ Prefix задач [VL]: VT
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -252,5 +252,19 @@ DoD не отмечены (1): 2. Документация обновлена
 Файлы (7): src/cli/prompt.ts, src/cli/prompt.test.mjs, src/cli/commands/init-wizard.ts, src/cli/commands/init.ts, src/cli/init-wizard.test.mjs, src/core/setup.ts, src/core/setup.test.mjs
 Фрагмент плана: ## Диагноз (по коду, без запуска) **Дефект 1 — «падение» на шаге секретов.** `createPrompter()` (init-wizard.ts:172) создаёт ОДИН `readline.Interface` на весь wizard. `chooseAgents` в TTY-ветке (init-wizard.ts:255-305) делает `stdin.setRawMode(true)`, `stdin.resume()`, `stdin.setEncoding('utf8')`, а…
 Отчёт собран сервером автоматически (VL-253): модель не передала comment.
+---
+author: @agent
+created: 2026-11-03 18:58
+---
+Фаза close не удалась (код выхода 1): локировок=0, payload последнего запроса=253624 байт (макс 253624), usage={"input_tokens":1632978,"output_tokens":10829,"cache_read_input_tokens":1415680,"total_tokens":1643807,"reasoning_tokens":5744} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-03 18:59
+---
+Фаза Close выполнена. Ветка vb/vl-320 слита в master (1 коммит: e0423ed, merge 5e78191), worktree удалена (force — в ней был только untracked-симлинк backlog/references/data), ветка vb/vl-320 удалена.
+Проверки после merge: `pnpm build` — успешно; ранний точечный прогон затронутых diff'ом тестов (`src/cli/prompt.test.mjs`, `src/core/setup.test.mjs`, `src/cli/init-wizard.test.mjs`) — 41 тест зелёный; полный `pnpm test` — 161 файл, 3048 тестов passed, 4 skipped, падений нет (повторных прогонов не было).
+DoD: 1. Тесты проходят — да (полный прогон); 2. Документация обновлена — да (doc-7 раздел `init`: автодефолт prefix из имени проекта, приоритет `--web`, поведение Ctrl+C/Esc, не-TTY-дефолты; CHANGELOG.md — запись в Unreleased/Исправлено); 3. Нет регрессий — да.
+Коммиты: c10ce6b — refs (ref-25) и lesson-195; 93e2825 — документация и CHANGELOG.
+Замечание для будущих задач: в описании VL-321 указано, что `@clack/prompts` добавляется в dependencies в VL-320 — фактически VL-320 реализован на собственном TUI-слое без внешних зависимостей (`src/cli/prompt.ts`, zero deps), поэтому VL-321 не сможет «переиспользовать» пакет из VL-320 и должен вводить его сам.
 ---
 <!-- COMMENTS:END -->
