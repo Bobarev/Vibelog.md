@@ -23,6 +23,20 @@ export interface SettingsData {
   commit_coauthor?: boolean;
   /** Лимиты веб-чата (VL-269): секция `chat` settings.json. */
   chat?: ChatSettings;
+  /** VL-317: сверка цены вендора с каталогом (секция `pricing_guard`). */
+  pricing_guard?: PricingGuardSettings;
+}
+
+/**
+ * Сверка цены вендора с каталогом (VL-317). Отсутствие ключа — дефолт из
+ * `core/pricing-guard.ts` (enabled=true, threshold_percent=10, ask, allow).
+ */
+export interface PricingGuardSettings {
+  enabled?: boolean;
+  threshold_percent?: number;
+  on_drift?: "ask" | "auto" | "warn";
+  catalog_ttl_minutes?: number;
+  offline?: "allow" | "block";
 }
 
 /** Лимиты веб-чата: секунды/штуки как в конфиге; отсутствие ключа — дефолт. */
@@ -43,6 +57,14 @@ export type SettingsPatch = {
 } & {
   max_wall_time?: number | null;
   max_requests?: number | null;
+  /** VL-317: секция pricing_guard; null по ключу — сброс к дефолту. */
+  pricing_guard?: {
+    enabled?: boolean | null;
+    threshold_percent?: number | null;
+    on_drift?: "ask" | "auto" | "warn" | null;
+    catalog_ttl_minutes?: number | null;
+    offline?: "allow" | "block" | null;
+  };
   /** Секция chat: ключ со значением null/0 удаляется (сброс к дефолту). */
   chat?: {
     max_iterations?: number | null;

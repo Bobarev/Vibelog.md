@@ -35,6 +35,7 @@ import {
   PRICING_GUARD_KEYS,
 } from '../../dist/core/pricing-guard.js';
 import { catalogCachePath } from '../../dist/core/provider-catalog.js';
+import { handleCatalogApi } from '../../dist/web/catalog-api.js';
 
 let cwd;
 
@@ -576,5 +577,74 @@ describe('refreshModelPricing', () => {
       () => refreshModelPricing(cwd, 'nope', { fetchFn: fakeFetch(endpointsPayload([])) }),
       /отсутствует/,
     );
+  });
+});
+
+// ── REST API сверки (AC11/AC12) ──
+
+describe('GET /api/pricing/drift и POST /api/pricing/refresh', () => {
+  it('drift отдаёт состояние и подробности (AC11)', async () => {
+    writeSettings({ pricing: { input_per_1m: 10, output_per_1m: 20, cache_per_1m: 0 }, vendor: 'makora' });
+    const fetchFn = fakeFetch(
+      endpointsPayload([{ id: 'makora', input_per_1m: 15, output_per_1m: 20, cache_per_1m: 0 }]),
+    );
+    const res = await handleCatalogApi(
+      'GET',
+      '/api/pricing/drift',
+      null,
+      cwd,
+      'model=routerai%2Fxiaomi%2Fmimo-v2.6%2F%40makora',
+      { fetchFn },
+    );
+    assert.equal(res.status, 200);
+    assert.equal(res.body.state, 'drift');
+    assert.equal(res.body.direction, 'increased');
+    assert.equal(res.body.maxDeltaPercent, 50);
+    assert.equal(res.body.vendor, 'makora');
+    assert.ok(Array.isArray(res.body.components));
+    // конфиг отдаётся странице «Модели» для отображения порога
+    assert.equal(res.body.config.thresholdPercent, 10);
+  });
+
+  it('drift без модели — состояние активной/default модели', async () => {
+    writeSettings();
+    const fetchFn = fakeFetch(
+      endpointsPayload([{ id: 'makora', input_per_1m: 10, output_per_1m: 20, cache_per_1m: 0 }]),
+    );
+    const res = await handleCatalogApi('GET', '/api/pricing/drift', null, cwd, '', { fetchFn });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.state, 'ok');
+  });
+
+  it('refresh обновляет тариф из каталога (AC12)', async () => {
+    writeSettings({ vendor: 'makora' });
+    const fetchFn = fakeFetch(
+      endpointsPayload([{ id: 'makora', input_per_1m: 12, output_per_1m: 24, cache_per_1m: 0 }]),
+    );
+    const res = await handleCatalogApi(
+      'POST',
+      '/api/pricing/refresh',
+      { id: 'routerai/xiaomi/mimo-v2.6/@makora' },
+      cwd,
+      '',
+      { fetchFn },
+    );
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.pricing, { input_per_1m: 12, output_per_1m: 24, cache_per_1m: 0 });
+    assert.equal(res.body.vendor, 'makora');
+  });
+
+  it('refresh без id — 400', async () => {
+    writeSettings();
+    const res = await handleCatalogApi('POST', '/api/pricing/refresh', {}, cwd, '', {
+      fetchFn: fakeFetch(endpointsPayload([])),
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /id/);
+  });
+
+  it('чужие URL не перехватываются', async () => {
+    const res = await handleCatalogApi('GET', '/api/tasks', null, cwd, '', {});
+    assert.equal(res, null);
   });
 });

@@ -102,6 +102,7 @@ import {
 } from '../core/provider-catalog.js';
 import { DEFAULT_PERSONA_ID, listPersonas } from './personas.js';
 import { CHAT_SECTION_KEYS, loadBotSettings, saveBotSettings } from '../bot/settings.js';
+import { PRICING_GUARD_KEYS } from '../core/pricing-guard.js';
 import type { BotSettings } from '../bot/settings.js';
 import { CHAT_LIMITS_CEILING } from './chat-limits.js';
 import { startTaskPhase, getRun, rejectTask } from './orchestrator.js';
@@ -973,6 +974,53 @@ function validateSettingsPatch(
         }
         // Пустая секция = полный сброс: ключ chat удаляется из settings.json
         patch.chat = Object.keys(section).length > 0 ? (section as BotSettings['chat']) : undefined;
+        break;
+      }
+      case 'pricing_guard': {
+        // VL-317: секция сверки цен. Валидация ДО записи (как у chat):
+        // неизвестный ключ/тип — 400, в settings.json не попадает мусор.
+        // null — полный сброс секции (все значения вернутся к дефолтам).
+        if (value === null) {
+          patch.pricing_guard = undefined;
+          break;
+        }
+        if (typeof value !== 'object' || Array.isArray(value)) {
+          return { error: `pricing_guard: ожидается объект с ключами ${PRICING_GUARD_KEYS.join(', ')}` };
+        }
+        const section: Record<string, unknown> = {};
+        for (const [subKey, subValue] of Object.entries(value as Record<string, unknown>)) {
+          if (!(PRICING_GUARD_KEYS as readonly string[]).includes(subKey)) {
+            return { error: `Неизвестный ключ настройки: pricing_guard.${subKey}` };
+          }
+          if (subValue === null) continue; // сброс ключа к дефолту
+          if (subKey === 'enabled') {
+            if (typeof subValue !== 'boolean') {
+              return { error: `pricing_guard.enabled: ожидается boolean, получено ${JSON.stringify(subValue)}` };
+            }
+            section[subKey] = subValue;
+            continue;
+          }
+          if (subKey === 'on_drift') {
+            if (subValue !== 'ask' && subValue !== 'auto' && subValue !== 'warn') {
+              return { error: `pricing_guard.on_drift: ожидается 'ask' | 'auto' | 'warn', получено ${JSON.stringify(subValue)}` };
+            }
+            section[subKey] = subValue;
+            continue;
+          }
+          if (subKey === 'offline') {
+            if (subValue !== 'allow' && subValue !== 'block') {
+              return { error: `pricing_guard.offline: ожидается 'allow' | 'block', получено ${JSON.stringify(subValue)}` };
+            }
+            section[subKey] = subValue;
+            continue;
+          }
+          const n = Number(subValue);
+          if (!Number.isFinite(n) || n < 0) {
+            return { error: `pricing_guard.${subKey}: ожидается неотрицательное число, получено ${JSON.stringify(subValue)}` };
+          }
+          section[subKey] = n;
+        }
+        patch.pricing_guard = Object.keys(section).length > 0 ? section : undefined;
         break;
       }
       default:

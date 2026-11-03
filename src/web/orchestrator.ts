@@ -47,6 +47,7 @@ import { appendBilling } from '../core/billing.js';
 // VL-276: живость процесса фазы — reap залипших локов (см. reapStaleRuns);
 // функция уже написана для супервизора, дублировать логику process.kill нельзя
 import { isPidAlive } from '../core/supervisor-state.js';
+import { checkPricingDriftCached, decideDriftPolicy, resolvePricingGuard } from '../core/pricing-guard.js';
 
 // Реэкспорт для обратной совместимости (VL-85): renderPrompt/Phase вынесены
 // в phase-prompt.ts — общий модуль оркестратора и CLI vibelog-agent.
@@ -284,6 +285,38 @@ export function startPhase(
   if (workflow && PHASES.includes(phase as Phase) && !isPhaseAllowed(workflow, taskStatus, phase)) {
     return { error: `Фаза ${phase} недопустима из статуса ${taskStatus}` };
   }
+  // VL-317 (AC9): сверка цены вендора ПЕРЕД стартом фазы. Точка выбрана
+  // здесь, а не в ensureLlmEnv: `ensureLlmEnv` — общая валидация окружения
+  // (её вызывают и TUI-чат, и headless-CLI, где цена не нужна), а фаза-ран
+  // запускается именно отсюда. Сверка СИНХРОННАЯ (по кэшу каталога VL-316):
+  // старт фазы не должен ждать сеть, а при отсутствии кэша цена неизвестна —
+  // это не повод блокировать работу при offline='allow' (дефолт).
+  const pricingGuard = resolvePricingGuard(cwd);
+  if (pricingGuard.config.enabled) {
+    const drift = checkPricingDriftCached(cwd);
+    const action = decideDriftPolicy(pricingGuard.config, drift);
+    if (action.kind === 'block') {
+      // offline='block': цена неизвестна, работа не начинается (AC10)
+      return { error: action.message };
+    }
+    if (action.kind === 'ask') {
+      // AC5: фаза НЕ стартует, причина пишется в задачу — пользователь
+      // принимает решение (перезапуск с явным подтверждением/переездом вендора)
+      const reason = `Сверка цены (pricing_guard): ${action.message}`;
+      addComment(cwd, taskId, reason);
+      return { error: reason };
+    }
+    if ('warning' in action && action.warning !== undefined) {
+      // AC7/warn и информационное снижение цены: работаем, предупреждение — в лог
+      console.warn(`[vibelog-pricing] ${taskId}/${phase}: ${action.warning}`);
+    }
+    if (action.kind === 'auto') {
+      // AC6: переключение вендора логируется в задачу
+      addComment(cwd, taskId, `Сверка цены (pricing_guard): ${action.message}`);
+      console.warn(`[vibelog-pricing] ${taskId}/${phase}: ${action.message}`);
+    }
+  }
+
   // {{producesStatus}} — статус после фазы из workflow (VL-188): шаблоны
   // фаз больше не хардкодят "Spec"/"Planned"/"Review"/"Done".
   // null (нет перехода — служебная фаза/до- workflow статус) → '' —

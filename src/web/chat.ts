@@ -85,6 +85,24 @@ import { resolveSupervisorRuntime } from '../core/supervisor-config.js';
 import type { SupervisorGrantPreview } from './supervisor.js';
 import { supervisorGrantPreview } from '../mcp/supervisor.js';
 
+
+/**
+ * VL-317: дописывает строку в журнал решений по цене треда (AC6/AC7).
+ *
+ * Отдельный файл (`<threadId>.pricing.log`), а не jsonl истории: решения по
+ * цене — диагностика для человека, они не должны попадать в контекст модели
+ * (иначе каждый следующий ход «видел» бы старые предупреждения).
+ */
+export function appendDriftLog(cwd: string, threadId: string, text: string): void {
+  try {
+    const dir = join(cwd, '.vibelog', 'chat-sessions');
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, `${threadId}.pricing.log`), `${new Date().toISOString()} ${text}\n`, 'utf-8');
+  } catch {
+    // Нет прав/диска — журнал не критичен: предупреждение уже ушло в ленту
+  }
+}
+
 /** SSE-событие чата (data-строка — JSON с полем type). */
 export type ChatEvent =
   | { type: 'thread'; threadId: string }
@@ -738,6 +756,10 @@ async function produce(
   deps: ChatDeps,
   queue: EventQueue,
 ): Promise<void> {
+  // VL-317: новый ход (не resume/continue) — точка сверки цены
+  const hasMessage =
+    typeof body.message === 'string' && (body.message as string).trim().length > 0;
+
   // --- роль (VL-283: фиксируется за тредом) ---------------------------------
   // Роль — свойство ТРЕДА, а не хода: первый ход фиксирует её в
   // <threadId>.persona.json, а последующие ходы body.persona игнорируют —

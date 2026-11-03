@@ -146,7 +146,8 @@ export function startWebServer(
         // Async-эндпоинты каталога моделей (VL-316): ходят в сеть, поэтому не
         // могут жить в синхронном handleApi. Ветка ДО общего вызова — иначе
         // GET /api/catalog/models ушёл бы в handleApi и получил 404.
-        if (url.startsWith('/api/catalog/')) {
+        // VL-317: сверка цен (/api/pricing/*) живёт в том же async-обработчике
+        if (url.startsWith('/api/catalog/') || url.startsWith('/api/pricing/')) {
           handleCatalogApi(method, url, parsed, cwd, queryString)
             .then((result) => {
               if (res.destroyed || res.writableEnded) return;

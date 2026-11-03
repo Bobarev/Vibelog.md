@@ -66,6 +66,22 @@ type ChatEvent =
    * VL-269: ход остановлен лимитом, история сохранена. Клиент продолжает ход
    * сам (до `maxAutoContinue` раз), без нового user-сообщения.
    */
+  /**
+   * VL-317: цена вендора разошлась с каталогом. kind='ask' — ход не начался,
+   * карточка предлагает «Продолжить»/«Перейти на <вендор>»; kind='warn' —
+   * ход идёт, в ленте остаётся предупреждение; kind='auto' — вендор
+   * переключён автоматически.
+   */
+  | {
+      type: "pricing"
+      kind: "ask" | "warn" | "auto"
+      state: "ok" | "drift" | "unknown"
+      message: string
+      model?: string
+      vendor?: string
+      alternative?: string
+      maxDeltaPercent?: number
+    }
   | {
       type: "truncated"
       reason: "iterations" | "wall_time"
@@ -99,11 +115,41 @@ const MAX_AUTO_CONTINUE_FALLBACK = 3
 export const CHAT_ERROR_PART = "chat-error"
 
 /**
+ * Имя data-части «дрейф цены вендора» (VL-317): карточка с было/стало и
+ * кнопками «Продолжить» / «Перейти на <вендор>» (AC5), либо предупреждение
+ * в ленте (AC7).
+ */
+export const CHAT_PRICING_PART = "chat-pricing"
+
+/**
  * Текущий threadId (VL-207: id приходит из hash при восстановлении,
  * событие thread записывает id при первом ходе в новом треде). Resume и
  * следующие ходы продолжают тот же jsonl. Выставляется провайдером при
  * смене треда (useEffect — до первого действия пользователя).
  */
+/**
+ * VL-317: решение пользователя по карточке дрейфа цены. Живёт module-state,
+ * потому что карточка и адаптер run — разные компоненты (как allow-list
+ * треда VL-264): карточка пишет, следующий POST хода читает и очищает.
+ * `undefined` — решения нет (обычный ход).
+ */
+let pricingDecision: { ack: boolean; vendor?: string } | undefined
+
+/**
+ * Записывает решение по дрейфу цены (VL-317): `ack` — «Продолжить»
+ * (расхождение принимается), `vendor` — «Перейти на <вендор>».
+ */
+export function setPricingDecision(ack: boolean, vendor?: string): void {
+  pricingDecision = { ack, ...(vendor !== undefined ? { vendor } : {}) }
+}
+
+/** Забирает решение по цене и очищает его (один POST = одно решение). */
+function takePricingDecision(): { ack: boolean; vendor?: string } | undefined {
+  const d = pricingDecision
+  pricingDecision = undefined
+  return d
+}
+
 let activeThreadId: string | undefined
 
 /**
@@ -386,6 +432,24 @@ function applyEvent(
         data: { message: ev.message, retryable: true },
       })
       return false
+    case "pricing":
+      // VL-317: карточка/предупреждение о цене. В content кладём data-часть —
+      // её рендерит PartView (thread.tsx). Ход при kind='ask' сервер уже
+      // завершил событием done, поэтому run не продолжается сам.
+      parts.push({
+        type: "data",
+        name: CHAT_PRICING_PART,
+        data: {
+          kind: ev.kind,
+          state: ev.state,
+          message: ev.message,
+          ...(ev.model !== undefined ? { model: ev.model } : {}),
+          ...(ev.vendor !== undefined ? { vendor: ev.vendor } : {}),
+          ...(ev.alternative !== undefined ? { alternative: ev.alternative } : {}),
+          ...(ev.maxDeltaPercent !== undefined ? { maxDeltaPercent: ev.maxDeltaPercent } : {}),
+        },
+      })
+      return false
     case "done":
       return false
     case "usage":
@@ -456,8 +520,17 @@ const chatAdapter: ChatModelAdapter = {
           ...(activeModelId ? { model: activeModelId } : {}),
         }
       } else {
+        // VL-317: ответ на карточку дрейфа цены — то же сообщение, но с
+        // подтверждением расхождения и/или выбранным вендором
+        const pricing = takePricingDecision()
         body = {
           message: lastUserText(options.messages),
+          ...(pricing !== undefined
+            ? {
+                ...(pricing.ack ? { pricingAck: true } : {}),
+                ...(pricing.vendor !== undefined ? { pricingVendor: pricing.vendor } : {}),
+              }
+            : {}),
           ...(activeThreadId ? { threadId: activeThreadId } : {}),
           // VL-209: переопределение модели (undefined — default из settings.json)
           ...(activeModelId ? { model: activeModelId } : {}),

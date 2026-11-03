@@ -82,6 +82,13 @@ export interface BotSettings {
    * пользователь его не задавал (тогда чат берёт дефолт из chat-limits.ts).
    */
   chat?: ChatSectionSettings;
+  /**
+   * VL-317: сверка цены вендора с каталогом (секция `pricing_guard`).
+   * Хранится как есть (сырым объектом): значения валидирует и подставляет
+   * дефолты `resolvePricingGuard` из core/pricing-guard.ts — страница
+   * настроек не должна дублировать правила валидации.
+   */
+  pricing_guard?: Record<string, unknown>;
 }
 
 /** Лимиты веб-чата в том виде, в котором они лежат в settings.json. */
@@ -204,6 +211,14 @@ export function loadBotSettings(cwd: string): BotSettings {
   const commitCoauthor = raw.commit_coauthor === false ? false : undefined;
   // Лимиты веб-чата (VL-269): секция chat, только положительные целые
   const chat = readChatSection(raw.chat);
+  // VL-317: секция pricing_guard отдаётся в API/UI как есть — терпимый
+  // парсинг с дефолтами живёт в core/pricing-guard.ts (единый источник)
+  const pricingGuard =
+    raw.pricing_guard !== null &&
+    typeof raw.pricing_guard === 'object' &&
+    !Array.isArray(raw.pricing_guard)
+      ? (raw.pricing_guard as Record<string, unknown>)
+      : undefined;
   return {
     chats: chats.map(Number).filter((n) => Number.isFinite(n)),
     ...(defaultAgent ? { default_agent: defaultAgent } : {}),
@@ -219,6 +234,7 @@ export function loadBotSettings(cwd: string): BotSettings {
     ...(codeSameSession !== undefined ? { code_same_session: codeSameSession } : {}),
     ...(commitCoauthor !== undefined ? { commit_coauthor: commitCoauthor } : {}),
     ...(chat !== undefined ? { chat } : {}),
+    ...(pricingGuard !== undefined ? { pricing_guard: pricingGuard } : {}),
     // Пользовательские записи перекрывают дефолты; поле всегда объект —
     // handlers не пишет ?? {} (VL-82)
     task_type_styles: { ...DEFAULT_TASK_TYPE_STYLES, ...extractTaskTypeStyles(raw.task_type_styles) },
@@ -283,6 +299,8 @@ export function saveBotSettings(cwd: string, settings: BotSettings): void {
     commit_coauthor: settings.commit_coauthor,
     // VL-269: секция лимитов веб-чата; undefined удаляет ключ (сброс к дефолту)
     chat: settings.chat,
+    // VL-317: секция сверки цен; undefined удаляет ключ (все дефолты)
+    pricing_guard: settings.pricing_guard,
     task_type_styles: Object.keys(userStyles).length > 0 ? userStyles : undefined,
   };
   saveSettingsPatch(cwd, patch);
