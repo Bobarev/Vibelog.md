@@ -98,8 +98,6 @@ describe('VL-210 — ядро setup', () => {
           default: 'p1/m1',
           available: { 'p1/m1': { provider: 'p1', model: 'm1', api_mode: 'chat' } },
         },
-        env: { TELEGRAM_BOT_TOKEN: 'x' },
-        chats: [1, 2],
       }),
       'utf-8',
     );
@@ -107,6 +105,13 @@ describe('VL-210 — ядро setup', () => {
     writeFileSync(
       join(testDir, '.qwen', 'settings.json'),
       JSON.stringify({ mcpServers: { vibelog: { command: 'vibelog' } } }),
+      'utf-8',
+    );
+
+    // VL-329: чаты и токен читаются из .env, а не из settings.json
+    writeFileSync(
+      join(testDir, '.env'),
+      'TELEGRAM_BOT_TOKEN=x\nTELEGRAM_CHAT_IDS=1, 2\n',
       'utf-8',
     );
 

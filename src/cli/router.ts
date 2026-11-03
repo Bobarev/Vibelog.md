@@ -213,10 +213,11 @@ vibelog init [name] [--prefix LB] [--mode fresh|upgrade] [--yes] [--web]
   --no-mcp                   — не настраивать MCP-сервер (.qwen/.opencode settings.json)
 
 Секреты и бот:
-  --secrets-location system|env|settings|both  — где хранить ключи
+  --secrets-location system|env  — где хранить ключи
                         (system — не писать, завести переменные самому; env — .env)
   --secrets-overwrite   — перезаписать уже существующие секреты
   --bot, --bot-token <t>, --bot-chats <ids>, --bot-proxy <url>  — Telegram-бот
+                        (привязка чатов пишется в .env: TELEGRAM_CHAT_IDS)
 
 LLM (только если выбран vb):
   --gateway <id> --base-url <url> --api-key-env <VAR> --api-key <key>
@@ -385,8 +386,8 @@ vibelog model <subcommand>
 vibelog bot
 
 Запускает Telegram-бота (long polling). Токен: TELEGRAM_BOT_TOKEN в .env
-или в секции env .vibelog/settings.json. При старте в консоль печатается пин-код —
-введите его в Telegram после /start для привязки чата.
+(единственный источник секретов). При старте в консоль печатается пин-код —
+введите его в Telegram после /start: chat_id допишется в .env (TELEGRAM_CHAT_IDS).
 
 Команды: /tasks, /task <id>, /board`,
 

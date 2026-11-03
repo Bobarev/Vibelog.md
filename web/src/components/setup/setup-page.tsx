@@ -60,8 +60,8 @@ const AGENT_LABELS: Record<string, string> = {
   claude: "claude — внешний Claude Code",
 }
 
-/** Локации секретов, которые API принимает (UI предлагает только первые две). */
-type SecretsLocation = "system" | "env" | "settings" | "both"
+/** Локации секретов (VL-329: секция env settings.json удалена). */
+type SecretsLocation = "system" | "env"
 
 /** Цена за 1M токенов для подписи пункта (как в CLI-wizard-е, VL-324). */
 function formatPrice(value: number | undefined): string {
@@ -564,7 +564,7 @@ export function SetupPage() {
                 </p>
               </div>
               <div className="space-y-1">
-                <Label htmlFor="setup-bot-chats">chat_id через запятую</Label>
+                <Label htmlFor="setup-bot-chats">chat_id через запятую (сохранятся в .env)</Label>
                 <Input
                   id="setup-bot-chats"
                   value={form.botChats}

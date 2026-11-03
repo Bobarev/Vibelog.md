@@ -41,6 +41,9 @@
 - **Релизные задачи — publish и пуш без согласия**: если задача релизная, публикация пакета (npm publish, токен без 2FA) и пуш на gitverse разрешены в процессе выполнения задачи без дополнительного согласия пользователя (решение Pavel, 2026-10-04).
 - **Совместимость с Backlog.md** — строгая ТОЛЬКО в хранении данных: структура папок backlog/, формат md/yaml файлов, frontmatter задач. Внутренние API (core-функции, CLI-команды, веб-интерфейс) развиваются свободно — например, addComment в core допустим, хотя в оригинале его нет.
 - **Node.js 20+**, macOS 10.15 Catalina (проверять, что нет нативных модулей).
+- **Секреты и chat_id — только `.env`** (VL-329): токены, API-ключи и `TELEGRAM_CHAT_IDS` живут в `.env` в корне проекта (приоритет: реальное shell-окружение → `.env`). Секция `env` в `.vibelog/settings.json` больше не читается (старый проект получает одноразовое предупреждение) и не пишется — `settings.json` коммитится в git.
+- **Git-политика `.vibelog/`** (VL-329): каталог не игнорируется корневым `.gitignore` целиком — у него собственный `.vibelog/.gitignore` по принципу «всё локальное игнорируется, конфигурация коммитится». Коммитятся `config.json`, `installed.lock.json`, `settings.json`, `prompts/`, `billing/`; игнорируются `agent-sessions/`, `chat-sessions/`, `cache/`, `qwen-debug/`, `tmp/`, `supervisor/`, `worktrees/`, `idempotency.json`, `auto-queue.json`, `phase-in-progress.json`, `*.log`.
+- **Временные файлы — только `.vibelog/tmp/`** (VL-329): новый код не пишет логи/дампы в корень проекта; путь берётся из `src/core/tmp.ts` (`tmpDir`/`ensureTmpDir`/`tmpFile`), каталог создаётся лениво и не попадает в git.
 - **Не использовать Claude Code / Codex / Opencode** — они не работают на Catalina. Целевой агент — Qwen Code.
 
 ## Запрет на внешние рантаймы

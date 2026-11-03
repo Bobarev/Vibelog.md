@@ -2,9 +2,9 @@
  * Тесты REST API настроек (VL-156): GET/PUT /api/settings.
  *
  * Проверяют контракт страницы настроек:
- * - GET отдаёт валидированные поля и НЕ отдаёт env-секцию (секреты);
+ * - GET отдаёт валидированные поля и НЕ отдаёт секреты (VL-329: их нет в файле);
  * - PUT валидирует как команда /set (400 на мусор, файл не меняется);
- * - PUT пишет через saveBotSettings — env-секция и chats сохраняются (VL-143);
+ * - PUT пишет через saveBotSettings — прочие ключи settings.json сохраняются;
  * - 0/null сбрасывает лимит (ключ удаляется из settings.json).
  */
 
@@ -38,17 +38,19 @@ afterAll(() => {
 });
 
 describe('GET /api/settings (VL-156)', () => {
-  it('без файла → дефолты: chats [], дефолтные task_type_styles, без env', () => {
+  it('без файла → дефолты: дефолтные task_type_styles, без chats/env', () => {
     const res = handleApi('GET', '/api/settings', null, cwd);
     assert.equal(res.status, 200);
     const { settings } = res.body;
-    assert.deepEqual(settings.chats, []);
+    // VL-329: chats живут в .env (TELEGRAM_CHAT_IDS), в ответе их нет
+    assert.equal('chats' in settings, false);
     // Дефолтные стили типов всегда объект (VL-82)
     assert.equal(settings.task_type_styles.bug, 'danger');
     assert.equal(settings.task_type_styles.feature, 'success');
   });
 
-  it('НЕ отдаёт env-секцию (секреты не утекают в браузер)', () => {
+  it('НЕ отдаёт секреты и chats (VL-329: их место в .env)', () => {
+    // Даже если в файле остались старые ключи (legacy-проект) — наружу не идут
     writeSettingsFile({
       chats: [42],
       env: { TELEGRAM_BOT_TOKEN: 'secret-token-xyz', TELEGRAM_PROXY: 'http://127.0.0.1:7070' },
@@ -62,7 +64,7 @@ describe('GET /api/settings (VL-156)', () => {
     assert.ok(!raw.includes('env'), 'env-секция не отдана');
     // Несекретные поля при этом видны
     assert.equal(res.body.settings.default_agent, 'vb');
-    assert.deepEqual(res.body.settings.chats, [42]);
+    assert.equal('chats' in res.body.settings, false, 'chats не отдаются');
   });
 
   it('git_user_name из кэша settings.json → отдан в теле (VL-166)', () => {

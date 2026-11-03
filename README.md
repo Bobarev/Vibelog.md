@@ -74,7 +74,7 @@ vibelog browser
 
 ## Contributing
 
-Отдельного CONTRIBUTING.md нет — правила разработки, проверки и коммиты описаны в [AGENTS.md](AGENTS.md). Кратко: исходники на TypeScript (`.ts` → `tsc` → `dist/`, ESM), пакетный менеджер pnpm.
+Отдельного CONTRIBUTING.md нет — правила разработки, проверки и коммиты описаны в [AGENTS.md](AGENTS.md). Кратко: исходники на TypeScript (`.ts` → `tsc` → `dist/`, ESM), пакетный менеджер pnpm; служебные файлы проекта живут в `.vibelog/` (конфигурация — в git, временное — в `.vibelog/tmp/`), секреты — только в `.env`.
 
 ```bash
 pnpm install && pnpm build   # сборка обязательна: bin/vibelog.mjs импортирует dist/

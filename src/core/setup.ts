@@ -20,11 +20,13 @@ import { stringifyYaml } from './yaml.js';
 import { findBacklogDir } from './paths.js';
 import { getGitUserName } from './git.js';
 import { saveProjectSettings } from './project-settings.js';
-import { loadSettings, readSettingsEnv, saveSettingsPatch } from './settings.js';
+import { loadSettings, saveSettingsPatch } from './settings.js';
 import { loadGateways, loadModels } from './models.js';
 import type { GatewayConfig, ModelsConfig } from './models.js';
 import { loadWorkflows } from './workflow.js';
 import { readEnvFile, writeSecrets } from './setup-secrets.js';
+import { upsertDotEnv } from './env-file.js';
+import { parseChatIds } from './env-file.js';
 import type { SecretsLocation } from './setup-secrets.js';
 import { hasVibelogMcp, setupMcp } from './setup-mcp.js';
 import type { McpTarget } from './setup-mcp.js';
@@ -76,7 +78,11 @@ export interface SetupState {
   prefix: string;
   agents: { id: AgentId; available: boolean; enabled: boolean; reason?: string }[];
   defaultAgent?: string;
-  secrets: { envFile: boolean; envKeys: string[]; settingsEnvKeys: string[] };
+  /**
+   * VL-329: `settingsEnvKeys` удалён вместе с секцией `env` settings.json —
+   * секреты живут только в `.env` (envKeys) и реальном окружении.
+   */
+  secrets: { envFile: boolean; envKeys: string[] };
   bot: { configured: boolean; chats: number[] };
   /** VL-315: шлюзы (раньше providers). */
   gateways: Record<string, GatewayConfig>;
@@ -187,15 +193,13 @@ export function readSetupState(cwd: string, modeOverride?: SetupMode): SetupStat
   const settings = loadSettings(cwd);
   const gateways = loadGateways(cwd);
   const models = loadModels(cwd);
-  const settingsEnv = readSettingsEnv(cwd);
   const envFile = readEnvFile(cwd);
 
-  const chatsRaw = settings.chats;
-  const chats = Array.isArray(chatsRaw)
-    ? chatsRaw.filter((x): x is number => typeof x === 'number' && Number.isFinite(x))
-    : [];
+  // VL-329: chat_id — личная привязка, живёт в .env (TELEGRAM_CHAT_IDS),
+  // а не в коммитимом settings.json
+  const chats = parseChatIds(envFile.TELEGRAM_CHAT_IDS);
   const botConfigured =
-    settingsEnv.TELEGRAM_BOT_TOKEN !== undefined || envFile.TELEGRAM_BOT_TOKEN !== undefined;
+    envFile.TELEGRAM_BOT_TOKEN !== undefined || process.env.TELEGRAM_BOT_TOKEN !== undefined;
 
   const defaultAgentRaw = settings.default_agent;
   const defaultAgent = typeof defaultAgentRaw === 'string' && defaultAgentRaw !== ''
@@ -234,7 +238,6 @@ export function readSetupState(cwd: string, modeOverride?: SetupMode): SetupStat
     secrets: {
       envFile: existsSync(join(cwd, '.env')),
       envKeys: Object.keys(envFile),
-      settingsEnvKeys: Object.keys(settingsEnv),
     },
     bot: { configured: botConfigured, chats },
     gateways,
@@ -481,11 +484,8 @@ export function applySetup(cwd: string, answers: SetupAnswers): SetupResult {
     const res = writeSecrets(cwd, secrets, answers.secretsLocation, {
       overwrite: answers.secretsOverwrite === true,
     });
-    const where = answers.secretsLocation === 'settings'
-      ? '.vibelog/settings.json env'
-      : answers.secretsLocation === 'both'
-        ? '.env + settings.json env'
-        : '.env';
+    // VL-329: единственное место записи секретов — .env
+    const where = '.env';
     for (const key of res.written) result.written.push(`${where} (${key})`);
     for (const key of res.skipped) result.skipped.push(`секрет ${key} (уже задан)`);
     if (answers.secretsLocation === 'system') {
@@ -497,13 +497,19 @@ export function applySetup(cwd: string, answers: SetupAnswers): SetupResult {
     }
   }
 
-  // --- 4. чаты бота (несекретные) ---
+  // --- 4. чаты бота (VL-329: личная привязка → .env, не settings.json) ---
   if (answers.bot && answers.bot.chats.length > 0) {
-    const currentChats = Array.isArray(settings.chats) ? settings.chats : [];
+    const currentChats = parseChatIds(readEnvFile(cwd).TELEGRAM_CHAT_IDS);
     const merged = Array.from(new Set([...currentChats, ...answers.bot.chats]));
     if (merged.length !== currentChats.length) {
-      saveSettingsPatch(cwd, { chats: merged });
-      result.written.push(`.vibelog/settings.json (chats: ${merged.length})`);
+      try {
+        upsertDotEnv(cwd, 'TELEGRAM_CHAT_IDS', merged.join(','), { overwrite: true });
+        result.written.push(`.env (TELEGRAM_CHAT_IDS: ${merged.length})`);
+      } catch (err) {
+        // .env с секретами: ошибку записи не глотаем молча — пользователь
+        // должен знать, что привязка не сохранилась
+        result.warnings.push(`чаты не записаны в .env: ${(err as Error).message}`);
+      }
     }
   }
 
@@ -521,11 +527,9 @@ export function applySetup(cwd: string, answers: SetupAnswers): SetupResult {
   return result;
 }
 
-/** Человекочитаемое имя локации секретов. */
+/** Человекочитаемое имя локации секретов (VL-329: только два варианта). */
 function secretsLabel(loc: SecretsLocation): string {
   if (loc === 'system') return 'env (системные переменные, приоритет env → .env)';
-  if (loc === 'settings') return 'settings.json env';
-  if (loc === 'both') return '.env + settings.json env';
   return '.env';
 }
 

@@ -49,6 +49,7 @@ import { getAvailablePhases, getWorkflowForTask } from '../core/workflow.js';
 import type { Workflow } from '../core/workflow.js';
 import { agentSessionsDir, findTaskPhaseSessionSync, loadSessionMetaSync } from '../agent/session.js';
 import { loadBotSettings, resolveDefaultAgent } from './settings.js';
+import { readBotChats } from './env.js';
 import { startTaskPhase } from '../web/orchestrator.js';
 import type { PhaseExitCallback, PhaseRun } from '../web/orchestrator.js';
 
@@ -165,9 +166,10 @@ async function sendText(bot: Bot, chatId: number, text: string): Promise<void> {
   }
 }
 
-/** Уведомление во все привязанные чаты (loadBotSettings.chats). */
+/** Уведомление во все привязанные чаты (VL-329: TELEGRAM_CHAT_IDS из .env). */
 function notifyAllChats(bot: Bot, cwd: string, text: string): void {
-  for (const chatId of loadBotSettings(cwd).chats) {
+  void cwd;
+  for (const chatId of readBotChats()) {
     void sendText(bot, chatId, text).catch(() => {});
   }
 }

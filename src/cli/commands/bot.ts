@@ -40,7 +40,7 @@ export async function runBot(
   const token = resolveToken(cwd);
   if (!token) {
     console.error(
-      'Токен Telegram-бота не найден. Задайте TELEGRAM_BOT_TOKEN в .env или в секции env .vibelog/settings.json'
+      'Токен Telegram-бота не найден. Задайте TELEGRAM_BOT_TOKEN в .env (единственный источник секретов)'
     );
     return;
   }

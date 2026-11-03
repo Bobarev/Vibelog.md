@@ -1,28 +1,31 @@
 /**
  * Настройки Telegram-бота (VL-34).
  *
- * Хранятся в едином .vibelog/settings.json (VL-143, gitignored) — отдельно
- * от backlog/config.yml: (1) секреты в env-секции не должны коммититься
- * в git, (2) config.yml остаётся совместимым с Backlog.md: оригинал читает
- * конфиг switch-ом по известным ключам и вычищает неизвестные поля при
- * записи (saveConfig) — хранить токен там нельзя.
+ * Хранятся в едином .vibelog/settings.json (VL-143) — отдельно от
+ * backlog/config.yml: config.yml остаётся совместимым с Backlog.md (оригинал
+ * читает конфиг switch-ом по известным ключам и вычищает неизвестные поля при
+ * записи, saveConfig).
  *
- * Файл читается/пишется через общий core-модуль settings.js: там же живут
- * ленивая миграция legacy bot.yml/settings.yml и env-секция секретов.
+ * VL-329: settings.json КОММИТИТСЯ в git (собственная политика
+ * `.vibelog/.gitignore`), поэтому секретов и личных привязок в нём нет:
+ * токен/прокси и `TELEGRAM_CHAT_IDS` живут в `.env` (см. bot/env.ts).
+ *
+ * Файл читается/пишется через общий core-модуль settings.js: там же живёт
+ * ленивая миграция legacy bot.yml/settings.yml.
  */
 
 import type { AgentName } from './commands.js';
-import {
-  loadSettings,
-  readSettingsEnv,
-  saveSettingsPatch,
-  settingsPath,
-} from '../core/settings.js';
+import { loadSettings, saveSettingsPatch, settingsPath } from '../core/settings.js';
+import { readBotChats } from './env.js';
 
-/** Настройки бота: привязанные чаты и опции фаз (секреты — в env-секции settings.json). */
+/**
+ * Настройки бота: опции фаз (VL-329).
+ *
+ * Секретов и личных привязок здесь больше нет: settings.json коммитится в git,
+ * поэтому токен/прокси живут в `.env`, а привязанные chat_id — в
+ * `TELEGRAM_CHAT_IDS` того же `.env` (см. readBotChats в bot/env.ts).
+ */
 export interface BotSettings {
-  /** Привязанные chat_id (команда /start в чате). */
-  chats: number[];
   /** Маппинг «тип задачи → стиль кнопки» rich-вывода /tasks (VL-82). */
   task_type_styles?: Record<string, string>;
   /** Агент по умолчанию для команд фаз и кнопок действий (VL-94, /set). */
@@ -170,7 +173,6 @@ export function botSettingsPath(cwd: string): string {
 /** Читает настройки бота; отсутствующий файл → пустые настройки + дефолты стилей. */
 export function loadBotSettings(cwd: string): BotSettings {
   const raw = loadSettings(cwd);
-  const chats = Array.isArray(raw.chats) ? raw.chats : [];
   // Валидация при чтении (VL-94): битое значение в settings.json не должно
   // попадать в запуски — неизвестный агент игнорируется (дефолт qwen)
   const defaultAgent =
@@ -220,7 +222,6 @@ export function loadBotSettings(cwd: string): BotSettings {
       ? (raw.pricing_guard as Record<string, unknown>)
       : undefined;
   return {
-    chats: chats.map(Number).filter((n) => Number.isFinite(n)),
     ...(defaultAgent ? { default_agent: defaultAgent } : {}),
     ...(maxWallTime !== undefined ? { max_wall_time: maxWallTime } : {}),
     ...(maxRequests !== undefined ? { max_requests: maxRequests } : {}),
@@ -277,7 +278,6 @@ export function saveBotSettings(cwd: string, settings: BotSettings): void {
   // Явный патч: BotSettings — интерфейс без index signature,
   // прямое приведение к Record<string, unknown> TS отклоняет
   const patch: Record<string, unknown> = {
-    chats: settings.chats,
     default_agent: settings.default_agent,
     max_wall_time: settings.max_wall_time,
     max_requests: settings.max_requests,
@@ -307,19 +307,21 @@ export function saveBotSettings(cwd: string, settings: BotSettings): void {
 }
 
 /**
- * Разрешает токен бота: env TELEGRAM_BOT_TOKEN → env-секция settings.json.
+ * Разрешает токен бота: только окружение (VL-329).
  *
- * @returns токен или null, если нигде не задан
+ * Источник — `TELEGRAM_BOT_TOKEN` из реального env или `.env` (его грузит
+ * loadProjectEnv). Секция `env` settings.json больше не читается.
+ *
+ * @returns токен или null, если не задан
  */
 export function resolveToken(cwd: string): string | null {
-  const envToken = process.env.TELEGRAM_BOT_TOKEN;
-  if (envToken) return envToken;
-  return readSettingsEnv(cwd).TELEGRAM_BOT_TOKEN ?? null;
+  void cwd;
+  return process.env.TELEGRAM_BOT_TOKEN ?? null;
 }
 
 /**
- * Разрешает прокси для Telegram API: env TELEGRAM_PROXY → env-секция
- * settings.json.
+ * Разрешает прокси для Telegram API: только окружение (VL-329) —
+ * `TELEGRAM_PROXY` из реального env или `.env`.
  *
  * Нужен там, где api.telegram.org заблокирован напрямую (например, системный
  * прокси macOS на 127.0.0.1:7070): Node fetch и grammy системный прокси не
@@ -328,9 +330,8 @@ export function resolveToken(cwd: string): string | null {
  * @returns URL прокси или null, если прокси не задан
  */
 export function resolveProxy(cwd: string): string | null {
-  const envProxy = process.env.TELEGRAM_PROXY;
-  if (envProxy) return envProxy;
-  return readSettingsEnv(cwd).TELEGRAM_PROXY ?? null;
+  void cwd;
+  return process.env.TELEGRAM_PROXY ?? null;
 }
 
 /**

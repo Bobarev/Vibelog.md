@@ -1,9 +1,9 @@
 /**
  * Тесты записи секретов wizard-а (VL-210).
  *
- * Проверяет .env (шапка, дописывание без перезаписи), секцию env
- * settings.json и режим both. Значения секретов не должны попадать в
- * результат (только имена ключей).
+ * VL-329: единственное место записи — .env (секция env settings.json и режим
+ * both удалены). Значения секретов не должны попадать в результат (только
+ * имена ключей).
  */
 
 import { describe, it, beforeEach, afterAll } from 'vitest';
@@ -12,7 +12,12 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { readEnvFile, writeSecrets } from '../../dist/core/setup-secrets.js';
+import {
+  readEnvFile,
+  writeSecrets,
+  SECRETS_LOCATIONS,
+  PROPOSED_SECRETS_LOCATIONS,
+} from '../../dist/core/setup-secrets.js';
 
 const testDir = mkdtempSync(join(tmpdir(), 'vibelog-setup-secrets-'));
 
@@ -61,19 +66,9 @@ describe('VL-210 — запись секретов', () => {
     assert.ok(!content.includes('API_KEY=new'), content);
   });
 
-  it('writeSecrets settings пишет секцию env settings.json', () => {
-    const res = writeSecrets(testDir, { TELEGRAM_BOT_TOKEN: 'tok' }, 'settings');
-    assert.deepEqual(res.written, ['TELEGRAM_BOT_TOKEN']);
-    const settings = JSON.parse(readFileSync(join(testDir, '.vibelog', 'settings.json'), 'utf-8'));
-    assert.equal(settings.env.TELEGRAM_BOT_TOKEN, 'tok');
-    assert.ok(!existsSync(join(testDir, '.env')), '.env не создаётся в режиме settings');
-  });
-
-  it('writeSecrets both пишет в оба места', () => {
-    writeSecrets(testDir, { K: 'v' }, 'both');
-    assert.ok(readFileSync(join(testDir, '.env'), 'utf-8').includes('K=v'));
-    const settings = JSON.parse(readFileSync(join(testDir, '.vibelog', 'settings.json'), 'utf-8'));
-    assert.equal(settings.env.K, 'v');
+  it('VL-329: локации только system|env — settings/both удалены', () => {
+    assert.deepEqual(SECRETS_LOCATIONS, ['system', 'env']);
+    assert.deepEqual(PROPOSED_SECRETS_LOCATIONS, ['system', 'env']);
   });
 
   it('VL-324: writeSecrets system ничего не пишет на диск', () => {
@@ -96,12 +91,10 @@ describe('VL-210 — запись секретов', () => {
     assert.equal(readEnvFile(testDir).API_KEY, 'new');
   });
 
-  it('VL-324: overwrite в settings.json заменяет значение секции env', () => {
-    writeSecrets(testDir, { K: 'old' }, 'settings');
-    const res = writeSecrets(testDir, { K: 'new' }, 'settings', { overwrite: true });
-    assert.deepEqual(res.written, ['K']);
-    const settings = JSON.parse(readFileSync(join(testDir, '.vibelog', 'settings.json'), 'utf-8'));
-    assert.equal(settings.env.K, 'new');
+  it('VL-329: секция env в settings.json не создаётся ни при какой локации', () => {
+    writeSecrets(testDir, { K: 'v' }, 'env');
+    assert.ok(!existsSync(join(testDir, '.vibelog', 'settings.json')), 'settings.json не создаётся');
+    assert.ok(readFileSync(join(testDir, '.env'), 'utf-8').includes('K=v'));
   });
 
   it('writeSecrets не возвращает значения секретов', () => {

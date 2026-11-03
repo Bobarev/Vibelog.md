@@ -28,7 +28,6 @@ import { LLM_GATEWAY_PRESETS, deriveApiKeyEnv, deriveGatewayId } from '../core/l
 import { loadGateways, resolveActiveModel, resolveModelById } from '../core/models.js';
 import { pingLlm, checkTelegramToken } from '../core/setup-check.js';
 import { loadProjectEnv, fileLoadedEnvKeys } from '../bot/env.js';
-import { readSettingsEnv } from '../core/settings.js';
 import type { ApiResponse } from './api.js';
 
 /**
@@ -36,9 +35,8 @@ import type { ApiResponse } from './api.js';
  * VL-324: список живёт в core/setup-secrets.ts — добавилась локация `system`
  * (ничего не писать), и дублировать перечень в веб-слое нельзя.
  *
- * VL-328 (AC5): валидируем по ПОЛНОМУ перечню — `settings`/`both` остаются
- * принимаемыми ради старых проектов, но в UI предлагаются только
- * `PROPOSED_SECRETS_LOCATIONS`.
+ * VL-329: `settings`/`both` удалены — перечень принимаемых и предлагаемых
+ * локаций совпадает (секция `env` settings.json больше не поддерживается).
  */
 const LOCATIONS: SecretsLocation[] = SECRETS_LOCATIONS;
 
@@ -51,20 +49,20 @@ function isHttpUrl(value: string): boolean {
  * Перечитывает env проекта так, чтобы ТОЛЬКО ЧТО записанные секреты попали в
  * `process.env` (VL-328, AC8).
  *
- * Почему не просто `loadProjectEnv`: `loadDotEnv`/`applySettingsEnv` пишут лишь
- * ПУСТЫЕ ключи (dotenv-семантика, VL-143). Значение, загруженное из прошлого
- * `.env` при старте сервера, уже висит в `process.env`, поэтому обновлённый
- * ключ не применился бы — ping LLM ушёл бы со старым (или пустым) секретом и
- * вернул ложный 401. Поэтому снимаем ключи, которые пришли ИЗ ФАЙЛОВ
- * (`fileLoadedEnvKeys`) и присутствуют в текущих `.env`/секции env, и грузим
- * заново. Переменные реального shell-окружения не трогаем — их приоритет
- * главнее файла (VL-143).
+ * Почему не просто `loadProjectEnv`: `loadDotEnv` пишет лишь ПУСТЫЕ ключи
+ * (dotenv-семантика, VL-143). Значение, загруженное из прошлого `.env` при
+ * старте сервера, уже висит в `process.env`, поэтому обновлённый ключ не
+ * применился бы — ping LLM ушёл бы со старым (или пустым) секретом и вернул
+ * ложный 401. Поэтому снимаем ключи, которые пришли ИЗ ФАЙЛА
+ * (`fileLoadedEnvKeys`) и присутствуют в текущем `.env`, и грузим заново.
+ * Переменные реального shell-окружения не трогаем — их приоритет главнее
+ * файла (VL-143). VL-329: секции `env` settings.json больше нет.
  *
  * @param cwd — директория проекта
  */
 function reloadProjectEnv(cwd: string): void {
   const fromFiles = fileLoadedEnvKeys();
-  const fresh = { ...readEnvFile(cwd), ...readSettingsEnv(cwd) };
+  const fresh = readEnvFile(cwd);
   for (const key of Object.keys(fresh)) {
     if (!fromFiles.has(key)) continue;
     delete process.env[key];
@@ -275,15 +273,14 @@ export function handleSetupApi(
         secrets: {
           envFile: state.secrets.envFile,
           envKeys: state.secrets.envKeys,
-          settingsEnvKeys: state.secrets.settingsEnvKeys,
         },
         bot: {
           configured: state.bot.configured,
           chats: state.bot.chats,
           // VL-328 (AC6): только ФАКТ наличия прокси — значение секрета наружу
-          // не отдаём (тот же принцип, что keySet у шлюзов). Читаем оба
-          // возможных места: env процесса и секцию env settings.json.
-          proxySet: Boolean(process.env.TELEGRAM_PROXY || readSettingsEnv(cwd).TELEGRAM_PROXY),
+          // не отдаём (тот же принцип, что keySet у шлюзов). VL-329: источник
+          // один — окружение (реальный env или .env).
+          proxySet: Boolean(process.env.TELEGRAM_PROXY),
         },
         // VL-328 (AC1, AC9): перечень шлюзов — из ядра, один для CLI и веба
         gatewayPresets: LLM_GATEWAY_PRESETS.map((p) => ({
@@ -295,8 +292,7 @@ export function handleSetupApi(
           manualModel: p.manualModel === true,
           custom: p.base_url === undefined,
         })),
-        // VL-328 (AC5): только предлагаемые локации; settings/both остаются
-        // принимаемыми в POST ради старых проектов
+        // VL-328 (AC5) / VL-329: перечень локаций из ядра (settings/both удалены)
         secretsLocations: PROPOSED_SECRETS_LOCATIONS.map((loc) => ({
           id: loc,
           label: SECRETS_LOCATION_LABELS[loc as 'system' | 'env'] ?? loc,
@@ -393,12 +389,13 @@ export async function handleSetupCheckBot(
   const token = typeof body?.token === 'string' && body.token !== ''
     ? body.token
     : process.env.TELEGRAM_BOT_TOKEN ?? '';
-  // VL-328 (AC8): прокси из окружения/секции env settings.json (VL-327) —
-  // без него getMe уходит напрямую и на заблокированном api.telegram.org
-  // возвращает ложный timeout вместо результата проверки.
+  // VL-328 (AC8): прокси из окружения (.env, VL-329) — без него getMe уходит
+  // напрямую и на заблокированном api.telegram.org возвращает ложный timeout
+  // вместо результата проверки.
+  void cwd;
   const proxy = typeof body?.proxy === 'string' && body.proxy !== ''
     ? body.proxy
-    : process.env.TELEGRAM_PROXY ?? readSettingsEnv(cwd).TELEGRAM_PROXY ?? '';
+    : process.env.TELEGRAM_PROXY ?? '';
   const result = await checkTelegramToken(token, proxy !== '' ? { proxy } : {});
   return { status: 200, body: result };
 }

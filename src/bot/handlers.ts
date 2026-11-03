@@ -45,6 +45,7 @@ import {
   renderTasksRich,
 } from './rich.js';
 import { loadBotSettings, resolveDefaultAgent, saveBotSettings } from './settings.js';
+import { readBotChats, saveBotChats } from './env.js';
 import { saveSettingsPatch, loadSettings } from '../core/settings.js';
 import { loadModels } from '../core/models.js';
 import { commandsHelp, helpText } from './registry.js';
@@ -346,7 +347,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   /** Проверка привязки чата; при отсутствии — ответ-подсказка. */
   function requireBind(ctx: Context): boolean {
     const chatId = ctx.chat?.id;
-    if (chatId !== undefined && loadBotSettings(deps.cwd).chats.includes(chatId)) return true;
+    if (chatId !== undefined && readBotChats().includes(chatId)) return true;
     void sendMd(ctx, 'Бот не привязан к чату — выполните /start');
     return false;
   }
@@ -428,7 +429,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   bot.command('start', async (ctx) => {
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return;
-    if (loadBotSettings(deps.cwd).chats.includes(chatId)) {
+    if (readBotChats().includes(chatId)) {
       await sendMd(ctx, `Чат уже привязан. Команды: ${commandsHelp()}`);
       return;
     }
@@ -1822,11 +1823,21 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     if (chatId === undefined || !awaitingPin.has(chatId)) return;
     // ctx.message.text — так typings grammy фильтруют message:text
     if (ctx.message.text.trim() === deps.getPin()) {
-      const settings = loadBotSettings(deps.cwd);
-      if (!settings.chats.includes(chatId)) settings.chats.push(chatId);
-      saveBotSettings(deps.cwd, settings);
+      // VL-329: chat_id — личная привязка, её место в .env рядом с токеном
+      // (settings.json коммитится в git). upsert сохраняет прочие строки
+      // и комментарии .env, ключ не дублируется.
+      const chats = readBotChats();
+      if (!chats.includes(chatId)) {
+        try {
+          saveBotChats(deps.cwd, [...chats, chatId]);
+        } catch (err) {
+          // .env с секретами: не глотаем ошибку записи молча
+          await sendMd(ctx, `Не удалось сохранить привязку в .env: ${(err as Error).message}`);
+          return;
+        }
+      }
       awaitingPin.delete(chatId);
-      await sendMd(ctx, `Чат привязан ✅ Команды: ${commandsHelp()}`);
+      await sendMd(ctx, `Чат привязан ✅ (id добавлен в .env) Команды: ${commandsHelp()}`);
     } else {
       await sendMd(ctx, 'Неверный код. Проверьте консоль запущенного vibelog bot.');
     }
