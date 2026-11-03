@@ -1,9 +1,9 @@
 # Roadmap — Vibelog.md
 
 **Текущая версия:** 1.11.0
-**Активный горизонт:** v1.12.0 — v1.13.0
-**Последнее обновление:** 2026-10-29 (после закрытия v1.11)
-**Связанные документы:** CHANGELOG.md, backlog/ (задачи), doc-6 (настройки), doc-21 (спецификация экспериментов)
+**Активный горизонт:** v1.12.0 — v1.14.0
+**Последнее обновление:** 2026-11-03 (добавлен горизонт UI Kit / `vb` CLI)
+**Связанные документы:** CHANGELOG.md, backlog/ (задачи), doc-6 (настройки), doc-21 (спецификация экспериментов), doc-25 (спецификация `vb` CLI, реестра UI и шаблонов), decisions decision-6…decision-11
 
 ## Как читать этот roadmap
 
@@ -17,6 +17,7 @@
 - **v1.11 закрыт** (VL-209…VL-290): супервизор и авто-лечение фаз, стабильный env тестов, guard повторов, инструменты агента (search_files, project_map, read_file на директориях), веб-чат и global search, релиз 1.11.0.
 - **Эпик A/B-экспериментов:** спецификация VL-293 Done (doc-21), MVP VL-294–VL-298 Done (артефакт `backlog/experiments/`, dataset JSONL, manual runner + record, report/compare, LLM-judge). Осталось v2 — VL-299, VL-300, VL-301.
 - **Открытые задачи:** VL-210 (init wizard, Spec), VL-299/VL-300 (Planned), VL-301 (Spec), VL-124 (To Do).
+- **Новое направление:** UI Kit для Svelte и `vb` CLI — спецификация doc-25 готова, ADR decision-6…decision-11 приняты, задачи ещё не созданы.
 
 ## Сейчас (v1.12.0)
 
@@ -65,6 +66,22 @@
 - **Задачи:** не создана
 - **Статус:** planned
 
+## Горизонт v1.14.0 — UI Kit для Svelte и `vb` CLI
+
+- **Зачем:** нужны тестовые проекты, пригодные одновременно как реальная работа. Первый кейс — UI Kit для мессенджера MAX Mini App на Svelte. Попутно проверяется агент на менее знакомом стеке (Svelte) и появляется инфраструктура распространения кода.
+- **Спецификация:** doc-25. Решения: decision-6 (Svelte 5 Runes + Tailwind), decision-7 (микро-shadcn, zero runtime dependencies), decision-8 (реестр на GitVerse, алиас `vibelog.md`, формат shadcn), decision-9 (три команды, служебное в `.vibelog/`), decision-10 (версионирование хешами в `installed.lock.json`), decision-11 (шаблоны: монорепозиторий, метаданные в `package.json`, `sparse-checkout`).
+- **Что (первая версия):**
+  1. Репозиторий `Vibelog-md/templates` + шаблон `svelte-minimal` (`package.json` с `vibelog.type`, `postCreate`, файл правил агента `CLAUDE.md` «только Svelte 5 Runes + только Tailwind»).
+  2. `vb create`: `sparse-checkout` + `--filter=blob:none`, копирование, пакетный менеджер, зависимости, `postCreate`, `git init`; fallback при отсутствии поддержки фильтрации на сервере.
+  3. Репозиторий `Vibelog-md/ui`: `registry.json`, сборка в `public/r/*.json`, корневой элемент `vibelog.md/ui` (`utils.ts`, `cn`, CSS-переменные).
+  4. `vb install`: скачивание по API-форме URL GitVerse, проверка `dependencies` из JSON реестра, `registryDependencies` одного уровня, разрешение конфликтов, атомарная запись, хеши в `.vibelog/installed.lock.json`.
+  5. Компоненты по порядку: `Button` (веб, порт с React-эталона) → `Input` + `Label` → `Card` (мультифайловый).
+- **Вне первой версии:** `vb update`, полная рекурсивная резолюция зависимостей, MAX Bridge (`window.WebApp`, `HapticFeedback`), компоненты на `bits-ui`, синтаксис `host/owner/repo`.
+- **Зависимости:** нет блокеров в текущем backlog. `vb` — алиас существующего бинаря `vibelog`, отдельного пакета не появляется.
+- **Уверенность:** Medium (инфраструктура `vb`), High (Svelte-шаблон и первый компонент)
+- **Задачи:** не созданы (план по шагам — §7 doc-25)
+- **Риски:** частичное клонирование может не поддерживаться GitVerse (закрыто fallback); агент может выдавать синтаксис Svelte 4 (закрыто файлом правил и `ai-tools`); `vb update` без манифеста затирал бы правки агента (закрыто хешами, собираются с первого дня).
+
 ## Будущее (v1.+)
 
 ### Subagents (роли в агенте)
@@ -106,9 +123,15 @@
 - **Decisions в workflow** — решили не добавлять: перегружает промпты, пока не используется. Если понадобится — вернёмся.
 - **TSID (multi-author)** — отложено: нет соавторов. Вернёмся, когда появятся.
 - **Отдельный `<VL-NN>.meta.json`** — отказались в пользу `.vibelog/billing/<taskId>.json` (append-only массив сессий) при реализации VL-198.
+- **`manifest.json` для lock-файла UI Kit** — отказались в пользу `.vibelog/installed.lock.json` (decision-9/10): «manifest» — опись пакета, а здесь фиксируется состояние установки.
+- **Отдельный бинарь для `vb`** — отказались: `vb` остаётся алиасом `vibelog`, команды добавляются в существующий CLI.
+- **Проверка Tailwind в `vb init`** — отказались: `vb init` универсален и не знает про стек проекта; зависимости проверяет `vb install` по декларации `dependencies` в JSON реестра.
+- **Отдельные репозитории на каждый шаблон** — отказались в пользу монорепозитория `Vibelog-md/templates` + `sparse-checkout`.
 
 ## Не сейчас (Not now)
 
 - Milestones в workflow — когда будет много релизных задач.
 - OpenCode adapter — ждёт готовности внешнего агента; в wizard пункт показывается disabled.
 - Claude adapter — «Скоро», в wizard disabled.
+- `vb update` для UI Kit — после того как `installed.lock.json` накопит данные в реальных проектах.
+- Компоненты на `bits-ui` (Dialog, DropdownMenu) и MAX Bridge — после того как веб-`Button` пройдёт всю цепочку установки.

@@ -2,7 +2,7 @@
 id: decision-4
 title: Loop detection и лимиты tool-calling цикла агента — двойной предел + дедупликация вызовов
 date: 2026-10-04
-status: proposed
+status: accepted
 ---
 ## Context
 
