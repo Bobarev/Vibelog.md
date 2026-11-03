@@ -370,3 +370,70 @@ describe('VL-310 — noop-детекция общая для write-инстру�
     assert.equal(refAck.noop, true, `связь уже есть: ${JSON.stringify(refAck)}`);
   });
 });
+
+/**
+ * VL-326: `hint` в noop-ответе — «переданные поля уже такие; если нужны
+ * другие — передай их в этом же вызове».
+ *
+ * Инцидент VL-324: модель 12 раз подряд вызвала `backlog_update_task`,
+ * передавая только уже применённые поля (`priority`, `type`) и меняя лишь
+ * `idempotencyKey`. Noop-текст называл следующий шаг (`backlog_finish_phase`),
+ * которого в веб-чате нет, и не подсказывал главного: полей просто НЕ ХВАТАЕТ.
+ * Теперь `ackNoopDetailed` всегда отдаёт `hint`, а `toolUpdateTask` — свой
+ * `hint` с перечнем не переданных полей.
+ */
+describe('VL-326 — hint в noop-ответе update_task', () => {
+  it('AC5: noop-ответ update_task содержит hint с указанием передать другие поля', async () => {
+    const t = createTaskFile(cwd, { title: 'Hint-задача', type: 'bug', priority: 'High' });
+    const ack = JSON.parse(
+      await handleToolCall('backlog_update_task', { id: t.id, type: 'bug', priority: 'High' }, cwd),
+    );
+    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
+    assert.equal(typeof ack.hint, 'string', 'hint обязателен в noop-ответе');
+    assert.match(ack.hint, /уже такие/);
+    assert.match(ack.hint, /в ЭТОМ ЖЕ вызове/);
+    // перечислены поля, которых в вызове не было
+    assert.match(ack.hint, /description/);
+    assert.match(ack.hint, /acceptanceCriteria/);
+  });
+
+  it('AC5: переданные поля не предлагаются в hint', async () => {
+    const t = createTaskFile(cwd, { title: 'Hint-задача 2', type: 'bug', priority: 'High' });
+    // plan уже применён первым вызовом — второй становится noop
+    await handleToolCall('backlog_update_task', { id: t.id, plan: 'План уже такой' }, cwd);
+    const ack = JSON.parse(
+      await handleToolCall(
+        'backlog_update_task',
+        { id: t.id, type: 'bug', priority: 'High', plan: 'План уже такой' },
+        cwd,
+      ),
+    );
+    assert.equal(ack.noop, true);
+    assert.match(ack.hint, /description/);
+    const suggestion = ack.hint.split('например:')[1] ?? '';
+    assert.ok(!suggestion.includes('plan'), 'plan передан — не предлагается');
+  });
+
+  it('AC5: универсальный hint (ackNoopDetailed без своего hint) говорит то же самое', async () => {
+    const { ackNoopDetailed, NOOP_DEFAULT_HINT } = await import('../../dist/mcp/tool-result.js');
+    const parsed = JSON.parse(ackNoopDetailed('Изменений нет: test'));
+    assert.equal(parsed.noop, true);
+    assert.equal(parsed.hint, NOOP_DEFAULT_HINT);
+    assert.match(parsed.hint, /уже имеют эти значения/);
+    assert.match(parsed.hint, /в ЭТОМ ЖЕ вызове/);
+    // прежний текст «Следующий шаг: backlog_finish_phase» в hint не звучит —
+    // в веб-чате такого инструмента нет (инцидент VL-324)
+    assert.ok(!parsed.hint.includes('backlog_finish_phase'));
+  });
+
+  it('AC5: ackNoop остаётся обёрткой — message/applied не меняются', async () => {
+    const { ackNoop } = await import('../../dist/mcp/tool-result.js');
+    const parsed = JSON.parse(ackNoop('Изменений нет: type', { type: 'bug' }));
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.noop, true);
+    assert.equal(parsed.reason, 'noop');
+    assert.equal(parsed.message, 'Изменений нет: type');
+    assert.deepEqual(parsed.applied, { type: 'bug' });
+    assert.deepEqual(parsed.skipped, []);
+  });
+});

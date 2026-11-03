@@ -1091,15 +1091,17 @@ describe('VL-255 — дедупликация и лимит tool-вызовов'
       const task = createTaskFile(dir, { title: 'Задача VL-324b', type: 'bug', priority: 'High' });
       // Каждый вызов — ДРУГОЙ набор уже применённых полей: сигнатуры разные,
       // дедуп их пропускает, но прогресса нет — инструмент отвечает noop.
+      // Наборы РАЗЛИЧНЫ по сигнатуре (иначе их отсекает дедуп, и серия не растёт),
+      // но каждый содержит только уже применённые значения.
       const variants = [
         { priority: 'High' },
         { type: 'bug' },
-        { priority: 'High', type: 'bug' },
-        { priority: 'High' },
-        { type: 'bug' },
-        { priority: 'High', type: 'bug' },
-        { priority: 'High' },
-        { type: 'bug' },
+        { labels: [] },
+        { assignee: [] },
+        { milestone: '' },
+        { description: '' },
+        { plan: '' },
+        { notes: '' },
       ];
       const calls = variants.map((v, i) => ({
         id: `n${i}`,

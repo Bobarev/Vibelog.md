@@ -219,9 +219,17 @@ describe('VL-326 — createTurnToolGuard: серия noop-ответов', () =>
     assert.equal(guard.check('backlog_update_task', last), 'noop_repeat');
     assert.equal(guard.stats().noop_blocked, 1);
     assert.equal(guard.stats().noop, MAX_NOOP_REPEATS_PER_TURN + 1);
-    // вызов с НОВОЙ сигнатурой — единственный выход из серии, он исполняется
+    // смена аргументов внутри того же инструмента тоже блокируется: он уже
+    // отвечал «изменений нет», другой набор уже применённых полей прогресса
+    // не даст (инцидент VL-324: модель меняла только idempotencyKey)
     guard.beginTurn();
-    assert.equal(guard.check('backlog_update_task', { id: 'VL-1', plan: 'x' }), 'execute');
+    assert.equal(guard.check('backlog_update_task', { id: 'VL-1', plan: 'x' }), 'noop_repeat');
+    // выход из серии — ДРУГОЙ инструмент: он исполняется и сбрасывает её
+    guard.beginTurn();
+    assert.equal(guard.check('read_file', { path: 'a.ts' }), 'execute');
+    guard.noteExecuted('read_file', { path: 'a.ts' });
+    guard.beginTurn();
+    assert.equal(guard.check('backlog_update_task', { id: 'VL-1', plan: 'x' }), 'execute', 'серия сброшена другим инструментом');
   });
 
   it('реально исполненный (не-noop) вызов сбрасывает серию', () => {
