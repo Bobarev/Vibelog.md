@@ -1330,3 +1330,19 @@ describe('VL-318 — git_commit документации в close-шаблона
   });
 });
 
+describe('VL-323 — allowForeign в шагах refs/lessons сопровождается предупреждением', () => {
+  it('AC5: в обоих close-шаблонах рядом с git_commit refs/lessons сказано про modified_files и отказ', () => {
+    for (const file of ['phase-close.md', 'phase-close-worktree.md']) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      // Шаг refs/lessons узнаём по сообщению коммита и флагу.
+      const idx = text.indexOf('refs и lessons", "allowForeign": true');
+      assert.ok(idx !== -1, `${file}: шаг refs/lessons с allowForeign найден`);
+      // Предупреждение — в пределах следующих 600 символов после вызова.
+      const tail = text.slice(idx, idx + 600);
+      assert.match(tail, /ОБЯЗАТЕЛЕН/, `${file}: нет пометки «обязателен»`);
+      assert.match(tail, /modified_files/, `${file}: нет упоминания modified_files`);
+      assert.match(tail, /отклоняет/, `${file}: нет предупреждения, что без флага коммит отклоняется`);
+    }
+  });
+});
+
