@@ -5,7 +5,7 @@
  * индексам, usage), non-200, фолбэк non-stream, ретраи на сетевые ошибки.
  */
 
-import { describe, it } from 'vitest';
+import { afterAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -672,10 +672,21 @@ describe('vendor в wire-body (VL-315)', () => {
   /** Пустой успешный SSE-ответ (текста нет — нам нужен только wire-body). */
   const okStream = () => sseResponse([JSON.stringify({ choices: [{ delta: { content: 'ok' } }] })]);
 
+  /**
+   * Изоляция от локального (gitignored) `.vibelog/settings.json` (AGENTS.md,
+   * инвариант VL-240): без пустого cwd `resolveActiveModel(process.cwd())`
+   * подхватывает `models.default` разработчика, его `vendor` (например `morph`)
+   * перекрывает `@`-хвост тестовой модели и `provider` появляется там, где его
+   * быть не должно — падают два теста на машине с настроенной моделью.
+   */
+  const emptyDir = mkdtempSync(join(tmpdir(), 'vb-llm-vendor-'));
+  afterAll(() => rmSync(emptyDir, { recursive: true, force: true }));
+
   it('chat: provider.order + allow_fallbacks=false, имя модели без @-хвоста', async () => {
     const { impl, state } = fakeFetch([okStream()]);
     const client = createLlmClient({
       ...CLIENT_OPTS,
+      cwd: emptyDir,
       model: 'deepseek/deepseek-v4.1-flash@provider=baidu&allow_fallbacks=false',
       fetchImpl: impl,
     });
@@ -689,6 +700,7 @@ describe('vendor в wire-body (VL-315)', () => {
     const { impl, state } = fakeFetch([okStream()]);
     const client = createLlmClient({
       ...CLIENT_OPTS,
+      cwd: emptyDir,
       apiMode: 'responses',
       vendor: 'makora',
       fetchImpl: impl,
@@ -701,7 +713,7 @@ describe('vendor в wire-body (VL-315)', () => {
 
   it('без vendor поля provider в теле нет (поведение как раньше)', async () => {
     const { impl, state } = fakeFetch([okStream()]);
-    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    const client = createLlmClient({ ...CLIENT_OPTS, cwd: emptyDir, fetchImpl: impl });
     await client.streamChat([{ role: 'user', content: 'x' }], []);
     const body = JSON.parse(state.bodies[0]);
     assert.equal('provider' in body, false);
@@ -711,6 +723,7 @@ describe('vendor в wire-body (VL-315)', () => {
     const { impl, state } = fakeFetch([okStream()]);
     const client = createLlmClient({
       ...CLIENT_OPTS,
+      cwd: emptyDir,
       model: 'm@provider=baidu',
       vendor: 'morph',
       fetchImpl: impl,
