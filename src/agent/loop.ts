@@ -347,6 +347,15 @@ const MAX_APPLIED_REPEATS_PER_RUN = 3;
 // честный fail(): оркестратор откатит статус и запустит авто-resume, вместо
 // ложного «ран завершён штатно» (инцидент Close VL-307).
 const MAX_NOOP_REPEATS_PER_RUN = 3;
+// VL-323: серия дословных повторов вызова, вернувшего ackError (ok:false).
+// Это НЕ «модель крутится на уже сделанной работе» (VL-303/304/310) и не
+// «изменений нет» (VL-309): эффекта не было ни разу, работа не сделана, а
+// модель просто не поняла, что чинить. Порог 5 (а не 3) даёт ей время
+// применить подсказку из текста ошибки (инцидент Close VL-320: git_commit без
+// allowForeign → 3 отказа → fail на 4-м повторе, хотя исправление было в
+// тексте ошибки). Защита от вечного круга сохраняется: исчерпание серии —
+// честный fail() с текстом последней ошибки.
+export const MAX_ERROR_REPEATS_PER_RUN = 5;
 // Фантомные tool_calls (пустые name/id, VL-215): сколько ходов ПОДРЯД модель
 // может отдавать фантомы до fail(). 3 — по образцу loop detection VL-83:
 // фантомный ход тратит LLM-запрос, но единичный случай модель исправляет
@@ -384,12 +393,77 @@ const NEXT_STEP_HINT =
  *
  * Маркерная подстрока «Loop detection» сохранена намеренно (lesson-76):
  * по ней распознают событие существующие тесты и разборы сессий.
+ *
+ * VL-323: если предыдущий ответ по этой сигнатуре был отказом (`ok:false`,
+ * ackError), директива обязана назвать ПРИЧИНУ отказа и готовое исправление —
+ * иначе слабая модель читает общее «смени аргументы» как «попробуй ещё раз» и
+ * повторяет дословно (инцидент Close VL-320: git_commit без allowForeign,
+ * текст ошибки с подсказкой был в tool-результате, но директива его теряла).
+ * Текст ошибки обрезается, чтобы директива осталась < 400 байт (инвариант
+ * VL-310 на размер директив).
+ *
+ * @param name — имя повторённого инструмента
+ * @param repeatLimit — порог повторов, при котором сработала блокировка
+ * @param lastError — текст последнего отказа по этой сигнатуре (если был)
  */
-export function loopDetectionDirective(name: string, repeatLimit: number): string {
+export function loopDetectionDirective(name: string, repeatLimit: number, lastError?: string): string {
+  const reason = lastError === undefined ? '' : clipErrorText(lastError);
+  if (reason !== '') {
+    return (
+      `Loop detection: ${name} — предыдущий вызов отклонён: ${reason}. Повтор даст тот же отказ — исправь аргументы.`
+    );
+  }
   return (
     `Loop detection: инструмент ${name} вызван ${repeatLimit} раза подряд с одинаковыми аргументами — вызов НЕ выполнен и заблокирован. ` +
     `Повтор с теми же аргументами бесполезен. ${NEXT_STEP_HINT}`
   );
+}
+
+/**
+ * Максимальная длина текста ошибки внутри директивы (инвариант < 400 байт).
+ *
+ * 100 символов: кириллица в UTF-8 — 2 байта на символ, и директива с
+ * максимальным текстом ошибки занимает ~366 байт (проверено тестом).
+ */
+const ERROR_IN_DIRECTIVE_MAX_CHARS = 100;
+
+/** Сколько символов хвоста сохранить (готовая подсказка стоит в конце). */
+const ERROR_IN_DIRECTIVE_TAIL_CHARS = 35;
+
+/**
+ * Извлекает текст отказа из JSON-ответа write-инструмента (VL-323).
+ *
+ * ackError кладёт причину в `error`, ackDenied — в `message`; для прочих
+ * форм берём первое непустое из них. null — текста нет (директива останется
+ * общей, как до VL-323).
+ */
+function parsedErrorText(output: string): string | null {
+  try {
+    const parsed = JSON.parse(output) as { error?: unknown; message?: unknown } | null;
+    if (!parsed || typeof parsed !== 'object') return null;
+    for (const value of [parsed.error, parsed.message]) {
+      if (typeof value === 'string' && value.trim() !== '') return value;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Обрезает текст отказа для подстановки в директиву loop detection (VL-323).
+ *
+ * Сжимает пробелы. Длинный текст режется с сохранением ХВОСТА: готовая
+ * подсказка («передай allowForeign: true») у ackError стоит в конце
+ * сообщения, и простое усечение по голове её съедало — модель снова читала
+ * бесполезный текст (риск R2 плана: директива обязана остаться < 400 байт,
+ * инвариант VL-310).
+ */
+function clipErrorText(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length <= ERROR_IN_DIRECTIVE_MAX_CHARS) return flat;
+  const head = ERROR_IN_DIRECTIVE_MAX_CHARS - ERROR_IN_DIRECTIVE_TAIL_CHARS - 1;
+  return `${flat.slice(0, head)}…${flat.slice(-ERROR_IN_DIRECTIVE_TAIL_CHARS)}`;
 }
 
 /**
@@ -541,6 +615,18 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   let appliedRepeatSig: string | null = null;
   // VL-310: то же для noop-повторов (см. noopSignatures).
   let noopRepeatSig: string | null = null;
+  // VL-323: сигнатуры, чей последний ответ был отказом (`ok:false`). Отдельный
+  // набор от applied/noop: отказ значит «вызов не исполнен и НЕ будет исполнен
+  // в текущем виде» — повтор с теми же аргументами гарантированно бесполезен,
+  // поэтому модели нужна не блокировка-запрет, а готовое исправление.
+  const errorSignatures = new Set<string>();
+  // Текст последнего отказа по сигнатуре — попадает в директиву блокировки.
+  const lastErrorBySignature = new Map<string, string>();
+  // VL-323: серия подряд повторов вызова, вернувшего ackError. Порог фазового
+  // прерывания — MAX_ERROR_REPEATS_PER_RUN (5), не 3: модели нужно время
+  // применить подсказку из текста ошибки (инцидент Close VL-320).
+  let errorRepeatCount = 0;
+  let errorRepeatSig: string | null = null;
   // VL-310: отчёт этой сессии уже записан вызывающим инструментом
   // (backlog_finish_phase/backlog_add_comment с успешным ack). Только в этом
   // случае повтор уже применённого вызова завершает ран штатно: терять
@@ -1094,6 +1180,20 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           console.error(`[vibelog-agent] повтор применённого вызова: ${call.name}`);
           return;
         }
+        // VL-323: вызов, вернувший отказ (ackError), — не луп «по сделанной
+        // работе», а недопонимание причины отказа. Серия считается отдельно,
+        // фатальные счётчики blockedStreak/blockedTotal не растут, а директива
+        // несёт ТЕКСТ ошибки и требование исправить аргументы.
+        if (errorSignatures.has(signature)) {
+          noteErrorRepeat(signature);
+          await pushMessage({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: loopDetectionDirective(call.name, repeatLimit, lastErrorBySignature.get(signature)),
+          });
+          console.error(`[vibelog-agent] повтор вызова с отказом: ${call.name}`);
+          return;
+        }
         blockedStreak++;
         blocked.add(signature);
         blockCounts.set(signature, (blockCounts.get(signature) ?? 0) + 1);
@@ -1103,7 +1203,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         await pushMessage({
           role: 'tool',
           tool_call_id: call.id,
-          content: loopDetectionDirective(call.name, repeatLimit),
+          content: loopDetectionDirective(call.name, repeatLimit, lastErrorBySignature.get(signature)),
         });
         // Диагностика в точке срабатывания → logTail оркестратора (lesson-77)
         console.error(`[vibelog-agent] loop detection: ${call.name} заблокирован`);
@@ -1125,11 +1225,55 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
        * по капу, хотя между повторами шла нормальная работа (сессия
        * agent-1793637056809: document_update перемежался чтениями задачи).
        */
-      const resetRepeatSeries = (): void => {
+      const resetRepeatSeries = (signature?: string): void => {
         appliedRepeatCount = 0;
         appliedRepeatSig = null;
         noopRepeatCount = 0;
         noopRepeatSig = null;
+        // VL-323: серию отказов рвёт только работа с ДРУГИМИ аргументами.
+        // Повтор отказа исполняется (VL-318), поэтому reset вызывается и на
+        // нём — сбрасывать тут серию нельзя, иначе защита от вечного круга
+        // никогда не сработает. Набор errorSignatures не чистим: он про факт
+        // отказа по этим аргументам.
+        if (signature === undefined || !errorSignatures.has(signature)) {
+          errorRepeatCount = 0;
+          errorRepeatSig = null;
+        }
+      };
+
+      /**
+       * Исход повтора вызова, вернувшего ackError (VL-323).
+       *
+       * null — ран продолжается: модели ушла директива с текстом ошибки, она
+       * может исправить аргументы. LoopResult — серия исчерпана
+       * (MAX_ERROR_REPEATS_PER_RUN): честный fail() с последним текстом ошибки,
+       * чтобы оркестратор откатил статус (защита от вечного круга).
+       */
+      /**
+       * Учитывает очередное обращение к сигнатуре, вернувшей отказ (VL-323).
+       *
+       * Считаем и ИСПОЛНЕННЫЕ отказы, и заблокированные повторы: после порога
+       * streak повторы блокируются и до handler не доходят, поэтому без учёта
+       * блокировок счётчик застыл бы и вечный круг стал бы возможен.
+       */
+      const noteErrorRepeat = (signature: string): void => {
+        if (errorRepeatSig === signature) {
+          errorRepeatCount++;
+        } else {
+          errorRepeatSig = signature;
+          errorRepeatCount = 1;
+        }
+      };
+
+      const errorRepeatOutcome = (name: string, signature: string): LoopResult | null => {
+        // Порог — «больше MAX»: модель получает до 5 обращений к отказавшему
+        // вызову (из них ≥3 — директивы с текстом ошибки) прежде, чем ран
+        // прерывается. Строгое < , а не <=: на 5-м обращении ещё даём шанс.
+        if (errorRepeatCount <= MAX_ERROR_REPEATS_PER_RUN) return null;
+        const detail = lastErrorBySignature.get(signature) ?? '';
+        return fail(
+          `Loop detection: модель ${errorRepeatCount} раз подряд повторила вызов ${name} с одними и теми же аргументами, хотя он отклонялся с ошибкой${detail === '' ? '' : `: ${detail}`} — фаза прервана (работа не завершена). ${NEXT_STEP_HINT}`,
+        );
       };
 
       const appliedRepeatOutcome = (name: string): LoopResult | null => {
@@ -1171,6 +1315,14 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           if (outcome !== null) return outcome;
           continue;
         }
+        // VL-323: сигнатура отклонялась с ошибкой (ackError) — повторная
+        // блокировка не фатальна: серия считается отдельно и ограничена
+        // MAX_ERROR_REPEATS_PER_RUN, директива несёт текст ошибки.
+        if (errorSignatures.has(signature)) {
+          const outcome = errorRepeatOutcome(call.name, signature);
+          if (outcome !== null) return outcome;
+          continue;
+        }
         if (repeatsBefore >= 1 || blockedTotal >= 2) {
           return fail(
             `Loop detection: инструмент ${call.name} вызван ${repeatLimit} раза подряд с одинаковыми аргументами — вызов повторно заблокирован (та же сигнатура уже отклонялась в этой сессии), фаза прервана. ${NEXT_STEP_HINT}`,
@@ -1201,6 +1353,16 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       }
       if (streak >= repeatLimit) {
         await blockAndPush();
+        // VL-323: вызов отклонялся с ошибкой (ackError) — это не «модель
+        // крутится на сделанной работе», а непонимание причины отказа. На
+        // 3-м повторе фаза НЕ прерывается: модели ушла директива с текстом
+        // ошибки и требованием исправить аргументы, серия ограничена
+        // MAX_ERROR_REPEATS_PER_RUN (инцидент Close VL-320).
+        if (errorSignatures.has(signature)) {
+          const outcome = errorRepeatOutcome(call.name, signature);
+          if (outcome !== null) return outcome;
+          continue;
+        }
         // VL-310: применённый вызов — не луп: ран продолжается (директива
         // уже отправлена), терминально — по общему правилу.
         if (appliedSignatures.has(signature)) {
@@ -1316,7 +1478,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       }
       // VL-310: реально исполненный (не заблокированный) вызов рвёт серию
       // повторов — дальше кап считает заново.
-      if (blockDirective === null && spec) resetRepeatSeries();
+      if (blockDirective === null && spec) resetRepeatSeries(signature);
       // VL-274: tool завершён — активность; окно простоя отсчитывается заново
       // (resume делает и noteActivity: длительность инструмента не «съедает» бюджет)
       idleGuard.resume();
@@ -1379,6 +1541,16 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           if (isReportWritingTool(call.name)) reportWritten = true;
         }
         if (noop) noopSignatures.add(signature);
+        // VL-323: отказ (ackError) — запоминаем факт и ТЕКСТ ошибки. Директива
+        // блокировки для этой сигнатуры возьмёт текст отсюда и назовёт готовое
+        // исправление (инцидент Close VL-320: подсказка «передай
+        // allowForeign: true» была только в tool-результате и терялась).
+        if (failed) {
+          errorSignatures.add(signature);
+          noteErrorRepeat(signature);
+          const errorText = parsedErrorText(output);
+          if (errorText !== null) lastErrorBySignature.set(signature, errorText);
+        }
       }
       // VL-178: единый ingestion-cap ВСЕХ tool-выводов, включая внешние MCP
       // (chrome_devtools__take_snapshot приносил 624 КБ целиком — VL-110-cap

@@ -59,6 +59,7 @@ Definition of Done (DoD): {{taskDoD}}
    - Точные пути — через ls backlog/references/<ref-N>* backlog/lessons/lesson-N* — используй выведенные пути, не угадывай slug.
    - Сверь git status --porcelain -- <пути>; backlog/references/data/ НЕ коммить (в .gitignore).
    - Незакоммиченное — явные пути, один коммит: git_commit {"paths": [<явные пути>], "message": "docs(task): {{taskId}} — refs и lessons", "allowForeign": true}. Нечего коммитить — пропусти (пустой коммит запрещён).
+   - **`allowForeign: true` здесь ОБЯЗАТЕЛЕН:** файлы `backlog/references/*` и `backlog/lessons/*` не входят в modified_files задачи, поэтому без флага git_commit отклоняет коммит ВСЕГДА (ответ `ok:false` с подсказкой). Не «оптимизируй» вызов, выкидывая флаг.
 
 8. **Документация** в ГЛАВНОМ репо. CHANGELOG.md: запись в разделе Unreleased — что сделано (из отчётов Фаз 3 и merge); ничего пользовательского не менялось — пропусти. Менялось поведение, форматы, CLI или промпты — обнови соответствующие документы backlog/docs. git_commit {"paths": ["CHANGELOG.md", <путь к обновлённому документу>], "message": "docs: {{taskId}} — документация и CHANGELOG", "allowForeign": true}. Флаг allowForeign обязателен: CHANGELOG.md и backlog/docs/* не входят в modified_files задачи, без него git_commit отклоняет коммит.
 

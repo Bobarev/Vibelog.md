@@ -62,6 +62,7 @@ Definition of Done (DoD): {{taskDoD}}
    - Сверь git status --porcelain -- <пути> — закоммиченное и чистое пропусти. Файлы в backlog/references/data/ НЕ коммить (в .gitignore — там клоны репозиториев).
    - Файл задачи (его `lessons`, статус, комментарий) в этот коммит НЕ добавляй — его коммитит framework после записи token_usage.
    - Незакоммиченное добавь явными путями и закоммить одним коммитом: git_commit {"paths": [<явные пути>], "message": "docs(task): {{taskId}} — refs и lessons", "allowForeign": true}. Нечего коммитить — пропусти шаг.
+   - **`allowForeign: true` здесь ОБЯЗАТЕЛЕН:** файлы `backlog/references/*` и `backlog/lessons/*` не входят в modified_files задачи, поэтому без флага git_commit отклоняет коммит ВСЕГДА (ответ `ok:false` с подсказкой). Не «оптимизируй» вызов, выкидывая флаг.
 
 ## Экономия ходов
 

@@ -2531,3 +2531,144 @@ describe('VL-318 — ackError (ok:false) не считается применё�
     assert.match(String(first.content), /allowForeign: true/, 'текст ошибки дошёл до модели');
   });
 });
+
+describe('VL-323 — серия ackError не убивает фазу на 3-м повторе', () => {
+  /** Заглушка git_commit: без allowForeign отдаёт ackError с подсказкой. */
+  function commitSpec() {
+    const state = { calls: 0, okCalls: 0 };
+    const spec = {
+      name: 'git_commit',
+      description: 'write-заглушка с ackError',
+      inputSchema: { type: 'object', properties: { paths: { type: 'array' }, message: { type: 'string' } } },
+      handler: async (args) => {
+        state.calls++;
+        if (args.allowForeign !== true) {
+          return JSON.stringify({
+            ok: false,
+            error: 'git_commit: эти файлы не принадлежат задаче VL-320: backlog/references/ref-25-Svelte-CLI.md; передай allowForeign: true',
+          });
+        }
+        state.okCalls++;
+        return JSON.stringify({ ok: true, message: 'закоммичено' });
+      },
+    };
+    return { spec, state };
+  }
+
+  it('AC1/AC3: регресс agent-1793720932286 — директива несёт текст ошибки и подсказку allowForeign', async () => {
+    // Реальная сессия Close VL-320: git_commit без allowForeign → ackError,
+    // затем дословные повторы → «Loop detection: смени аргументы» (без причины)
+    // → fail на 4-м повторе, хотя исправление было в тексте ошибки.
+    const { spec, state } = commitSpec();
+    const same = { paths: ['backlog/references/ref-25-Svelte-CLI.md'], message: 'docs(task): VL-320 — refs и lessons' };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'git_commit', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'git_commit', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'git_commit', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c4', name: 'git_commit', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c5', name: 'git_commit', arguments: { ...same, allowForeign: true } }] },
+      { text: 'Готово' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false, `ран не должен падать на 4-м повторе: ${res.result}`);
+    assert.equal(res.result, 'Готово');
+    assert.equal(state.okCalls, 1, 'исправленный вызов дошёл до handler');
+    // Директива блокировки содержит ТЕКСТ ошибки и готовое исправление.
+    const directive = res.messages
+      .filter((m) => m.role === 'tool' && String(m.content).includes('Loop detection'))
+      .map((m) => String(m.content))
+      .pop();
+    assert.ok(directive, 'директива блокировки отправлена');
+    assert.match(directive, /Loop detection/, 'маркер lesson-76 сохранён');
+    assert.match(directive, /allowForeign: true/, 'директива называет готовое исправление');
+    assert.ok(
+      Buffer.byteLength(directive, 'utf8') < 400,
+      `директива < 400 байт (${Buffer.byteLength(directive, 'utf8')})`,
+    );
+  });
+
+  it('AC2: 5 дословных повторов ackError не фатальны, 6-й исчерпывает серию с текстом ошибки', async () => {
+    const { spec, state } = commitSpec();
+    const same = { paths: ['CHANGELOG.md'], message: 'docs: VL-323' };
+    const { llm } = fakeLlm(
+      Array.from({ length: 10 }, (_, i) => ({
+        text: '',
+        toolCalls: [{ id: `c${i + 1}`, name: 'git_commit', arguments: same }],
+      })),
+    );
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, true, 'вечный круг отказов обязан прерывать ран');
+    assert.match(res.result, /Loop detection/, 'маркер сохранён в фатальном тексте');
+    assert.match(res.result, /allowForeign: true/, 'текст ошибки попал в причину падения');
+    assert.equal(state.calls, 2, 'исполнены первые два отказа, дальше вызов блокируется');
+  });
+
+  it('AC4: обычный луп read-инструмента по-прежнему фаталится на 3-м повторе', async () => {
+    const spec = {
+      name: 'backlog_view_task',
+      description: 'read-заглушка',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => '[]',
+    };
+    const same = { id: 'VL-323' };
+    const { llm } = fakeLlm(
+      Array.from({ length: 6 }, (_, i) => ({
+        text: '',
+        toolCalls: [{ id: `c${i + 1}`, name: 'backlog_view_task', arguments: same }],
+      })),
+    );
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, true, 'общий путь loop detection не тронут');
+    assert.match(res.result, /Loop detection/);
+    assert.doesNotMatch(res.result, /отклонялся с ошибкой/, 'read-луп не считается серией отказов');
+  });
+
+  it('AC4: директива с длинным текстом ошибки остаётся < 400 байт', async () => {
+    const spec = {
+      name: 'git_commit',
+      description: 'write-заглушка с длинной ошибкой',
+      inputSchema: { type: 'object', properties: { paths: { type: 'array' } } },
+      handler: async () =>
+        JSON.stringify({ ok: false, error: `git_commit: ${'очень длинное описание причины отказа '.repeat(12)}передай allowForeign: true` }),
+    };
+    const same = { paths: ['backlog/docs/doc-10.md'], message: 'docs' };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'git_commit', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'git_commit', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'git_commit', arguments: same }] },
+      { text: 'Готово' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    const directives = res.messages.filter((m) => m.role === 'tool' && String(m.content).includes('Loop detection'));
+    assert.ok(directives.length > 0, 'директива отправлена');
+    for (const d of directives) {
+      const content = String(d.content);
+      assert.ok(Buffer.byteLength(content, 'utf8') < 400, `директива < 400 байт (${Buffer.byteLength(content, 'utf8')})`);
+      assert.match(content, /Loop detection/);
+    }
+  });
+
+  it('AC2: перемежение реальной работой сбрасывает серию отказов', async () => {
+    const { spec } = commitSpec();
+    const readSpec = {
+      name: 'backlog_view_task',
+      description: 'read-заглушка',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' }, n: { type: 'number' } } },
+      handler: async () => '[]',
+    };
+    const bad = { paths: ['CHANGELOG.md'], message: 'docs: VL-323' };
+    const script = [];
+    let n = 0;
+    // 4 пары «отказ + чтение с ДРУГИМИ аргументами»: серия отказов рвётся,
+    // ран не должен умереть на кап.
+    for (let i = 0; i < 4; i++) {
+      script.push({ text: '', toolCalls: [{ id: `c${++n}`, name: 'git_commit', arguments: bad }] });
+      script.push({ text: '', toolCalls: [{ id: `c${++n}`, name: 'backlog_view_task', arguments: { id: 'VL-323', n: i } }] });
+    }
+    script.push({ text: 'работаю дальше' });
+    const { llm } = fakeLlm(script);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec, readSpec] });
+    assert.equal(res.is_error, false, `серия сброшена реальной работой: ${res.result}`);
+    assert.equal(res.result, 'работаю дальше');
+  });
+});
