@@ -97,7 +97,9 @@ export async function route(args: string[]): Promise<void> {
     case 'qwen-debug':
       return runQwenDebug(cwd);
     case 'agent':
-      return runAgent(subcommand, positional, flags, cwd);
+      // VL-305: сырой argv — подкоманда run передаёт флаги фазы агенту
+      // без переинтерпретации парсером vibelog
+      return runAgent(subcommand, positional, flags, cwd, args);
     // VL-261: сводка сессии агента по jsonl; agent-session — алиас из
     // описания задачи (обе формы ведут в один обработчик)
     case 'session':
@@ -146,7 +148,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('board', colors.cyan)} [--export]                   Канбан-доска
   ${colorize('browser', colors.cyan)} [--port N] [--host ADDR]   Веб-интерфейс
   ${colorize('bot', colors.cyan)}                             Telegram-бот (grammy)
-  ${colorize('agent', colors.cyan)} [task-id]               Чат с LLM-агентом (TUI); analyze <ref> [комментарий] — анализ сессии
+  ${colorize('agent', colors.cyan)} [task-id]               Чат с LLM-агентом (TUI); run <фаза> <task-id> — headless-запуск фазы; analyze <ref> — анализ сессии
   ${colorize('session', colors.cyan)} summary|outline <id> [--task VL-N] [--json]  Сводка/обзор транскрипта сессии
   ${colorize('qwen-debug', colors.cyan)}                  Дебаг-прогон qwen (ping, stream-json)
   ${colorize('search', colors.cyan)} "query" [--status ...]      Поиск задач с фильтрами
@@ -376,12 +378,22 @@ vibelog bot
 
     agent: `
 vibelog agent [task-id] [--resume <session-ref>]
+vibelog agent run <фаза> <task-id> [флаги агента]
 vibelog agent analyze <session-ref> [комментарий]
 
 Интерактивный TUI-чат с LLM-агентом (VL-158, нужен терминал):
   task-id — карточка задачи добавляется в контекст чата
   --resume <session-ref> (VL-171) — чат продолжает сохранённую сессию
     (vb:agent-XXX либо agent-XXX; префикс vb: необязателен)
+
+Headless-запуск фазы без отдельного бинаря (VL-305):
+  run <фаза> <task-id> [флаги] — вызывает тот же CLI, что спавнит оркестратор
+  (vibelog-agent): промпт из шаблона фазы, в stdout JSON type=result, exit code
+  агента возвращается как есть. Флаги (--model, --headless, --comment,
+  --max-tool-calls, --max-wall-time, --max-requests, --resume, --no-mcp и др.)
+  передаются агенту без переинтерпретации парсером vibelog.
+  Без аргументов — справка по фазам и exit 1.
+  Пример: vibelog agent run plan VL-111 --model routerai/openai/gpt-5 --headless
 
 Штатный разбор сессии vibelog-agent (VL-141) — CLI-паритет /analyze бота:
 статистика jsonl (длительность, wall-убийства, прогоны «Продолжи», профиль

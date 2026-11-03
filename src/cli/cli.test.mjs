@@ -443,6 +443,100 @@ describe('CLI — интеграционные тесты', () => {
     assert.equal(process.exitCode, 1);
     process.exitCode = 0;
   });
+
+  // ── VL-305: vibelog agent run <фаза> <task-id> [флаги] ──
+
+  it('agent run без аргументов → справка по фазам и exit 1 (VL-305)', async () => {
+    let out = '';
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((...c) => { out += c.join(' ') + '\n'; });
+    try {
+      await runAgent('run', [], {}, testDir, ['agent', 'run']);
+    } finally {
+      logSpy.mockRestore();
+    }
+    assert.match(out, /vibelog agent run <фаза> <task-id>/, `нет справки: ${out}`);
+    assert.match(out, /Фазы: spec \| plan \| code/, 'справка перечисляет фазы');
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+  });
+
+  it('agent run с одним позиционным → справка и exit 1 (VL-305)', async () => {
+    // Один аргумент агент принял бы за готовый промпт (qwen-совместимость) —
+    // для run это ошибка ввода, а не запуск
+    let out = '';
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((...c) => { out += c.join(' ') + '\n'; });
+    try {
+      await runAgent('run', ['plan'], {}, testDir, ['agent', 'run', 'plan']);
+    } finally {
+      logSpy.mockRestore();
+    }
+    assert.match(out, /vibelog agent run <фаза> <task-id>/);
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+  });
+
+  it('agent run --help → справка, exit 0 (VL-305)', async () => {
+    let out = '';
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((...c) => { out += c.join(' ') + '\n'; });
+    try {
+      await runAgent('run', [], {}, testDir, ['agent', 'run', '--help']);
+    } finally {
+      logSpy.mockRestore();
+    }
+    assert.match(out, /vibelog agent run <фаза> <task-id>/);
+    assert.notEqual(process.exitCode, 1, 'справка — не ошибка');
+    process.exitCode = 0;
+  });
+
+  it('agent run с неизвестной фазой → ошибка агента со списком фаз (VL-305)', async () => {
+    // Текст ошибки даёт агентский CLI (renderPrompt), не роутер vibelog.
+    // main() работает от process.cwd() — переходим в testDir (там есть clt-1),
+    // иначе агент упадёт раньше на «Задача не найдена». chdir возвращаем в finally.
+    const prevCwd = process.cwd();
+    let errText = '';
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((...c) => { errText += c.join(' ') + '\n'; });
+    try {
+      process.chdir(testDir);
+      await runAgent('run', ['deploy', 'clt-1'], {}, testDir, ['agent', 'run', 'deploy', 'clt-1']);
+    } finally {
+      process.chdir(prevCwd);
+      errSpy.mockRestore();
+    }
+    assert.match(errText, /Неизвестная фаза/, `нет ошибки агента: ${errText}`);
+    assert.match(errText, /spec/, 'ошибка перечисляет доступные фазы');
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+  });
+
+  it('agent run передаёт флаги агенту без переинтерпретации (VL-305)', async () => {
+    // Флаги с пробелами и повторяющиеся значения: парсер vibelog (args.ts)
+    // собрал бы их иначе — run обязан отдать агенту сырой argv.
+    // Проверяем через parseArgs агентского CLI: значения доходят дословно.
+    const { parseArgs: parseAgentArgs } = await import('../../dist/agent/cli.js');
+    const raw = ['agent', 'run', 'plan', 'clt-1', '--model', 'routerai/x y', '--comment', 'правь только src/cli', '--max-tool-calls', '7', '--headless'];
+    const runIdx = raw[0] === 'agent' && raw[1] === 'run' ? 1 : raw.indexOf('run', 1);
+    const agentArgv = raw.slice(runIdx + 1);
+    const opts = parseAgentArgs(agentArgv);
+    assert.deepEqual(opts.positionals, ['plan', 'clt-1']);
+    assert.equal(opts.model, 'routerai/x y', 'значение с пробелом не разрезано');
+    assert.equal(opts.comment, 'правь только src/cli');
+    assert.equal(opts.maxToolCalls, 7);
+    assert.equal(opts.headless, true);
+  });
+
+  it('agent run — неизвестная подкоманда упоминает run в подсказке (VL-305)', async () => {
+    let errText = '';
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((...c) => { errText += c.join(' ') + '\n'; });
+    try {
+      await runAgent('deploy', ['x'], {}, testDir);
+    } finally {
+      errSpy.mockRestore();
+    }
+    assert.match(errText, /Неизвестная подкоманда agent/);
+    assert.match(errText, /run <фаза> <task-id>/, 'подсказка перечисляет run');
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+  });
 });
 
 // ── VL-189: env проекта при запуске бота и браузера ──
