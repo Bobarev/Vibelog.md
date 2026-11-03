@@ -283,20 +283,20 @@ vibelog config set default_editor nvim           # строка
 
 Типизация `set` определяется ключом: массивы (`statuses`, `labels`, `priorities`, `types`, `definition_of_done`), boolean, числа (`default_port`, `active_branch_days`, `max_column_width`), строки. Неизвестный ключ — ошибка со списком допустимых.
 
-### Модели и провайдеры LLM (VL-209)
+### Модели, шлюзы и вендоры LLM (VL-209, VL-315)
 
-`.vibelog/settings.json` содержит единый реестр LLM-провайдеров и моделей (секции `providers` + `models`), из которого резолвятся клиент фаз, TUI-чат и веб-чат:
+`.vibelog/settings.json` содержит единый реестр LLM-шлюзов и моделей (секции `gateways` + `models`), из которого резолвятся клиент фаз, TUI-чат и веб-чат:
 
 ```json
 {
-  "providers": {
+  "gateways": {
     "routerai": { "base_url": "https://routerai.ru/api/v1", "api_key_env": "ROUTERAI_API_KEY" }
   },
   "models": {
     "default": "routerai/xiaomi/mimo-v2.6-pro",
     "available": {
       "routerai/xiaomi/mimo-v2.6-pro": {
-        "label": "MiMo v2.6 Pro", "provider": "routerai",
+        "label": "MiMo v2.6 Pro", "gateway": "routerai", "vendor": "gmicloud",
         "model": "xiaomi/mimo-v2.6-pro", "api_mode": "chat",
         "pricing": { "input_per_1m": 1.2, "output_per_1m": 6, "cache_per_1m": 0.3 }
       }
@@ -305,10 +305,14 @@ vibelog config set default_editor nvim           # строка
 }
 ```
 
-- `provider` модели — ссылка на `providers[<id>]`; ключ читается из env по `api_key_env` (приоритет VL-143: env → `.env` → `env`-секция settings.json), fallback — прямой `provider.api_key` (не для секретов). `base_url` у провайдера обязателен.
+- **Терминология (VL-315):** `gateway` — шлюз (у него `base_url` и ключ), `vendor` — апстрим ВНУТРИ шлюза (`baidu` / `makora` / `morph` / `gmicloud` / `xiaomi`), `model` — имя модели у шлюза.
+- `gateway` модели — ссылка на `gateways[<id>]`; ключ читается из env по `api_key_env` (приоритет VL-143: env → `.env` → `env`-секция settings.json), fallback — прямой `gateway.api_key` (не для секретов). `base_url` у шлюза обязателен.
+- `vendor` — необязательный id апстрима: при его наличии выбор передаётся **структурно** в теле запроса (`provider: { order: [vendor], allow_fallbacks: false }`, ref-18), в оба режима API (chat и responses — проверено живым запросом). Нет `vendor` — поведение как раньше, без выбора апстрима. У одной модели разные апстримы дают разные цены — это разные записи `available`.
+- **Обратная совместимость:** старые ключи продолжают работать без правок — секция `providers` читается как алиас `gateways` (при совпадении id приоритет у `gateways`, запись только в `gateways`), поле `provider` у модели — как алиас `gateway`, а `@`-хвост в имени модели (`deepseek/…@provider=baidu&allow_fallbacks=false`) распознаётся при чтении и разбирается в `vendor` + чистое имя (правило — одна функция `parseVendorSuffix`). Запись в settings всегда структурная, без `@`-хвоста.
 - `api_mode` — `chat` | `responses` (VL-205); `pricing` — тарифы для billing (VL-198, см. «Учёт токенов и pricing» ниже).
-- Без секции `models` — полный fallback на старое поведение (env `VIBELOG_LLM_MODEL` / `VIBELOG_LLM_API_KEY` / `VIBELOG_LLM_BASE_URL`), ничего не ломается. Неизвестный `provider` у модели, отсутствующий `base_url` или незаданная переменная `api_key_env` — понятная ошибка валидации при старте фазы.
-- Переключение: CLI `vibelog model list|use <id>|current` и `vibelog provider list` (без значений ключей — только статус «задан/не задан»); бот `/model` (список) и `/set model <id>` (регистр id сохраняется); веб — селект модели на `#/settings` (`GET/PUT /api/models`) и переключатель в шапке сайдбара тредов чата. На старте фазы в stderr печатается `Модель: <label> (<id>), api_mode: …` (для logTail оркестратора).
+- Без секции `models` — полный fallback на старое поведение (env `VIBELOG_LLM_MODEL` / `VIBELOG_LLM_API_KEY` / `VIBELOG_LLM_BASE_URL`), ничего не ломается. Неизвестный `gateway` у модели, отсутствующий `base_url` или незаданная переменная `api_key_env` — понятная ошибка валидации при старте фазы; неизвестный `vendor` ошибкой не считается (апстримы — «provider preferences» шлюза) и загрузку не ломает.
+- Мета сессии хранит пару `model_gateway` + `model` (VL-239, VL-315): старый ключ `model_provider` читается как алиас, поэтому старые сессии возобновляются без ошибок. `vendor` в идентичность модели НЕ входит — смена апстрима не ломает resume.
+- Переключение: CLI `vibelog model list|use <id>|current` и `vibelog provider list` (алиас `vibelog gateway list`; без значений ключей — только статус «задан/не задан»); бот `/model` (список) и `/set model <id>` (регистр id сохраняется); веб — селект модели на `#/settings` (`GET/PUT /api/models`), отдельная страница «Модели» (`#/models`) и переключатель в шапке сайдбара тредов чата. На старте фазы в stderr печатается `Модель: <label> (<id>), api_mode: …` (для logTail оркестратора).
 
 ### Workflow с переходами статус (VL-188)
 

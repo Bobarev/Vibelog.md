@@ -329,21 +329,23 @@ vibelog model <subcommand>
   current     Показать активную модель
 ```
 
-Управление реестром LLM-моделей (VL-209): модели живут в секции `models` файла `.vibelog/settings.json` (`default` + `available`), провайдент — в секции `providers`. Секции нет — fallback на env `VIBELOG_LLM_MODEL` (старое поведение).
+Управление реестром LLM-моделей (VL-209): модели живут в секции `models` файла `.vibelog/settings.json` (`default` + `available`), шлюз — в секции `gateways` (VL-315; старое имя секции — `providers`, читается как deprecated-алиас). Секции нет — fallback на env `VIBELOG_LLM_MODEL` (старое поведение).
 
-- `list` — таблица: маркер `*` у активной, id, label, provider, api_mode; при пустом реестре — подсказка про env-fallback.
+- `list` — таблица: маркер `*` у активной, id, label, `gateway: <id>` (+ `vendor: <id>` у модели с выбранным апстримом), api_mode; при пустом реестре — подсказка про env-fallback.
 - `use <id>` — валидация id в `available` (неизвестный → ошибка со списком доступных), запись только `models.default` через read-modify-write (остальные ключи settings.json сохраняются).
-- `current` — `<id> — <label> (api_mode, provider)`; без секции models — «Модель из VIBELOG_LLM_MODEL: …»; ничего не задано → ошибка.
+- `current` — `<id> — <label> (api_mode: …, gateway: …)`; без секции models — «Модель из VIBELOG_LLM_MODEL: …»; ничего не задано → ошибка.
+
+**Модель, шлюз и вендор (VL-315).** `gateway` у модели — ссылка на `gateways[<id>]` (URL и ключ), `vendor` — необязательный id апстрима ВНУТРИ шлюза (например `baidu`), `model` — имя модели у шлюза. Старое поле `provider` у модели читается как алиас `gateway`, `@`-хвост в имени модели (`deepseek/…@provider=baidu&allow_fallbacks=false`) распознаётся при чтении и разбирается в `vendor` + чистое имя; запись в settings — всегда структурная, без `@`-хвоста.
 
 ---
 
 ## provider
 
 ```
-vibelog provider list
+vibelog provider list   (алиас: vibelog gateway list)
 ```
 
-Список LLM-провайдеров (VL-209) из секции `providers` файла `.vibelog/settings.json`: id, `base_url`, источник ключа (`env <api_key_env>` / `api_key (прямой)` / `нет источника`) и статус ключа (задан / НЕ ЗАДАН). Значения ключей в вывод не попадают — секреты.
+Список LLM-шлюзов (VL-209, переименование VL-315) из секции `gateways` файла `.vibelog/settings.json` (старый ключ `providers` читается как алиас): id, `base_url`, источник ключа (`env <api_key_env>` / `api_key (прямой)` / `нет источника`) и статус ключа (задан / НЕ ЗАДАН). Значения ключей в вывод не попадают — секреты.
 
 ---
 
