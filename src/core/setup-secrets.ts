@@ -1,20 +1,18 @@
 /**
- * Запись секретов wizard-а настройки проекта (VL-210, VL-324).
+ * Запись секретов wizard-а настройки проекта (VL-210, VL-324, VL-329).
  *
- * Секреты (API-ключи LLM, токен Telegram-бота, прокси бота) можно хранить в
- * трёх местах (VL-143 — приоритет чтения: реальный env → .env → секция `env`
- * settings.json):
+ * Секреты (API-ключи LLM, токен Telegram-бота, прокси бота) после VL-329
+ * живут в ДВУХ местах:
  *
  * - `system` (VL-324) — НИЧЕГО не писать: пользователь сам заводит
  *   переменные окружения (например в ~/.zshrc или через CI-secrets).
  *   Wizard только сообщает, какие имена ключей нужно завести;
- * - `.env` в корне проекта (gitignored) — рекомендуемый вариант;
- * - секция `env` в `.vibelog/settings.json` (тоже gitignored) — удобно,
- *   если .env в проекте не используется;
- * - оба — .env как основной источник, settings.json как fallback.
+ * - `.env` в корне проекта (gitignored) — рекомендуемый вариант.
  *
- * Значение `'env'` сохраняет прежний смысл «писать в .env» (переименования
- * нет — на него завязаны флаги `--secrets-location env` и web-форма).
+ * Секция `env` в `.vibelog/settings.json` больше НЕ поддерживается (VL-329):
+ * settings.json коммитится в git (собственная политика `.vibelog/.gitignore`),
+ * поэтому секретов в нём быть не должно. Значения `settings`/`both` в
+ * `SECRETS_LOCATIONS` не входят, флаги и тела запросов с ними отвергаются.
  *
  * Модуль намеренно НЕ пишет в process.env: wizard только сохраняет значения
  * на диск, а загрузка в окружение — задача loadProjectEnv (src/bot/env.ts)
@@ -27,26 +25,26 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readSettingsEnv, saveSettingsPatch } from './settings.js';
 
 /**
  * Куда писать секреты (шаг 3 wizard-а).
  *
  * `system` — не писать никуда (переменные окружения заводит пользователь).
+ * VL-329: `settings`/`both` удалены — секция `env` в settings.json больше
+ * не поддерживается.
  */
-export type SecretsLocation = 'system' | 'env' | 'settings' | 'both';
+export type SecretsLocation = 'system' | 'env';
 
 /** Все допустимые локации (валидация флагов и тела web-формы). */
-export const SECRETS_LOCATIONS: SecretsLocation[] = ['system', 'env', 'settings', 'both'];
+export const SECRETS_LOCATIONS: SecretsLocation[] = ['system', 'env'];
 
 /**
  * Локации, которые ПРЕДЛАГАЮТ wizard-ы (VL-328, AC5).
  *
- * `settings` и `both` остаются в `SECRETS_LOCATIONS` и принимаются API/флагами
- * ради старых проектов (VL-143), но в новом wizard-е не предлагаются: секция
- * `env` внутри settings.json — лишний путь для секретов, читаемый только как
- * fallback. Один перечень для консольного wizard-а и веб-мастера `#/setup`
- * (AC9) — иначе фронты снова разъедутся.
+ * VL-329: перечень совпадает с `SECRETS_LOCATIONS` — «принимаемые» и
+ * «предлагаемые» схлопнулись, потому что секцию `env` settings.json убрали.
+ * Один перечень для консольного wizard-а и веб-мастера `#/setup` (AC9) —
+ * иначе фронты снова разъедутся.
  */
 export const PROPOSED_SECRETS_LOCATIONS: ('system' | 'env')[] = ['system', 'env'];
 
@@ -67,7 +65,7 @@ export const SECRETS_LOCATION_LABELS: Record<'system' | 'env', string> = {
 /** Шапка нового .env — объясняет, что файл не коммитится. */
 const ENV_HEADER = [
   '# Vibelog: секреты проекта (не коммитить — .env в .gitignore)',
-  '# Формат: KEY=value, по одному на строку. Приоритет: env → .env → settings.json env.',
+  '# Формат: KEY=value, по одному на строку. Приоритет: env → .env.',
 ].join('\n');
 
 /**
@@ -231,35 +229,6 @@ export function writeSecrets(
   // ничего (AC2). Имена ключей вызывающий код сообщает пользователю.
   if (loc === 'system') return { written: [], skipped: [] };
 
-  const written: string[] = [];
-  const skipped: string[] = [];
-
-  if (loc === 'env' || loc === 'both') {
-    const res = writeEnvFile(cwd, clean, opts);
-    written.push(...res.written);
-    skipped.push(...res.skipped);
-  }
-
-  if (loc === 'settings' || loc === 'both') {
-    const current = readSettingsEnv(cwd);
-    const next: Record<string, string> = { ...current };
-    for (const [key, value] of Object.entries(clean)) {
-      if (current[key] !== undefined) {
-        if (opts.overwrite === true) {
-          next[key] = value;
-          if (!written.includes(key)) written.push(key);
-          continue;
-        }
-        // В режиме both ключ уже мог быть записан в .env — это не «пропуск»,
-        // а штатное дублирование (fallback VL-143)
-        if (!skipped.includes(key) && loc === 'settings') skipped.push(key);
-        continue;
-      }
-      next[key] = value;
-      if (!written.includes(key)) written.push(key);
-    }
-    saveSettingsPatch(cwd, { env: next });
-  }
-
-  return { written, skipped };
+  // VL-329: единственное место записи — .env (секция env settings.json убрана)
+  return writeEnvFile(cwd, clean, opts);
 }

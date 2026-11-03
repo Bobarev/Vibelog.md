@@ -107,15 +107,21 @@ describe('VL-210 — консольный wizard init', () => {
     assert.equal(settings.default_agent, 'qwen');
   });
 
-  it('init --secrets-location settings --bot-token пишет env-секцию settings.json', () => {
-    runCli(
+  it('VL-329: --secrets-location settings отвергается с понятной ошибкой', () => {
+    const out = runCli(
       'init', 'Secrets', '--prefix', 'sc', '--yes',
       '--agents', '', '--secrets-location', 'settings',
       '--bot-token', '123:abc', '--skip-bot-check',
     );
-    const settings = JSON.parse(readFileSync(join(testDir, '.vibelog', 'settings.json'), 'utf-8'));
-    assert.equal(settings.env.TELEGRAM_BOT_TOKEN, '123:abc');
-    assert.ok(!existsSync(join(testDir, '.env')), '.env не создаётся в режиме settings');
+    // Секция env в settings.json удалена: значения пишутся только в .env
+    assert.ok(out.includes('больше не поддерживается'), out);
+    // Никаких секретов в settings.json и никакого файла .env не создаётся
+    const settingsPath2 = join(testDir, '.vibelog', 'settings.json');
+    if (existsSync(settingsPath2)) {
+      const settings = JSON.parse(readFileSync(settingsPath2, 'utf-8'));
+      assert.equal(settings.env, undefined, 'секция env не пишется');
+    }
+    assert.ok(!existsSync(join(testDir, '.env')), '.env не создаётся при отказе');
   });
 
   it('init --secrets-location env --bot-token пишет .env с шапкой', () => {
@@ -330,14 +336,13 @@ describe('VL-210 — консольный wizard init', () => {
     assert.ok(!labels.includes('оба места'), `пункт «оба места» не должен предлагаться: ${labels}`);
   });
 
-  it('VL-327: флаг --secrets-location settings по-прежнему работает (старые проекты)', () => {
-    runCli(
+  it('VL-327/329: --secrets-location both тоже отвергается (секция env удалена)', () => {
+    const out = runCli(
       'init', 'Legacy', '--prefix', 'lg', '--yes',
-      '--agents', '', '--secrets-location', 'settings',
+      '--agents', '', '--secrets-location', 'both',
       '--bot-token', '7:q', '--skip-bot-check',
     );
-    const settings = JSON.parse(readFileSync(join(testDir, '.vibelog', 'settings.json'), 'utf-8'));
-    assert.equal(settings.env.TELEGRAM_BOT_TOKEN, '7:q');
+    assert.ok(out.includes('больше не поддерживается'), out);
   });
 
   it('VL-327: ключ, записанный wizard-ом в .env, виден проверке LLM (не «не найден в окружении»)', () => {

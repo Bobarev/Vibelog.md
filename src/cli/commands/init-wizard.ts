@@ -75,9 +75,20 @@ function parseChats(raw: string): number[] {
   return out;
 }
 
-/** Валидирует локацию секретов из флага. */
+/**
+ * Валидирует локацию секретов из флага (VL-329).
+ *
+ * `settings`/`both` больше не поддерживаются: секция `env` в settings.json
+ * удалена (файл коммитится в git). Флаг с таким значением отвергается с
+ * понятной ошибкой, а не молча пишет секреты не туда.
+ */
 function parseSecretsLocation(raw: string): SecretsLocation | null {
-  if (raw === 'system' || raw === 'env' || raw === 'settings' || raw === 'both') return raw;
+  if (raw === 'system' || raw === 'env') return raw;
+  if (raw === 'settings' || raw === 'both') {
+    throw new Error(
+      `--secrets-location ${raw} больше не поддерживается: секреты пишутся только в .env (env) или не пишутся вовсе (system)`,
+    );
+  }
   return null;
 }
 
@@ -273,9 +284,9 @@ async function chooseAgents(
  * Пункты вопроса «Где хранить API-ключи и токены» (VL-327, AC6).
  *
  * Ровно два варианта: `env` (приоритет env → .env, ничего не пишем) и
- * `.env` (файл в корне проекта). Пункты «.vibelog/settings.json (секция env)»
- * и «оба места» убраны из wizard-а: значения `SecretsLocation` для них
- * сохранены ради старых проектов и флага `--secrets-location`.
+ * `.env` (файл в корне проекта). VL-329: значения `settings`/`both` удалены
+ * из `SecretsLocation` целиком — секция `env` в settings.json больше не
+ * поддерживается (файл коммитится в git).
  *
  * VL-328 (AC5, AC9): состав и подписи берутся из общего ядра
  * `core/setup-secrets.ts` — тот же перечень отдаёт веб-мастер `#/setup`,
@@ -500,7 +511,11 @@ export async function runWizard(
         'Прокси бота (TELEGRAM_PROXY, Enter — не задавать)',
         '',
       );
-      const chatsRaw = await session.askText('chat_id через запятую (опционально)', '');
+      // VL-329: chat_id сохраняются в .env (TELEGRAM_CHAT_IDS), не в settings.json
+      const chatsRaw = await session.askText(
+        'chat_id через запятую (опционально, сохранятся в .env)',
+        '',
+      );
       bot = {
         token: token || undefined,
         chats: parseChats(chatsRaw),

@@ -300,9 +300,9 @@ export function handleApi(
     }
 
     // GET /api/settings — настройки для веб-страницы (VL-156).
-    // loadBotSettings отдаёт ТОЛЬКО валидированные несекретные поля; env-секция
-    // (TELEGRAM_BOT_TOKEN и др.) сюда не попадает — секреты не должны утекать
-    // в браузер даже на localhost.
+    // loadBotSettings отдаёт ТОЛЬКО валидированные несекретные поля; секреты
+    // (TELEGRAM_BOT_TOKEN и др.) живут в .env и сюда не попадают — они не
+    // должны утекать в браузер даже на localhost (VL-329).
     if (method === 'GET' && url === '/api/settings') {
       // git_user_name (VL-166): резолвим из кэша .vibelog/settings.json или
       // git config → '@agent'. Нужен юзер-меню шапки. resolveGitUserName
@@ -316,7 +316,8 @@ export function handleApi(
     // PUT /api/settings — патч настроек, зеркало валидации команды /set (VL-156).
     // Неизвестный ключ или битое значение → 400, файл не меняется: веб не должен
     // писать в settings.json мусор, который проигнорирует бот. Запись через
-    // saveBotSettings (read-modify-write) сохраняет env-секцию и chats (VL-143).
+    // saveBotSettings (read-modify-write) сохраняет прочие ключи settings.json
+    // (VL-143); секретов и chats в файле больше нет (VL-329).
     if (method === 'PUT' && url === '/api/settings') {
       const validated = validateSettingsPatch(body);
       if ('error' in validated) return { status: 400, body: { error: validated.error } };

@@ -75,11 +75,11 @@ export interface SetupStateData {
   configError: string | null;
   agents: SetupAgent[];
   defaultAgent: string | null;
-  secrets: { envFile: boolean; envKeys: string[]; settingsEnvKeys: string[] };
+  secrets: { envFile: boolean; envKeys: string[] };
   bot: { configured: boolean; chats: number[]; proxySet: boolean };
   /** VL-328: перечень шлюзов из ядра (core/llm-presets.ts). */
   gatewayPresets: GatewayPreset[];
-  /** VL-328: предлагаемые локации секретов (без settings/both). */
+  /** VL-328/329: предлагаемые локации секретов (system|env). */
   secretsLocations: SecretsLocationOption[];
   gateways: SetupGateway[];
   models: { default: string | null; available: SetupModel[] };
@@ -94,8 +94,8 @@ export interface SetupAnswersPayload {
   prefix: string;
   agents: string[];
   defaultAgent?: string;
-  /** VL-328: UI предлагает system|env, но API принимает и legacy-значения. */
-  secretsLocation: "system" | "env" | "settings" | "both";
+  /** VL-329: секреты пишутся только в .env (env) или не пишутся (system). */
+  secretsLocation: "system" | "env";
   bot?: { token?: string; chats: number[]; proxy?: string };
   gateway?: {
     id: string;

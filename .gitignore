@@ -5,9 +5,10 @@ dist/
 backlog/references/data/
 # Markdown-кэш doc/url references (VL-194), см. vibelog reference add --cache
 backlog/references/cache/
-# Секреты (токены) — не коммитить
+# Секреты (токены, API-ключи, TELEGRAM_CHAT_IDS) — не коммитить
 .env
-.vibelog/
+# .vibelog/ имеет СОБСТВЕННУЮ git-политику (.vibelog/.gitignore, VL-329):
+# конфигурация коммитится, локальные артефакты — нет
 # web/dist (собранный React UI) коммитится — см. VL-26
 !web/dist/
 .DS_Store

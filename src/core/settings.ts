@@ -3,24 +3,27 @@
  *
  * До VL-143 настройки были разнесены по двум YAML-файлам: `.vibelog/bot.yml`
  * (Telegram-бот) и `.vibelog/settings.yml` (кэш git user.name). Теперь —
- * один JSON-файл (секция `env` по образцу settings.json Qwen Code):
+ * один JSON-файл:
  *
  * - несекретные настройки — топ-уровневые snake_case-ключи (совместимость
  *   с прежним bot.yml — минимальные изменения для пользователей и docs);
- * - секреты (токены, API-ключи) — в секции `env`; переменная окружения
- *   и `.env` приоритетнее секции `env` (см. runBot: loadDotEnv →
- *   applySettingsEnv — обе функции записывают только пустые ключи);
+ * - SECRETS — только `.env` в корне проекта и реальное окружение (VL-329):
+ *   приоритет «shell env → .env». Секция `env` в settings.json больше НЕ
+ *   читается (старые проекты получают одноразовое предупреждение, см.
+ *   detectLegacyEnvSection) и не пишется — settings.json коммитится в git;
+ * - личные привязки (chat_id бота) — тоже `.env` (TELEGRAM_CHAT_IDS, VL-329);
  * - legacy-файлы bot.yml/settings.yml мигрируются лениво при первом чтении
  *   отсутствующего settings.json и удаляются ТОЛЬКО после успешной записи
  *   и контрольного перечитывания (риск-параграф плана VL-143).
  *
- * Файл лежит в gitignored `.vibelog/` — env-секция содержит секреты
- * и не должна коммититься.
+ * Файл лежит в `.vibelog/` и коммитится в git (VL-329): секретов в нём
+ * не остаётся.
  */
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseYaml } from './yaml.js';
+import { upsertDotEnv } from './env-file.js';
 
 /**
  * Записывает объект в settings.json (создаёт .vibelog/ при необходимости).
@@ -98,20 +101,29 @@ export function migrateLegacyConfig(cwd: string): boolean {
   const proj = hasProj ? readYaml(projLegacy) : {};
 
   const out: Record<string, unknown> = {};
-  const env: Record<string, string> = {};
+  /** Секреты из bot.yml — переезжают в `.env` (VL-329), не в settings.json. */
+  const secrets: Record<string, string> = {};
+  /** Привязки чатов из bot.yml — тоже в `.env` (VL-329). */
+  let chats: number[] = [];
   for (const [key, value] of Object.entries(bot)) {
-    // Секреты — только в env-секцию; топ-уровневые telegram_* больше не читаются
+    // Секреты — только в .env; топ-уровневые telegram_* больше не читаются
     if (key === 'telegram_token') {
-      if (typeof value === 'string' && value !== '') env.TELEGRAM_BOT_TOKEN = value;
+      if (typeof value === 'string' && value !== '') secrets.TELEGRAM_BOT_TOKEN = value;
       continue;
     }
     if (key === 'telegram_proxy') {
-      if (typeof value === 'string' && value !== '') env.TELEGRAM_PROXY = value;
+      if (typeof value === 'string' && value !== '') secrets.TELEGRAM_PROXY = value;
+      continue;
+    }
+    // VL-329: chat_id — личная привязка, ей место рядом с токеном в .env
+    if (key === 'chats') {
+      if (Array.isArray(value)) {
+        chats = value.map(Number).filter((n) => Number.isFinite(n));
+      }
       continue;
     }
     out[key] = value;
   }
-  if (Object.keys(env).length > 0) out.env = env;
   if (typeof proj.git_user_name === 'string') out.git_user_name = proj.git_user_name;
 
   // Запись + контрольное перечитывание; при сбое — чистим битый вывод
@@ -131,9 +143,32 @@ export function migrateLegacyConfig(cwd: string): boolean {
     return false;
   }
 
+  // Секреты и чаты — в .env. Существующие значения .env не перезаписываем
+  // (пользователь мог задать их вручную свежее, чем старый bot.yml).
+  // Если запись в .env не удалась — legacy bot.yml НЕ удаляем: там остался
+  // единственный экземпляр токена, и «потерять» его нельзя (fail-safe).
+  let envWriteOk = true;
+  if (chats.length > 0) {
+    try {
+      upsertDotEnv(cwd, 'TELEGRAM_CHAT_IDS', chats.join(','));
+    } catch {
+      envWriteOk = false;
+    }
+  }
+  for (const [key, value] of Object.entries(secrets)) {
+    try {
+      upsertDotEnv(cwd, key, value);
+    } catch {
+      envWriteOk = false;
+    }
+  }
+
   // Контроль пройден — legacy можно удалять (сбой удаления не критичен:
   // миграция идемпотентна, наличие legacy при существующем settings.json
-  // игнорируется при чтении)
+  // игнорируется при чтении).
+  // bot.yml удаляем только если секреты реально легли в .env (fail-safe:
+  // единственный экземпляр токена не должен исчезнуть из-за ошибки записи).
+  if (hasBot && !envWriteOk) return true;
   if (hasBot) {
     try {
       unlinkSync(botLegacy);
@@ -183,11 +218,29 @@ export function readSettingsEnv(cwd: string): Record<string, string> {
 }
 
 /**
- * Ключи, записанные в process.env из ФАЙЛОВЫХ источников (.env и секция
- * `env` settings.json) — в отличие от переменных, заданных в реальном
- * shell-окружении. Нужны для фикса бага рестарта (VL-143):
- * `spawnReplacementBot` спавнит дочерний процесс без этих ключей, чтобы тот
- * перечитал .env/settings.json и подхватил новые значения.
+ * Признак «старый проект с секцией `env` в settings.json» (VL-329).
+ *
+ * Секция `env` больше не читается: единственный источник секретов — `.env`
+ * и реальное окружение. Но молча терять токены нельзя, поэтому при старте
+ * (loadProjectEnv) печатается одноразовое предупреждение с просьбой перенести
+ * ключи. Функция только читает файл — ничего не мигрирует автоматически:
+ * settings.json мог быть скопирован в другой проект, и «умный» перенос мог бы
+ * размножить чужие секреты.
+ *
+ * @returns true, если секция `env` есть и содержит хотя бы один ключ
+ */
+export function detectLegacyEnvSection(cwd: string): boolean {
+  return Object.keys(readSettingsEnv(cwd)).length > 0;
+}
+
+/**
+ * Ключи, записанные в process.env из `.env` — в отличие от переменных,
+ * заданных в реальном shell-окружении. Нужны для фикса бага рестарта
+ * (VL-143): `spawnReplacementBot` спавнит дочерний процесс без этих ключей,
+ * чтобы тот перечитал `.env` и подхватил новые значения.
+ *
+ * VL-329: учитываются ТОЛЬКО ключи из `.env` — секция `env` settings.json
+ * больше не читается.
  */
 const fileEnvKeys = new Set<string>();
 
@@ -202,23 +255,13 @@ export function fileLoadedEnvKeys(): ReadonlySet<string> {
 }
 
 /**
- * Заполняет пустые ключи process.env из секции `env` settings.json
- * (приоритет: реальный env → .env → секция `env` — обе функции-загрузчика
- * ставят только пустые значения, поэтому порядок вызова loadDotEnv →
- * applySettingsEnv гарантирует приоритет .env).
+ * @deprecated VL-329: секция `env` settings.json больше не читается —
+ * секреты живут только в `.env` и реальном окружении. Функция оставлена
+ * no-op ради внешних вызовов: пишет в stderr одноразовое предупреждение.
  *
- * @returns ключи, реально записанные в process.env (записываются и в учёт
- *   файловых ключей — см. fileLoadedEnvKeys)
+ * @returns пустой набор (ничего не записано)
  */
 export function applySettingsEnv(cwd: string): Set<string> {
-  const written = new Set<string>();
-  const section = readSettingsEnv(cwd);
-  for (const [key, value] of Object.entries(section)) {
-    if (process.env[key] === undefined) {
-      process.env[key] = value;
-      written.add(key);
-    }
-  }
-  registerFileEnvKeys(written);
-  return written;
+  void cwd;
+  return new Set<string>();
 }

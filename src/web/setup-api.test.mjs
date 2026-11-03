@@ -159,8 +159,11 @@ describe('VL-210 — REST API /api/setup', () => {
     assert.ok(!JSON.stringify(res.body).includes('bot-secret-token'), 'значение токена не в ответе');
     const env = readFileSync(join(testDir, '.env'), 'utf-8');
     assert.ok(env.includes('TELEGRAM_BOT_TOKEN=bot-secret-token'), env);
-    const settings = JSON.parse(readFileSync(join(testDir, '.vibelog', 'settings.json'), 'utf-8'));
-    assert.deepEqual(settings.chats, [42]);
+    // VL-329: chat_id — личная привязка, пишется в .env (TELEGRAM_CHAT_IDS)
+    assert.ok(env.includes('TELEGRAM_CHAT_IDS=42'), env);
+    const settingsRaw = readFileSync(join(testDir, '.vibelog', 'settings.json'), 'utf-8');
+    assert.ok(!settingsRaw.includes('chats'), 'chats не попадают в settings.json');
+    assert.ok(!settingsRaw.includes('bot-secret-token'), 'секретов в settings.json нет');
   });
 
   it('неизвестный URL → null (маршрутизация продолжается)', () => {
@@ -211,11 +214,12 @@ describe('VL-328 — веб-мастер догнал CLI-wizard', () => {
     assert.ok(locations[1].label.includes('.env'), locations[1].label);
   });
 
-  it('AC5: legacy-локации settings/both по-прежнему принимаются API', () => {
+  it('VL-329: legacy-локации settings/both отвергаются (секция env удалена)', () => {
     for (const loc of ['settings', 'both']) {
       fresh();
       const res = handleSetupApi('POST', '/api/setup', body({ secretsLocation: loc }), testDir);
-      assert.equal(res.status, 200, `${loc}: ${JSON.stringify(res.body)}`);
+      assert.equal(res.status, 400, `${loc}: ${JSON.stringify(res.body)}`);
+      assert.ok(res.body.error.includes('secretsLocation'), res.body.error);
     }
   });
 
