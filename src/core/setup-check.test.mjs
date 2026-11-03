@@ -165,4 +165,62 @@ describe('VL-210 — проверки окружения', () => {
     assert.equal(res.ok, false);
     assert.ok(res.error?.includes('Токен не задан'), res.error);
   });
+
+  // ── VL-327 ──
+
+  it('VL-327: pingLlm с пустым apiKey не ходит в сеть и называет env-переменную', async () => {
+    let called = false;
+    const res = await pingLlm(active({ apiKey: '', apiKeyEnv: 'ROUTERAI_API_KEY' }), {
+      fetchImpl: async () => {
+        called = true;
+        throw new Error('сеть не должна вызываться');
+      },
+    });
+    assert.equal(called, false, 'fetch не должен вызываться без ключа');
+    assert.equal(res.ok, false);
+    assert.ok(res.error?.includes('ключ ROUTERAI_API_KEY не найден в окружении'), res.error);
+    // Регресс на наблюдавшийся 401: сообщение не должно говорить про 401/HTTP
+    assert.ok(!res.error?.includes('401'), res.error);
+  });
+
+  it('VL-327: pingLlm без apiKeyEnv подставляет VIBELOG_LLM_API_KEY', async () => {
+    const res = await pingLlm(active({ apiKey: '' }));
+    assert.equal(res.ok, false);
+    assert.ok(res.error?.includes('VIBELOG_LLM_API_KEY'), res.error);
+  });
+
+  it('VL-327: checkTelegramToken с proxy использует инъектированный fetch, токен не течёт', async () => {
+    const calls = [];
+    const res = await checkTelegramToken('123:secret-token', {
+      proxy: 'socks5://127.0.0.1:1080',
+      fetchImpl: fakeFetch(
+        { ok: false, status: 401, text: JSON.stringify({ ok: false, description: 'Unauthorized' }) },
+        calls,
+      ),
+    });
+    // Прокси-ветка не падает и всё равно идёт через fetchImpl (тесты без сети)
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.includes('/getMe'), calls[0].url);
+    assert.equal(res.ok, false);
+    assert.ok(res.error?.includes('Токен невалиден'), res.error);
+    assert.ok(!res.error?.includes('secret-token'), 'токен не должен попадать в ошибку');
+  });
+
+  it('VL-327: checkTelegramToken с proxy и ok-ответом отдаёт username', async () => {
+    const res = await checkTelegramToken('1:a', {
+      proxy: 'http://127.0.0.1:3128',
+      fetchImpl: fakeFetch({ text: JSON.stringify({ ok: true, result: { username: 'proxy_bot' } }) }),
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.username, 'proxy_bot');
+  });
+
+  it('VL-327: без proxy поведение прежнее (нет dispatcher в запросе)', async () => {
+    const calls = [];
+    await checkTelegramToken('1:a', {
+      fetchImpl: fakeFetch({ text: JSON.stringify({ ok: true, result: { username: 'b' } }) }, calls),
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].init?.dispatcher, undefined);
+  });
 });

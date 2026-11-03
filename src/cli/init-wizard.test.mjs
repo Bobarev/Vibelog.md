@@ -16,7 +16,14 @@ import { spawnSync } from 'node:child_process';
 
 import { testSpawnEnv } from '../test-env.mjs';
 import { resolveModelById } from '../../dist/core/models.js';
-import { defaultApiKeyEnv, gatewayIdFromUrl, LLM_GATEWAYS } from '../../dist/cli/commands/init-wizard.js';
+import {
+  defaultApiKeyEnv,
+  gatewayIdFromUrl,
+  groupModelsByAuthor,
+  modelAuthor,
+  secretsLocationOptions,
+  LLM_GATEWAYS,
+} from '../../dist/cli/commands/init-wizard.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const testDir = mkdtempSync(join(tmpdir(), 'vibelog-init-wizard-'));
@@ -272,5 +279,87 @@ describe('VL-210 — консольный wizard init', () => {
     assert.equal(result, 'ok', `web-мастер не стартовал: ${out}`);
     assert.ok(out.includes('Веб-мастер настройки'), out);
     assert.ok(!out.includes('Режим: fresh'), `консольный wizard не должен запускаться: ${out}`);
+  });
+
+  // ── VL-327 ──
+
+  it('VL-327: modelAuthor берёт сегмент id до "/"', () => {
+    assert.equal(modelAuthor('deepseek/deepseek-chat'), 'deepseek');
+    assert.equal(modelAuthor('xiaomi/mimo-v2.6-pro'), 'xiaomi');
+    assert.equal(modelAuthor('без-слэша'), 'без-слэша');
+  });
+
+  it('VL-327: groupModelsByAuthor группирует по автору и сортирует авторов', () => {
+    const models = [
+      { id: 'xiaomi/mimo-v2' },
+      { id: 'deepseek/deepseek-chat' },
+      { id: 'deepseek/deepseek-reasoner' },
+      { id: 'openai/gpt-5' },
+    ];
+    const groups = groupModelsByAuthor(models);
+    assert.deepEqual([...groups.keys()], ['deepseek', 'openai', 'xiaomi']);
+    assert.equal(groups.get('deepseek').length, 2, 'модели автора не обрезаны');
+    assert.deepEqual(
+      groups.get('deepseek').map((m) => m.id),
+      ['deepseek/deepseek-chat', 'deepseek/deepseek-reasoner'],
+    );
+  });
+
+  it('VL-327: список моделей автора не обрезан лимитом каталога (50+)', () => {
+    // Каталог RouterAI: у одного автора десятки моделей — все должны попасть
+    // в список, иначе пользователь снова не найдёт нужную (регресс AC4)
+    const models = Array.from({ length: 70 }, (_, i) => ({ id: `deepseek/model-${i}` }));
+    const groups = groupModelsByAuthor(models);
+    assert.equal(groups.get('deepseek').length, 70);
+  });
+
+  it('VL-327: один автор — шаг выбора автора пропускается (группа одна)', () => {
+    const groups = groupModelsByAuthor([{ id: 'only/a' }, { id: 'only/b' }]);
+    assert.equal(groups.size, 1, 'при одном авторе select автора не нужен');
+    assert.equal([...groups.keys()][0], 'only');
+  });
+
+  it('VL-327: secretsLocationOptions — ровно два пункта, без settings/both', () => {
+    const options = secretsLocationOptions();
+    assert.equal(options.length, 2);
+    assert.deepEqual(options.map((o) => o.value), ['system', 'env']);
+    assert.ok(options[0].label.includes('env (Приоритет: env → .env)'), options[0].label);
+    assert.ok(options[1].label.includes('.env (файл в корне проекта)'), options[1].label);
+    const labels = options.map((o) => o.label).join(' | ');
+    assert.ok(!labels.includes('settings.json'), `пункт settings.json не должен предлагаться: ${labels}`);
+    assert.ok(!labels.includes('оба места'), `пункт «оба места» не должен предлагаться: ${labels}`);
+  });
+
+  it('VL-327: флаг --secrets-location settings по-прежнему работает (старые проекты)', () => {
+    runCli(
+      'init', 'Legacy', '--prefix', 'lg', '--yes',
+      '--agents', '', '--secrets-location', 'settings',
+      '--bot-token', '7:q', '--skip-bot-check',
+    );
+    const settings = JSON.parse(readFileSync(join(testDir, '.vibelog', 'settings.json'), 'utf-8'));
+    assert.equal(settings.env.TELEGRAM_BOT_TOKEN, '7:q');
+  });
+
+  it('VL-327: ключ, записанный wizard-ом в .env, виден проверке LLM (не «не найден в окружении»)', () => {
+    // Регресс на наблюдавшийся 401: без повторного loadProjectEnv после
+    // applySetup ping уходил с apiKey === '' и печатал «ключ X не найден
+    // в окружении» (а до VL-327 — бесполезное «LLM ответил 401»).
+    // base_url — заведомо закрытый локальный порт: соединение отклоняется
+    // сразу, внешней сети тест не касается.
+    const out = runCli(
+      'init', 'EnvReload', '--prefix', 'er', '--yes',
+      '--agents', 'vb',
+      '--gateway', 'routerai', '--base-url', 'http://127.0.0.1:1/v1',
+      '--api-key-env', 'VL327_TEST_KEY',
+      '--model', 'openai/gpt-4o', '--api-key', 'test-key-not-a-secret',
+    );
+    // Ключ попал в .env и перечитан: проверка ругается на сеть, а не на ключ
+    const env = readFileSync(join(testDir, '.env'), 'utf-8');
+    assert.ok(env.includes('VL327_TEST_KEY=test-key-not-a-secret'), env);
+    assert.ok(
+      !out.includes('VL327_TEST_KEY не найден в окружении'),
+      `окружение не перечитано после applySetup: ${out}`,
+    );
+    assert.ok(out.includes('LLM:'), `проверка LLM не выполнилась: ${out}`);
   });
 });

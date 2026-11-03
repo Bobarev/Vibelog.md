@@ -140,6 +140,12 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
     throw err;
   }
 
+  // VL-327: перечитываем окружение ПОСЛЕ применения настроек. loadDotEnv
+  // записывает только ОТСУТСТВУЮЩИЕ ключи, поэтому первый вызов (до wizard-а)
+  // не видит того, что wizard только что дописал в .env — без этого проверки
+  // ниже шли бы с пустым ROUTERAI_API_KEY (401) и без TELEGRAM_PROXY (timeout).
+  loadProjectEnv(cwd);
+
   // Отчёт: что записано/пропущено (без значений секретов).
   // Легаси-строки («Создана директория…», «Создан конфиг…», «MCP-сервер
   // vibelog настроен…») сохранены дословно: на них опираются интеграционные
@@ -247,7 +253,11 @@ async function runChecks(cwd: string, answers: SetupAnswers, flags: FlagValues):
 
   // Бот — getMe
   if (answers.bot?.token && flags['skip-bot-check'] !== true) {
-    const check = await checkTelegramToken(answers.bot.token);
+    // VL-327: прокси берём из окружения (после повторного loadProjectEnv там
+    // уже значение из .env) — иначе прямой доступ к api.telegram.org не
+    // проходит и проверка врёт таймаутом.
+    const proxy = (process.env.TELEGRAM_PROXY ?? '').trim();
+    const check = await checkTelegramToken(answers.bot.token, proxy !== '' ? { proxy } : {});
     if (check.ok) printSuccess(`Telegram OK: @${check.username ?? 'бот'}`);
     else printError(check.error ?? 'Токен невалиден');
   }
