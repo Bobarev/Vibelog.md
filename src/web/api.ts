@@ -80,7 +80,21 @@ import {
 import { GRANTABLE_TOOLS, findActiveGrant, isValidRunId, latestGrantDraft, saveGrantDraft } from './supervisor-grant.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadSettings, saveSettingsPatch } from '../core/settings.js';
-import { loadModels, loadGateways } from '../core/models.js';
+import {
+  loadModels,
+  loadGateways,
+  validateModelInput,
+  checkModelRemovable,
+  upsertModel,
+  removeModel,
+  buildModelId,
+} from '../core/models.js';
+import type { ModelInput } from '../core/models.js';
+import {
+  listCatalogModels,
+  listCatalogVendors,
+  normalizePricing,
+} from '../core/provider-catalog.js';
 import { DEFAULT_PERSONA_ID, listPersonas } from './personas.js';
 import { CHAT_SECTION_KEYS, loadBotSettings, saveBotSettings } from '../bot/settings.js';
 import type { BotSettings } from '../bot/settings.js';
@@ -299,28 +313,7 @@ export function handleApi(
     // только keySet: true|false (секреты не утекают в браузер, паттерн
     // GET /api/settings).
     if (method === 'GET' && url === '/api/models') {
-      const models = loadModels(cwd);
-      const gateways = loadGateways(cwd);
-      return {
-        status: 200,
-        body: {
-          default: models.default ?? null,
-          available: Object.entries(models.available).map(([id, m]) => ({
-            id,
-            label: m.label ?? id,
-            // VL-265: описание модели для пикера чата (undefined — ключ не сериализуется)
-            ...(m.description ? { description: m.description } : {}),
-            gateway: m.gateway,
-            ...(m.vendor ? { vendor: m.vendor } : {}),
-            api_mode: m.api_mode ?? 'chat',
-          })),
-          gateways: Object.entries(gateways).map(([id, p]) => ({
-            id,
-            base_url: p.base_url,
-            keySet: Boolean((p.api_key_env && process.env[p.api_key_env]) || p.api_key),
-          })),
-        },
-      };
+      return { status: 200, body: modelsResponse(cwd) };
     }
 
     // PUT /api/models — смена models.default (VL-209): зеркало `vibelog model
@@ -343,6 +336,54 @@ export function handleApi(
         models: { ...((settings.models ?? {}) as Record<string, unknown>), default: id },
       });
       return { status: 200, body: { default: id } };
+    }
+
+    // POST /api/models — добавить модель (VL-316, AC7/AC8/AC12).
+    // Валидация ДО записи (зеркало validateModelsConfig, риск R4): неизвестный
+    // шлюз, пустое имя, дубль id → 400, файл не меняется.
+    if (method === 'POST' && url === '/api/models') {
+      const parsed = parseModelBody(body);
+      if ('error' in parsed) return { status: 400, body: { error: parsed.error } };
+      const models = loadModels(cwd);
+      const gateways = loadGateways(cwd);
+      const validated = validateModelInput(models, gateways, parsed.input);
+      if ('error' in validated) return { status: 400, body: { error: validated.error } };
+      upsertModel(cwd, validated.id, parsed.input);
+      return { status: 201, body: { id: validated.id, models: modelsResponse(cwd) } };
+    }
+
+    // PUT /api/models/:id — изменить модель (AC9). id в пути — текущий ключ;
+    // смена id (например, при смене вендора) допустима: запись переносится,
+    // models.default следует за ней (upsertModel).
+    const modelMatch = url.match(/^\/api\/models\/(.+)$/);
+    if (modelMatch && method === 'PUT') {
+      const currentId = decodeURIComponent(modelMatch[1]);
+      const models = loadModels(cwd);
+      if (!models.available[currentId]) {
+        return { status: 404, body: { error: `Модель "${currentId}" отсутствует в models.available` } };
+      }
+      const parsed = parseModelBody(body, currentId);
+      if ('error' in parsed) return { status: 400, body: { error: parsed.error } };
+      const gateways = loadGateways(cwd);
+      const validated = validateModelInput(models, gateways, parsed.input, { excludeId: currentId });
+      if ('error' in validated) return { status: 400, body: { error: validated.error } };
+      upsertModel(cwd, validated.id, parsed.input);
+      // Переименование: старый ключ убираем, чтобы не осталось двух записей
+      if (validated.id !== currentId) removeModel(cwd, currentId);
+      return { status: 200, body: { id: validated.id, models: modelsResponse(cwd) } };
+    }
+
+    // DELETE /api/models/:id — удалить модель с защитой (AC10, риск R3):
+    // models.default и модель, закреплённая за сессией агента, не удаляются.
+    if (modelMatch && method === 'DELETE') {
+      const id = decodeURIComponent(modelMatch[1]);
+      const reason = checkModelRemovable(cwd, id);
+      if (reason !== null) {
+        const status = loadModels(cwd).available[id] ? 409 : 404;
+        return { status, body: { error: reason } };
+      }
+      removeModel(cwd, id);
+      return { status: 200, body: { models: modelsResponse(cwd) } };
     }
 
     // GET /api/personas — реестр ролей веб-чата (VL-265): id, label,
@@ -684,6 +725,105 @@ export function handleApi(
   } catch (err) {
     return { status: 500, body: { error: (err as Error).message } };
   }
+}
+
+/**
+ * Тело GET /api/models (VL-209, расширено VL-316): реестр моделей и шлюзов
+ * БЕЗ значений ключей (только keySet).
+ *
+ * Вынесено в функцию, потому что ответ нужен и GET-у, и CRUD-эндпоинтам
+ * (POST/PUT/DELETE возвращают свежий реестр — страница «Модели» не делает
+ * второй запрос после сохранения).
+ */
+function modelsResponse(cwd: string): Record<string, unknown> {
+  const models = loadModels(cwd);
+  const gateways = loadGateways(cwd);
+  return {
+    default: models.default ?? null,
+    available: Object.entries(models.available).map(([id, m]) => ({
+      id,
+      label: m.label ?? id,
+      // VL-265: описание модели для пикера чата (undefined — ключ не сериализуется)
+      ...(m.description ? { description: m.description } : {}),
+      gateway: m.gateway,
+      ...(m.vendor ? { vendor: m.vendor } : {}),
+      model: m.model,
+      api_mode: m.api_mode ?? 'chat',
+      // VL-316: тариф и контекст — для таблицы страницы «Модели»
+      ...(m.pricing ? { pricing: m.pricing } : {}),
+      ...(m.context_window ? { context_window: m.context_window } : {}),
+    })),
+    gateways: Object.entries(gateways).map(([id, p]) => ({
+      id,
+      base_url: p.base_url,
+      keySet: Boolean((p.api_key_env && process.env[p.api_key_env]) || p.api_key),
+    })),
+  };
+}
+
+/**
+ * Разбирает тело POST/PUT /api/models в ModelInput (VL-316).
+ *
+ * Терпимость к лишним ключам: UI присылает всю форму, а не только
+ * изменившиеся поля. Битые типы не «приводятся» молча — это 400, иначе в
+ * settings.json уехал бы мусор (риск R4: одна валидация, а не две).
+ *
+ * @param currentId — текущий id при редактировании (для переноса записи)
+ * @returns { input } либо { error } с понятным текстом
+ */
+function parseModelBody(
+  body: Record<string, unknown> | null,
+  currentId?: string,
+): { input: ModelInput } | { error: string } {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { error: 'Ожидается JSON-объект с полями модели' };
+  }
+  const str = (key: string): string | undefined => {
+    const value = body[key];
+    if (value === undefined || value === null) return undefined;
+    return typeof value === 'string' ? value : undefined;
+  };
+  const gateway = str('gateway');
+  if (gateway === undefined) return { error: 'gateway: ожидается строка id шлюза' };
+  const model = str('model');
+  if (model === undefined) return { error: 'model: ожидается строка имени модели' };
+
+  const input: ModelInput = { gateway, model };
+  if (currentId !== undefined) input.id = currentId;
+  const label = str('label');
+  if (label !== undefined) input.label = label;
+  const description = str('description');
+  if (description !== undefined) input.description = description;
+  const vendor = str('vendor');
+  if (vendor !== undefined) input.vendor = vendor;
+  const apiMode = str('api_mode');
+  if (apiMode !== undefined) input.api_mode = apiMode as ModelInput['api_mode'];
+
+  const pricing = body.pricing;
+  if (pricing !== undefined && pricing !== null) {
+    if (typeof pricing !== 'object' || Array.isArray(pricing)) {
+      return { error: 'pricing: ожидается объект { input_per_1m, output_per_1m, cache_per_1m }' };
+    }
+    const p = pricing as Record<string, unknown>;
+    const num = (key: string): number => {
+      const value = p[key];
+      return typeof value === 'number' ? value : Number.NaN;
+    };
+    input.pricing = {
+      input_per_1m: num('input_per_1m'),
+      output_per_1m: num('output_per_1m'),
+      cache_per_1m: num('cache_per_1m'),
+    };
+  }
+
+  const contextWindow = body.context_window;
+  if (contextWindow !== undefined && contextWindow !== null) {
+    if (typeof contextWindow !== 'number') {
+      return { error: 'context_window: ожидается число токенов' };
+    }
+    input.context_window = contextWindow;
+  }
+  return { input };
 }
 
 /**

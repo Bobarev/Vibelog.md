@@ -34,7 +34,9 @@
  * настройки не должны ронять процесс, битые поля отбрасываются.
  */
 
-import { loadSettings } from './settings.js';
+import { loadSettings, saveSettingsPatch } from './settings.js';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import type { ApiMode } from '../agent/llm.js';
 import type { ModelPricing } from './analytics.js';
 
@@ -74,6 +76,12 @@ export interface ModelConfig {
   vendor?: string;
   /** Имя модели у шлюза БЕЗ `@`-хвоста (напр. "xiaomi/mimo-v2.6-pro"). */
   model: string;
+  /**
+   * Размер контекста в токенах (VL-316): приходит из каталога шлюза и
+   * становится ручным полем только для моделей, добавленных руками
+   * (открытый вопрос VL-313). undefined — неизвестен.
+   */
+  context_window?: number;
   /** Режим API (VL-205); дефолт 'chat'. */
   api_mode?: ApiMode;
   /** Тарифы для billing (VL-198) — теперь внутри модели. */
@@ -248,6 +256,13 @@ export function loadModels(cwd: string): ModelsConfig {
         conf.description = mm.description;
       }
       if (mm.api_mode === 'chat' || mm.api_mode === 'responses') conf.api_mode = mm.api_mode;
+      if (
+        typeof mm.context_window === 'number' &&
+        Number.isFinite(mm.context_window) &&
+        mm.context_window > 0
+      ) {
+        conf.context_window = mm.context_window;
+      }
       if (typeof mm.pricing === 'object' && mm.pricing !== null && !Array.isArray(mm.pricing)) {
         const p = mm.pricing as Record<string, unknown>;
         const num = (x: unknown): number =>
@@ -413,4 +428,280 @@ export function validateModelsConfig(cwd: string): string[] {
     );
   }
   return errors;
+}
+
+/**
+ * Вход записи модели из веб-интерфейса (VL-316): что приходит в
+ * POST/PUT /api/models.
+ *
+ * Отдельный тип нужен, потому что запись в settings.json — структурная
+ * (`gateway` + чистый `model` + `vendor`), а UI присылает ровно эти поля;
+ * `id` вычисляется сервером (`<gateway>/<model>[/<vendor>]`).
+ */
+export interface ModelInput {
+  /** Явный id (при редактировании — текущий ключ); undefined — вычислить. */
+  id?: string;
+  label?: string;
+  description?: string;
+  gateway: string;
+  model: string;
+  vendor?: string;
+  api_mode?: ApiMode;
+  pricing?: ModelPricing;
+  context_window?: number;
+}
+
+/** Нормализует имя модели: срезает `@`-хвост, лишние слэши и пробелы. */
+function cleanModelName(model: string): string {
+  return parseVendorSuffix(model.trim()).model.replace(/^\/+|\/+$/g, '');
+}
+
+/**
+ * Вычисляет id записи модели: `<gateway>/<model>` + `/@<vendor>` при наличии
+ * вендора.
+ *
+ * Вендор входит в id, потому что у RouterAI разные вендоры одной модели —
+ * это РАЗНЫЕ записи available (цены разные). Без вендора в id вторая запись
+ * той же модели молча перезаписала бы первую.
+ */
+export function buildModelId(input: { gateway: string; model: string; vendor?: string }): string {
+  const base = `${input.gateway}/${cleanModelName(input.model)}`;
+  return input.vendor ? `${base}/@${input.vendor}` : base;
+}
+
+/**
+ * Приводит запись модели к СТРУКТУРНОМУ виду для записи в settings.json
+ * (AC11, ленивая миграция VL-315).
+ *
+ * Старый формат (`provider` + `@`-хвост в `model`) читается нормально, но
+ * при первом сохранении из UI запись переписывается новой формой: `gateway`,
+ * чистый `model`, отдельный `vendor`. Ключи с пустыми значениями не пишутся —
+ * чтобы файл не заполнялся `""`.
+ *
+ * @returns объект для models.available[id]; порядок ключей фиксирован (label,
+ *   description, gateway, vendor, model, api_mode, context_window, pricing)
+ */
+export function toStoredModel(input: ModelInput): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (input.label !== undefined && input.label !== '') out.label = input.label;
+  if (input.description !== undefined && input.description !== '') out.description = input.description;
+  out.gateway = input.gateway;
+  if (input.vendor !== undefined && input.vendor !== '') out.vendor = input.vendor;
+  out.model = cleanModelName(input.model);
+  if (input.api_mode !== undefined) out.api_mode = input.api_mode;
+  if (
+    input.context_window !== undefined &&
+    Number.isFinite(input.context_window) &&
+    input.context_window > 0
+  ) {
+    out.context_window = Math.floor(input.context_window);
+  }
+  if (input.pricing !== undefined) {
+    out.pricing = {
+      input_per_1m: input.pricing.input_per_1m,
+      output_per_1m: input.pricing.output_per_1m,
+      cache_per_1m: input.pricing.cache_per_1m,
+    };
+  }
+  return out;
+}
+
+/**
+ * Валидирует запись модели ДО записи в файл (AC12; риск R4 плана —
+ * дублирования правил: здесь только то, чего не может проверить
+ * `validateModelsConfig`: она валидирует толькo активную модель).
+ *
+ * @param models — текущая секция (для проверки дубля id)
+ * @param gateways — известные шлюзы
+ * @param input — приходящая запись
+ * @param opts.excludeId — id, который разрешено «занять» (редактирование себя)
+ * @returns { id } с вычисленным id либо { error } с понятным текстом (400)
+ */
+export function validateModelInput(
+  models: ModelsConfig,
+  gateways: Record<string, GatewayConfig>,
+  input: ModelInput,
+  opts: { excludeId?: string } = {},
+): { id: string } | { error: string } {
+  if (typeof input.gateway !== 'string' || input.gateway === '') {
+    return { error: 'gateway: ожидается id шлюза из секции gateways' };
+  }
+  if (!gateways[input.gateway]) {
+    return { error: `Неизвестный шлюз: ${input.gateway} — отсутствует в settings.gateways` };
+  }
+  const model = cleanModelName(typeof input.model === 'string' ? input.model : '');
+  if (model === '') return { error: 'model: имя модели не может быть пустым' };
+  // Структурная запись не знает `@`-хвоста (VL-315): если он остался после
+  // разбора, значит в поле ввели мусор — лучше 400, чем запись с хвостом
+  if (model.includes('@')) {
+    return { error: 'model: имя модели не должно содержать «@» — вендор задаётся полем vendor' };
+  }
+  if (input.vendor !== undefined && typeof input.vendor !== 'string') {
+    return { error: 'vendor: ожидается строка id вендора' };
+  }
+  if (input.api_mode !== undefined && input.api_mode !== 'chat' && input.api_mode !== 'responses') {
+    return { error: 'api_mode: допустимые значения — chat или responses' };
+  }
+  if (input.pricing !== undefined) {
+    for (const key of ['input_per_1m', 'output_per_1m', 'cache_per_1m'] as const) {
+      const value = input.pricing[key];
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+        return { error: `pricing.${key}: ожидается неотрицательное число` };
+      }
+    }
+  }
+  if (
+    input.context_window !== undefined &&
+    (typeof input.context_window !== 'number' ||
+      !Number.isFinite(input.context_window) ||
+      input.context_window <= 0)
+  ) {
+    return { error: 'context_window: ожидается положительное число токенов' };
+  }
+  // id ВСЕГДА вычисляется из gateway/model/vendor: при редактировании смена
+  // вендора меняет и id (разные вендоры — разные записи available), поэтому
+  // брать id из тела нельзя — запись осталась бы под старым ключом.
+  const id = buildModelId({ gateway: input.gateway, model, vendor: input.vendor });
+  if (id.trim() === '') return { error: 'id: пустой идентификатор модели' };
+  if (id !== opts.excludeId && models.available[id]) {
+    return { error: `Модель "${id}" уже есть в models.available — выберите другой id или отредактируйте её` };
+  }
+  return { id };
+}
+
+/**
+ * Проверяет, можно ли удалить модель (AC10; риск R3 плана).
+ *
+ * Модель фиксируется в мете сессий агента (`model_id`/`model_gateway` +
+ * `model_name`, VL-239) и может быть выбрана по умолчанию; удаление такой
+ * записи ломает резюм активной работы — поэтому проверка ДО удаления, а не
+ * после.
+ *
+ * @param cwd — директория проекта
+ * @param id — удаляемый id модели
+ * @param opts.sessionMetaReader — инжекция читателя мет (тесты)
+ * @returns null, если удалять можно; иначе текст причины (400)
+ */
+export function checkModelRemovable(
+  cwd: string,
+  id: string,
+  opts: { sessionMetaReader?: (cwd: string) => SessionModelRef[] } = {},
+): string | null {
+  const models = loadModels(cwd);
+  if (!models.available[id]) return `Модель "${id}" отсутствует в models.available`;
+  if (models.default === id) {
+    return `Модель "${id}" — models.default: сначала выберите другую модель по умолчанию`;
+  }
+  const reader = opts.sessionMetaReader ?? readSessionModelRefs;
+  for (const ref of reader(cwd)) {
+    if (ref.modelId === id) {
+      return `Модель "${id}" закреплена за сессией агента ${ref.sessionId} (${ref.taskId ?? 'без задачи'}): удаление сломает resume. Дождитесь завершения задачи или создайте новую сессию`;
+    }
+  }
+  const conf = models.available[id];
+  // Смена id при редактировании — тот же риск: сессия ищет модель по паре
+  // gateway+wire-имя, если id переименован. Удаление пары задевает её.
+  for (const ref of reader(cwd)) {
+    if (ref.gateway === conf.gateway && ref.modelName === conf.model) {
+      return `Модель "${id}" (${conf.gateway}/${conf.model}) закреплена за сессией агента ${ref.sessionId} (${ref.taskId ?? 'без задачи'}): удаление сломает resume`;
+    }
+  }
+  return null;
+}
+
+/** Ссылка меты сессии агента на модель (VL-239) — для проверки удаления. */
+export interface SessionModelRef {
+  sessionId: string;
+  taskId?: string;
+  modelId?: string;
+  gateway?: string;
+  modelName?: string;
+}
+
+/**
+ * Читает меты сессий агента и собирает ссылки на модели.
+ *
+ * Читает `<cwd>/.vibelog/agent-sessions/*.meta.json`; битые меты и записи
+ * без ссылки на модель пропускаются (паттерн loadSettings — диагностические
+ * данные не должны ронять страницу).
+ */
+export function readSessionModelRefs(cwd: string): SessionModelRef[] {
+  const dir = join(cwd, '.vibelog', 'agent-sessions');
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const out: SessionModelRef[] = [];
+  for (const entry of entries) {
+    if (!entry.endsWith('.meta.json')) continue;
+    const sessionId = entry.slice(0, -'.meta.json'.length);
+    let meta: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(join(dir, entry), 'utf-8'));
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) continue;
+      meta = parsed as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const ref: SessionModelRef = { sessionId };
+    if (typeof meta.taskId === 'string' && meta.taskId !== '') ref.taskId = meta.taskId;
+    if (typeof meta.model_id === 'string' && meta.model_id !== '') ref.modelId = meta.model_id;
+    const gateway = typeof meta.model_gateway === 'string' ? meta.model_gateway : meta.model_provider;
+    if (typeof gateway === 'string' && gateway !== '') ref.gateway = gateway;
+    if (typeof meta.model_name === 'string' && meta.model_name !== '') ref.modelName = meta.model_name;
+    // Запись без идентичности модели (старые/интерактивные сессии) не интересна
+    if (ref.modelId === undefined && ref.gateway === undefined) continue;
+    out.push(ref);
+  }
+  return out;
+}
+
+/**
+ * Read-modify-write секции models: добавляет/заменяет одну запись.
+ *
+ * Пишет ТОЛЬКО новый ключ `gateways`-эпохи (структурный `gateway`/`vendor`),
+ * остальные ключи settings.json сохраняются как есть. Старые записи
+ * available при этом остаются в файле как есть до собственного сохранения
+ * (ленивая миграция: трогаем только то, что пользователь отредактировал).
+ */
+export function upsertModel(cwd: string, id: string, input: ModelInput): void {
+  const settings = loadSettings(cwd);
+  const rawModels =
+    typeof settings.models === 'object' && settings.models !== null && !Array.isArray(settings.models)
+      ? (settings.models as Record<string, unknown>)
+      : {};
+  const rawAvailable =
+    typeof rawModels.available === 'object' && rawModels.available !== null && !Array.isArray(rawModels.available)
+      ? (rawModels.available as Record<string, unknown>)
+      : {};
+  const nextAvailable: Record<string, unknown> = { ...rawAvailable, [id]: toStoredModel(input) };
+  const nextModels: Record<string, unknown> = { ...rawModels, available: nextAvailable };
+  if (typeof rawModels.default === 'string' && rawModels.default !== '') {
+    // Смена id при редактировании: default должен продолжать указывать на модель
+    if (input.id !== undefined && input.id !== id && rawModels.default === input.id) {
+      nextModels.default = id;
+    }
+  }
+  saveSettingsPatch(cwd, { models: nextModels });
+}
+
+/**
+ * Удаляет запись модели из models.available (проверку делает вызывающий —
+ * checkModelRemovable: здесь только механика read-modify-write).
+ */
+export function removeModel(cwd: string, id: string): void {
+  const settings = loadSettings(cwd);
+  const rawModels =
+    typeof settings.models === 'object' && settings.models !== null && !Array.isArray(settings.models)
+      ? (settings.models as Record<string, unknown>)
+      : {};
+  const rawAvailable =
+    typeof rawModels.available === 'object' && rawModels.available !== null && !Array.isArray(rawModels.available)
+      ? (rawModels.available as Record<string, unknown>)
+      : {};
+  const nextAvailable = { ...rawAvailable };
+  delete nextAvailable[id];
+  saveSettingsPatch(cwd, { models: { ...rawModels, available: nextAvailable } });
 }
