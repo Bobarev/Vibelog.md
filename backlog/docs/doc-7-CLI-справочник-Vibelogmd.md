@@ -440,6 +440,23 @@ Manual runner (doc-21 §4/§7/§10). Без `--dry-run` создаёт очер�
 
 **Правило «stale running»**: если у рана `status: running`, пуст `finished_at` и `pid` не жив (`process.kill(pid, 0)` → ESRCH), команды печатают предупреждение с подсказкой `experiment run <exp-id> --recover`. Manual-ран с `pid: null` зависшим не считается — его закрывает `report`. Статус карточки эксперимента — производная от последнего рана (`draft → running → completed|failed`).
 
+#### runner: ai-phase (VL-299)
+
+Если в карточке `runner: ai-phase`, `run` не печатает инструкцию, а **сам прогоняет** матрицу «строки датасета × варианты» headless-агентом (doc-21 §13–§14). Дополнительные флаги:
+
+| Флаг | Описание |
+|---|---|
+| `--timeout <сек>` | Таймаут одной задачи. Приоритет: флаг → `timeout_sec` в frontmatter карточки → **600 с** (`DEFAULT_TASK_TIMEOUT_SEC`). Истёкший таймаут пишет строку с `error_kind: 'timeout'` и продолжает прогон |
+| `--max-tool-calls N` | Лимит tool-calls на один ран задачи (пробрасывается в `vibelog-agent`) |
+| `--variant A,B` | Ограничить набор вариантов (как у manual) |
+| `--dry-run` | Матрица «строки × варианты» + оценка стоимости по среднему usage прошлых ранов; без данных — «оценки нет». Ран не создаётся |
+
+**Изоляция.** Каждый прогон идёт в собственном git-worktree `.vibelog/worktrees/exp-<id>-run-<N>` на ветке `exp/<id>-run-<N>` (ветка задачи не переиспользуется). После каждой задачи — откат `git reset --hard` + `git clean -fd` в `try/finally`, поэтому падение рана не оставляет грязи для следующей строки. Параллельные прогоны одного эксперимента запрещены: `meta.json` последнего рана + живой `pid` работают как lock, второй `run` получает отказ (не очередь) с подсказкой `--recover`.
+
+**Учёт токенов.** Ран спавнится с `VIBELOG_EXPERIMENT=exp-<id>/run-<N>`: usage пишется в `<run-dir>/usage.json`, а `.vibelog/billing/<taskId>.json` **не создаётся** — эксперимент не загрязняет биллинг задач.
+
+**Метрики строки.** `tool_calls` берётся из stdout `type=result`.`tool_calls_total` (fallback — подсчёт по jsonl рана); `cost` считается по `models.available[<variant.model>].pricing`; если тарифа нет — `cost: null` и `pricing_missing: true` в `meta.json` (не `0`). SIGINT/SIGTERM переводят ран в `status: failed` с частичными `results.jsonl`.
+
 ### record
 
 ```
