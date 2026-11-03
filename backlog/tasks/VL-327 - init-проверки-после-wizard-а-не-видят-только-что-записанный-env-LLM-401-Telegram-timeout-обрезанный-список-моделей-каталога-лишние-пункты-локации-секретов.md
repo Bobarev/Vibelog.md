@@ -1,11 +1,11 @@
 ---
 id: VL-327
 title: 'init: проверки после wizard-а не видят только что записанный .env (LLM 401, Telegram timeout), обрезанный список моделей каталога, лишние пункты локации секретов'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-03 23:28'
-updated_date: '2026-11-03 23:57'
+updated_date: '2026-11-04 00:06'
 due_date: ''
 labels:
   - cli
@@ -27,15 +27,17 @@ modified_files:
   - src/core/setup-check.ts
   - src/core/setup-check.test.mjs
   - src/cli/init-wizard.test.mjs
-lessons: []
+lessons:
+  - lesson-206
+  - lesson-207
 token_usage:
-  input: 5239373
-  output: 33438
-  cache: 4515840
-  total: 5272811
-  requests: 84
-  duration_ms: 837365
-  reasoning: 12793
+  input: 6631072
+  output: 42456
+  cache: 5829888
+  total: 6673528
+  requests: 115
+  duration_ms: 899955
+  reasoning: 16072
   by_phase:
     code:
       input: 4695082
@@ -43,10 +45,10 @@ token_usage:
       cache: 4028160
       requests: 70
     close:
-      input: 544291
-      output: 3960
-      cache: 487680
-      requests: 14
+      input: 1935990
+      output: 12978
+      cache: 1801728
+      requests: 45
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -94,7 +96,7 @@ VL-324 (правки wizard-а `vibelog init`) выполнена, но ручн
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -156,5 +158,18 @@ DoD не отмечены (1): 2. Документация обновлена
 Файлы (5): src/cli/commands/init.ts, src/cli/commands/init-wizard.ts, src/core/setup-check.ts, src/core/setup-check.test.mjs, src/cli/init-wizard.test.mjs
 Фрагмент плана: ## Файлы и порядок шагов 1. **`src/cli/commands/init.ts`** (главная причина 401/timeout) - После `applySetup(cwd, answers)` и до `runChecks` — повторный `loadProjectEnv(cwd)`. Комментарий: `loadDotEnv` пишет только отсутствующие ключи, поэтому первый вызов (до wizard-а) не видит того, что wizard доп…
 Отчёт собран сервером автоматически (VL-253): модель не передала comment.
+---
+author: @agent
+created: 2026-11-03 23:57
+---
+Фаза close не удалась (код выхода 1): 3, блокировок=0, payload последнего запроса=189923 байт (макс 189923), usage={"input_tokens":544291,"output_tokens":3960,"cache_read_input_tokens":487680,"total_tokens":548251,"reasoning_tokens":1688} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-04 00:06
+---
+Фаза Close выполнена. Ветка vb/vl-327 (1 коммит fccadaf) слита в master merge-коммитом bc56cf0 без конфликтов; worktree .vibelog/worktrees/vl-327 удалена (в ней оставался только untracked-симлинк backlog/references/data от оркестратора — удаление с --force, данные целы), ветка vb/vl-327 удалена.
+Проверка после merge: `pnpm build` (tsc strict) чистый; ранний точечный фильтр по diff merge (src/core/setup-check.test.mjs + src/cli/init-wizard.test.mjs, они же покрывают src/cli/commands/init.ts) — 44 теста зелёные; полный прогон `vitest run` — 164 файла / 3139 тестов passed, 4 skipped (пре-существующие skip), падений нет, повторов не требовалось. Код в фазе не правился.
+DoD: 1. Тесты проходят — да (полный прогон); 2. Документация обновлена — да (doc-6: два пункта локации секретов, двухступенчатый выбор модели по автору, раздел про финальные проверки по свежему окружению; CHANGELOG Unreleased → Исправлено), коммит b76b4e1; 3. Нет регрессий — да.
+Lessons: lesson-206 (перечитывай окружение после записи .env) и lesson-207 (не обрезай длинный список молча), коммит 3c2dbbc.
 ---
 <!-- COMMENTS:END -->
