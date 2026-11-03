@@ -546,6 +546,33 @@ Vibelog.md doctor
 
 ---
 
+## agent
+
+```
+vibelog agent                                TUI-чат с агентом
+vibelog agent <task-id>                      чат с карточкой задачи в system-промпте
+vibelog agent analyze <session-ref> [комм.]  анализ сессии агента
+vibelog agent run <фаза> <task-id> [флаги]   headless-запуск фазы (VL-305)
+```
+
+`vibelog agent` без подкоманд — TUI-чат (VL-158); `vibelog agent analyze` — разбор сессии (VL-141/169). Оба пути требуют интерактивного терминала и описаны в doc-10.
+
+**`vibelog agent run` (VL-305)** — запуск фазы без отдельного бинаря `vibelog-agent`: удобный UX-путь для человека, который «живёт» в `vibelog`. Команда делегирует вызов в `main()` из `dist/agent/cli.js`, то есть работает ровно так же, как `vibelog-agent <фаза> <task-id> [флаги]` (см. раздел `vibelog-agent` ниже), и возвращает его exit code.
+
+```
+vibelog agent run plan VL-111 --model routerai/anthropic/claude-sonnet-4 --headless
+vibelog agent run code VL-305 --comment "продолжи с шага 3" --max-tool-calls 60
+vibelog agent run --help
+```
+
+Ключевая деталь реализации: **флаги фазы передаются агенту сырым argv**, а не собираются обратно из разобранного роутером объекта — поэтому сохраняются порядок, повторяющиеся флаги и значения с пробелами (`--comment "текст с пробелами"`). Парсер `vibelog` флаги после `run` не интерпретирует; полный список флагов (`--headless`, `--no-mcp`, `--comment`, `--max-tool-calls`, `--tool-calls-per-session`, `--max-wall-time`, `--resume`, `--api-mode` и др.) — в разделе `vibelog-agent`.
+
+Поведение справки: `vibelog agent run` без аргументов (или с одним позиционным, или если первым идёт флаг) печатает справку по фазам из общего реестра `PHASES` и завершается с exit 1 — без стектрейса; `--help`/`-h` — та же справка с exit 0. Неизвестная фаза даёт ошибку **агента** (`Неизвестная фаза` + список фаз), а не подсказку роутера.
+
+Отдельный бинарь `vibelog-agent` при этом остаётся: его спавнит оркестратор фаз (qwen-совместимый контракт — промпт позиционным аргументом, в stdout только JSON `type=result`). `vibelog agent run` не заменяет его в спавне, причина — `bin/vibelog.mjs` перед роутингом делает проверку обновлений (до 3 с) и печатает заголовки, а `dist/cli/router.js` статически тянет все модули команд.
+
+---
+
 ## vibelog-agent
 
 ```
