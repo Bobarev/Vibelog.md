@@ -15,7 +15,7 @@
  */
 
 import { loadSettings } from './settings.js';
-import { resolveActiveModel } from './models.js';
+import { resolveActiveModel, resolveModelById } from './models.js';
 
 /**
  * Агрегат использования токенов (формат frontmatter/billing/meta, VL-198).
@@ -162,6 +162,28 @@ export function getActiveModelPricing(cwd: string): ModelPricing | undefined {
   const modelName = active?.model ?? process.env.VIBELOG_LLM_MODEL;
   if (!modelName) return undefined;
   return getPricing(cwd)[modelName];
+}
+
+/**
+ * Тариф КОНКРЕТНОЙ модели по её id из `models.available` (VL-313).
+ *
+ * Панель токенов веб-чата считает деньги по тарифу той модели, которой
+ * реально шёл тред: после смены модели в пикере прошлые ходы не должны
+ * посчитаться по чужому тарифу (getActiveModelPricing смотрит на
+ * `models.default`). Fallback — legacy-секция `pricing` по wire-имени.
+ *
+ * @param cwd — директория проекта settings.json
+ * @param modelId — id из models.available; undefined/null — активная модель
+ * @returns undefined, если ни модель, ни её тариф не найдены (расчёт даст 0)
+ */
+export function pricingForModelId(cwd: string, modelId?: string | null): ModelPricing | undefined {
+  if (!modelId) return getActiveModelPricing(cwd);
+  const active = resolveModelById(cwd, modelId);
+  if (active === null) return undefined;
+  if (active.pricing) return active.pricing;
+  // Тариф в записи модели не задан — legacy-секция по wire-имени (паттерн
+  // getActiveModelPricing: конфиги до VL-209 продолжают работать).
+  return getPricing(cwd)[active.model];
 }
 
 /**

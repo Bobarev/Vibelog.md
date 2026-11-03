@@ -37,6 +37,8 @@ import {
   type ChatModelRunResult,
 } from "@assistant-ui/react"
 
+import type { ThreadUsageView } from "@/lib/chat-usage"
+
 /** Тип content-части assistant-сообщения (из результата run). */
 type Parts = NonNullable<ChatModelRunResult["content"]>
 type Part = Parts[number]
@@ -58,6 +60,8 @@ type ChatEvent =
     }
   | { type: "done" }
   | { type: "error"; message: string }
+  /** VL-313: расход токенов треда после очередного вызова модели. */
+  | { type: "usage"; usage: ThreadUsageView }
   /**
    * VL-269: ход остановлен лимитом, история сохранена. Клиент продолжает ход
    * сам (до `maxAutoContinue` раз), без нового user-сообщения.
@@ -174,9 +178,39 @@ export function setActivePersonaId(id: string): void {
   activePersonaId = id
 }
 
+/**
+ * Расход токенов активного треда (VL-313): приходит событием `usage` после
+ * каждого вызова модели и из `GET /api/chat/threads/:id` при восстановлении.
+ *
+ * Хранение — module-state с подпиской (как activeThreadId/activeModelId):
+ * панель живёт в шапке треда, а событие приходит в адаптере рантайма, между
+ * ними нет общего React-дерева. Подписка через useSyncExternalStore даёт
+ * панели обновление без перезагрузки страницы (AC1).
+ */
+let activeUsage: ThreadUsageView | null = null
+const usageListeners = new Set<() => void>()
+
+/** Текущий расход треда (null — учёта нет: пустой тред). */
+export function getActiveUsage(): ThreadUsageView | null {
+  return activeUsage
+}
+
+/** Установка расхода треда (событие usage / восстановление истории). */
+export function setActiveUsage(usage: ThreadUsageView | null): void {
+  activeUsage = usage
+  for (const listener of usageListeners) listener()
+}
+
+/** Подписка на изменение расхода (для useSyncExternalStore). */
+export function subscribeActiveUsage(listener: () => void): () => void {
+  usageListeners.add(listener)
+  return () => {
+    usageListeners.delete(listener)
+  }
+}
+
 /** Решения, уже отправленные на сервер (идемпотентность resume). */
 const sentApprovals = new Set<string>()
-
 /**
  * Уведомление о создании нового треда сервером (VL-207): провайдер
  * регистрирует колбэк, ChatPage переводит hash на `#/chat/<id>` — без
@@ -353,6 +387,11 @@ function applyEvent(
       })
       return false
     case "done":
+      return false
+    case "usage":
+      // VL-313: расход треда — обновляем module-state панели (AC1). В content
+      // сообщения ничего не кладём: это метаданные треда, а не часть ответа.
+      setActiveUsage(ev.usage)
       return false
     case "truncated": {
       // VL-269: ход остановлен лимитом, история сохранена. Плашку с причиной
@@ -534,6 +573,7 @@ export function ChatRuntimeProvider({
   threadId,
   initialMessages,
   allowList,
+  initialUsage,
   onThreadCreated,
   children,
 }: {
@@ -543,6 +583,11 @@ export function ChatRuntimeProvider({
   initialMessages?: import("@assistant-ui/react").ThreadMessageLike[]
   /** Allow-list треда (VL-264): инструменты, разрешённые «Always allow». */
   allowList?: readonly string[] | undefined
+  /**
+   * Расход токенов треда из GET /api/chat/threads/:id (VL-313, AC2): панель
+   * восстанавливает те же цифры после перезагрузки страницы.
+   */
+  initialUsage?: ThreadUsageView | null
   /** Новый тред создан сервером → обновить hash на #/chat/<id>. */
   onThreadCreated?: (id: string) => void
   children: React.ReactNode
@@ -561,11 +606,13 @@ export function ChatRuntimeProvider({
     // VL-264: allow-list — свойство треда, при смене сбрасываем (иначе
     // «разрешено всегда» из другого треда дало бы ложную пометку)
     setAlwaysAllowed(allowList)
+    // VL-313: расход — тоже свойство треда: новый тред начинается с нуля
+    setActiveUsage(initialUsage ?? null)
     notifyThreadCreated = id => createdRef.current?.(id)
     return () => {
       notifyThreadCreated = null
     }
-  }, [threadId, allowList])
+  }, [threadId, allowList, initialUsage])
 
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
 }

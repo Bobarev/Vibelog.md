@@ -77,6 +77,8 @@ import {
   removeThreadAllow,
   effectiveThreadPersona,
 } from './chat.js';
+// VL-313: расход токенов треда для панели (восстановление после перезагрузки)
+import { threadUsageView } from './chat-usage.js';
 import { GRANTABLE_TOOLS, findActiveGrant, isValidRunId, latestGrantDraft, saveGrantDraft } from './supervisor-grant.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadSettings, saveSettingsPatch } from '../core/settings.js';
@@ -235,6 +237,9 @@ export function handleApi(
           // VL-283: роль, зафиксированная за тредом (null — тред ещё пуст).
           // Клиент по ней показывает бейдж вместо пикера роли.
           persona: effectiveThreadPersona(cwd, chatThreadMatch[1]),
+          // VL-313: расход токенов треда — панель восстанавливает те же цифры
+          // после перезагрузки без отдельного запроса (null — тред без ходов).
+          usage: threadUsageView(cwd, chatThreadMatch[1]),
         },
       };
     }
