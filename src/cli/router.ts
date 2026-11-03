@@ -159,7 +159,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('doc', colors.cyan)} create|list|...          Документы (spec/guide)
   ${colorize('reference', colors.cyan)} list|add|...          Референсы (repo/url/file/doc/spec/experiment)
   ${colorize('lesson', colors.cyan)} list|create|...         Уроки из задач (lessons learned)
-  ${colorize('experiment', colors.cyan)} create|list|dataset|run|record|report|judge  Эксперименты (A/B): карточки, прогоны, judge, отчёт
+  ${colorize('experiment', colors.cyan)} create|list|dataset|run|record|report|judge|gc  Эксперименты (A/B): карточки, прогоны, judge, отчёт, git-политика
   ${colorize('config', colors.cyan)} get|set|list             Конфиг проекта
   ${colorize('model', colors.cyan)} list|use|current          LLM-модели: список, переключение
   ${colorize('provider', colors.cyan)} list                   LLM-провайдеры (base_url, ключ)
