@@ -35,7 +35,7 @@ import { isWriteOperation } from '../../dist/core/tool-classify.js';
 import { createTaskFile } from '../../dist/core/store.js';
 import { writeDocument } from '../../dist/core/document.js';
 import { writeReference } from '../../dist/core/reference.js';
-import { createLessonFile } from '../../dist/core/lesson.js';
+import { createLessonFile, getLesson, lessonToMarkdown } from '../../dist/core/lesson.js';
 
 const cwd = mkdtempSync(join(tmpdir(), 'vibelog-write-ack-contract-'));
 const backlogDir = join(cwd, 'backlog');
@@ -310,5 +310,38 @@ describe('VL-310 — инвариант «каждый write-инструмен�
         'Добавь сценарий в NOOP_SCENARIOS (если операция идемпотентна по значениям) ' +
         'или строку с причиной в NOOP_NOT_APPLICABLE.',
     );
+  });
+});
+
+/**
+ * VL-319: noop-ответ обязан называть НЕЗАПОЛНЕННОЕ обязательное поле.
+ *
+ * Инвариант введён только для уроков: у остальных сущностей «обязательное по
+ * смыслу» поле не определено механически, и требование `missing` сломало бы
+ * 8 инструментов. Для урока такое поле есть — тело: пустое тело означает, что
+ * урок создан шаблоном без `content` (phase-close.md до VL-319), и модель
+ * должна узнать об этом из ответа, а не из повторного чтения.
+ */
+describe('VL-319 — noop-ответ называет незаполненное обязательное поле', () => {
+  it('AC3: noop lesson_update на уроке с пустым телом содержит missing[0].field === "content" и hint', async () => {
+    const l = createLessonFile(cwd, { title: 'Урок-пустышка контракта', tags: ['a'] });
+    // Обнуляем тело: имитируем урок, созданный шаблоном Close без content
+    const entry = getLesson(cwd, l.id);
+    writeFileSync(entry.path, lessonToMarkdown(entry.lesson, ''), 'utf-8');
+    // Первый вызов на пустом теле — ошибка (AC1), не noop
+    const err = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+    assert.equal(err.ok, false, `ожидалась ошибка: ${JSON.stringify(err)}`);
+    assert.ok(!err.noop, 'пустое тело без content — ошибка, а не noop');
+    assert.equal(err.missing[0].field, 'content', 'missing называет пропущенное поле');
+    assert.equal(typeof err.hint, 'string', 'hint со следующим шагом');
+    // Дополняем тело → повторный вызов даёт noop с missing (тело уже непустое,
+    // но проверяем форму ответа: applied — только переданные поля)
+    writeFileSync(entry.path, lessonToMarkdown(entry.lesson, '## Проблема\n\nx\n'), 'utf-8');
+    const first = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+    assert.equal(first.ok, true, `первый вызов применяет: ${JSON.stringify(first)}`);
+    const noop = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+    assert.equal(noop.noop, true, `ожидался noop: ${JSON.stringify(noop)}`);
+    assert.deepEqual(Object.keys(noop.applied), ['verified_by'], 'applied — только переданные поля');
+    assert.equal(typeof noop.hint, 'string', 'hint обязателен в noop-ответе');
   });
 });

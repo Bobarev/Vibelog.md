@@ -12,7 +12,7 @@
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -22,7 +22,7 @@ import { createTaskFile, getTask, listTasks } from '../../dist/core/store.js';
 import { statSync } from 'node:fs';
 import { writeDocument, getDocument } from '../../dist/core/document.js';
 import { writeReference } from '../../dist/core/reference.js';
-import { createLessonFile, getLesson } from '../../dist/core/lesson.js';
+import { createLessonFile, getLesson, lessonToMarkdown } from '../../dist/core/lesson.js';
 
 const cwd = mkdtempSync(join(tmpdir(), 'vibelog-write-ack-'));
 const backlogDir = join(cwd, 'backlog');
@@ -253,6 +253,53 @@ describe('VL-306 — noop-детекция lesson_update', () => {
     const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, tags: ['a', 'c'] }, cwd));
     assert.equal(ack.ok, true);
     assert.ok(!ack.noop, 'есть реальное изменение — noop быть не должно');
+  });
+});
+
+describe('VL-319 — пустое тело урока: ошибка вместо noop', () => {
+  /** Создаёт урок с ПУСТЫМ телом (как шаблон Close до VL-319). */
+  function createEmptyBodyLesson(title) {
+    const l = createLessonFile(cwd, { title, tags: ['empty'] });
+    const entry = getLesson(cwd, l.id);
+    writeFileSync(entry.path, lessonToMarkdown(entry.lesson, ''), 'utf-8');
+    return l;
+  }
+
+  it('AC1: lesson_update без content на уроке с пустым телом → ok:false + error (не noop)', async () => {
+    const l = createEmptyBodyLesson('Урок без тела');
+    const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+    assert.equal(ack.ok, false, `ожидалась ошибка: ${JSON.stringify(ack)}`);
+    assert.ok(!ack.noop, 'это НЕ noop — сигнатура не должна попадать в noopSignatures');
+    assert.match(String(ack.error), /пустое/);
+    assert.match(String(ack.error), /content/);
+    assert.match(String(ack.error), /Проблема/);
+    assert.equal(ack.missing[0].field, 'content', 'missing называет пропущенное поле');
+    assert.equal(typeof ack.hint, 'string', 'hint со следующим шагом');
+  });
+
+  it('AC2: lesson_update с content:"" → ok:false, файл не перезаписан', async () => {
+    const l = createLessonFile(cwd, { title: 'Урок с телом', tags: ['x'] });
+    const before = readFileSync(getLesson(cwd, l.id).path, 'utf-8');
+    const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, content: '   ' }, cwd));
+    assert.equal(ack.ok, false, `ожидалась ошибка: ${JSON.stringify(ack)}`);
+    assert.match(String(ack.error), /Пустое тело урока недопустимо/);
+    assert.equal(readFileSync(getLesson(cwd, l.id).path, 'utf-8'), before, 'файл не изменён');
+  });
+
+  it('AC3: noop-ответ содержит missing[0].field === "content" и hint', async () => {
+    const l = createEmptyBodyLesson('Урок без тела 2');
+    // Первый вызов на пустом теле — ошибка (AC1), файл не тронут
+    const first = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+    assert.equal(first.ok, false, 'первый вызов на пустом теле — ошибка (AC1)');
+    // Дополняем тело, чтобы получить именно noop-ветку на повторном вызове
+    const entry = getLesson(cwd, l.id);
+    writeFileSync(entry.path, lessonToMarkdown(entry.lesson, '## Проблема\n\nx\n'), 'utf-8');
+    const applied = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+    assert.equal(applied.ok, true, `первый вызов применяет: ${JSON.stringify(applied)}`);
+    const noop = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+    assert.equal(noop.noop, true, `ожидался noop: ${JSON.stringify(noop)}`);
+    assert.deepEqual(Object.keys(noop.applied), ['verified_by'], 'applied — только переданные поля');
+    assert.equal(typeof noop.hint, 'string', 'hint со следующим шагом обязателен');
   });
 });
 

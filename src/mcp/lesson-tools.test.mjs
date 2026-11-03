@@ -91,6 +91,19 @@ describe('VL-153 — lesson_create / view / list / search / update', () => {
   it('update: без полей → ошибка', async () => {
     await assert.rejects(handleToolCall('lesson_update', { id: 'lesson-1' }, testRoot), /Не указаны поля/);
   });
+
+  it('VL-319: create без content → файл со скелетом (тело непустое)', async () => {
+    const out = await handleToolCall('lesson_create', { title: 'Урок без тела' }, testRoot);
+    const ack = JSON.parse(out);
+    assert.equal(ack.ok, true, `create отвечает JSON-ack: ${out}`);
+    assert.ok(ack.applied.content > 0, 'applied.content — длина непустого тела');
+    const lessons = JSON.parse(await handleToolCall('lesson_list', {}, testRoot));
+    const created = lessons.find(l => l.title === 'Урок без тела');
+    const view = JSON.parse(await handleToolCall('lesson_view', { id: created.id }, testRoot));
+    assert.match(view.body, /## Проблема/, 'скелет содержит раздел Проблема');
+    assert.match(view.body, /## Решение/, 'скелет содержит раздел Решение');
+    assert.match(view.body, /## Пример/, 'скелет содержит раздел Пример');
+  });
 });
 
 describe('VL-153 — lesson_link + backlog_update_task lessons', () => {

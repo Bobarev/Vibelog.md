@@ -34,7 +34,9 @@ export type LessonFindingType =
   | 'broken_supersede'
   | 'supersede_cycle'
   | 'duplicate_of'
-  | 'stale';
+  | 'stale'
+  /** VL-319: тело урока пустое/только пробелы — урок-пустышка. */
+  | 'empty_body';
 
 /** Одна находка аудита: тип, урок и детали (машиночитаемо + текст). */
 export interface LessonFinding {
@@ -316,6 +318,19 @@ export function auditLessons(cwd: string, opts: LessonAuditOptions = {}): Lesson
   for (const entry of entries) {
     const lesson = entry.lesson;
 
+    // 0. VL-319: пустое тело — урок-пустышка. Детерминированно, без порогов:
+    // такие уроки рождались шаблоном Close без `content` (lesson-191) и потом
+    // не поддавались дополнению через lesson_update (noop → повтор → кап →
+    // fail → авто-resume). Находка делает склад пустых уроков видимым.
+    if (String(entry.body || '').trim() === '') {
+      push({
+        type: 'empty_body',
+        lessonId: lesson.id,
+        details: { body_length: String(entry.body || '').length },
+        message: 'тело урока пустое — урок не содержит ни Проблемы, ни Решения',
+      });
+    }
+
     // 1. Битые пути: тело урока + applies_to (механически проверяемые пути)
     const bodyPaths = extractLessonPaths(entry.body);
     const appliesPaths = (lesson.applies_to || [])
@@ -456,6 +471,7 @@ export function auditLessons(cwd: string, opts: LessonAuditOptions = {}): Lesson
     supersede_cycle: 0,
     duplicate_of: 0,
     stale: 0,
+    empty_body: 0,
   };
   for (const f of findings) summary[f.type] += 1;
 
@@ -535,7 +551,7 @@ export function applyLessonAudit(cwd: string, opts: LessonAuditApplyOptions): Le
  */
 export function formatLessonAuditMarkdown(report: LessonAuditReport): string {
   const order: LessonFindingType[] = [
-    'missing_path', 'dangling_task', 'broken_supersede',
+    'empty_body', 'missing_path', 'dangling_task', 'broken_supersede',
     'supersede_cycle', 'duplicate_of', 'stale',
   ];
   const lines: string[] = [];

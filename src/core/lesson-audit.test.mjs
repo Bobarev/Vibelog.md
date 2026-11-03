@@ -391,6 +391,24 @@ describe('VL-279 — applyLessonAudit и отчёт (AC9, AC10)', () => {
     assert.match(md, /missing_path/);
     assert.ok(md.includes(report.total.toString()), 'число проверенных уроков');
   });
+
+  it('VL-319 (AC8): урок с пустым телом → finding empty_body', () => {
+    writeLesson('lesson-851', {
+      title: 'Урок-пустышка без тела', tags: ['emptybody'],
+      source_tasks: ['VL-1'], linked_tasks: ['VL-1'], updated_date: '2026-05-20',
+    }, '');
+    writeLesson('lesson-852', {
+      title: 'Урок только с пробелами', tags: ['emptybody'],
+      source_tasks: ['VL-1'], linked_tasks: ['VL-1'], updated_date: '2026-05-20',
+    }, '   \n\n  ');
+    const report = auditLessons(testRoot, { now: NOW });
+    const empty = report.findings.filter(f => f.type === 'empty_body');
+    assert.ok(empty.some(f => f.lessonId === 'lesson-851'), 'empty_body для пустого тела');
+    assert.ok(empty.some(f => f.lessonId === 'lesson-852'), 'empty_body для тела из пробелов');
+    assert.equal(report.summary.empty_body, empty.length, 'сводка согласована с находками');
+    const md = formatLessonAuditMarkdown(report);
+    assert.match(md, /empty_body/, 'тип попадает в markdown-отчёт');
+  });
 });
 
 describe('VL-279 — MCP lesson_audit (AC1, AC9)', () => {

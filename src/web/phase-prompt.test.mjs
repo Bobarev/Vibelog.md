@@ -1139,6 +1139,43 @@ describe('VL-254 — бюджет времени и запрет node -e-обх�
 });
 
 // ============================================================
+// VL-319 — урок без тела не создаётся шаблоном фазы
+// ============================================================
+//
+// Шаблоны Close/Code вызывали `lesson_create` без `content`, и
+// `createLessonFile` писал пустое тело — рождались уроки-пустышки (lesson-191),
+// которые потом не поддавались дополнению через `lesson_update` (noop →
+// повтор → кап → fail → авто-resume, сессия agent-1793712738536). Инвариант:
+// каждый `lesson_create` в шаблонах фаз обязан передавать `content`.
+
+describe('VL-319 — lesson_create в шаблонах фаз передаёт content', () => {
+  const phaseFiles = readdirSync(templatesDir).filter(f => f.endsWith('.md'));
+
+  it('AC6: каждый lesson_create в templates/phases/*.md содержит content', () => {
+    const offenders = [];
+    for (const file of phaseFiles) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      // Аргументы вызова — от «lesson_create {» до закрывающей «}» в той же строке
+      for (const m of text.matchAll(/lesson_create\s*\{([^\n]*)\}/g)) {
+        if (!m[1].includes('"content"')) offenders.push(`${file}: ${m[0].slice(0, 120)}`);
+      }
+    }
+    assert.deepEqual(offenders, [], `lesson_create без content: ${offenders.join(' | ')}`);
+  });
+
+  it('AC6: Close-шаблоны (обычный и worktree) передают content в lesson_create', () => {
+    for (const file of ['phase-close.md', 'phase-close-worktree.md']) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      const calls = [...text.matchAll(/lesson_create\s*\{([^\n]*)\}/g)];
+      assert.ok(calls.length > 0, `${file}: вызов lesson_create присутствует`);
+      for (const call of calls) {
+        assert.ok(call[1].includes('"content"'), `${file}: lesson_create обязан передавать content`);
+      }
+    }
+  });
+});
+
+// ============================================================
 // VL-312 — ревизия промптов фаз: структура эталона phase-spec и запрет дублей
 // ============================================================
 //
