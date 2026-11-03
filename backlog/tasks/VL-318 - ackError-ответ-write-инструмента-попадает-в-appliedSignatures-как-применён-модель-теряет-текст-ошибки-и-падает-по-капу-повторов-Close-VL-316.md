@@ -1,11 +1,11 @@
 ---
 id: VL-318
 title: ackError-ответ write-инструмента попадает в appliedSignatures как «применён» — модель теряет текст ошибки и падает по капу повторов (Close VL-316)
-status: Planned
+status: Review
 assignee: []
 reporter: ''
 created_date: '2026-11-03 16:11'
-updated_date: '2026-11-03 16:19'
+updated_date: '2026-11-03 16:48'
 due_date: ''
 labels:
   - agent
@@ -24,12 +24,30 @@ documentation: []
 modified_files:
   - src/agent/loop.ts
   - src/agent/loop.test.mjs
+  - src/web/phase-prompt.test.mjs
   - templates/phases/phase-close.md
   - templates/phases/phase-close-worktree.md
-  - src/web/phase-prompt.test.mjs
-  - CHANGELOG.md
-  - backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md
-lessons: []
+lessons:
+  - lesson-191
+token_usage:
+  input: 3685726
+  output: 18584
+  cache: 3570688
+  total: 3704310
+  requests: 79
+  duration_ms: 650609
+  reasoning: 4633
+  by_phase:
+    code:
+      input: 1121588
+      output: 8759
+      cache: 1083392
+      requests: 24
+    close:
+      input: 2564138
+      output: 9825
+      cache: 2487296
+      requests: 55
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -69,19 +87,19 @@ VL-306 (страховка appliedSignatures — источник дефекта
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Ответ write-инструмента с ok:false (ackError/ackDenied) НЕ попадает в appliedSignatures: в src/agent/loop.ts JSON-ветка различает ok:true (applied), noop:true (noop) и ok:false (failed), а страховка VL-306 для не-JSON ответов не срабатывает при failed
-- [ ] #2 Повтор вызова, вернувшего ackError, отдаёт модели исходный текст ошибки (tool-результат исполняется заново), а не директиву «вызов уже применён ранее»
-- [ ] #3 Регресс-тест на сессию agent-1793705489953: git_commit с чужим путём (ackError) + 4 дословных повтора → модель видит текст ошибки с подсказкой allowForeign, ран не падает по капу applied-повторов
-- [ ] #4 Шаг документации в templates/phases/phase-close.md и phase-close-worktree.md коммитит CHANGELOG.md и backlog/docs/* с allowForeign: true
-- [ ] #5 Тест-инвариант в src/web/phase-prompt.test.mjs: каждый git_commit в close-шаблонах, чьи пути включают CHANGELOG.md или backlog/docs/, несёт allowForeign: true
+- [x] #1 Ответ write-инструмента с ok:false (ackError/ackDenied) НЕ попадает в appliedSignatures: в src/agent/loop.ts JSON-ветка различает ok:true (applied), noop:true (noop) и ok:false (failed), а страховка VL-306 для не-JSON ответов не срабатывает при failed
+- [x] #2 Повтор вызова, вернувшего ackError, отдаёт модели исходный текст ошибки (tool-результат исполняется заново), а не директиву «вызов уже применён ранее»
+- [x] #3 Регресс-тест на сессию agent-1793705489953: git_commit с чужим путём (ackError) + 4 дословных повтора → модель видит текст ошибки с подсказкой allowForeign, ран не падает по капу applied-повторов
+- [x] #4 Шаг документации в templates/phases/phase-close.md и phase-close-worktree.md коммитит CHANGELOG.md и backlog/docs/* с allowForeign: true
+- [x] #5 Тест-инвариант в src/web/phase-prompt.test.mjs: каждый git_commit в close-шаблонах, чьи пути включают CHANGELOG.md или backlog/docs/, несёт allowForeign: true
 - [ ] #6 Тесты проходят (pnpm build && pnpm test), документация обновлена (doc-10 §6 — классификация ответов write-инструментов, CHANGELOG)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
+- [x] #1 Тесты проходят
 - [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -136,3 +154,24 @@ pnpm build && pnpm test
 - **R2. Внешние MCP-инструменты.** Страховка и раньше ограничена `spec !== undefined` + `isMcpWriteTool`; `failed` только сужает её — внешние не затрагиваются.
 - **R3. Шаблоны — инвариант VL-105/lesson-29.** В шаблоны не вносить ID задач и `pnpm`; правка — только флаг `allowForeign`.
 <!-- SECTION:PLAN:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author: @agent
+created: 2026-11-03 16:31
+---
+Фаза 3 (Code) выполнена. Коммит 8e34e53 «fix: VL-318 — ackError (ok:false) не считается применённым; allowForeign в close-шаблонах».
+Изменено:
+- `src/agent/loop.ts` — в классификации ответа write-вызова введён третий исход `failed` (JSON с `ok === false`, т.е. ackError/ackDenied): сигнатура НЕ пополняет `appliedSignatures`/`noopSignatures`, страховка VL-306 получила условие `!failed` (она существует для не-JSON ответов, а не для распознанного отказа). Комментарий с инцидентом agent-1793705489953.
+- `src/agent/loop.test.mjs` — новый describe «VL-318 — ackError (ok:false) не считается применённым»: (1) регресс сессии agent-1793705489953 — git_commit с чужим путём → ackError, повтор исполняется заново, модель видит текст ошибки с подсказкой `allowForeign: true`, ложной директивы «уже применён ранее» нет, затем успешный вызов с allowForeign и финальный текст; (2) 4+ дословных повтора ackError → обычный loop detection (не кап applied-повторов), handler исполнялся повторно. Кейсы VL-306 (плоский текст → applied) и VL-309 (noop) не тронуты и проходят.
+- `templates/phases/phase-close.md` (шаг 4) и `templates/phases/phase-close-worktree.md` (шаг 8) — в `git_commit` шага документации добавлен `"allowForeign": true` + пояснение, почему флаг обязателен (CHANGELOG.md и backlog/docs/* не входят в modified_files).
+- `src/web/phase-prompt.test.mjs` — инвариант VL-318: парсер вызовов `git_commit {…}` с балансировкой скобок; каждый вызов в обоих close-шаблонах, чьи пути содержат CHANGELOG.md или backlog/docs/, обязан нести `"allowForeign": true`.
+Проверки: `pnpm build` — успешно; `pnpm test` — полный прогон, 160 файлов / 3022 теста passed, 4 skipped (пре-существующие skip, не связаны с задачей), падений нет.
+Что осталось: AC6 в части документации — doc-10 §6 (классификация ответов write-инструментов) и запись в CHANGELOG.md пишет Фаза Close (в Code документация backlog/ и CHANGELOG не правится по правилам фазы), поэтому AC6 не отмечен; DoD «Документация обновлена» — тоже на Close.
+---
+author: @agent
+created: 2026-11-03 16:36
+---
+Фаза close не удалась (код выхода 1):  блокировок=0, payload последнего запроса=232387 байт (макс 232387), usage={"input_tokens":1083369,"output_tokens":4138,"cache_read_input_tokens":1047040,"total_tokens":1087507,"reasoning_tokens":626} — статус возвращён к Review.
+---
+<!-- COMMENTS:END -->
