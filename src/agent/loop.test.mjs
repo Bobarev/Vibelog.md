@@ -564,6 +564,64 @@ describe('runLoop loop detection (VL-83)', () => {
     assert.equal(res.messages[res.messages.length - 1].role, 'assistant');
   });
 
+  it('VL-319 (AC7): регресс agent-1793712738536 — директива noop-повтора не утверждает «уже был выполнен»', async () => {
+    // Реальная сессия Close VL-318: lesson_update {id, title, tags, sourceTasks,
+    // verifiedBy} БЕЗ content на уроке с пустым телом → noop «изменений нет»,
+    // затем 4 дословных повтора → кап → fail → авто-resume. Директива
+    // утверждала «вызов уже был выполнен», хотя он не исполнялся ни разу.
+    const state = { calls: 0 };
+    const spec = {
+      name: 'lesson_update',
+      description: 'write-заглушка урока',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => {
+        state.calls++;
+        return JSON.stringify({
+          ok: false, noop: true, reason: 'noop',
+          message: 'Изменений нет: title, tags уже имеют эти значения.',
+          applied: { title: 'T', tags: ['a'] }, skipped: [],
+          missing: [{ field: 'content', reason: 'тело урока пустое — не заполнено' }],
+          hint: 'Добавь в вызов `content` с непустым markdown.',
+        });
+      },
+    };
+    const same = { id: 'lesson-191', title: 'T', tags: ['a'], verifiedBy: 'agent' };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'lesson_update', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'lesson_update', arguments: same }] },
+      { text: 'перехожу к следующему шагу' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false, `ран не должен падать: ${res.result}`);
+    assert.equal(state.calls, 1, 'повтор noop-вызова не исполняется');
+    const directive = res.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'c2');
+    assert.ok(directive, 'модель получает директиву на повтор noop-вызова');
+    const text = String(directive.content);
+    assert.match(text, /lesson_update/, 'директива называет имя инструмента');
+    assert.match(text, /НЕ исполнен/, 'директива говорит, что вызов НЕ исполнен');
+    assert.ok(!text.includes('уже был выполнен'), 'формулировки «уже был выполнен» быть не должно');
+    assert.ok(Buffer.byteLength(text, 'utf8') < 400, `директива < 400 байт (${Buffer.byteLength(text, 'utf8')})`);
+  });
+
+  it('VL-319 (AC7): кап noop-повторов по-прежнему срабатывает на 4-й серии', async () => {
+    const spec = {
+      name: 'lesson_update',
+      description: 'write-заглушка урока',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => JSON.stringify({
+        ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [],
+      }),
+    };
+    const same = { id: 'lesson-191', title: 'T' };
+    const { llm } = fakeLlm(Array.from({ length: 10 }, (_, i) => ({
+      text: '',
+      toolCalls: [{ id: `c${i + 1}`, name: 'lesson_update', arguments: same }],
+    })));
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, true, 'вечный повтор noop-вызова — честный fail');
+    assert.match(res.result, /повторила вызов lesson_update/);
+  });
+
   it('разные аргументы — не loop detection', async () => {
     const { spec, state: toolState } = countingTool('t');
     const { llm } = fakeLlm([

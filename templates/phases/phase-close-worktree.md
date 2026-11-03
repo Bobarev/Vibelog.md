@@ -50,7 +50,7 @@ Definition of Done (DoD): {{taskDoD}}
    - Сформулируй 1–3 урока: императив, конкретика, одно предложение.
    - Похожие проверь: lesson_search_lessons {"query": "<ключевые слова>"} и/или listLessons с tags задачи, status=active.
    - Похожий активный есть → обнови: lesson_update {"id": "lesson-N", "linkedTasks": ["{{taskId}}", ...]} (linked_tasks += {{taskId}}).
-   - Нет → создай: lesson_create {"title": "...", "tags": [...], "sourceTasks": ["{{taskId}}"], "content": "## Проблема\n\n<что было не так>\n\n## Решение\n\n<что сделали>\n\n## Пример\n\n<конкретный пример>"} + lesson_link {"lessonId": "lesson-N", "taskId": "{{taskId}}"}. Аргумент `content` ОБЯЗАТЕЛЕН: урок без тела — пустышка, которую потом нельзя дополнить (VL-319)..
+   - Нет → создай: lesson_create {"title": "...", "tags": [...], "sourceTasks": ["{{taskId}}"], "content": "## Проблема\n\n<что было не так>\n\n## Решение\n\n<что сделали>\n\n## Пример\n\n<конкретный пример>"} + lesson_link {"lessonId": "lesson-N", "taskId": "{{taskId}}"}. Аргумент `content` ОБЯЗАТЕЛЕН: урок без тела — пустышка, которую потом нельзя дополнить..
    - Свяжи задачу: backlog_update_task {"id": "{{taskId}}", "lessons": ["lesson-N", ...]} (полная замена списка).
    - Фиксировать нечего — пропусти шаг.
 
