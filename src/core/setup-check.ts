@@ -14,6 +14,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import type { ActiveModel } from './models.js';
 
 /** Результат ping-а LLM. */
@@ -91,6 +92,20 @@ export async function pingLlm(
 ): Promise<LlmPingResult> {
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
   const timeoutMs = opts.timeoutMs ?? PING_TIMEOUT_MS;
+  // VL-327: пустой ключ → не ходим в сеть. Раньше запрос уходил БЕЗ заголовка
+  // Authorization, шлюз отвечал 401, и пользователь видел бесполезное
+  // «LLM ответил 401. Проверьте base_url, api_key и имя модели» — при том что
+  // причина ровно одна: ключа нет в окружении (например, wizard только что
+  // дописал его в .env, а process.env ещё не перечитан).
+  if (active.apiKey === '') {
+    const envName = active.apiKeyEnv ?? 'VIBELOG_LLM_API_KEY';
+    return {
+      ok: false,
+      model: active.model,
+      latencyMs: 0,
+      error: `ключ ${envName} не найден в окружении: проверьте .env или переменные окружения`,
+    };
+  }
   const baseUrl = active.baseUrl.replace(/\/+$/, '');
   const isResponses = active.apiMode === 'responses';
   const url = isResponses ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
@@ -244,18 +259,34 @@ export function checkAgentBinary(
  *
  * Токен НЕ попадает в текст ошибки (он в URL запроса — секрет).
  *
+ * VL-327: при заданном прокси запрос идёт через undici `ProxyAgent` — тот же
+ * приём, что в `vibelog bot` (`src/cli/commands/bot.ts`). Раньше проверка
+ * всегда ходила через `globalThis.fetch`, который системный прокси macOS не
+ * читает: при заблокированном напрямую api.telegram.org пользователь видел
+ * «Telegram не ответил за 10000 мс», хотя бот потом работал через прокси.
+ *
  * @param token — токен бота
- * @param opts.fetchImpl — подмена fetch (тесты)
+ * @param opts.fetchImpl — подмена fetch (тесты; приоритетнее прокси)
+ * @param opts.proxy — URL прокси (TELEGRAM_PROXY), пусто — напрямую
  * @param opts.timeoutMs — таймаут запроса (дефолт 10 с)
  */
 export async function checkTelegramToken(
   token: string,
-  opts: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+  opts: { fetchImpl?: typeof fetch; proxy?: string; timeoutMs?: number } = {},
 ): Promise<BotCheckResult> {
   if (!token || token.trim() === '') {
     return { ok: false, error: 'Токен не задан. Проверьте TELEGRAM_BOT_TOKEN.' };
   }
-  const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+  const proxy = (opts.proxy ?? '').trim();
+  // Тип fetch подинъектированного мока уже совпадает с typeof fetch, а
+  // undici-fetch приводим к нему же: контракт (url, init) → Response тот же.
+  const fetchImpl: typeof fetch =
+    opts.fetchImpl ??
+    (proxy !== ''
+      ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (((input: any, init?: any) =>
+          undiciFetch(input, { ...init, dispatcher: new ProxyAgent(proxy) })) as any)
+      : globalThis.fetch);
   const timeoutMs = opts.timeoutMs ?? PING_TIMEOUT_MS;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

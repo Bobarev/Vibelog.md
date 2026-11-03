@@ -22,7 +22,7 @@ import type { FlagValues } from '../args.js';
 import { createPromptSession } from '../prompt.js';
 import type { PromptOption, PromptSession } from '../prompt.js';
 import { loadGateways, resolveModelById } from '../../core/models.js';
-import { CATALOG_SEARCH_LIMIT, getCatalogAdapter } from '../../core/provider-catalog.js';
+import { getCatalogAdapter } from '../../core/provider-catalog.js';
 import { readEnvFile } from '../../core/setup-secrets.js';
 import { readSettingsEnv } from '../../core/settings.js';
 import type { SetupAnswers, SetupState, AgentId } from '../../core/setup.js';
@@ -329,10 +329,55 @@ async function chooseAgents(
 }
 
 /**
+ * Пункты вопроса «Где хранить API-ключи и токены» (VL-327, AC6).
+ *
+ * Ровно два варианта: `env` (приоритет env → .env, ничего не пишем) и
+ * `.env` (файл в корне проекта). Пункты «.vibelog/settings.json (секция env)»
+ * и «оба места» убраны из wizard-а: значения `SecretsLocation` для них
+ * сохранены ради старых проектов и флага `--secrets-location`.
+ *
+ * Вынесено в функцию (а не inline-массив) ради теста состава списка.
+ */
+export function secretsLocationOptions(): PromptOption<SecretsLocation>[] {
+  return [
+    { value: 'system', label: 'env (Приоритет: env → .env)', hint: 'ничего не писать' },
+    { value: 'env', label: '.env (файл в корне проекта)', hint: 'по умолчанию' },
+  ];
+}
+
+/**
+ * Автор модели — сегмент `id` до `/` (`deepseek/deepseek-chat` → `deepseek`).
+ *
+ * VL-327: каталог RouterAI — сотни моделей (у авторов десятки своих), и
+ * плоский список обрезался первыми ~50 в порядке ответа каталога: нужной
+ * модели пользователь просто не находил. Группировка по автору снимает
+ * обрезку — у одного автора помещается весь набор.
+ */
+export function modelAuthor(modelId: string): string {
+  const slash = modelId.indexOf('/');
+  return slash === -1 ? modelId : modelId.slice(0, slash);
+}
+
+/** Группирует модели каталога по автору: автор → модели этого автора. */
+export function groupModelsByAuthor<T extends { id: string }>(models: T[]): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const model of models) {
+    const author = modelAuthor(model.id);
+    const bucket = groups.get(author);
+    if (bucket) bucket.push(model);
+    else groups.set(author, [model]);
+  }
+  return new Map([...groups.entries()].sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/**
  * Выбор модели и вендора из каталога шлюза (AC5).
  *
  * Возвращает `null`, если каталог недоступен (сеть/ошибка парсинга) — wizard
  * в этом случае переходит в ручной ввод с сообщением, а не падает.
+ *
+ * VL-327: выбор двухступенчатый — сначала автор, затем модель этого автора
+ * (без обрезки списка). При единственном авторе первый шаг пропускается.
  *
  * Цены показываются в подписи пункта: рубли за 1M токенов (нормализация
  * `normalizePricing` уже применена каталогом), поэтому пользователь видит
@@ -361,11 +406,27 @@ async function pickFromCatalog(
     console.error('Каталог моделей пуст. Введите модель вручную.');
     return null;
   }
-  // Лимит пунктов: каталог RouterAI — сотни моделей, clack-список приемлемо
-  // листает первые ~50 (тот же лимит, что у поиска каталога)
+
+  // Шаг 1 — автор модели. При единственном авторе шаг бессмысленен: пропускаем.
+  const groups = groupModelsByAuthor(models);
+  let author = [...groups.keys()][0];
+  if (groups.size > 1) {
+    author = await session.askSelect<string>(
+      'Автор модели:',
+      [...groups.entries()].map(([name, list]) => ({
+        value: name,
+        label: name,
+        hint: `${list.length} моделей`,
+      })),
+      0,
+    );
+  }
+  const authorModels = groups.get(author) ?? [];
+
+  // Шаг 2 — модель автора: список полный (без CATALOG_SEARCH_LIMIT — VL-327)
   const modelId = await session.askSelect<string>(
-    'Модель из каталога:',
-    models.slice(0, CATALOG_SEARCH_LIMIT).map((m) => ({
+    `Модель ${author} из каталога:`,
+    authorModels.map((m) => ({
       value: m.id,
       label: m.id,
       hint: `${formatPrice(m.pricing.input_per_1m)} / ${formatPrice(m.pricing.output_per_1m)}`,
@@ -450,14 +511,11 @@ export async function runWizard(
     // котором падал прежний wizard, стал предсказуемым (стрелки + Enter).
     // VL-324: пункт «settings.json (секция env)» заменён на «env» — вариант
     // «ничего не писать, пользователь сам заводит переменные окружения»
-    // (чтение и так идёт env → .env). Секция env в settings.json остаётся
-    // читаемой ради старых проектов, но новым wizard-ом не предлагается.
-    const secretsOptions: PromptOption<SecretsLocation>[] = [
-      { value: 'system', label: 'env (Приоритет: env → .env)', hint: 'ничего не писать' },
-      { value: 'env', label: '.env (файл в корне проекта)', hint: 'по умолчанию' },
-      { value: 'settings', label: '.vibelog/settings.json (секция env)' },
-      { value: 'both', label: 'оба места (.env + settings.json)' },
-    ];
+    // (чтение и так идёт env → .env).
+    // VL-327: пунктов ровно два — «settings» и «оба места» из wizard-а убраны
+    // (значения SecretsLocation сохранены ради старых проектов и флага
+    // --secrets-location, но новым проектам не предлагаются).
+    const secretsOptions = secretsLocationOptions();
     let secretsLocation: SecretsLocation = 'env';
     if (state.secrets.envKeys.length > 0) {
       const keep = await session.askConfirm(
