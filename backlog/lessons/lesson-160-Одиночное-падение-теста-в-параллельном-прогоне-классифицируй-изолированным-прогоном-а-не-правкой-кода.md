@@ -11,6 +11,7 @@ source_tasks:
 linked_tasks:
   - VL-290
   - VL-300
+  - VL-325
 created_date: 2026-11-02
 updated_date: 2026-11-03
 supersedes: ''
