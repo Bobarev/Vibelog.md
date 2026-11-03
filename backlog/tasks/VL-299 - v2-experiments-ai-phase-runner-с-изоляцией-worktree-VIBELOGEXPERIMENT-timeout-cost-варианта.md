@@ -1,11 +1,11 @@
 ---
 id: VL-299
 title: '[v2] experiments: ai-phase runner с изоляцией (worktree, VIBELOG_EXPERIMENT, timeout, cost варианта)'
-status: Planned
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-02 02:04'
-updated_date: '2026-11-02 02:19'
+updated_date: '2026-11-03 03:46'
 due_date: ''
 labels:
   - v2
@@ -22,8 +22,39 @@ project: ''
 parent_task_id: VL-293
 ordinal: 0
 documentation: []
-modified_files: []
-lessons: []
+modified_files:
+  - src/core/worktree.ts
+  - src/core/billing.ts
+  - src/core/analytics.ts
+  - src/core/experiment.ts
+  - src/core/experiment-runner.ts
+  - src/core/experiment-runner.test.mjs
+  - src/agent/cli.ts
+  - src/agent/cli.test.mjs
+  - src/cli/commands/experiment-run.ts
+  - src/cli/commands/experiment.ts
+lessons:
+  - lesson-184
+  - lesson-185
+token_usage:
+  input: 9546373
+  output: 55238
+  cache: 9235456
+  total: 9601611
+  requests: 100
+  duration_ms: 895746
+  reasoning: 19902
+  by_phase:
+    code:
+      input: 8417294
+      output: 48622
+      cache: 8156672
+      requests: 75
+    close:
+      input: 1129079
+      output: 6616
+      cache: 1078784
+      requests: 25
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -52,26 +83,79 @@ v2-эпик VL-293 (зависит от VL-296, VL-297, VL-298). Автомат�
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 До старта кода: решения по doc-21 §19 (1) дефолт --timeout, (2) блокировка параллельных прогонов (lock по pid), (3) pass_fail = 1/0 — зафиксированы в doc-21 и в этой задаче в разделе Implementation Notes; без них реализация не начинается
-- [ ] #2 Прогон идёт в отдельном worktree; после каждой задачи откат (reset --hard + clean -fd) в try/finally
-- [ ] #3 VIBELOG_EXPERIMENT=exp-<id>/run-<N>: usage в run-каталог, .vibelog/billing не пишется
-- [ ] #4 tool_calls из stdout type=result.tool_calls_total, fallback countToolCallsInMessages
-- [ ] #5 cost по models.available[variant.model].pricing → calculateCost через новый getModelPricingById; нет pricing → cost: null (+pricing_missing)
-- [ ] #6 SIGINT → status failed с частичными results; timeout задачи → error_kind='timeout'
-- [ ] #7 run --dry-run показывает число прогонов и оценку стоимости
-- [ ] #8 env в тестах только через testSpawnEnv()
-- [ ] #9 CHANGELOG.md обновлён
-- [ ] #10 pnpm build && pnpm test зелёные
+- [x] #1 До старта кода: решения по doc-21 §19 (1) дефолт --timeout, (2) блокировка параллельных прогонов (lock по pid), (3) pass_fail = 1/0 — зафиксированы в doc-21 и в этой задаче в разделе Implementation Notes; без них реализация не начинается
+- [x] #2 Прогон идёт в отдельном worktree; после каждой задачи откат (reset --hard + clean -fd) в try/finally
+- [x] #3 VIBELOG_EXPERIMENT=exp-<id>/run-<N>: usage в run-каталог, .vibelog/billing не пишется
+- [x] #4 tool_calls из stdout type=result.tool_calls_total, fallback countToolCallsInMessages
+- [x] #5 cost по models.available[variant.model].pricing → calculateCost через новый getModelPricingById; нет pricing → cost: null (+pricing_missing)
+- [x] #6 SIGINT → status failed с частичными results; timeout задачи → error_kind='timeout'
+- [x] #7 run --dry-run показывает число прогонов и оценку стоимости
+- [x] #8 env в тестах только через testSpawnEnv()
+- [x] #9 CHANGELOG.md обновлён
+- [x] #10 pnpm build && pnpm test зелёные
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
-- [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #1 Тесты проходят
+- [x] #2 Документация обновлена
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Implementation Plan
 <!-- SECTION:PLAN:BEGIN -->
 1) ensureExperimentWorktree + откат между вариантами (src/core/worktree.ts). 2) getModelPricingById в src/core/analytics.ts + cost: null без pricing. 3) VIBELOG_EXPERIMENT: billing.ts + agent/cli.ts → usage.json в run-dir. 4) Цикл dataset × variants, timeout, SIGINT→failed, error_kind. 5) tool_calls из stdout type=result (fallback countToolCallsInMessages). 6) --dry-run с оценкой стоимости. 7) Тесты на моках spawn + env через testSpawnEnv(). 8) pnpm build && pnpm test. Риски: изоляция (откат должен быть и при падении рана — try/finally), параллельный запуск вариантов в одном worktree запрещён, billing-загрязнение.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+<!-- SECTION:NOTES:BEGIN -->
+## Решения по doc-21 §19 (блокер старта снят до кода)
+
+1. **Дефолт `--timeout` на задачу — 600 с** (`DEFAULT_TASK_TIMEOUT_SEC` в `src/core/experiment-runner.ts`). Приоритет: флаг `--timeout <сек>` → `timeout_sec` в frontmatter карточки → 600. Поле `timeout_sec` добавлено в схему `Experiment` (round-trip: пишется только когда задано).
+2. **Блокировка параллельных прогонов — lock по pid, отказ, не очередь.** `assertNoActiveRun` читает `meta.json` последнего рана: `status: running` + живой `pid` (`detectStaleRun`) → `ExperimentRunError` с подсказкой `--recover`. Очередь отклонена: два прогона делили бы `results.jsonl` и worktree-каталоги.
+3. **`judge.scale: pass_fail` → `1`/`0`** (не `true`/`false`): `median`/`win_rate` работают без отдельной ветки.
+
+Все три зафиксированы в doc-21 §19 (статус «решено в VL-299»).
+
+## Реализация
+
+- `src/core/worktree.ts`: `ensureExperimentWorktree` (worktree `.vibelog/worktrees/exp-<id>-run-<N>`, ветка `exp/<id>-run-<N>`), `resetExperimentWorktree` (`reset --hard` + `clean -fd`, без `-x` — симлинк node_modules сохраняется), `removeExperimentWorktree`.
+- `src/core/billing.ts`: `parseExperimentMarker`, `billingSuppressed(env)`, `experimentUsagePath(cwd, expId, runN)`, `appendExperimentUsage`.
+- `src/core/analytics.ts`: `getModelPricingById(cwd, modelId)` (id обязателен — пустой не превращается в активную модель).
+- `src/core/experiment-runner.ts`: цикл «строки датасета × варианты», спавн `vibelog-agent` с `--max-tool-calls`/`--max-wall-time`, откат worktree в `try/finally`, SIGINT → `failed` + частичные results, timeout → `error_kind: 'timeout'`, `tool_calls` из stdout `type=result.tool_calls_total` с fallback `countToolCallsInMessages`, cost по модели варианта (`null` + `pricing_missing` без тарифа), `--dry-run` с оценкой стоимости по среднему usage прошлых ранов.
+- `src/agent/cli.ts`: при `VIBELOG_EXPERIMENT` usage пишется в `<run-dir>/usage.json`, billing задачи не пишется (блок стоит до `if (taskId)` — у эксперимента taskId нет).
+- `src/cli/commands/experiment-run.ts`: ветка `runner: ai-phase` → `runAiPhase` (флаги `--timeout`, `--max-tool-calls`, `--variant`, `--dry-run`).
+<!-- SECTION:NOTES:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author: @agent
+created: 2026-11-03 03:42
+---
+Фаза 3 (Code) выполнена. Коммит 9fc7ca4.
+**Блокер старта снят до кода** (AC1): три решения doc-21 §19 зафиксированы в doc-21 (статус «решено в VL-299») и в Implementation Notes задачи — (1) дефолт `--timeout` 600 с, приоритет флаг → `timeout_sec` карточки → 600; (2) lock по pid: второй `run` при живом pid — отказ, не очередь; (3) `judge.scale: pass_fail` → `1`/`0`.
+Изменено:
+- `src/core/worktree.ts` — `ensureExperimentWorktree` (worktree `.vibelog/worktrees/exp-<id>-run-<N>`, ветка `exp/<id>-run-<N>`, не переиспользует ветку задачи), `resetExperimentWorktree` (`reset --hard` + `clean -fd`, без `-x` — симлинк node_modules выживает), `removeExperimentWorktree`.
+- `src/core/billing.ts` — `parseExperimentMarker`, `billingSuppressed(env)`, `experimentUsagePath(cwd, expId, runN)`, `appendExperimentUsage`.
+- `src/core/analytics.ts` — `getModelPricingById(cwd, modelId)` (id обязателен: пустой не подменяется активной моделью).
+- `src/core/experiment.ts` — поле `timeout_sec` в схеме (round-trip: пишется только когда задано).
+- `src/core/experiment-runner.ts` (новый) — цикл «строки датасета × варианты», спавн `vibelog-agent` с `--max-tool-calls`/`--max-wall-time`, откат worktree в `try/finally` (в т.ч. при падении рана), SIGINT/SIGTERM → `status: failed` + частичные results, timeout задачи → `error_kind: 'timeout'` с продолжением прогона, `tool_calls` из stdout `type=result.tool_calls_total` с fallback `countToolCallsInMessages` по jsonl, cost по модели варианта (`null` + `pricing_missing` без тарифа), `--dry-run` с матрицей и оценкой стоимости по среднему usage прошлых ранов («оценки нет» без данных).
+- `src/agent/cli.ts` — при `VIBELOG_EXPERIMENT` usage пишется в `<run-dir>/usage.json`, `.vibelog/billing/*` не пишется (блок стоит до `if (taskId)` — у эксперимента taskId нет; маркер `billing_recorded` ставится, чтобы fallback оркестратора не создал файл).
+- `src/cli/commands/experiment-run.ts` — ветка `runner: ai-phase` → `runAiPhase` (флаги `--timeout`, `--max-tool-calls`, `--variant`, `--dry-run`); `src/cli/commands/experiment.ts` — проброс промиса.
+Тесты: новый `src/core/experiment-runner.test.mjs` (11 тестов: откат worktree по факту состояния дерева, cost/null без pricing, timeout → error_kind, SIGINT → failed с частичными results, dry-run без создания рана, lock по pid, дефолт 600 с и `timeout_sec`, fallback tool_calls, parseExperimentMarker/billingSuppressed/buildRunEnv); `src/agent/cli.test.mjs` +1 (VIBELOG_EXPERIMENT → usage.json, billing не создан). env в тестах — только через `testSpawnEnv()`.
+Проверки: `pnpm build` — чисто; `pnpm test` — полный прогон, 153 файла / 2847 passed, 4 skipped (пропуски — предсуществующие `it.skip` в чужих файлах, не связаны с задачей).
+Что осталось: AC9 (CHANGELOG.md) — по правилам фазы Code CHANGELOG и документы backlog/docs не обновляются, это делает фаза Close после слияния. DoD «Документация обновлена» закрыт частично: спецификация doc-21 §19 обновлена, пользовательская документация (doc-7/doc-6/CHANGELOG) — за Close.
+---
+author: @agent
+created: 2026-11-03 03:46
+---
+Фаза Close выполнена. Статус: Done.
+Коммиты:
+- feat `9fc7ca4` — ai-phase runner экспериментов с изоляцией (сделан в фазе Code; остатков кода не было — `git status` по всем 10 modified_files чист).
+- docs `c3dcf9f` — CHANGELOG.md (запись VL-299), doc-7 (раздел `experiment run` → runner ai-phase: флаги `--timeout`/`--max-tool-calls`/`--variant`/`--dry-run`, изоляция worktree, lock по pid, `VIBELOG_EXPERIMENT` → `usage.json`, метрики tool_calls/cost), doc-21 §19 (три вопроса помечены «решено в VL-299»).
+- docs(task) `616b6db` — lessons lesson-184, lesson-185.
+Проверки после merge: `pnpm build` — чисто (один прогон). Ранний точечный фильтр — `experiment-runner`, `cli`, `worktree`, `billing`, `analytics` (5 файлов / 111 тестов) зелёные. Полный прогон `npx vitest run` — 154 файла / 2855 passed, 4 skipped (пропуски — предсуществующие `it.skip` в чужих файлах, не связаны с задачей). Повторных полных прогонов не было.
+AC9 (CHANGELOG.md) закрыт в этой фазе. DoD: тесты проходят, документация обновлена, регрессий нет — все отмечены.
+Не закоммичено: `backlog/references/ref-24-assistant-ui-Elements-ComposerMenu-меню-слэш-команд.md` — файл чужой задачи (VL-314), не принадлежит VL-299 и не коммитился.
+---
+<!-- COMMENTS:END -->
