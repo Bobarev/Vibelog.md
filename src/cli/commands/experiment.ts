@@ -9,6 +9,8 @@
  * MVP-шаг 4 (VL-297): отчёт — `report` (метрики, `--compare`, `--json`).
  * MVP-шаг 5 (VL-298): LLM-judge — `judge` (upsert `score` в существующие
  * строки, `judge_usage`/`cost_judge` в meta отдельно от cost варианта).
+ * v2 (VL-301): git-политика — `gc` (кандидаты на `.gitignore` по размеру
+ * `results.jsonl`; правка файла только по явному `--apply`).
  *
  * Подкоманды:
  * - create <title> [--dataset D] [--runner manual] [--status draft]
@@ -27,6 +29,7 @@
  *                  [--custom '<json>'] [--run N] [--from-json <file>]
  * - report <exp-id> [--run N] [--compare run-M] [--json]
  * - judge <exp-id> [--run N]
+ * - gc <exp-id> [--apply]
  *
  * Файлы: backlog/experiments/exp-<id>.md (YAML-фронтматтер + описание),
  *        backlog/experiments/datasets/<name>.jsonl (общие датасеты),
@@ -49,6 +52,7 @@ import type { ParsedDataset, DatasetRow } from '../../core/dataset.js';
 import { experimentRun, experimentRecord } from './experiment-run.js';
 import { experimentReport } from './experiment-report.js';
 import { experimentJudge } from './experiment-judge.js';
+import { experimentGc } from './experiment-gc.js';
 import { join, relative } from 'node:path';
 
 /**
@@ -127,13 +131,16 @@ export async function runExperiment(
     case 'judge':
       // VL-298: judge — асинхронный (LLM-вызовы), остальные подкоманды синхронные
       return experimentJudge(positional, flags, backlogDir, cwd);
+    case 'gc':
+      // VL-301: git-политика — только печать кандидатов или явный --apply
+      return experimentGc(positional, flags, backlogDir);
     default:
       // `experiment dataset <exp-id>`: router отдаёт exp-id в subcommand (VL-295)
       if (/^exp-/i.test(subcommand)) {
         return experimentDatasetResolve([subcommand, ...positional], flags, backlogDir);
       }
       printError(`Неизвестная подкоманда: ${subcommand}`);
-      printInfo('Доступные: create, list, dataset, run, record, report, judge');
+      printInfo('Доступные: create, list, dataset, run, record, report, judge, gc');
   }
 }
 
