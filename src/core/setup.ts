@@ -45,7 +45,12 @@ export interface SetupAnswers {
   /** Агент по умолчанию; имеет смысл только при agents.length > 1. */
   defaultAgent?: AgentId;
   secretsLocation: SecretsLocation;
-  bot?: { token?: string; chats: number[] };
+  /**
+   * VL-324: перезаписать уже существующие секреты (пользователь подтвердил
+   * в wizard-е). Без флага существующие значения не меняются.
+   */
+  secretsOverwrite?: boolean;
+  bot?: { token?: string; chats: number[]; proxy?: string };
   /** VL-315: шлюз (раньше provider). */
   gateway?: { id: string; base_url: string; api_key_env?: string; apiKey?: string };
   model?: {
@@ -198,8 +203,15 @@ export function readSetupState(cwd: string, modeOverride?: SetupMode): SetupStat
     : undefined;
 
   // --- агенты: vb всегда доступен; внешние — только при наличии папки ---
+  // VL-324: vb отмечен по умолчанию, но ТОЛЬКО в сценарии «других агентов
+  // нет» — если в проекте уже есть .qwen/.opencode/.claude, поведение
+  // прежнее и vb не навязывается поверх выбранных внешних агентов (AC1).
+  const hasExternal =
+    existsSync(join(cwd, '.qwen')) ||
+    existsSync(join(cwd, '.opencode')) ||
+    existsSync(join(cwd, '.claude'));
   const agents: SetupState['agents'] = [
-    { id: 'vb', available: true, enabled: false },
+    { id: 'vb', available: true, enabled: !hasExternal },
   ];
   if (existsSync(join(cwd, '.qwen'))) {
     agents.push({ id: 'qwen', available: true, enabled: true });
@@ -459,15 +471,30 @@ export function applySetup(cwd: string, answers: SetupAnswers): SetupResult {
   // --- 3. секреты (только имена ключей в отчёте) ---
   const secrets: Record<string, string> = {};
   if (answers.bot?.token) secrets.TELEGRAM_BOT_TOKEN = answers.bot.token;
+  // VL-324: прокси бота живёт в .env; пустое значение не пишем вовсе
+  // (пустой TELEGRAM_PROXY сломал бы grammY: он ждёт URL или отсутствие ключа)
+  if (answers.bot?.proxy) secrets.TELEGRAM_PROXY = answers.bot.proxy;
   if (answers.gateway?.apiKey && answers.gateway.api_key_env) {
     secrets[answers.gateway.api_key_env] = answers.gateway.apiKey;
   }
   if (Object.keys(secrets).length > 0) {
-    const res = writeSecrets(cwd, secrets, answers.secretsLocation);
-    for (const key of res.written) {
-      result.written.push(`${answers.secretsLocation === 'settings' ? '.vibelog/settings.json env' : '.env'} (${key})`);
-    }
+    const res = writeSecrets(cwd, secrets, answers.secretsLocation, {
+      overwrite: answers.secretsOverwrite === true,
+    });
+    const where = answers.secretsLocation === 'settings'
+      ? '.vibelog/settings.json env'
+      : answers.secretsLocation === 'both'
+        ? '.env + settings.json env'
+        : '.env';
+    for (const key of res.written) result.written.push(`${where} (${key})`);
     for (const key of res.skipped) result.skipped.push(`секрет ${key} (уже задан)`);
+    if (answers.secretsLocation === 'system') {
+      // Ничего не пишем: пользователь заводит переменные сам (AC2) — но
+      // сообщаем имена, иначе непонятно, что именно нужно объявить
+      result.warnings.push(
+        `Секреты не записаны (локаль system): заведите переменные окружения — ${Object.keys(secrets).join(', ')}`,
+      );
+    }
   }
 
   // --- 4. чаты бота (несекретные) ---
@@ -496,6 +523,7 @@ export function applySetup(cwd: string, answers: SetupAnswers): SetupResult {
 
 /** Человекочитаемое имя локации секретов. */
 function secretsLabel(loc: SecretsLocation): string {
+  if (loc === 'system') return 'env (системные переменные, приоритет env → .env)';
   if (loc === 'settings') return 'settings.json env';
   if (loc === 'both') return '.env + settings.json env';
   return '.env';
@@ -515,13 +543,15 @@ export function formatSetupLog(answers: SetupAnswers, state: SetupState, cwd: st
         .map((a) => (a === answers.defaultAgent ? `${a} (default)` : a))
         .join(', ');
   const gateway = answers.gateway ? answers.gateway.id : '—';
-  const model = answers.model ? answers.model.id : '—';
+  const modelLabel = answers.model
+    ? `${answers.model.id}${answers.model.vendor ? ` (вендор: ${answers.model.vendor})` : ''}`
+    : '—';
   const bot = answers.bot?.token ? 'да' : 'нет';
   const mcp = answers.mcp && answers.agents.some((a) => MCP_AGENTS.includes(a)) ? 'да' : 'нет';
 
   const lines = [
     `Режим: ${answers.mode}${answers.mode === 'upgrade' ? ' (backlog/ найден)' : ''}. ` +
-      `Агенты: ${agents}. Шлюз: ${gateway}, модель: ${model}. ` +
+      `Агенты: ${agents}. Шлюз: ${gateway}, модель: ${modelLabel}. ` +
       `Секреты: ${secretsLabel(answers.secretsLocation)}. Бот: ${bot}. MCP: ${mcp}`,
   ];
 

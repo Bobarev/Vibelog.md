@@ -76,6 +76,34 @@ describe('VL-210 — запись секретов', () => {
     assert.equal(settings.env.K, 'v');
   });
 
+  it('VL-324: writeSecrets system ничего не пишет на диск', () => {
+    const res = writeSecrets(testDir, { API_KEY: 'secret' }, 'system');
+    assert.deepEqual(res.written, []);
+    assert.deepEqual(res.skipped, []);
+    assert.ok(!existsSync(join(testDir, '.env')), '.env не создаётся');
+    assert.ok(!existsSync(join(testDir, '.vibelog', 'settings.json')), 'settings.json не создаётся');
+  });
+
+  it('VL-324: overwrite заменяет строку ключа в .env, не дописывая вторую', () => {
+    writeFileSync(join(testDir, '.env'), '# шапка\nAPI_KEY=old\nOTHER=1\n', 'utf-8');
+    const res = writeSecrets(testDir, { API_KEY: 'new' }, 'env', { overwrite: true });
+    assert.deepEqual(res.written, ['API_KEY']);
+    const content = readFileSync(join(testDir, '.env'), 'utf-8');
+    assert.ok(content.includes('API_KEY=new'), content);
+    assert.ok(!content.includes('API_KEY=old'), content);
+    assert.equal(content.split('API_KEY=').length - 1, 1, 'ключ встречается один раз');
+    assert.ok(content.includes('OTHER=1'), 'остальные ключи не тронуты');
+    assert.equal(readEnvFile(testDir).API_KEY, 'new');
+  });
+
+  it('VL-324: overwrite в settings.json заменяет значение секции env', () => {
+    writeSecrets(testDir, { K: 'old' }, 'settings');
+    const res = writeSecrets(testDir, { K: 'new' }, 'settings', { overwrite: true });
+    assert.deepEqual(res.written, ['K']);
+    const settings = JSON.parse(readFileSync(join(testDir, '.vibelog', 'settings.json'), 'utf-8'));
+    assert.equal(settings.env.K, 'new');
+  });
+
   it('writeSecrets не возвращает значения секретов', () => {
     const res = writeSecrets(testDir, { SECRET_KEY: 'super-secret-value' }, 'env');
     const serialized = JSON.stringify(res);

@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 import { testSpawnEnv } from '../test-env.mjs';
+import { resolveModelById } from '../../dist/core/models.js';
+import { defaultApiKeyEnv, gatewayIdFromUrl, LLM_GATEWAYS } from '../../dist/cli/commands/init-wizard.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const testDir = mkdtempSync(join(tmpdir(), 'vibelog-init-wizard-'));
@@ -145,6 +147,88 @@ describe('VL-210 — консольный wizard init', () => {
     assert.equal(settings.gateways.p1.api_key_env, 'P1_KEY');
     assert.equal(settings.models.default, 'p1/m1');
     assert.equal(settings.models.available['p1/m1'].api_mode, 'chat');
+  });
+
+  it('VL-324: --api-mode по умолчанию responses, рантайм-фолбэк не тронут', () => {
+    runCli(
+      'init', 'LlmDefault', '--prefix', 'ld', '--yes',
+      '--agents', 'vb', '--skip-llm-check',
+      '--gateway', 'routerai', '--base-url', 'https://routerai.ru/api/v1',
+      '--model', 'openai/gpt-4o',
+    );
+    const settings = JSON.parse(readFileSync(join(testDir, '.vibelog', 'settings.json'), 'utf-8'));
+    assert.equal(settings.models.available['openai/gpt-4o'].api_mode, 'responses');
+    // AC7: имя env-переменной выводится из шлюза
+    assert.equal(settings.gateways.routerai.api_key_env, 'ROUTERAI_API_KEY');
+    // AC9: resolveModelById находит созданную модель
+    const resolved = resolveModelById(testDir, 'openai/gpt-4o');
+    assert.ok(resolved, 'модель резолвится');
+    assert.equal(resolved.gatewayId, 'routerai');
+    assert.equal(resolved.model, 'openai/gpt-4o');
+  });
+
+  it('VL-324: --vendor пишется в models.available, @-хвост срезается из model', () => {
+    runCli(
+      'init', 'LlmVendor', '--prefix', 'lv', '--yes',
+      '--agents', 'vb', '--skip-llm-check',
+      '--gateway', 'routerai', '--base-url', 'https://routerai.ru/api/v1',
+      '--model', 'openai/gpt-4o@openai', '--vendor', 'openai',
+    );
+    const settings = JSON.parse(readFileSync(join(testDir, '.vibelog', 'settings.json'), 'utf-8'));
+    assert.equal(settings.models.available['openai/gpt-4o'].vendor, 'openai');
+    assert.equal(settings.models.available['openai/gpt-4o'].model, 'openai/gpt-4o');
+  });
+
+  it('VL-324: --bot-proxy пишется в .env, пустой прокси ключа не создаёт', () => {
+    runCli(
+      'init', 'Proxy', '--prefix', 'px', '--yes',
+      '--agents', '', '--bot-token', '1:a', '--skip-bot-check',
+      '--bot-proxy', 'socks5://127.0.0.1:1080',
+    );
+    const env = readFileSync(join(testDir, '.env'), 'utf-8');
+    assert.ok(env.includes('TELEGRAM_PROXY=socks5://127.0.0.1:1080'), env);
+
+    fresh();
+    runCli(
+      'init', 'NoProxy', '--prefix', 'np', '--yes',
+      '--agents', '', '--bot-token', '1:a', '--skip-bot-check',
+    );
+    const env2 = readFileSync(join(testDir, '.env'), 'utf-8');
+    assert.ok(!env2.includes('TELEGRAM_PROXY'), env2);
+  });
+
+  it('VL-324: --secrets-location system не пишет .env, но сообщает имена', () => {
+    const out = runCli(
+      'init', 'Sys', '--prefix', 'sy', '--yes',
+      '--agents', '', '--secrets-location', 'system',
+      '--bot-token', '9:z', '--skip-bot-check',
+    );
+    assert.ok(!existsSync(join(testDir, '.env')), '.env не создаётся');
+    assert.ok(out.includes('TELEGRAM_BOT_TOKEN'), `в выводе должно быть имя ключа: ${out}`);
+  });
+
+  it('VL-324: gatewayIdFromUrl выводит id из домена, defaultApiKeyEnv — имя ключа', () => {
+    // AC4: api.cloud.ru → cloud_ru (служебный поддомен api отброшен, зона осталась)
+    assert.equal(gatewayIdFromUrl('https://api.cloud.ru/aig/v1'), 'cloud_ru');
+    assert.equal(gatewayIdFromUrl('https://routerai.ru/api/v1'), 'routerai_ru');
+    assert.equal(gatewayIdFromUrl('http://localhost:8080/v1'), 'localhost');
+    assert.ok(gatewayIdFromUrl('не-url').length > 0, 'мусорный ввод не роняет вывод id');
+    assert.equal(defaultApiKeyEnv('routerai'), 'ROUTERAI_API_KEY');
+    assert.equal(defaultApiKeyEnv('selectel_router'), 'SELECTEL_ROUTER_API_KEY');
+    assert.equal(defaultApiKeyEnv('cloud_ru'), 'CLOUD_RU_API_KEY');
+    assert.equal(defaultApiKeyEnv('my-gw.example'), 'MY_GW_EXAMPLE_API_KEY');
+  });
+
+  it('VL-324: хардкод-список шлюзов содержит RouterAI, Selectel и OpenAI-совместимый', () => {
+    const ids = LLM_GATEWAYS.map((g) => g.id);
+    assert.deepEqual(ids, ['routerai', 'selectel_router', 'openai_compatible']);
+    const routerai = LLM_GATEWAYS[0];
+    assert.equal(routerai.base_url, 'https://routerai.ru/api/v1');
+    assert.equal(routerai.api_key_env, 'ROUTERAI_API_KEY');
+    assert.equal(routerai.catalog, true);
+    const selectel = LLM_GATEWAYS[1];
+    assert.equal(selectel.base_url, 'https://api.selectel.ru/aig/v1');
+    assert.equal(selectel.api_key_env, 'SELECTEL_ROUTER_API_KEY');
   });
 
   it('VL-320: без --prefix prefix выводится из имени проекта (Vibelog Templates → VT)', () => {

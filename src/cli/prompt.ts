@@ -23,7 +23,7 @@
  * возвращают дефолты — wizard не падает (AC7 VL-320).
  */
 
-import { confirm, isCancel, multiselect, select, text } from '@clack/prompts';
+import { confirm, isCancel, multiselect, password, select, text } from '@clack/prompts';
 import type { Option } from '@clack/prompts';
 import type { Readable, Writable } from 'node:stream';
 
@@ -49,6 +49,11 @@ export interface PromptOption<T> {
 export interface PromptSession {
   /** Текстовый вопрос с дефолтом (Enter — оставить) и валидацией в цикле. */
   askText(question: string, def: string, validate?: (value: string) => string | null): Promise<string>;
+  /**
+   * Ввод секрета с маскировкой (VL-324): символы не отображаются.
+   * Enter без ввода — пустая строка (или `def`), то есть «пропустить».
+   */
+  askPassword(question: string, def: string): Promise<string>;
   /** Вопрос да/нет. */
   askConfirm(question: string, def: boolean): Promise<boolean>;
   /** Одиночный выбор стрелками. */
@@ -79,6 +84,7 @@ export interface ClackPrompts {
   confirm: typeof confirm;
   select: typeof select;
   multiselect: typeof multiselect;
+  password: typeof password;
   isCancel: typeof isCancel;
 }
 
@@ -130,7 +136,7 @@ export function createPromptSession(opts: PromptSessionOptions = {}): PromptSess
   const input = opts.input ?? (process.stdin as unknown as InputLike);
   const output = opts.output ?? (process.stdout as unknown as OutputLike);
   const interactive = opts.forceInteractive === true || isInteractive(input, output);
-  const p: ClackPrompts = opts.prompts ?? { text, confirm, select, multiselect, isCancel };
+  const p: ClackPrompts = opts.prompts ?? { text, confirm, select, multiselect, password, isCancel };
   // clack ждёт node-потоки (`Readable`/`Writable`), а в тестах передаётся
   // `PassThrough` — по контракту это они и есть; приводим тип один раз здесь,
   // чтобы не повторять приведение в каждом промпте.
@@ -166,6 +172,22 @@ export function createPromptSession(opts: PromptSessionOptions = {}): PromptSess
           },
         }),
       );
+      return String(raw ?? '').trim() || def;
+    },
+
+    async askPassword(question, def) {
+      // Не-TTY: секрет не читаем — возвращаем дефолт (обычно пустая строка,
+      // то есть «пропустить»), wizard не падает (AC10).
+      if (!interactive) return def;
+      const raw = orCancel(
+        await p.password({
+          message: question,
+          input: promptInput,
+          output: promptOutput,
+        }),
+      );
+      // Значение секрета НЕ обрезаем по краям агрессивно: пробелы в ключе
+      // почти наверняка случайны, но trim безопасен (ключи их не содержат).
       return String(raw ?? '').trim() || def;
     },
 

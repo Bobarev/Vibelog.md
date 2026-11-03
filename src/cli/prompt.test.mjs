@@ -38,6 +38,7 @@ function fakePrompts(result) {
       confirm: record('confirm'),
       select: record('select'),
       multiselect: record('multiselect'),
+      password: record('password'),
       isCancel: (value) => value === CANCEL,
     },
   };
@@ -65,7 +66,7 @@ describe('VL-322 — интерактивный слой prompt (обёртка 
     assert.equal(isInteractive(new PassThrough(), new PassThrough()), false);
   });
 
-  it('не-TTY: askText/askConfirm/askSelect/askMultiselect возвращают дефолты', async () => {
+  it('не-TTY: askText/askConfirm/askSelect/askMultiselect/askPassword возвращают дефолты', async () => {
     const session = createPromptSession({
       input: new PassThrough(),
       output: new PassThrough(),
@@ -88,6 +89,8 @@ describe('VL-322 — интерактивный слой prompt (обёртка 
       ['qwen'],
       'disabled-пункт отфильтрован',
     );
+    // VL-324: askPassword в не-TTY возвращает дефолт (обычно '' — «пропустить»)
+    assert.equal(await session.askPassword('API-ключ', ''), '');
     session.close();
   });
 
@@ -176,12 +179,29 @@ describe('VL-322 — интерактивный слой prompt (обёртка 
     session.close();
   });
 
+  it('VL-324: askPassword маппится на clack.password, пустой ввод → дефолт', async () => {
+    const { session, calls } = makeFakeSession('  secret-value  ');
+    assert.equal(await session.askPassword('API-ключ ROUTERAI_API_KEY', ''), 'secret-value');
+    const [call] = calls;
+    assert.equal(call.name, 'password', 'используется маскированный промпт, а не text');
+    assert.equal(call.opts.message, 'API-ключ ROUTERAI_API_KEY');
+    assert.equal(call.opts.input !== undefined, true, 'потоки инъектируются');
+    session.close();
+  });
+
+  it('VL-324: askPassword с пустым вводом возвращает переданный дефолт', async () => {
+    const { session } = makeFakeSession('   ');
+    assert.equal(await session.askPassword('API-ключ', ''), '');
+    session.close();
+  });
+
   it('отмена (CANCEL_SYMBOL) в любом промпте — PromptCancelledError', async () => {
     for (const run of [
       (s) => s.askText('Имя', 'x'),
       (s) => s.askConfirm('Бот?', true),
       (s) => s.askSelect('Выбор', [{ value: 'a', label: 'A' }], 0),
       (s) => s.askMultiselect('Агенты', [{ value: 'vb', label: 'vb' }], []),
+      (s) => s.askPassword('API-ключ', ''),
     ]) {
       const { session } = makeFakeSession(CANCEL);
       await assert.rejects(() => run(session), (err) => err instanceof PromptCancelledError);
