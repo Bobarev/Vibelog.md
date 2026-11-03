@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  runAiPhaseExperiment, assertNoActiveRun, ExperimentRunError,
+  runAiPhaseExperiment, runExternalExperiment, assertNoActiveRun, ExperimentRunError,
   DEFAULT_TASK_TIMEOUT_SEC, toolCallsFromSession, buildRunEnv,
 } from '../core/experiment-runner.js';
 import { writeExperiment, readMetaJson, runDirFor } from '../core/experiment.js';
@@ -310,5 +310,170 @@ describe('billing: подавление для эксперимента (VL-299)
     expect(env.VIBELOG_PHASE_TASK_ID).toBeUndefined();
     expect(env.VIBELOG_PHASE_NAME).toBeUndefined();
     expect(env.VIBELOG_RUN_PHASE).toBeUndefined();
+  });
+});
+
+describe('external runner (VL-300, doc-21 §13)', () => {
+  let dir;
+  beforeEach(() => {
+    dir = makeRepo('vibelog-exp-external-');
+    writeDataset(dir, 'ds', ['t1', 't2']);
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Пишет скрипт-заглушку раннера и возвращает shell-команду его запуска. */
+  function writeRunnerScript(body) {
+    const path = join(dir, 'runner.mjs');
+    writeFileSync(path, body, 'utf-8');
+    return `"${process.execPath}" "${path}"`;
+  }
+
+  /** Карточка эксперимента с runner: external. */
+  function makeExternalExperiment(over = {}) {
+    return makeExperiment(dir, { runner: 'external', ...over });
+  }
+
+  it('JSON-строка датасета на stdin → results-строка на stdout; meta.runner=external', async () => {
+    const cmd = writeRunnerScript(`
+      let raw = '';
+      process.stdin.on('data', (c) => { raw += c; });
+      process.stdin.on('end', () => {
+        const input = JSON.parse(raw);
+        process.stdout.write(JSON.stringify({
+          score: input.variant === 'A' ? 5 : 8,
+          output: 'ответ ' + input.task_id,
+          custom: { tokens: 42 },
+        }) + '\\n');
+      });
+    `);
+    const exp = makeExternalExperiment();
+    const result = await runExternalExperiment({
+      cwd: dir, backlogDir: join(dir, 'backlog'), expId: exp.id, runnerCmd: cmd,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result.run).toBe(1);
+    const meta = readMetaJson(result.runDir);
+    expect(meta.runner).toBe('external');
+    expect(meta.status).toBe('completed');
+    expect(meta.n).toBe(4);
+    expect(meta.dropped).toBe(0);
+    // cost внешней команды неизвестен — null, не 0
+    expect(meta.cost_total).toBeNull();
+
+    const rows = readResultsFile(resultsPath(result.runDir)).rows;
+    expect(rows).toHaveLength(4);
+    const a = rows.filter(r => r.variant === 'A');
+    const b = rows.filter(r => r.variant === 'B');
+    expect(a.every(r => r.score === 5)).toBe(true);
+    expect(b.every(r => r.score === 8)).toBe(true);
+    // task_id/variant подставлены из входа, custom сохранён
+    expect(rows.map(r => r.task_id).sort()).toEqual(['t1', 't1', 't2', 't2']);
+    expect(rows.every(r => r.custom?.tokens === 42)).toBe(true);
+    expect(rows.every(r => r.cost === null)).toBe(true);
+  });
+
+  it('таймаут команды → error_kind=timeout, прогон продолжается', async () => {
+    const cmd = writeRunnerScript(`
+      let raw = '';
+      process.stdin.on('data', (c) => { raw += c; });
+      process.stdin.on('end', () => {
+        const input = JSON.parse(raw);
+        if (input.task_id === 't1') { setTimeout(() => {}, 60000); return; }
+        process.stdout.write(JSON.stringify({ score: 1 }) + '\\n');
+      });
+    `);
+    const exp = makeExternalExperiment();
+    const result = await runExternalExperiment({
+      cwd: dir, backlogDir: join(dir, 'backlog'), expId: exp.id, runnerCmd: cmd,
+      timeoutSec: 1,
+    });
+
+    const rows = readResultsFile(resultsPath(result.runDir)).rows;
+    expect(rows).toHaveLength(4);
+    const timedOut = rows.filter(r => r.error_kind === 'timeout');
+    expect(timedOut).toHaveLength(2);
+    expect(timedOut.every(r => r.task_id === 't1')).toBe(true);
+    expect(rows.filter(r => !r.error_kind)).toHaveLength(2);
+    expect(result.status).toBe('completed');
+    expect(readMetaJson(result.runDir).dropped).toBe(2);
+  }, 30000);
+
+  it('код выхода ≠ 0 → error_kind=runner с текстом stderr', async () => {
+    const cmd = writeRunnerScript(`
+      process.stdin.resume();
+      process.stdin.on('end', () => {
+        process.stderr.write('сломалось\\n');
+        process.exit(3);
+      });
+    `);
+    const exp = makeExternalExperiment();
+    const result = await runExternalExperiment({
+      cwd: dir, backlogDir: join(dir, 'backlog'), expId: exp.id, runnerCmd: cmd,
+    });
+    const rows = readResultsFile(resultsPath(result.runDir)).rows;
+    expect(rows).toHaveLength(4);
+    expect(rows.every(r => r.error_kind === 'runner')).toBe(true);
+    expect(rows[0].error).toMatch(/с кодом 3/);
+    expect(rows[0].error).toMatch(/сломалось/);
+  });
+
+  it('stdout без JSON-строки → error_kind=runner', async () => {
+    const cmd = writeRunnerScript(`
+      process.stdin.resume();
+      process.stdin.on('end', () => { process.stdout.write('просто текст\\n'); });
+    `);
+    const exp = makeExternalExperiment();
+    const result = await runExternalExperiment({
+      cwd: dir, backlogDir: join(dir, 'backlog'), expId: exp.id, runnerCmd: cmd,
+    });
+    const rows = readResultsFile(resultsPath(result.runDir)).rows;
+    expect(rows.every(r => r.error_kind === 'runner')).toBe(true);
+    expect(rows[0].error).toMatch(/не вернула JSON-строку/);
+  });
+
+  it('пустая и синтаксически битая команда отвергаются до создания рана', async () => {
+    const exp = makeExternalExperiment();
+    await expect(runExternalExperiment({
+      cwd: dir, backlogDir: join(dir, 'backlog'), expId: exp.id, runnerCmd: '   ',
+    })).rejects.toThrow(/Пустая команда раннера/);
+    await expect(runExternalExperiment({
+      cwd: dir, backlogDir: join(dir, 'backlog'), expId: exp.id, runnerCmd: 'echo "незакрытая',
+    })).rejects.toThrow(/shell не разбирает команду/);
+    // ран не создан
+    expect(existsSync(runDirFor(join(dir, 'backlog'), exp.id, 1))).toBe(false);
+  });
+
+  it('--dry-run печатает матрицу и не создаёт ран', async () => {
+    const exp = makeExternalExperiment();
+    const lines = [];
+    const result = await runExternalExperiment({
+      cwd: dir, backlogDir: join(dir, 'backlog'), expId: exp.id,
+      runnerCmd: 'node -e "process.stdin.resume()"',
+      dryRun: true, onProgress: (l) => lines.push(l),
+    });
+    expect(result.status).toBe('dry-run');
+    expect(lines.join('\n')).toMatch(/вызовов \(строк × вариантов\): 4/);
+    expect(existsSync(runDirFor(join(dir, 'backlog'), exp.id, 1))).toBe(false);
+  });
+
+  it('rerunOf пишется в meta.json как rerun_of', async () => {
+    const cmd = writeRunnerScript(`
+      process.stdin.resume();
+      process.stdin.on('end', () => { process.stdout.write(JSON.stringify({ score: 2 }) + '\\n'); });
+    `);
+    const exp = makeExternalExperiment();
+    await runExternalExperiment({
+      cwd: dir, backlogDir: join(dir, 'backlog'), expId: exp.id, runnerCmd: cmd,
+    });
+    const second = await runExternalExperiment({
+      cwd: dir, backlogDir: join(dir, 'backlog'), expId: exp.id, runnerCmd: cmd, rerunOf: 1,
+    });
+    expect(second.run).toBe(2);
+    expect(readMetaJson(second.runDir).rerun_of).toBe(1);
+    // старый ран не перезаписан
+    expect(readMetaJson(runDirFor(join(dir, 'backlog'), exp.id, 1)).rerun_of).toBeNull();
   });
 });

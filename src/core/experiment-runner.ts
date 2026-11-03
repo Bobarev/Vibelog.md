@@ -27,7 +27,7 @@
  * НЕ 0: ноль означал бы «вариант бесплатен» и выигрывал бы сравнение по цене.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -39,7 +39,9 @@ import { readDatasetFile, resolveDataset } from './dataset.js';
 import type { DatasetRow } from './dataset.js';
 import { resolveVariantPrompts } from './prompts.js';
 import type { ResolvedPrompt } from './prompts.js';
-import { readResultsFile, upsertResult, rewriteResultsJsonl, resultsPath } from './results.js';
+import {
+  readResultsFile, upsertResult, rewriteResultsJsonl, resultsPath, normalizeResultRow,
+} from './results.js';
 import type { ResultRow, ResultUsage } from './results.js';
 import { calculateCost, getModelPricingById } from './analytics.js';
 import type { TokenUsage } from './analytics.js';
@@ -56,6 +58,9 @@ export const DEFAULT_TASK_TIMEOUT_SEC = 600;
 
 /** Дефолтный лимит tool-calls рана (как у агента, VL-83). */
 export const DEFAULT_MAX_TOOL_CALLS = 100;
+
+/** Таймаут health-check внешней команды (сек): дольше — считаем «не ответил». */
+export const EXTERNAL_HEALTH_CHECK_TIMEOUT_SEC = 30;
 
 /** Итог одного спавна рана (тестовый шов подменяет реализацию). */
 export interface SpawnRunResult {
@@ -104,6 +109,8 @@ export interface AiPhaseRunOptions {
   maxToolCalls?: number;
   /** Только матрица + оценка стоимости, без создания рана. */
   dryRun?: boolean;
+  /** Ран, перезапуском которого является этот (`--rerun N`, VL-300). */
+  rerunOf?: number | null;
   /** Тестовый шов: подмена спавна. */
   spawnRun?: SpawnRunFn;
   /** Канал прогресса (CLI печатает в stdout). */
@@ -651,3 +658,436 @@ export async function runAiPhaseExperiment(opts: AiPhaseRunOptions): Promise<AiP
 
 /** Экспорт для тестов: сборка аргументов рана. */
 export { buildRunArgs, buildRunEnv };
+
+// ── External runner (VL-300, doc-21 §13) ──
+
+/**
+ * Параметры одного вызова внешней команды раннера.
+ *
+ * Команда получает на stdin **одну JSON-строку** (`{task_id, variant, ...}`),
+ * а на stdout обязана вернуть **одну JSON-строку** результата (doc-21 §7).
+ * Такой контракт позволяет подключить любой язык/скрипт без SDK: обмен идёт
+ * построчно через stdin/stdout, как в JSONL-формате.
+ */
+export interface SpawnExternalParams {
+  /** Shell-команда (исполняется через `/bin/sh -c`). */
+  cmd: string;
+  /** Рабочий каталог команды (корень проекта, не worktree: команда своя). */
+  cwd: string;
+  /** JSON-строка входа (датасет + вариант). */
+  stdin: string;
+  /** Окружение (без фазового env агентской сессии). */
+  env: NodeJS.ProcessEnv;
+  /** Таймаут задачи (мс). */
+  timeoutMs: number;
+}
+
+/** Итог вызова внешней команды. */
+export interface SpawnExternalResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+}
+
+/** Функция спавна внешней команды (по умолчанию — `/bin/sh -c`). */
+export type SpawnExternalFn = (params: SpawnExternalParams) => Promise<SpawnExternalResult>;
+
+/**
+ * Спавн внешней команды по умолчанию: `/bin/sh -c` + stdin/stdout + таймаут.
+ *
+ * Почему shell, а не массив argv: пользователь передаёт `--runner-cmd` одной
+ * строкой (`'node scripts/run.mjs --model x'`), разбирать её на слова вручную
+ * значило бы изобретать парсер кавычек. `/bin/sh` есть на целевой macOS.
+ * Таймаут обязателен: зависшая команда иначе остановит прогон навсегда
+ * (SIGTERM, через 5 с — SIGKILL, как в ai-phase раннере).
+ */
+const defaultSpawnExternal: SpawnExternalFn = ({ cmd, cwd, stdin, env, timeoutMs }) =>
+  new Promise<SpawnExternalResult>((resolve) => {
+    const child = spawn('/bin/sh', ['-c', cmd], { cwd, env });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+    let killTimer: NodeJS.Timeout | undefined;
+
+    const finish = (code: number | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      resolve({ code, stdout, stderr, timedOut });
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        // процесс уже вышел — не ошибка
+      }
+      killTimer = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // см. выше
+        }
+      }, 5000);
+    }, timeoutMs);
+
+    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8'); });
+    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8'); });
+    child.on('error', (err) => {
+      stderr += `\n${err.message}`;
+      finish(null);
+    });
+    child.on('close', (code) => finish(code));
+
+    // stdin закрываем всегда: команда, читающая до EOF, иначе будет ждать
+    child.stdin?.on('error', () => { /* EPIPE при раннем выходе команды — не ошибка */ });
+    child.stdin?.end(`${stdin}\n`);
+  });
+
+/**
+ * Health-check команды раннера: проверяется только **синтаксис** shell-строки.
+ *
+ * Выполнять пользовательскую команду «пробным» запуском нельзя: это
+ * произвольный код (может писать файлы, тратить деньги), а `--runner-cmd`
+ * запускается только по явной воле человека — лишний скрытый запуск нарушал бы
+ * это правило. `sh -n` ловит типичную ошибку (незакрытая кавычка/скобка) до
+ * первого прогона, а не после N дорогих задач.
+ *
+ * @throws ExperimentRunError при пустой или синтаксически битой команде
+ */
+export function assertExternalRunnerHealthy(cmd: string): void {
+  const value = String(cmd || '').trim();
+  if (!value) {
+    throw new ExperimentRunError(
+      'Пустая команда раннера: укажите --runner-cmd \'<shell-команда>\' '
+      + '(команда получает JSON-строку датасета на stdin и печатает results-строку на stdout)'
+    );
+  }
+  const probe = spawnSync('/bin/sh', ['-n', '-c', value], { encoding: 'utf-8' });
+  if (probe.status !== 0) {
+    const detail = (probe.stderr || '').trim() || `код ${probe.status ?? 'signal'}`;
+    throw new ExperimentRunError(`--runner-cmd: shell не разбирает команду — ${detail}`);
+  }
+}
+
+/** Вход внешней команды: строка датасета + вариант (doc-21 §5, §7). */
+function externalStdinPayload(row: DatasetRow, variant: string, exp: Experiment): string {
+  const cfg = exp.variants[variant] ?? {};
+  return JSON.stringify({
+    task_id: row.task_id,
+    variant,
+    variant_label: cfg.label ?? null,
+    model: cfg.model ?? null,
+    params: cfg.params ?? {},
+    ...(row.expected_ac !== undefined ? { expected_ac: row.expected_ac } : {}),
+    ...(row.input !== undefined ? { input: row.input } : {}),
+    ...(row.payload !== undefined ? { payload: row.payload } : {}),
+  });
+}
+
+/** Окружение внешней команды: маркер эксперимента, без фазового env родителя. */
+function buildExternalEnv(
+  base: NodeJS.ProcessEnv,
+  expId: string,
+  runN: number,
+  taskId: string,
+  variant: string
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...base,
+    [EXPERIMENT_ENV]: `${expId}/run-${runN}`,
+    VIBELOG_EXPERIMENT_TASK_ID: taskId,
+    VIBELOG_EXPERIMENT_VARIANT: variant,
+  };
+  delete env.VIBELOG_PHASE_TASK_ID;
+  delete env.VIBELOG_PHASE_NAME;
+  delete env.VIBELOG_RUN_PHASE;
+  delete env.VIBELOG_SESSION_ID;
+  return env;
+}
+
+/**
+ * Разбирает stdout внешней команды в строку результата.
+ *
+ * Команде разрешено печатать лишнее в stderr, но в stdout должна быть ровно
+ * одна JSON-строка: берётся ПЕРВАЯ непустая строка, которая парсится как
+ * JSON-объект (логи команды перед результатом не ломают прогон).
+ * `task_id`/`variant` при отсутствии подставляются из входа — иначе каждая
+ * команда была бы обязана их дублировать, что не добавляет информации.
+ *
+ * @returns строку результата либо текст ошибки (kind + message)
+ */
+export function parseExternalResult(
+  stdout: string,
+  row: DatasetRow,
+  variant: string
+): { row: ResultRow } | { error: { kind: string; message: string } } {
+  const lines = String(stdout ?? '').split(/\r?\n/);
+  let found: Record<string, unknown> | null = null;
+  for (const line of lines) {
+    const value = line.trim();
+    if (!value.startsWith('{')) continue;
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        found = parsed as Record<string, unknown>;
+        break;
+      }
+    } catch {
+      // не JSON — пропускаем строку (это может быть лог команды)
+    }
+  }
+  if (!found) {
+    const preview = String(stdout ?? '').trim().slice(0, 200);
+    return {
+      error: {
+        kind: 'runner',
+        message: `команда не вернула JSON-строку результата на stdout${preview ? ` (получено: ${preview})` : ' (stdout пуст)'}`,
+      },
+    };
+  }
+  return normalizeResultRow({
+    ...found,
+    task_id: found.task_id ?? row.task_id,
+    variant: found.variant ?? variant,
+  });
+}
+
+/** Опции прогона external runner'ом. */
+export interface ExternalRunOptions {
+  /** Корень проекта (cwd команды и место .vibelog). */
+  cwd: string;
+  /** Корень backlog-а. */
+  backlogDir: string;
+  /** id эксперимента. */
+  expId: string;
+  /** Shell-команда раннера (`--runner-cmd`). */
+  runnerCmd: string;
+  /** Фильтр вариантов (пусто — все из карточки). */
+  variants?: string[];
+  /** Таймаут задачи в секундах. */
+  timeoutSec?: number;
+  /** Только матрица, без создания рана. */
+  dryRun?: boolean;
+  /** Ран, перезапуском которого является этот (`--rerun N`). */
+  rerunOf?: number | null;
+  /** Тестовый шов: подмена спавна команды. */
+  spawnExternal?: SpawnExternalFn;
+  /** Канал прогресса. */
+  onProgress?: (line: string) => void;
+}
+
+/**
+ * Прогоняет эксперимент внешней командой (doc-21 §13, v2).
+ *
+ * Контракт: для каждой пары (строка датасета × вариант) команда вызывается
+ * один раз; на stdin — JSON-строка входа, из stdout читается results-строка
+ * (upsert по `(task_id, variant)`, как в manual-профиле).
+ *
+ * Решения:
+ * - **изоляция не нужна**: команда своя, worktree не создаётся — проект не
+ *   трогаем сами, ответит ли команда мусором в файлах, решает пользователь;
+ * - **ошибка команды ≠ падение прогона**: строка пишется с `error_kind:
+ *   'runner'` (код ≠ 0 / нет JSON) или `'timeout'` (истёк таймаут), прогон
+ *   идёт дальше — одна сломанная задача не убивает сравнение;
+ * - **здоровье команды проверяется до рана** (`assertExternalRunnerHealthy`);
+ * - **cost всегда `null`**: внешняя команда может не ходить в LLM вовсе, и
+ *   выдуманная цена испортила бы сравнение по стоимости.
+ *
+ * @throws ExperimentRunError при понятных пользователю проблемах
+ */
+export async function runExternalExperiment(opts: ExternalRunOptions): Promise<AiPhaseRunResult> {
+  const { cwd, backlogDir, expId, runnerCmd } = opts;
+  const progress = opts.onProgress ?? (() => {});
+  const entry = getExperiment(backlogDir, expId);
+  if (!entry) throw new ExperimentRunError(`Эксперимент не найден: ${expId}`);
+  const exp = entry.experiment;
+
+  assertExternalRunnerHealthy(runnerCmd);
+
+  if (!exp.dataset) {
+    throw new ExperimentRunError(`У эксперимента ${exp.id} не указан dataset — задайте его при create (--dataset)`);
+  }
+  const dataset = resolveDataset(backlogDir, exp.id, exp.dataset, {});
+  const parsed = readDatasetFile(dataset.absolutePath);
+  if (parsed.rows.length === 0) {
+    throw new ExperimentRunError(`Датасет ${dataset.relativePath} не содержит валидных строк`);
+  }
+
+  const allVariants = Object.keys(exp.variants);
+  const variants = opts.variants && opts.variants.length > 0
+    ? opts.variants.map(v => v.toUpperCase())
+    : allVariants;
+  const unknown = variants.filter(v => !allVariants.includes(v));
+  if (unknown.length > 0) {
+    throw new ExperimentRunError(`В карточке нет вариантов: ${unknown.join(', ')} (есть: ${allVariants.join(', ')})`);
+  }
+  if (variants.length === 0) {
+    throw new ExperimentRunError(`У эксперимента ${exp.id} нет вариантов — создайте карточку с --variant A:builtin:spec`);
+  }
+
+  const timeoutSec = opts.timeoutSec ?? exp.timeout_sec ?? DEFAULT_TASK_TIMEOUT_SEC;
+
+  if (opts.dryRun) {
+    progress(`  эксперимент: ${exp.id} — ${exp.title}`);
+    progress(`  раннер: external (${runnerCmd})`);
+    progress(`  датасет: ${dataset.relativePath} (${dataset.resolution.chosen}); строк: ${parsed.rows.length}`);
+    progress(`  вариантов: ${variants.length}; вызовов (строк × вариантов): ${parsed.rows.length * variants.length}`);
+    progress(`  таймаут задачи: ${timeoutSec} с`);
+    progress('');
+    progress('--dry-run: ран не создан');
+    return {
+      run: null, runDir: null, status: 'dry-run', rows: [],
+      costTotal: null, pricingMissing: false, reason: null,
+    };
+  }
+
+  assertNoActiveRun(backlogDir, exp.id);
+
+  const { run, runDir } = createRunDir(backlogDir, exp.id);
+  const meta: RunMeta = {
+    schema_version: 1,
+    exp_id: exp.id,
+    run,
+    status: 'running',
+    runner: 'external',
+    started_at: new Date().toISOString(),
+    finished_at: null,
+    pid: process.pid,
+    resolution: {
+      dataset: dataset.resolution,
+      runner_cmd: runnerCmd,
+      prompts: {},
+    } as Record<string, unknown>,
+    results_ignored: false,
+    n: 0,
+    dropped: 0,
+    cost_total: null,
+    pricing_missing: false,
+    rerun_of: opts.rerunOf ?? null,
+    reason: null,
+  };
+  writeMetaJson(runDir, meta);
+  syncExperimentStatus(backlogDir, exp.id);
+
+  const spawnExternal = opts.spawnExternal ?? defaultSpawnExternal;
+  const resultsFile = resultsPath(runDir);
+  const rows: ResultRow[] = [];
+  let reason: string | null = null;
+  let status: 'completed' | 'failed' = 'completed';
+
+  const ac = new AbortController();
+  const onSignal = (): void => {
+    reason = 'прогон прерван сигналом (SIGINT/SIGTERM)';
+    ac.abort();
+  };
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
+
+  try {
+    for (const row of parsed.rows) {
+      for (const variant of variants) {
+        if (ac.signal.aborted) break;
+        const startedAt = Date.now();
+        let result: SpawnExternalResult;
+        try {
+          result = await spawnExternal({
+            cmd: runnerCmd,
+            cwd,
+            stdin: externalStdinPayload(row, variant, exp),
+            env: buildExternalEnv(process.env, exp.id, run, row.task_id, variant),
+            timeoutMs: timeoutSec * 1000,
+          });
+        } catch (err) {
+          result = { code: null, stdout: '', stderr: (err as Error).message, timedOut: false };
+        }
+        const durationMs = Date.now() - startedAt;
+
+        let resultRow: ResultRow;
+        if (result.timedOut) {
+          resultRow = {
+            task_id: row.task_id,
+            variant,
+            score: null,
+            error: `таймаут команды раннера (${timeoutSec} с)`,
+            error_kind: 'timeout',
+            cost: null,
+            duration_ms: durationMs,
+          };
+        } else if (result.code !== 0) {
+          const detail = (result.stderr || '').trim().split('\n')[0] ?? '';
+          resultRow = {
+            task_id: row.task_id,
+            variant,
+            score: null,
+            error: `команда раннера завершилась с кодом ${result.code ?? 'signal'}${detail ? `: ${detail.slice(0, 300)}` : ''}`,
+            error_kind: 'runner',
+            cost: null,
+            duration_ms: durationMs,
+          };
+        } else {
+          const parsedRow = parseExternalResult(result.stdout, row, variant);
+          if ('error' in parsedRow) {
+            resultRow = {
+              task_id: row.task_id,
+              variant,
+              score: null,
+              error: parsedRow.error.message,
+              error_kind: 'runner',
+              cost: null,
+              duration_ms: durationMs,
+            };
+          } else {
+            resultRow = { ...parsedRow.row, cost: null, duration_ms: durationMs };
+          }
+        }
+
+        rows.push(resultRow);
+        const existing = readResultsFile(resultsFile);
+        rewriteResultsJsonl(resultsFile, upsertResult(existing.rows, resultRow));
+        progress(
+          `  ${row.task_id} × ${variant}: ${resultRow.error_kind ? `ошибка (${resultRow.error_kind})` : 'ok'}`
+          + `, ${durationMs} мс`
+        );
+      }
+      if (ac.signal.aborted) break;
+    }
+  } catch (err) {
+    status = 'failed';
+    reason = (err as Error).message;
+  } finally {
+    process.removeListener('SIGINT', onSignal);
+    process.removeListener('SIGTERM', onSignal);
+    if (ac.signal.aborted) {
+      status = 'failed';
+      reason = reason ?? 'прогон прерван сигналом (SIGINT/SIGTERM)';
+    }
+    const finalMeta: RunMeta = {
+      ...meta,
+      status,
+      finished_at: new Date().toISOString(),
+      n: rows.filter(r => !r.error).length,
+      dropped: rows.filter(r => r.error).length,
+      cost_total: null,
+      reason,
+    };
+    writeMetaJson(runDir, finalMeta);
+    syncExperimentStatus(backlogDir, exp.id);
+  }
+
+  return {
+    run,
+    runDir,
+    status,
+    rows,
+    costTotal: null,
+    pricingMissing: false,
+    reason,
+  };
+}
+
+

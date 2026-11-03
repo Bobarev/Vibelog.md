@@ -8,7 +8,7 @@
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, rmSync, mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -204,5 +204,90 @@ describe('VL-296 — CLI experiment record', () => {
     const badVariant = runCli(['experiment', 'record', 'exp-1', '--variant', 'Z', '--task', 't1']);
     assert.equal(badVariant.status, 1);
     assert.match(badVariant.stderr, /нет варианта "Z"/);
+  });
+});
+
+describe('VL-300 — CLI experiment run --rerun / external runner', () => {
+  it('--rerun без --yes отказывает с подсказкой и не создаёт ран', () => {
+    const before = readdirSync(join(backlogDir, 'experiments', 'exp-1')).filter(n => n.startsWith('run-'));
+    const res = runCli(['experiment', 'run', 'exp-1', '--rerun', '1']);
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /--rerun 1 --yes/);
+    assert.match(res.stderr, /rerun_of: run-1/);
+    const after = readdirSync(join(backlogDir, 'experiments', 'exp-1')).filter(n => n.startsWith('run-'));
+    assert.deepEqual(after, before, 'ран не создан');
+  });
+
+  it('--rerun N --yes создаёт run-(max+1) с rerun_of: run-N, старый ран не тронут', () => {
+    const runsBefore = readdirSync(join(backlogDir, 'experiments', 'exp-1'))
+      .filter(n => /^run-\d+$/.test(n))
+      .map(n => Number(n.slice(4)))
+      .sort((a, b) => a - b);
+    const maxBefore = runsBefore[runsBefore.length - 1];
+    const oldMeta = JSON.parse(readFileSync(
+      join(backlogDir, 'experiments', 'exp-1', 'run-1', 'meta.json'), 'utf-8'
+    ));
+
+    const res = runCli(['experiment', 'run', 'exp-1', '--rerun', '1', '--yes']);
+    assert.equal(res.status, 0, res.stderr);
+
+    const newRun = maxBefore + 1;
+    const metaPath = join(backlogDir, 'experiments', 'exp-1', `run-${newRun}`, 'meta.json');
+    assert.ok(existsSync(metaPath), `создан run-${newRun}`);
+    const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
+    assert.equal(meta.rerun_of, 1);
+    assert.equal(meta.run, newRun);
+    // старый ран не перезаписан (run неизменяем, doc-21 §17 п.6)
+    const oldAfter = JSON.parse(readFileSync(
+      join(backlogDir, 'experiments', 'exp-1', 'run-1', 'meta.json'), 'utf-8'
+    ));
+    assert.deepEqual(oldAfter, oldMeta);
+  });
+
+  it('--rerun несуществующего рана — ошибка', () => {
+    const res = runCli(['experiment', 'run', 'exp-1', '--rerun', '99', '--yes']);
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /run-99 не найден/);
+  });
+
+  it('--yes без --rerun — ошибка (подтверждать нечего)', () => {
+    const res = runCli(['experiment', 'run', 'exp-1', '--yes']);
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /только вместе с --rerun/);
+  });
+
+  it('runner: external без --runner-cmd — ошибка с подсказкой', () => {
+    const create = runCli([
+      'experiment', 'create', 'Внешний раннер', '--dataset', 'ds-1', '--runner', 'external',
+    ]);
+    assert.equal(create.status, 0, create.stderr);
+    const res = runCli(['experiment', 'run', 'exp-2']);
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /--runner-cmd/);
+  });
+
+  it('runner: external с --runner-cmd прогоняет матрицу и пишет results', () => {
+    const script = join(testRoot, 'ext-runner.mjs');
+    writeFileSync(script, `
+      let raw = '';
+      process.stdin.on('data', (c) => { raw += c; });
+      process.stdin.on('end', () => {
+        const input = JSON.parse(raw);
+        process.stdout.write(JSON.stringify({ score: input.variant === 'A' ? 3 : 6 }) + '\\n');
+      });
+    `, 'utf-8');
+    const cmd = `"${process.execPath}" "${script}"`;
+    const res = runCli(['experiment', 'run', 'exp-2', '--runner-cmd', cmd]);
+    assert.equal(res.status, 0, res.stderr);
+    const meta = JSON.parse(readFileSync(
+      join(backlogDir, 'experiments', 'exp-2', 'run-1', 'meta.json'), 'utf-8'
+    ));
+    assert.equal(meta.runner, 'external');
+    assert.equal(meta.status, 'completed');
+    assert.equal(meta.n, 4);
+    const rows = readResults('exp-2', 1);
+    assert.equal(rows.length, 4);
+    assert.equal(rows.filter(r => r.variant === 'A').every(r => r.score === 3), true);
+    assert.equal(rows.filter(r => r.variant === 'B').every(r => r.score === 6), true);
   });
 });

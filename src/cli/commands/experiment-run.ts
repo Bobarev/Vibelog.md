@@ -21,12 +21,11 @@ import { readDatasetFile, resolveDataset } from '../../core/dataset.js';
 import type { ParsedDataset } from '../../core/dataset.js';
 import { resolveVariantPrompts } from '../../core/prompts.js';
 import type { ResolvedPrompt } from '../../core/prompts.js';
-import {
-  readResultsFile, upsertResult, rewriteResultsJsonl, resultsPath,
+import { readResultsFile, upsertResult, rewriteResultsJsonl, resultsPath,
   normalizeResultRow, RESULT_ERROR_KINDS, resultKey,
 } from '../../core/results.js';
 import type { ResultRow } from '../../core/results.js';
-import { runAiPhaseExperiment } from '../../core/experiment-runner.js';
+import { runAiPhaseExperiment, runExternalExperiment } from '../../core/experiment-runner.js';
 
 /** Путь относительно корня проекта для печати в CLI. */
 function displayPath(backlogDir: string, path: string): string {
@@ -97,6 +96,46 @@ function parseCustomFlag(raw: string): Record<string, unknown> | undefined {
 }
 
 /**
+ * Разбирает `--rerun N` / `--yes` (VL-300, doc-21 §17 п.6).
+ *
+ * Run неизменяем: `--rerun N` НЕ перезаписывает `run-N`, а создаёт новый
+ * `run-(max+1)` с `rerun_of: run-N`. Требование `--yes` — защита от
+ * случайного дубля дорогого прогона: одна опечатка в `--rerun` иначе стоила
+ * бы полной стоимости эксперимента.
+ *
+ * @returns номер перезапускаемого рана (null — обычный прогон)
+ * @throws Error с текстом для пользователя (CLI печатает как есть)
+ */
+function resolveRerun(flags: FlagValues, backlogDir: string, expId: string): number | null {
+  const raw = getFlag(flags, 'rerun', '');
+  if (raw === '') {
+    if (hasFlag(flags, 'yes')) {
+      throw new Error('--yes имеет смысл только вместе с --rerun N: подтверждать нечего');
+    }
+    return null;
+  }
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`--rerun: ожидается номер прогона (положительное целое), получено: "${raw}"`);
+  }
+  const existing = listRunNumbers(join(experimentsDir(backlogDir), expId));
+  if (!existing.includes(n)) {
+    throw new Error(
+      `Прогон run-${n} не найден (есть: ${existing.length ? existing.join(', ') : 'нет'}) — `
+      + `перезапускать нечего`
+    );
+  }
+  if (!hasFlag(flags, 'yes')) {
+    throw new Error(
+      `--rerun ${n} создаст НОВЫЙ прогон run-${(existing[existing.length - 1] ?? 0) + 1} `
+      + `(rerun_of: run-${n}) и потратит ресурсы повторно. `
+      + `Подтвердите: vibelog experiment run ${expId} --rerun ${n} --yes`
+    );
+  }
+  return n;
+}
+
+/**
  * `experiment run <exp-id>` — manual runner (doc-21 §3, §8).
  *
  * `--dry-run` печатает матрицу «строки датасета × варианты» и резолвнутые
@@ -108,7 +147,7 @@ function parseCustomFlag(raw: string): Record<string, unknown> | undefined {
 export function experimentRun(positional: string[], flags: FlagValues, backlogDir: string): void | Promise<void> {
   const expId = (positional[0] || '').trim();
   if (!expId) {
-    printError('Укажите id эксперимента: vibelog experiment run <exp-id> [--dry-run] [--recover]');
+    printError('Укажите id эксперимента: vibelog experiment run <exp-id> [--dry-run] [--recover] [--rerun N --yes]');
     process.exitCode = 1;
     return;
   }
@@ -140,14 +179,22 @@ export function experimentRun(positional: string[], flags: FlagValues, backlogDi
       return;
     }
 
+    // ── --rerun N --yes: новый ран с rerun_of (run неизменяем, doc-21 §17 п.6) ──
+    const rerunOf = resolveRerun(flags, backlogDir, exp.id);
+
     if (exp.runner === 'ai-phase') {
       // VL-299: ai-phase runner — асинхронный (спавн ранов), поэтому
       // возвращаем промис: runExperiment объявлен async и дождётся его
-      return runAiPhase(exp.id, flags, backlogDir, join(backlogDir, '..'));
+      return runAiPhase(exp.id, flags, backlogDir, join(backlogDir, '..'), rerunOf);
+    }
+
+    if (exp.runner === 'external') {
+      // VL-300: внешняя команда — тоже асинхронный спавн
+      return runExternal(exp.id, flags, backlogDir, join(backlogDir, '..'), rerunOf);
     }
 
     if (exp.runner !== 'manual') {
-      printError(`Раннер "${exp.runner}" не поддерживается в этой версии: доступны runner: manual и ai-phase`);
+      printError(`Раннер "${exp.runner}" не поддерживается в этой версии: доступны runner: manual, ai-phase и external`);
       process.exitCode = 1;
       return;
     }
@@ -236,7 +283,7 @@ export function experimentRun(positional: string[], flags: FlagValues, backlogDi
       dropped: 0,
       cost_total: null,
       pricing_missing: true,
-      rerun_of: null,
+      rerun_of: rerunOf,
       reason: null,
     };
     writeMetaJson(runDir, meta);
@@ -275,7 +322,8 @@ async function runAiPhase(
   expId: string,
   flags: FlagValues,
   backlogDir: string,
-  cwd: string
+  cwd: string,
+  rerunOf: number | null = null
 ): Promise<void> {
   const timeoutRaw = getFlag(flags, 'timeout', '');
   let timeoutSec: number | undefined;
@@ -313,6 +361,7 @@ async function runAiPhase(
       timeoutSec,
       maxToolCalls,
       dryRun: hasFlag(flags, 'dry-run'),
+      rerunOf,
       onProgress: (line) => console.log(line),
     });
     if (result.status === 'dry-run') return;
@@ -328,6 +377,83 @@ async function runAiPhase(
       printInfo('У части вариантов нет pricing в models.available — cost: null (не 0)');
     }
     if (result.costTotal !== null) printInfo(`Стоимость прогона: ${result.costTotal}`);
+    printInfo('Оценки ставит `experiment judge` (или человек через record); отчёт — `experiment report`');
+  } catch (err) {
+    printError((err as Error).message);
+    process.exitCode = 1;
+  }
+}
+
+
+/**
+ * `experiment run <exp-id>` для runner: external (VL-300, doc-21 §13).
+ *
+ * Тонкая CLI-обёртка над `runExternalExperiment`: флаг `--runner-cmd`
+ * (обязателен), `--timeout`, `--variant`, `--dry-run`. Команда получает
+ * JSON-строку входа на stdin и печатает results-строку на stdout.
+ *
+ * `--runner-cmd` — произвольный код пользователя, поэтому он **не** берётся
+ * из карточки и не имеет дефолта: запуск возможен только явным флагом
+ * (в карточке лежит только `runner: external` — факт согласия пользователя).
+ */
+async function runExternal(
+  expId: string,
+  flags: FlagValues,
+  backlogDir: string,
+  cwd: string,
+  rerunOf: number | null = null
+): Promise<void> {
+  const runnerCmd = getFlag(flags, 'runner-cmd', '').trim();
+  if (!runnerCmd) {
+    printError(
+      'Для runner: external обязателен --runner-cmd \'<shell-команда>\': '
+      + 'команда получает JSON-строку датасета на stdin и печатает results-строку на stdout'
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const timeoutRaw = getFlag(flags, 'timeout', '');
+  let timeoutSec: number | undefined;
+  if (timeoutRaw !== '') {
+    const n = Number(timeoutRaw);
+    if (!Number.isFinite(n) || n <= 0) {
+      printError(`--timeout: ожидается положительное число секунд, получено: "${timeoutRaw}"`);
+      process.exitCode = 1;
+      return;
+    }
+    timeoutSec = n;
+  }
+  const variantFlag = getFlag(flags, 'variant', '');
+  const variants = variantFlag
+    ? variantFlag.split(',').map(v => v.trim().toUpperCase()).filter(v => v !== '')
+    : undefined;
+
+  try {
+    const result = await runExternalExperiment({
+      cwd,
+      backlogDir,
+      expId,
+      runnerCmd,
+      variants,
+      timeoutSec,
+      dryRun: hasFlag(flags, 'dry-run'),
+      rerunOf,
+      onProgress: (line) => console.log(line),
+    });
+    if (result.status === 'dry-run') return;
+    const where = result.runDir ? displayPath(backlogDir, result.runDir) : '';
+    if (result.status === 'failed') {
+      printError(`Прогон run-${result.run} завершён со статусом failed: ${result.reason ?? 'причина неизвестна'}`);
+      printInfo(`Частичные результаты сохранены: ${where}/results.jsonl (строк: ${result.rows.length})`);
+      process.exitCode = 1;
+      return;
+    }
+    const failed = result.rows.filter(r => r.error).length;
+    printSuccess(
+      `Прогон run-${result.run} завершён: строк ${result.rows.length} (${where})`
+      + (failed > 0 ? `, с ошибкой ${failed}` : '')
+    );
+    if (rerunOf !== null) printInfo(`Перезапуск прогона run-${rerunOf} (rerun_of)`);
     printInfo('Оценки ставит `experiment judge` (или человек через record); отчёт — `experiment report`');
   } catch (err) {
     printError((err as Error).message);

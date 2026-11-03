@@ -20,6 +20,7 @@
  * - dataset <exp-id> [--dataset-path <p>]   (резолв для эксперимента)
  * - run <exp-id> [--dry-run] [--recover] [--variant A,B]
  *                  [--timeout <сек>] [--max-tool-calls <N>]
+ *                  [--runner-cmd '<shell>'] [--rerun N --yes]
  *                  [--variant-a-prompt-path <p>] [--variant-b-prompt-path <p>]
  * - record <exp-id> --variant A --task <id> [--score n] [--output t] [--error t]
  *                  [--error-kind k] [--tool-calls N] [--duration ms] [--cost n]
