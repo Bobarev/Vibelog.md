@@ -1295,6 +1295,22 @@ function toolUpdateStatus(args: ToolArgs, cwd: string): string {
  * Обновляет только переданные поля. updated_date обновляется всегда.
  * Поля plan/notes/append_notes/final_summary пишут в соответствующие секции тела.
  */
+/**
+ * Поля задачи, которые модель НЕ передала в вызове (VL-326).
+ *
+ * Нужны тексту `hint` noop-ответа: перечень подсказывает, что можно передать
+ * в этом же вызове вместо повторения уже применённых полей (инцидент VL-324:
+ * модель 12 раз передавала только `priority`/`type`, не догадываясь, что
+ * `description`/`acceptanceCriteria`/`plan` не пришли вовсе).
+ *
+ * Служебные имена (`id`, `idempotencyKey`, `append_notes` — дописывание, а не
+ * поле) исключены: предлагать их бессмысленно.
+ */
+function missingTaskFields(args: ToolArgs): string[] {
+  const suggested = ['description', 'acceptanceCriteria', 'plan', 'notes', 'labels', 'priority', 'status'];
+  return suggested.filter(field => args[field] === undefined);
+}
+
 function toolUpdateTask(args: ToolArgs, cwd: string): string {
   // VL-183: валидация id на границе MCP-слоя. Схема требует id, но сервер её
   // не проверяет: без id getTask/findTaskFilePath падают с TypeError
@@ -1391,10 +1407,16 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
           const value = currentRaw[key];
           applied[key] = Array.isArray(value) && key === 'acceptanceCriteria' ? value.length : value;
         }
-        return ackNoop(
+        return ackNoopDetailed(
           `Изменений нет: ${Object.keys(updates).join(', ')} уже имеют эти значения. ` +
             'Следующий шаг: backlog_finish_phase (или следующий шаг плана) — повтор этого вызова ничего не изменит.',
           applied,
+          [],
+          // VL-326: называем поля, которые модель НЕ передала, — иначе она
+          // повторяет вызов с теми же (уже применёнными) полями, меняя только
+          // idempotencyKey (инцидент VL-324: 12 повторов без description/AC/plan).
+          `Переданные поля (${Object.keys(updates).join(', ')}) уже такие. ` +
+            `Если нужны другие изменения, передай их в ЭТОМ ЖЕ вызове — например: ${missingTaskFields(args).join(', ')}.`,
         );
       }
     }

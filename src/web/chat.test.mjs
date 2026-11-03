@@ -1043,6 +1043,94 @@ describe('VL-255 — дедупликация и лимит tool-вызовов'
     }
   });
 
+  it('VL-326 регресс VL-324: 5× backlog_update_task с разными idempotencyKey и уже применёнными полями → 1 исполнение, остальные duplicate', async () => {
+    const dir = makeProject();
+    try {
+      const task = createTaskFile(dir, { title: 'Задача VL-324', type: 'bug', priority: 'High' });
+      // Первый вызов применяет priority/type (они уже такие — noop), дальше
+      // модель повторяет тот же вызов, меняя ТОЛЬКО idempotencyKey.
+      const calls = Array.from({ length: 5 }, (_, i) => ({
+        id: `u${i}`,
+        name: 'backlog_update_task',
+        arguments: { id: task.id, priority: 'High', type: 'bug', idempotencyKey: `key-${i}` },
+      }));
+      const { llm } = fakeLlm([{ text: 'Обновляю.', toolCalls: calls }, { text: 'Готово.' }]);
+      const events = await collectOn(
+        dir,
+        { message: 'обнови задачу', threadId: 'd-noop-dup' },
+        { llm },
+        ['backlog_update_task'],
+      );
+      const ends = events.filter(e => e.type === 'tool_end');
+      assert.equal(ends.length, 5, 'tool_end для каждого вызова (парность)');
+      // Первый — исполнен (noop: поля уже такие), остальные — duplicate
+      const first = JSON.parse(ends[0].result);
+      assert.equal(first.noop, true, 'первый вызов честно отвечает noop');
+      for (const blocked of ends.slice(1)) {
+        const parsed = JSON.parse(blocked.result);
+        assert.equal(parsed.duplicate, true, `повтор с новым idempotencyKey — duplicate: ${blocked.result.slice(0, 120)}`);
+      }
+      assert.ok(
+        !ends.some(e => e.result.includes('Лимит tool-вызовов')),
+        'до лимита 16 дело не доходит — дедуп срабатывает раньше',
+      );
+      const stats = loadChatToolStats(dir, 'd-noop-dup');
+      assert.ok(stats, 'диагностика хода записана');
+      assert.equal(stats.executed, 1, 'реально исполнен один вызов');
+      assert.equal(stats.deduped, 4);
+      assert.equal(stats.noop, 1, 'noop-счётчик в repeat_stats');
+      assert.equal(stats.noop_blocked, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('VL-326: обход дедупа разными наборами полей упирается в кап noop-серии, а не в лимит 16', async () => {
+    const dir = makeProject();
+    try {
+      const task = createTaskFile(dir, { title: 'Задача VL-324b', type: 'bug', priority: 'High' });
+      // Каждый вызов — ДРУГОЙ набор уже применённых полей: сигнатуры разные,
+      // дедуп их пропускает, но прогресса нет — инструмент отвечает noop.
+      const variants = [
+        { priority: 'High' },
+        { type: 'bug' },
+        { priority: 'High', type: 'bug' },
+        { priority: 'High' },
+        { type: 'bug' },
+        { priority: 'High', type: 'bug' },
+        { priority: 'High' },
+        { type: 'bug' },
+      ];
+      const calls = variants.map((v, i) => ({
+        id: `n${i}`,
+        name: 'backlog_update_task',
+        arguments: { id: task.id, ...v, idempotencyKey: `k-${i}` },
+      }));
+      const { llm } = fakeLlm([{ text: 'Обновляю.', toolCalls: calls }, { text: 'Готово.' }]);
+      const events = await collectOn(
+        dir,
+        { message: 'обнови задачу', threadId: 'd-noop-cap' },
+        { llm },
+        ['backlog_update_task'],
+      );
+      const ends = events.filter(e => e.type === 'tool_end');
+      assert.equal(ends.length, calls.length);
+      const blocked = ends.filter(e => e.result.includes('"noop_repeat":true'));
+      assert.ok(blocked.length > 0, 'кап noop-серии сработал');
+      assert.match(blocked[0].result, /повтор с теми же аргументами бесполезен/);
+      assert.ok(
+        !ends.some(e => e.result.includes('Лимит tool-вызовов')),
+        'кап noop-серии срабатывает раньше лимита вызовов на ответ',
+      );
+      const stats = loadChatToolStats(dir, 'd-noop-cap');
+      assert.ok(stats);
+      assert.ok(stats.noop >= 3, 'noop-ответы посчитаны');
+      assert.ok(stats.noop_blocked > 0, 'блокировки по noop-серии посчитаны');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('диагностика хода пишется в <threadId>.repeat.json и не ломает список тредов', async () => {
     const dir = makeProject();
     try {

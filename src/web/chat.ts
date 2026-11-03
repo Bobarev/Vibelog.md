@@ -33,7 +33,7 @@ import { loadModels, resolveModelById, validateModelsConfig } from '../core/mode
 import { globalSearch } from '../core/search.js';
 import { truncateToolOutput } from '../agent/tools.js';
 import { handleToolCall } from '../mcp/tools.js';
-import { ackDenied } from '../mcp/tool-result.js';
+import { ackDenied, isNoopAck } from '../mcp/tool-result.js';
 import { chatToolDefs, isWriteOperation, loadChatSystemTemplate } from './tool-policy.js';
 import type { ChatLocalTool } from './tool-policy.js';
 import { createCallGuard, formatChatLimitsErrors, resolveChatLimits } from './chat-limits.js';
@@ -69,6 +69,7 @@ import {
   createTurnToolGuard,
   duplicateCallResult,
   limitCallResult,
+  noopRepeatCallResult,
   resolveChatMaxToolCalls,
   type ToolGuardStats,
 } from './tool-dedup.js';
@@ -323,6 +324,13 @@ export interface ChatToolStats {
   deduped: number;
   /** Сколько вызовов заблокировано лимитом на ответ. */
   limit_hits: number;
+  /**
+   * VL-326: сколько исполненных вызовов вернули noop-ответ («изменений нет»).
+   * Расширение аддитивное — старые читатели файла не ломаются.
+   */
+  noop?: number;
+  /** VL-326: сколько вызовов заблокировано исчерпанием noop-серии. */
+  noop_blocked?: number;
 }
 
 /** Файл диагностики хода: `<threadId>.repeat.json` (не `.jsonl` — не тред). */
@@ -1090,12 +1098,20 @@ async function produce(
    * указанием использовать прежний результат), сверхлимитные вызовы ответа —
    * {ok:false,limit:true} с указанием завершить ход. Единая точка ⇒ защита
    * действует в обычном цикле, в resume-пути и в advanceToNextApproval.
+   *
+   * VL-326: тот же guard считает серию noop-ответов. Исполненный вызов с
+   * noop-ответом (`isNoopAck`) увеличивает серию, исчерпание капа блокирует
+   * следующие вызовы вердиктом `noop_repeat` ({ok:false,noop_repeat:true}).
+   * Причина: в веб-чате лимит вызовов на ответ сбрасывался `beginTurn()`
+   * на каждом ответе модели, поэтому серия «изменений нет» ничем не
+   * ограничивалась (инцидент VL-324).
    */
   const toolGuard = createTurnToolGuard({ maxPerResponse: resolveChatMaxToolCalls(cwd) });
   const executeTool = async (name: string, args: Record<string, unknown>): Promise<string> => {
     const verdict = toolGuard.check(name, args);
     if (verdict === 'duplicate') return duplicateCallResult();
     if (verdict === 'limit') return limitCallResult(toolGuard.maxPerResponse());
+    if (verdict === 'noop_repeat') return noopRepeatCallResult(toolGuard.maxNoopRepeats());
     // VL-268: grant прогона проверяется на КАЖДОМ вызове. Задача вне taskIds —
     // отказ без исполнения; инструмент вне allowedTools сюда не доходит
     // (гейт вызовов уже отправил его в Allow/Deny).
@@ -1103,6 +1119,13 @@ async function produce(
     if (grant.kind === 'error') return grantDeniedResult(grant.error, name);
     const local = localHandlers.get(name);
     const raw = local ? await local.handler(args) : await handleToolCall(name, args, cwd, { defaultStatus: resolveDefaultStatus(activePersona) });
+    // VL-326: noop-ответ («изменений нет») — не исполнение, а пустой круг:
+    // он наращивает серию и не сбрасывает её. Проверяется ДО noteExecuted,
+    // иначе сброс серии затрёт только что посчитанный noop.
+    if (isNoopAck(raw)) {
+      toolGuard.noteNoop(name, args);
+      return truncateToolOutput(raw);
+    }
     // Фиксируем исполнение ДО капа вывода: write инкрементит epoch ресурса,
     // поэтому последующее чтение того же файла не считается дублем.
     toolGuard.noteExecuted(name, args);
