@@ -80,6 +80,22 @@ interface ThreadHistoryResponse {
   persona?: string | null
   /** Расход токенов треда (VL-313, null — тред без ходов). */
   usage?: ThreadUsageView | null
+  /** Точка сжатия контекста (VL-314, null — не сжат). */
+  compaction?: CompactionState | null
+}
+
+/**
+ * Точка сжатия контекста треда (VL-314) — зеркало `CompactionState` из
+ * `src/web/chat-compaction.ts`. Клиенту нужен только `fromIndex` (номер
+ * сообщения, с которого payload уходит в модель) и способ сжатия.
+ */
+interface CompactionState {
+  fromIndex: number
+  method: "trim" | "summary"
+  summary?: string
+  tokensBefore?: number
+  tokensAfter?: number
+  compactedAt: string
 }
 
 /**
@@ -515,6 +531,28 @@ function EmptyState() {
 }
 
 /**
+ * Плашка «контекст сжат» (VL-314, AC10): в модель уходит не вся история,
+ * а с N-го сообщения. Полная история в ленте остаётся — плашка объясняет,
+ * почему модель «не помнит» начало диалога.
+ */
+function CompactionBanner({ compaction }: { compaction: CompactionState | null }) {
+  if (!compaction) return null
+  const method = compaction.method === "summary" ? "LLM-саммари" : "усечение"
+  const tokens =
+    compaction.tokensBefore !== undefined && compaction.tokensAfter !== undefined
+      ? ` (~${compaction.tokensBefore} → ~${compaction.tokensAfter} токенов)`
+      : ""
+  return (
+    <div
+      className="shrink-0 border-b bg-muted/40 px-4 py-1.5 text-center text-[11px] text-muted-foreground"
+      title={`Способ: ${method}. Сброс — /trim off или /compact reset.`}
+    >
+      Контекст сжат: в модель уходит с {compaction.fromIndex + 1}-го сообщения{tokens}
+    </div>
+  )
+}
+
+/**
  * Тред: сообщения + композер. Высота — h-full (скролл внутри viewport).
  *
  * `--thread-max-width: 40rem` (VL-264, ref perplexity.tsx): ширина ленты, к
@@ -529,10 +567,13 @@ function EmptyState() {
 function ChatThread({
   threadPersona,
   threadId,
+  compaction,
 }: {
   threadPersona: string | null
   /** id треда — resetKey панели расхода (VL-313). */
   threadId?: string
+  /** Точка сжатия контекста (VL-314): плашка над лентой. */
+  compaction?: CompactionState | null
 }) {
   return (
     <ThreadPrimitive.Root
@@ -545,6 +586,8 @@ function ChatThread({
       <ThreadPrimitive.If empty={false}>
         {/* VL-313: панель расхода — только для непустого треда (AC7) */}
         <UsageBar threadId={threadId} />
+        {/* VL-314: плашка сжатия — полная история в ленте остаётся (AC10) */}
+        <CompactionBanner compaction={compaction ?? null} />
         <ThreadPrimitive.Viewport
           className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-4 pt-6"
           // автоскролл вниз при новом контенте и при восстановлении истории
@@ -631,6 +674,8 @@ interface ChatLoadState {
   persona?: string | null
   /** Расход токенов треда (VL-313): панель восстанавливает цифры после reload. */
   usage?: ThreadUsageView | null
+  /** Точка сжатия контекста (VL-314): плашка «контекст сжат» над лентой. */
+  compaction?: CompactionState | null
 }
 
 /**
@@ -714,6 +759,8 @@ export function ChatPage() {
       persona: null,
       // VL-313: пока грузится история, панель не показывает расход прежнего треда
       usage: null,
+      // VL-314: плашка сжатия тоже не должна «залипать» от прежнего треда
+      compaction: null,
     }))
     void (async () => {
       try {
@@ -738,6 +785,8 @@ export function ChatPage() {
           persona: data.persona ?? null,
           // VL-313: расход треда — панель восстановит те же цифры (AC2)
           usage: data.usage ?? null,
+          // VL-314: точка сжатия — плашка «контекст сжат» (AC10)
+          compaction: data.compaction ?? null,
         })
         setRuntimeKey(k => k + 1)
       } catch (err) {
@@ -819,7 +868,11 @@ export function ChatPage() {
               initialUsage={load.usage}
               onThreadCreated={handleThreadCreated}
             >
-              <ChatThread threadPersona={load.persona ?? null} threadId={load.runtimeThreadId} />
+              <ChatThread
+                threadPersona={load.persona ?? null}
+                threadId={load.runtimeThreadId}
+                compaction={load.compaction ?? null}
+              />
             </ChatRuntimeProvider>
           )}
         </div>

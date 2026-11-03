@@ -30,6 +30,9 @@ import {
 } from './llm.js';
 import type { ToolSpec } from './tools.js';
 import { truncateToolOutput } from './tools.js';
+// VL-314: компакшн wire-истории вынесен в общий модуль (нужен и веб-чату);
+// реэкспорт ниже сохраняет публичный API loop.ts (тесты импортируют отсюда).
+import { compactWireMessages } from './compact.js';
 // VL-306: классификатор read/write — общий с веб-слоем (src/core/tool-classify.ts)
 import { isWriteOperation } from '../core/tool-classify.js';
 import { listTools } from '../mcp/tools.js';
@@ -463,40 +466,11 @@ export function wallTimeWarnText(
 }
 
 /**
- * Строит wire-копию истории для LLM-запроса (VL-122): system-сообщения +
- * первое user-сообщение (постановка) + сообщения с липкого якоря `from`.
- *
- * `messages` и jsonl-транскрипт НЕ мутируются — возвращается новый массив,
- * усекается только payload, уходящий в провайдер. Первый user в копии
- * получает дописанную служебную заметку об усечении; число опущенных
- * вычисляется детерминированно из якоря и не меняется между запросами
- * (append-only префикс — prefix-caching провайдера стабилен; маркер ломает
- * префикс ровно один раз — в момент сдвига якоря).
- *
- * Орфан-гард: хвост не должен начинаться с `role: 'tool'` без парного
- * assistant(tool_calls) — провайдер отклонит payload; начало хвоста
- * сдвигается вперёд, пока `messages[start].role === 'tool'`.
- *
- * Если отсекать нечего (якорь не за первым user / хвост пуст после
- * орфан-гарда) — возвращается исходный массив без маркера.
+ * Реэкспорт компакшна wire-истории (VL-314): реализация переехала в
+ * `src/agent/compact.ts` — та же функция нужна веб-чату (/trim, /compact).
+ * Публичный API loop.ts не меняется: тесты и агент импортируют отсюда.
  */
-export function compactWireMessages(messages: ChatMessage[], from: number): ChatMessage[] {
-  // Отсекать нечего: якорь за пределами диапазона
-  if (from <= 0 || from >= messages.length) return messages;
-  // Первый user — «постановка задачи», сохраняем дословно (с заметкой)
-  const firstUserIdx = messages.findIndex((m) => m.role === 'user');
-  if (firstUserIdx === -1 || from <= firstUserIdx + 1) return messages;
-  // Орфан-гард: хвост не начинается с tool-сообщения без парного assistant
-  let start = from;
-  while (start < messages.length && messages[start].role === 'tool') start++;
-  // Хвост целиком состоит из tool-сообщений — компакшн пропускается
-  if (start >= messages.length) return messages;
-  const omitted = start - firstUserIdx - 1;
-  const note = `[История усечена: опущено ${omitted} сообщений. Полный транскрипт — в сессии.]`;
-  const head = messages.slice(0, firstUserIdx + 1);
-  head[firstUserIdx] = { role: 'user', content: `${messages[firstUserIdx].content}\n\n${note}` };
-  return [...head, ...messages.slice(start)];
-}
+export { compactWireMessages };
 
 /**
  * Выполняет tool-calling loop до финального текста модели, лимита или

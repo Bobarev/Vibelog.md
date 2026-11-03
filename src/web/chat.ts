@@ -37,7 +37,25 @@ import { ackDenied } from '../mcp/tool-result.js';
 import { chatToolDefs, isWriteOperation, loadChatSystemTemplate } from './tool-policy.js';
 import type { ChatLocalTool } from './tool-policy.js';
 import { createCallGuard, formatChatLimitsErrors, resolveChatLimits } from './chat-limits.js';
-import { recordThreadUsage, describeThreadUsage, type ThreadUsageView } from './chat-usage.js';
+import { recordThreadUsage, describeThreadUsage, resolveContextWindow, type ThreadUsageView } from './chat-usage.js';
+import {
+  findCommand,
+  helpText,
+  parseCommand,
+  unknownCommandText,
+  type ParsedCommand,
+} from './chat-commands.js';
+import {
+  buildWireMessages,
+  estimateTokens,
+  loadChatSummaryTemplate,
+  loadCompaction,
+  pickTrimIndex,
+  resetCompaction,
+  resolveChatCompaction,
+  resolveTargetTokens,
+  saveCompaction,
+} from './chat-compaction.js';
 import {
   createTurnToolGuard,
   duplicateCallResult,
@@ -786,20 +804,23 @@ async function produce(
   const currentTurn = (): number => history.filter(m => m.role === 'user').length;
 
   // --- LLM-клиент -----------------------------------------------------------
+  // VL-314: создание клиента вынесено в функцию — его использует и LLM-цикл,
+  // и команда /compact (LLM-саммари). Ошибки конфигурации возвращаются
+  // текстом: вызывающий сам решает, отдать их error-событием или ответом
+  // команды (команда не должна ронять ход).
   let llm: Pick<LlmClient, 'streamChat'> | undefined = deps.llm;
-  if (!llm) {
+  const ensureLlm = (): { ok: true; client: Pick<LlmClient, 'streamChat'> } | { ok: false; error: string } => {
+    if (llm) return { ok: true, client: llm };
     // VL-209: переопределение модели из body (id из models.available) —
     // валидация до создания клиента; строка обязательна
     let bodyModel: string | undefined;
     if (body.model !== undefined) {
       if (typeof body.model !== 'string' || body.model === '') {
-        queue.push({ type: 'error', message: 'Некорректная модель: ожидается строка id из models.available' });
-        return;
+        return { ok: false, error: 'Некорректная модель: ожидается строка id из models.available' };
       }
       bodyModel = body.model;
       if (resolveModelById(cwd, bodyModel) === null) {
-        queue.push({ type: 'error', message: `Неизвестная модель: ${bodyModel} — отсутствует в models.available settings.json` });
-        return;
+        return { ok: false, error: `Неизвестная модель: ${bodyModel} — отсутствует в models.available settings.json` };
       }
     }
     // Models-путь (VL-209): секции настроены — валидируем их; fallback
@@ -807,25 +828,19 @@ async function produce(
     // (их матчат chat.test.mjs)
     const hasModelsSection = Object.keys(loadModels(cwd).available).length > 0;
     if (!hasModelsSection && !process.env.VIBELOG_LLM_API_KEY) {
-      queue.push({
-        type: 'error',
-        message:
+      return {
+        ok: false,
+        error:
           'Ошибка: не задан VIBELOG_LLM_API_KEY — чату нужен доступ к LLM (env VIBELOG_LLM_BASE_URL/VIBELOG_LLM_API_KEY/VIBELOG_LLM_MODEL)',
-      });
-      return;
+      };
     }
     if (!hasModelsSection && !process.env.VIBELOG_LLM_MODEL) {
-      queue.push({
-        type: 'error',
-        message: 'Ошибка: не задана VIBELOG_LLM_MODEL — модель LLM неизвестна',
-      });
-      return;
+      return { ok: false, error: 'Ошибка: не задана VIBELOG_LLM_MODEL — модель LLM неизвестна' };
     }
     if (hasModelsSection) {
       const errors = validateModelsConfig(cwd);
       if (errors.length > 0) {
-        for (const err of errors) queue.push({ type: 'error', message: `Ошибка: ${err}` });
-        return;
+        return { ok: false, error: errors.map(err => `Ошибка: ${err}`).join('\n') };
       }
     }
     try {
@@ -843,11 +858,51 @@ async function produce(
           ? { model: override.model, baseUrl: override.baseUrl, apiKey: override.apiKey, apiMode: override.apiMode }
           : {}),
       });
+      return { ok: true, client: llm };
     } catch (err) {
-      queue.push({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
+
+  // --- слэш-команды (VL-314) ------------------------------------------------
+  // Перехват ДО history.push({role:'user'}) и до LLM-цикла: текст команды
+  // не попадает ни в jsonl, ни в модель. Ответ отдаётся обычными событиями
+  // text + done — клиент рендерит его как сообщение ассистента.
+  if (typeof body.message === 'string' && body.message.trim().length > 0) {
+    const parsed = parseCommand(body.message);
+    if (parsed !== null) {
+      const refusal = commandRefusal(cwd, threadId, history);
+      if (refusal !== null) {
+        queue.push({ type: 'text', delta: refusal });
+        queue.push({ type: 'done' });
+        return;
+      }
+      const command = findCommand(parsed.name);
+      if (command === null) {
+        queue.push({ type: 'text', delta: unknownCommandText(parsed.name) });
+        queue.push({ type: 'done' });
+        return;
+      }
+      const result = await runChatCommand(parsed, {
+        cwd,
+        threadId,
+        history,
+        ensureLlm,
+        usageModelId: typeof body.model === 'string' && body.model !== '' ? body.model : loadModels(cwd).default,
+        queue,
+      });
+      queue.push({ type: 'text', delta: result.text });
+      queue.push({ type: 'done' });
       return;
     }
   }
+
+  const llmReady = ensureLlm();
+  if (!llmReady.ok) {
+    queue.push({ type: 'error', message: llmReady.error });
+    return;
+  }
+  llm = llmReady.client;
 
   const tools = chatToolDefs(cwd);
   // Локальные инструменты (read_file/write_file) имеют handler в chat-tool
@@ -1033,7 +1088,10 @@ async function produce(
       // VL-255: новый ответ модели — счётчик вызовов ответа начинается с нуля
       // (карта исполненных сигнатур сохраняется: дедуп действует на весь ход).
       toolGuard.beginTurn();
-      resp = await llm.streamChat([system, ...history], tools, {
+      // VL-314: payload собирается с учётом точки сжатия (sidecar). История
+      // треда (jsonl) и лента НЕ меняются — сжимается только то, что уходит
+      // в модель. Орфан-гард tool_calls ↔ tool — внутри buildWireMessages.
+      resp = await llm.streamChat([system, ...buildWireMessages(history, loadCompaction(cwd, threadId))], tools, {
         onToken: token => {
           callGuard.noteActivity();
           queue.push({ type: 'text', delta: token });
@@ -1161,6 +1219,272 @@ async function produce(
     }
     // Все вызовы исполнены — следующая итерация LLM.
   }
+}
+
+/**
+ * Отказ в исполнении команды (AC4): во время стриминга и в approval-паузе
+ * команды недоступны.
+ *
+ * Стриминг сервер не видит напрямую (ход живёт в другом запросе), но
+ * approval-пауза видна по истории: последний assistant с tool_calls без
+ * парных tool-результатов. Возвращает текст отказа либо null.
+ */
+function commandRefusal(cwd: string, threadId: string, history: ChatMessage[]): string | null {
+  if (pendingToolCalls(history).length > 0) {
+    return (
+      'Команда недоступна: диалог ждёт решения по подтверждению (Allow/Deny). ' +
+      'Сначала ответьте на карточку подтверждения, затем повторите команду.'
+    );
+  }
+  // Стриминг: параллельный ход по тому же треду. Признак — свежий (моложе
+  // 30 с) файл истории, изменённый после последнего прочитанного сообщения.
+  // Точного признака «ход идёт» в файловой системе нет, поэтому проверка
+  // мягкая: она ловит именно гонку двух вкладок, а не обычную работу.
+  try {
+    const file = sessionFile(cwd, threadId);
+    if (existsSync(file)) {
+      const ageMs = Date.now() - statSync(file).mtimeMs;
+      if (ageMs >= 0 && ageMs < 2_000 && history.length > 0) {
+        const last = history[history.length - 1]!;
+        // Ход в процессе: последнее сообщение — user (ответа ещё нет)
+        if (last.role === 'user') {
+          return (
+            'Команда недоступна: идёт ответ ассистента. Дождитесь завершения хода ' +
+            'и повторите команду.'
+          );
+        }
+      }
+    }
+  } catch {
+    // диагностика не должна мешать команде
+  }
+  return null;
+}
+
+/** Зависимости исполнения команды: LLM, учёт usage и очередь событий. */
+interface CommandDeps {
+  cwd: string;
+  threadId: string;
+  history: ChatMessage[];
+  ensureLlm: () => { ok: true; client: Pick<LlmClient, 'streamChat'> } | { ok: false; error: string };
+  /** id модели треда (для тарифа/окна в панели, VL-313). */
+  usageModelId: string | undefined;
+  queue: EventQueue;
+}
+
+/**
+ * Исполнить слэш-команду (VL-314).
+ *
+ * `/help` — справка из реестра. `/trim` — детерминированное усечение:
+ * считаем точку по цели в токенах, пишем sidecar, отдаём отчёт. `/trim off`
+ * — сброс. `/compact` — LLM-саммари: инкрементально (prior-summary + новые
+ * сообщения), результат — новое саммари в sidecar; usage учитывается в
+ * панели как обычный расход, но `requests` хода не увеличивает (AC12).
+ * `/compact reset` — сброс.
+ */
+async function runChatCommand(
+  parsed: ParsedCommand,
+  deps: CommandDeps,
+): Promise<{ text: string; isError?: boolean }> {
+  const { cwd, threadId, history, queue } = deps;
+  const arg = (parsed.args[0] ?? '').toLowerCase();
+
+  if (parsed.name === 'help') return { text: helpText() };
+
+  const { settings, errors } = resolveChatCompaction(cwd);
+  if (errors.length > 0) console.error(`[vibelog-chat] некорректные настройки сжатия: ${errors.join('; ')}`);
+  if (!settings.enabled) {
+    return {
+      text: 'Сжатие контекста выключено в настройках (chat.compact_enabled = false). Включите его, чтобы пользоваться /trim и /compact.',
+      isError: true,
+    };
+  }
+
+  if (parsed.name === 'trim') {
+    if (arg === 'off' || arg === 'reset') {
+      const removed = resetCompaction(cwd, threadId);
+      return {
+        text: removed
+          ? 'Сжатие сброшено: в модель снова уходит полная история треда.'
+          : 'Сжатия не было — сбрасывать нечего.',
+      };
+    }
+    return runTrim(deps, settings);
+  }
+
+  if (parsed.name === 'compact') {
+    if (arg === 'reset' || arg === 'off') {
+      const removed = resetCompaction(cwd, threadId);
+      return {
+        text: removed
+          ? 'Сжатие сброшено: в модель снова уходит полная история треда.'
+          : 'Сжатия не было — сбрасывать нечего.',
+      };
+    }
+    return runCompact(deps, settings);
+  }
+
+  return { text: unknownCommandText(parsed.name), isError: true };
+}
+
+/** Цель сжатия в токенах для треда: процент окна либо fallback (AC8). */
+function compactionTarget(cwd: string, usageModelId: string | undefined, settings: { targetPercent: number; targetTokens: number }): number {
+  const window = resolveContextWindow(cwd, usageModelId ?? null);
+  return resolveTargetTokens(window, settings.targetPercent, settings.targetTokens);
+}
+
+/** `/trim`: детерминированное усечение payload (0 ₽, AC5). */
+function runTrim(
+  deps: CommandDeps,
+  settings: { targetPercent: number; targetTokens: number; keepTail: number },
+): { text: string; isError?: boolean } {
+  const { cwd, threadId, history } = deps;
+  if (history.length === 0) return { text: 'Тред пуст — сжимать нечего.', isError: true };
+  const target = compactionTarget(cwd, deps.usageModelId, settings);
+  const tokensBefore = estimateTokens(history);
+  // keep_tail — гарантированный хвост: цель не может быть меньше него
+  const tailTokens = estimateTokens(history.slice(-settings.keepTail));
+  const effectiveTarget = Math.max(target, tailTokens);
+  const fromIndex = pickTrimIndex(history, effectiveTarget);
+  if (fromIndex >= history.length) {
+    return {
+      text:
+        `Сжимать нечего: история (~${tokensBefore} токенов) уже укладывается в цель ` +
+        `~${effectiveTarget} токенов.`,
+    };
+  }
+  const wire = buildWireMessages(history, {
+    fromIndex,
+    method: 'trim',
+    compactedAt: new Date().toISOString(),
+  });
+  const tokensAfter = estimateTokens(wire);
+  saveCompaction(cwd, threadId, {
+    fromIndex,
+    method: 'trim',
+    tokensBefore,
+    tokensAfter,
+    compactedAt: new Date().toISOString(),
+  });
+  return {
+    text:
+      `Контекст сжат (детерминированно, 0 ₽): в модель уходит с ${fromIndex + 1}-го сообщения ` +
+      `из ${history.length}. Оценка: ~${tokensBefore} → ~${tokensAfter} токенов. ` +
+      'История в ленте не изменилась; сброс — `/trim off`.',
+  };
+}
+
+/** `/compact`: LLM-саммари, инкрементально (AC6). */
+async function runCompact(
+  deps: CommandDeps,
+  settings: { targetPercent: number; targetTokens: number; keepTail: number },
+): Promise<{ text: string; isError?: boolean }> {
+  const { cwd, threadId, history, queue } = deps;
+  if (history.length === 0) return { text: 'Тред пуст — сжимать нечего.', isError: true };
+
+  const target = compactionTarget(cwd, deps.usageModelId, settings);
+  const tokensBefore = estimateTokens(history);
+  const tailTokens = estimateTokens(history.slice(-settings.keepTail));
+  const effectiveTarget = Math.max(target, tailTokens);
+  const fromIndex = pickTrimIndex(history, effectiveTarget);
+  if (fromIndex >= history.length) {
+    return {
+      text:
+        `Сжимать нечего: история (~${tokensBefore} токенов) уже укладывается в цель ` +
+        `~${effectiveTarget} токенов.`,
+    };
+  }
+
+  // Шаблон саммари — файлом (AC7): проект → встроенный, иначе fail-closed.
+  let template: string;
+  try {
+    template = loadChatSummaryTemplate(cwd);
+  } catch (err) {
+    return { text: err instanceof Error ? err.message : String(err), isError: true };
+  }
+
+  const llmReady = deps.ensureLlm();
+  if (!llmReady.ok) return { text: llmReady.error, isError: true };
+
+  // Инкрементальность: предыдущее саммари (если было) + сообщения, которые
+  // ещё не пересказаны. Саммари ПЕРЕПИСЫВАЕТСЯ, а не накапливается.
+  const previous = loadCompaction(cwd, threadId);
+  const priorSummary = previous?.method === 'summary' ? previous.summary : undefined;
+  const toSummarize = history.slice(previous?.fromIndex ?? 0, fromIndex);
+  const transcript = toSummarize
+    .map(m => {
+      if (m.role === 'tool') return `[tool ${m.tool_call_id}] ${m.content}`;
+      if (m.role === 'assistant') {
+        const calls = m.tool_calls?.length
+          ? `\n(вызовы: ${m.tool_calls.map(tc => `${tc.name}(${JSON.stringify(tc.arguments ?? {})})`).join(', ')})`
+          : '';
+        return `assistant: ${m.content ?? ''}${calls}`;
+      }
+      return `${m.role}: ${m.content}`;
+    })
+    .join('\n\n');
+
+  const prompt = [
+    template,
+    priorSummary ? `Предыдущее саммари (перепиши его с учётом новых сообщений):\n\n${priorSummary}` : '',
+    `Новые сообщения для сжатия:\n\n${transcript}`,
+  ]
+    .filter(p => p !== '')
+    .join('\n\n---\n\n');
+
+  let summary: string;
+  try {
+    const resp = await llmReady.client.streamChat(
+      [{ role: 'user', content: prompt }],
+      undefined,
+      {},
+    );
+    summary = resp.text.trim();
+    // AC12: расход саммари — обычный (токены и ₽ в панели), но requests хода
+    // не увеличивает: это не запрос хода.
+    if (resp.usage) {
+      const recorded = recordThreadUsage(cwd, threadId, {
+        ...(deps.usageModelId ? { modelId: deps.usageModelId } : {}),
+        input: resp.usage.input_tokens,
+        output: resp.usage.output_tokens,
+        cache: resp.usage.cache_read_input_tokens,
+        reasoning: resp.usage.reasoning_tokens,
+        countRequest: false,
+      });
+      const view = describeThreadUsage(cwd, recorded);
+      if (view !== null) queue.push({ type: 'usage', usage: view });
+    }
+  } catch (err) {
+    return {
+      text: `Не удалось получить саммари: ${err instanceof Error ? err.message : String(err)}`,
+      isError: true,
+    };
+  }
+  if (summary === '') {
+    return { text: 'Модель вернула пустое саммари — сжатие не применено.', isError: true };
+  }
+
+  const state = {
+    fromIndex,
+    method: 'summary' as const,
+    summary,
+    tokensBefore,
+    tokensAfter: estimateTokens(buildWireMessages(history, {
+      fromIndex,
+      method: 'summary',
+      summary,
+      compactedAt: new Date().toISOString(),
+    })),
+    compactedAt: new Date().toISOString(),
+  };
+  saveCompaction(cwd, threadId, state);
+  return {
+    text:
+      `Контекст сжат (LLM-саммари): в модель уходит с ${fromIndex + 1}-го сообщения ` +
+      `из ${history.length}. Оценка: ~${tokensBefore} → ~${state.tokensAfter} токенов. ` +
+      'История в ленте не изменилась; сброс — `/compact reset`.\n\n' +
+      `**Саммари**\n\n${summary}`,
+  };
 }
 
 /** Тело содержит корректный approval-объект. */
