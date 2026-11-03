@@ -83,6 +83,14 @@ export interface Experiment {
   metrics: ExperimentMetrics;
   /** MAP, не массив: A/B/C/D без миграции схемы (doc-21 §4). */
   variants: Record<string, VariantConfig>;
+  /**
+   * Таймаут одной задачи ai-phase прогона в секундах (VL-299, doc-21 §19 п.1).
+   *
+   * Не задан — действует дефолт `DEFAULT_TASK_TIMEOUT_SEC` (600 с); флаг
+   * `--timeout` перебивает и это поле. Поле живёт в карточке, потому что
+   * «сколько ждать одну задачу» — свойство эксперимента, а не запуска.
+   */
+  timeout_sec?: number;
   judge?: JudgeConfig;
   created_date: string;
   updated_date: string;
@@ -99,6 +107,8 @@ export interface ExperimentInput {
   runner?: string;
   metrics?: Partial<ExperimentMetrics>;
   variants?: Record<string, Partial<VariantConfig>>;
+  /** Таймаут задачи ai-phase прогона в секундах (VL-299). */
+  timeout_sec?: number;
   judge?: Partial<JudgeConfig>;
   created_date?: string;
   updated_date?: string;
@@ -236,6 +246,15 @@ export function createExperiment(input: ExperimentInput): Experiment {
   };
   const judge = normalizeJudge(input.judge);
   if (judge) experiment.judge = judge;
+  // VL-299: timeout_sec — только положительное конечное число; мусор
+  // отбрасывается (паттерн loadSettings: карточка не должна ронять прогон)
+  if (
+    input.timeout_sec !== undefined &&
+    Number.isFinite(Number(input.timeout_sec)) &&
+    Number(input.timeout_sec) > 0
+  ) {
+    experiment.timeout_sec = Math.round(Number(input.timeout_sec));
+  }
   return experiment;
 }
 
@@ -283,6 +302,9 @@ function experimentFromData(data: Record<string, unknown>, fallbackId: string): 
       custom,
     },
     variants,
+    timeout_sec: data.timeout_sec === undefined || data.timeout_sec === null
+      ? undefined
+      : Number(data.timeout_sec),
     judge: judgeRaw
       ? {
         enabled: judgeRaw.enabled === undefined ? false : Boolean(judgeRaw.enabled),
@@ -330,6 +352,9 @@ export function experimentToMarkdown(exp: Experiment, body?: string): string {
     created_date: exp.created_date,
     updated_date: exp.updated_date,
   };
+  // VL-299: timeout_sec пишется только когда задан — карточка без него
+  // остаётся байт-в-байт прежней при повторной записи
+  if (exp.timeout_sec !== undefined) frontmatter.timeout_sec = exp.timeout_sec;
   if (exp.judge) {
     const judge: Record<string, unknown> = { enabled: exp.judge.enabled };
     if (exp.judge.model) judge.model = exp.judge.model;

@@ -13,6 +13,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { TokenUsage } from './analytics.js';
+import { findBacklogDir, experimentRunsDir } from './paths.js';
 
 /** Одна запись сессии в billing (самодостаточна для сверки с провайдером). */
 export interface BillingSession {
@@ -133,4 +134,120 @@ export function billingRunStart(session: BillingSession): string | undefined {
     return new Date(finished - dur).toISOString();
   }
   return typeof session.startedAt === 'string' ? session.startedAt : undefined;
+}
+
+// ── Эксперименты: подавление billing и usage рана (VL-299, doc-21 §13) ──
+
+/** Префикс env-маркера эксперимента: `VIBELOG_EXPERIMENT=exp-<id>/run-<N>`. */
+export const EXPERIMENT_ENV = 'VIBELOG_EXPERIMENT';
+
+/** Разобранный env-маркер эксперимента. */
+export interface ExperimentMarker {
+  /** id эксперимента (`exp-N`). */
+  expId: string;
+  /** Номер прогона. */
+  run: number;
+}
+
+/**
+ * Разбирает значение `VIBELOG_EXPERIMENT` (`exp-<id>/run-<N>`).
+ *
+ * Формат фиксирован спецификацией (doc-21 §13): id эксперимента и номер
+ * прогона нужны, чтобы положить usage в каталог ИМЕННО этого рана. Кривое
+ * значение → null (маркер не действует: лучше записать billing, чем потерять
+ * учёт токенов из-за опечатки в env).
+ *
+ * @param value — сырое значение переменной (обычно process.env.VIBELOG_EXPERIMENT)
+ */
+export function parseExperimentMarker(value?: string | null): ExperimentMarker | null {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const m = /^(exp-[A-Za-z0-9_-]+)\/run-(\d+)$/.exec(raw);
+  if (!m) return null;
+  const run = Number.parseInt(m[2], 10);
+  if (!Number.isFinite(run) || run <= 0) return null;
+  return { expId: m[1], run };
+}
+
+/**
+ * Подавлен ли billing задачи (VL-299, doc-21 §13).
+ *
+ * Dataset-задачи эксперимента (`t1`, `t2`, …) не являются backlog-задачами:
+ * файлы `.vibelog/billing/T1.json` засоряют учёт, а реальные задачи получают
+ * чужие цифры при совпадении id. Поэтому при живом env-маркере
+ * `VIBELOG_EXPERIMENT` billing НЕ пишется — usage уходит в `usage.json` рана.
+ *
+ * Проверка стоит на стороне ПИСАТЕЛЯ (а не только раннера): забытый путь
+ * записи не должен просочиться в журнал.
+ *
+ * @param env — окружение процесса (по умолчанию process.env)
+ */
+export function billingSuppressed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return parseExperimentMarker(env[EXPERIMENT_ENV]) !== null;
+}
+
+/**
+ * Путь к `usage.json` рана эксперимента: `<backlog>/experiments/exp-<id>/run-<N>/usage.json`.
+ *
+ * @param cwd — корень проекта (backlog ищется вверх по дереву)
+ * @param expId — id эксперимента
+ * @param runN — номер прогона
+ * @returns абсолютный путь либо null, если backlog в проекте не найден
+ */
+export function experimentUsagePath(cwd: string, expId: string, runN: number): string | null {
+  const backlogDir = findBacklogDir(cwd);
+  if (!backlogDir) return null;
+  return join(experimentRunsDir(backlogDir, expId), `run-${runN}`, 'usage.json');
+}
+
+/** Одна запись usage рана эксперимента (append-массив в usage.json). */
+export interface ExperimentUsageEntry {
+  /** Строка датасета (task_id), к которой относится ран. */
+  task_id?: string;
+  /** Ключ варианта (A/B/…). */
+  variant?: string;
+  /** ID сессии агента. */
+  sessionId?: string;
+  /** Фаза рана. */
+  phase?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  usage: TokenUsage;
+  model?: string;
+  agent?: string;
+}
+
+/**
+ * Дописывает запись usage в `usage.json` рана эксперимента (VL-299).
+ *
+ * Формат — JSON-массив записей (append-семантика, как billing): ран может
+ * состоять из десятков задач × вариантов, и каждая запись самодостаточна.
+ * Битый файл → начинаем заново с предупреждением вызывающего (учёт рана
+ * важнее сохранности испорченного файла: он производный).
+ *
+ * @returns путь записанного файла либо null (backlog не найден)
+ */
+export function appendExperimentUsage(
+  cwd: string,
+  expId: string,
+  runN: number,
+  entry: ExperimentUsageEntry
+): string | null {
+  const path = experimentUsagePath(cwd, expId, runN);
+  if (!path) return null;
+  let entries: ExperimentUsageEntry[] = [];
+  if (existsSync(path)) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
+      if (Array.isArray(parsed)) entries = parsed as ExperimentUsageEntry[];
+    } catch {
+      // Битый usage.json — производный файл, перезаписываем с нуля
+      entries = [];
+    }
+  }
+  entries.push(entry);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(entries, null, 2)}\n`, 'utf-8');
+  return path;
 }

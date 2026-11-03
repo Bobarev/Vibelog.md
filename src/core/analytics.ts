@@ -187,6 +187,26 @@ export function pricingForModelId(cwd: string, modelId?: string | null): ModelPr
 }
 
 /**
+ * Тариф модели по её id из `models.available` (VL-299, doc-21 §11).
+ *
+ * Нужен экспериментам: стоимость считается по модели ВАРИАНТА, а не по
+ * активной модели проекта (`getActiveModelPricing` резолвит только активную).
+ * Отличие от {@link pricingForModelId}: id обязателен — пустой id не должен
+ * молча превращаться в «активную модель» (вариант без `model` не имеет
+ * тарифа, и cost у него `null`, а не стоимость чужой модели).
+ *
+ * @param cwd — директория проекта settings.json
+ * @param modelId — id из models.available
+ * @returns тариф либо undefined (модель не найдена / тарифа нет) — вызывающий
+ *   обязан записать `cost: null`, а не 0 (doc-21 §11: ноль = «бесплатно»)
+ */
+export function getModelPricingById(cwd: string, modelId: string): ModelPricing | undefined {
+  const id = String(modelId ?? '').trim();
+  if (!id) return undefined;
+  return pricingForModelId(cwd, id);
+}
+
+/**
  * Строки секции «Токены» для карточки задачи (общий билдер для бота и CLI,
  * lesson-37: дублирующийся рендер бота и веба выносим в общий модуль).
  *

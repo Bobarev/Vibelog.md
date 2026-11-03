@@ -19,6 +19,7 @@
  * - dataset view <name> [--exp <exp-id>] [--dataset-path <p>]
  * - dataset <exp-id> [--dataset-path <p>]   (резолв для эксперимента)
  * - run <exp-id> [--dry-run] [--recover] [--variant A,B]
+ *                  [--timeout <сек>] [--max-tool-calls <N>]
  *                  [--variant-a-prompt-path <p>] [--variant-b-prompt-path <p>]
  * - record <exp-id> --variant A --task <id> [--score n] [--output t] [--error t]
  *                  [--error-kind k] [--tool-calls N] [--duration ms] [--cost n]
@@ -116,6 +117,7 @@ export async function runExperiment(
     case 'dataset':
       return experimentDataset(positional, flags, backlogDir);
     case 'run':
+      // VL-299: ai-phase runner асинхронен (спавн ранов) — возвращаем промис
       return experimentRun(positional, flags, backlogDir);
     case 'record':
       return experimentRecord(positional, flags, backlogDir);

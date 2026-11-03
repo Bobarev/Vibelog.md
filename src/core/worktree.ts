@@ -153,7 +153,6 @@ function linkWorktreeDeps(dir: string, cwd: string): void {
 
 /**
  * Собирает worktree задачи главным tsc (без сети, без pnpm install).
- *
  * Сборка идёт из ГЛАВНОГО node_modules (`node <cwd>/node_modules/typescript/
  * lib/tsc.js -p <worktree>`): worktree внутри проекта резолвит типы/импорты
  * walk-up в главный node_modules. Перед сборкой dist worktree удаляется —
@@ -190,6 +189,125 @@ export function buildTaskWorktree(cwd: string, taskId: string): void {
 /** Путь к CLI внутри worktree: <worktree>/bin/vibelog.mjs (исполняет dist ветки). */
 export function worktreeCliPath(cwd: string, taskId: string): string {
   return join(taskWorktreeDir(cwd, taskId), 'bin', 'vibelog.mjs');
+}
+
+// ── Worktree эксперимента (VL-299, doc-21 §13) ──
+
+/**
+ * Имя ветки прогона эксперимента: exp-<id>-run-<N> → `exp/<id>-run-<N>`.
+ *
+ * Ветка НЕ переиспользует ветку задачи (`vb/vl-N`): прогон варианта пишет
+ * файлы и коммитит, и его история не должна попадать в ветку задачи.
+ */
+export function experimentBranchName(expId: string, runN: number): string {
+  return `exp/${expId}-run-${runN}`;
+}
+
+/**
+ * Путь worktree прогона: `<cwd>/.vibelog/worktrees/exp-<id>-run-<N>`.
+ *
+ * Внутри `.vibelog/` (gitignored) — как и worktree задач: git status главного
+ * репозитория остаётся чистым, а node_modules резолвится walk-up в главный.
+ */
+export function experimentWorktreeDir(cwd: string, expId: string, runN: number): string {
+  return join(cwd, '.vibelog', 'worktrees', `exp-${expId.replace(/^exp-/i, '')}-run-${runN}`);
+}
+
+/**
+ * Гарантирует наличие worktree прогона эксперимента (VL-299, doc-21 §13).
+ *
+ * Изоляция — главный риск ai-phase runner: без неё вариант A оставляет в
+ * репозитории пользователя коммиты/файлы, и вариант B стартует не с чистого
+ * состояния (сравнение недействительно). Поэтому каждый прогон получает
+ * СВОЙ worktree и СВОЮ ветку.
+ *
+ * Идемпотентность: существующий worktree на нужной ветке возвращается как
+ * есть (повторный запуск после падения не ломается). Существующий worktree
+ * на чужой ветке — ошибка с подсказкой удалить вручную (молчаливое
+ * пересоздание уничтожило бы незавершённый прогон).
+ *
+ * @param cwd — корень главного git-репозитория проекта
+ * @param expId — id эксперимента (`exp-N`)
+ * @param runN — номер прогона
+ * @returns абсолютный путь к worktree
+ * @throws Error на русском — git недоступен, не git-репо, конфликт веток/директорий
+ */
+export function ensureExperimentWorktree(cwd: string, expId: string, runN: number): string {
+  const dir = experimentWorktreeDir(cwd, expId, runN);
+  const branch = experimentBranchName(expId, runN);
+
+  if (existsSync(join(dir, '.git'))) {
+    const b = currentBranch(dir);
+    if (b === branch) return dir;
+    throw new Error(
+      `Директория ${dir} — worktree на ветке ${b ?? '(неизвестно)'}, ожидается ${branch}. ` +
+        `Удалите её вручную: git worktree remove ${dir}`
+    );
+  }
+
+  const branchExists =
+    spawnSync('git', ['-C', cwd, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], {
+      encoding: 'utf-8',
+    }).status === 0;
+  mkdirSync(dirname(dir), { recursive: true });
+  const args = branchExists
+    ? ['worktree', 'add', dir, branch]
+    : ['worktree', 'add', '-b', branch, dir, 'HEAD'];
+  const res = spawnSync('git', args, { cwd, encoding: 'utf-8' });
+  if (res.error || res.status !== 0) {
+    const detail = (res.stderr ?? res.error?.message ?? '').trim();
+    throw new Error(`Не удалось создать worktree прогона ${expId}/run-${runN}: ${detail}`);
+  }
+  // node_modules/references — не в git: без симлинков сборка и тесты в worktree
+  // не работают (тот же хелпер, что у worktree задач)
+  linkWorktreeDeps(dir, cwd);
+  return dir;
+}
+
+/**
+ * Откатывает worktree прогона к чистому состоянию (`reset --hard` + `clean -fd`).
+ *
+ * Вызывается ПОСЛЕ КАЖДОЙ задачи (в `try/finally`): вариант B обязан получить
+ * то же начальное состояние, что и A. `clean -fd` без `-x` — игнорируемые
+ * файлы (node_modules-симлинк, dist) не удаляются, иначе следующий ран
+ * остался бы без зависимостей.
+ *
+ * Ошибка git не бросает: откат — гигиена, а не результат эксперимента;
+ * вызывающий получает текст ошибки и решает (обычно — предупреждение).
+ *
+ * @param dir — путь worktree прогона
+ * @returns null при успехе, текст ошибки при сбое
+ */
+export function resetExperimentWorktree(dir: string): string | null {
+  const reset = spawnSync('git', ['-C', dir, 'reset', '--hard'], { encoding: 'utf-8' });
+  if (reset.error || reset.status !== 0) {
+    return (reset.stderr ?? reset.error?.message ?? 'git reset --hard не выполнен').trim();
+  }
+  const clean = spawnSync('git', ['-C', dir, 'clean', '-fd'], { encoding: 'utf-8' });
+  if (clean.error || clean.status !== 0) {
+    return (clean.stderr ?? clean.error?.message ?? 'git clean -fd не выполнен').trim();
+  }
+  return null;
+}
+
+/**
+ * Удаляет worktree прогона (в конце прогона, doc-21 §13).
+ *
+ * `git worktree remove --force` + `prune`: прогон мог оставить изменённые
+ * файлы, и без `--force` git откажется. Ошибка не бросает — уборка не должна
+ * заслонять результат эксперимента.
+ *
+ * @returns null при успехе, текст ошибки при сбое
+ */
+export function removeExperimentWorktree(cwd: string, expId: string, runN: number): string | null {
+  const dir = experimentWorktreeDir(cwd, expId, runN);
+  if (!existsSync(dir)) return null;
+  const res = spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd, encoding: 'utf-8' });
+  spawnSync('git', ['worktree', 'prune'], { cwd, encoding: 'utf-8' });
+  if (res.error || res.status !== 0) {
+    return (res.stderr ?? res.error?.message ?? 'git worktree remove не выполнен').trim();
+  }
+  return null;
 }
 
 /**

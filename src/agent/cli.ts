@@ -49,7 +49,7 @@ import { addComment, addTaskTokenUsage, getTask } from '../core/store.js';
 import { getWorkflowForTask, getStatusAfterPhase } from '../core/workflow.js';
 import { hasUsageDelta, usageDelta } from '../core/analytics.js';
 import type { TokenUsage } from '../core/analytics.js';
-import { appendBilling } from '../core/billing.js';
+import { appendBilling, appendExperimentUsage, parseExperimentMarker, EXPERIMENT_ENV } from '../core/billing.js';
 import type { TuiHandle } from './tui.js';
 
 /** Результат агента: QwenResult + type=result (контракт parseQwenResult). */
@@ -956,6 +956,9 @@ export async function main(argv: string[]): Promise<void> {
     // env-taskId фильтруем по префиксу конфига (VL-118, как при создании меты):
     // чужой id не должен получить ни frontmatter, ни меты пост-фактум
     const envTaskId = process.env.VIBELOG_PHASE_TASK_ID;
+    // VL-299: маркер эксперимента (exp-<id>/run-<N>) — при нём billing задачи
+    // не пишется, usage уходит в <run-dir>/usage.json (doc-21 §13)
+    const experimentMarker = parseExperimentMarker(process.env[EXPERIMENT_ENV]);
     const taskId = existing?.taskId
       ?? (isPhaseMode
         ? positionals[1]
@@ -964,14 +967,65 @@ export async function main(argv: string[]): Promise<void> {
       // VL-243: ран задачи (env/позиционные дали задачу, а меты нет) не должен
       // молча теряться — явный след в stderr → logTail оркестратора.
       const hintedTask = isPhaseMode ? positionals[1] : envTaskId;
-      if (hintedTask || process.env.VIBELOG_PHASE_NAME) {
+      // VL-299: ран эксперимента идёт БЕЗ backlog-задачи (task_id датасета —
+      // не задача), поэтому предупреждение о billing для него бессмысленно
+      if ((hintedTask || process.env.VIBELOG_PHASE_NAME) && !experimentMarker) {
         console.error(
           `Предупреждение: billing не записан — taskId не определён (фаза=${runPhase ?? '?'}, ` +
             `флаг/позиционный=${hintedTask ?? '-'}, env=${envTaskId ?? '-'})`
         );
       }
     }
-    if (taskId) {
+    // VL-299 (doc-21 §13): ран эксперимента НЕ пишет billing задачи —
+    // dataset-задачи (t1, t2, …) не являются backlog-задачами, и файлы
+    // T1.json засоряли бы учёт (а реальные задачи получали бы чужие цифры
+    // при совпадении id). usage уходит в <run-dir>/usage.json рана.
+    // Блок стоит ДО `if (taskId)`: у эксперимента taskId нет вовсе.
+    if (experimentMarker) {
+      try {
+        const runUsage: TokenUsage = {
+          input: loopResult.usage.input_tokens,
+          output: loopResult.usage.output_tokens,
+          cache: loopResult.usage.cache_read_input_tokens,
+          total: loopResult.usage.total_tokens,
+          requests: loopResult.num_turns,
+          ...(loopResult.usage.reasoning_tokens
+            ? { reasoning: loopResult.usage.reasoning_tokens }
+            : {}),
+        };
+        const usagePath = appendExperimentUsage(taskCwd, experimentMarker.expId, experimentMarker.run, {
+          ...(process.env.VIBELOG_EXPERIMENT_TASK_ID
+            ? { task_id: process.env.VIBELOG_EXPERIMENT_TASK_ID }
+            : {}),
+          ...(process.env.VIBELOG_EXPERIMENT_VARIANT
+            ? { variant: process.env.VIBELOG_EXPERIMENT_VARIANT }
+            : {}),
+          sessionId,
+          ...(runPhase ? { phase: runPhase } : {}),
+          startedAt: runStartedAt,
+          finishedAt: new Date().toISOString(),
+          durationMs: loopResult.duration_ms,
+          usage: runUsage,
+          model: llm.model || undefined,
+          agent: 'vb',
+        });
+        if (usagePath) {
+          console.error(`Эксперимент ${process.env[EXPERIMENT_ENV]}: usage записан в ${usagePath} (billing не пишется)`);
+        } else {
+          console.error(
+            `Предупреждение: эксперимент ${process.env[EXPERIMENT_ENV]}: backlog не найден — usage рана не сохранён`
+          );
+        }
+        // Маркер «учёт сделан»: fallback оркестратора не должен дописать billing
+        updateSessionMeta(sessionsDir, sessionId, {
+          cwd,
+          billing_recorded: { sessionId, finishedAt: new Date().toISOString() },
+        });
+      } catch (err) {
+        console.error(`Предупреждение: usage эксперимента не записан — ${(err as Error).message}`);
+      }
+    }
+    if (taskId && !experimentMarker) {
       // 1) Дельта в frontmatter (идемпотентно через usage_recorded: в ране
       // finish_phase уже мог дописать часть токенов)
       try {

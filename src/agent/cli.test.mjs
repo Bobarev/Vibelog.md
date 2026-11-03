@@ -1212,6 +1212,42 @@ describe('vibelog-agent CLI (VL-85)', () => {
     }
   });
 
+  // ── VL-299: VIBELOG_EXPERIMENT — usage в run-каталог, billing не пишется ──
+
+  it('VIBELOG_EXPERIMENT: usage.json рана, .vibelog/billing не создаётся (VL-299)', async () => {
+    const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-exp-'));
+    try {
+      mkdirSync(join(projDir, 'backlog', 'tasks'), { recursive: true });
+      writeFileSync(join(projDir, 'backlog', 'config.yml'), 'project_name: Exp Usage\n', 'utf-8');
+      // каталог рана эксперимента (usage.json пишется в него)
+      mkdirSync(join(projDir, 'backlog', 'experiments', 'exp-1', 'run-1'), { recursive: true });
+      const env = testSpawnEnv({
+        VIBELOG_LLM_BASE_URL: `http://127.0.0.1:${mock.port}/v1`,
+        VIBELOG_LLM_API_KEY: 'test-key',
+        VIBELOG_LLM_MODEL: 'test-model',
+        VIBELOG_SKIP_UPDATE_CHECK: 'true',
+        VIBELOG_EXPERIMENT: 'exp-1/run-1',
+        VIBELOG_EXPERIMENT_TASK_ID: 't1',
+        VIBELOG_EXPERIMENT_VARIANT: 'A',
+      });
+      const { code, stdout } = await runCli(['Просто запрос', '--no-mcp'], env, projDir);
+      assert.equal(code, 0, stdout);
+      // usage рана записан в каталог прогона
+      const usagePath = join(projDir, 'backlog', 'experiments', 'exp-1', 'run-1', 'usage.json');
+      assert.equal(existsSync(usagePath), true, 'usage.json рана создан');
+      const usage = JSON.parse(readFileSync(usagePath, 'utf-8'));
+      assert.equal(Array.isArray(usage), true);
+      assert.equal(usage.length, 1);
+      assert.equal(usage[0].task_id, 't1');
+      assert.equal(usage[0].variant, 'A');
+      assert.ok(usage[0].usage.total > 0, 'usage рана непустой');
+      // billing задачи НЕ пишется (dataset-задачи — не backlog-задачи)
+      assert.equal(existsSync(join(projDir, '.vibelog', 'billing')), false, 'billing не создан');
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
+
   // ── VL-277: файл задачи коммитится после записи token_usage (только close) ──
 
   /** git-проект с backlog и закоммиченным файлом задачи; отдаёт путь и relPath. */

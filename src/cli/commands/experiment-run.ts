@@ -26,6 +26,7 @@ import {
   normalizeResultRow, RESULT_ERROR_KINDS, resultKey,
 } from '../../core/results.js';
 import type { ResultRow } from '../../core/results.js';
+import { runAiPhaseExperiment } from '../../core/experiment-runner.js';
 
 /** Путь относительно корня проекта для печати в CLI. */
 function displayPath(backlogDir: string, path: string): string {
@@ -104,7 +105,7 @@ function parseCustomFlag(raw: string): Record<string, unknown> | undefined {
  * Manual-прогон **не завершается сам**: статус закрывает `report` (VL-297) —
  * `completed` на половине данных опаснее, чем явный `running`.
  */
-export function experimentRun(positional: string[], flags: FlagValues, backlogDir: string): void {
+export function experimentRun(positional: string[], flags: FlagValues, backlogDir: string): void | Promise<void> {
   const expId = (positional[0] || '').trim();
   if (!expId) {
     printError('Укажите id эксперимента: vibelog experiment run <exp-id> [--dry-run] [--recover]');
@@ -139,8 +140,14 @@ export function experimentRun(positional: string[], flags: FlagValues, backlogDi
       return;
     }
 
+    if (exp.runner === 'ai-phase') {
+      // VL-299: ai-phase runner — асинхронный (спавн ранов), поэтому
+      // возвращаем промис: runExperiment объявлен async и дождётся его
+      return runAiPhase(exp.id, flags, backlogDir, join(backlogDir, '..'));
+    }
+
     if (exp.runner !== 'manual') {
-      printError(`Раннер "${exp.runner}" не поддерживается в этой версии: доступен только runner: manual`);
+      printError(`Раннер "${exp.runner}" не поддерживается в этой версии: доступны runner: manual и ai-phase`);
       process.exitCode = 1;
       return;
     }
@@ -250,6 +257,78 @@ export function experimentRun(positional: string[], flags: FlagValues, backlogDi
       console.log(`  ${row.task_id}${expected}`);
     }
     printInfo('Прогон НЕ завершается сам: статус закрывает `experiment report`, когда все пары task_id × variant записаны');
+  } catch (err) {
+    printError((err as Error).message);
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * `experiment run <exp-id>` для runner: ai-phase (VL-299, doc-21 §13–§14).
+ *
+ * Тонкая CLI-обёртка над `runAiPhaseExperiment`: разбор флагов (`--timeout`,
+ * `--max-tool-calls`, `--variant`, `--dry-run`), печать прогресса и итога.
+ * Вся логика изоляции/таймаутов/стоимости живёт в core-модуле — CLI не
+ * должен содержать правил эксперимента (иначе MCP-поверхность их не получит).
+ */
+async function runAiPhase(
+  expId: string,
+  flags: FlagValues,
+  backlogDir: string,
+  cwd: string
+): Promise<void> {
+  const timeoutRaw = getFlag(flags, 'timeout', '');
+  let timeoutSec: number | undefined;
+  if (timeoutRaw !== '') {
+    const n = Number(timeoutRaw);
+    if (!Number.isFinite(n) || n <= 0) {
+      printError(`--timeout: ожидается положительное число секунд, получено: "${timeoutRaw}"`);
+      process.exitCode = 1;
+      return;
+    }
+    timeoutSec = n;
+  }
+  const maxToolCallsRaw = getFlag(flags, 'max-tool-calls', '');
+  let maxToolCalls: number | undefined;
+  if (maxToolCallsRaw !== '') {
+    const n = Number.parseInt(maxToolCallsRaw, 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      printError(`--max-tool-calls: ожидается положительное целое, получено: "${maxToolCallsRaw}"`);
+      process.exitCode = 1;
+      return;
+    }
+    maxToolCalls = n;
+  }
+  const variantFlag = getFlag(flags, 'variant', '');
+  const variants = variantFlag
+    ? variantFlag.split(',').map(v => v.trim().toUpperCase()).filter(v => v !== '')
+    : undefined;
+
+  try {
+    const result = await runAiPhaseExperiment({
+      cwd,
+      backlogDir,
+      expId,
+      variants,
+      timeoutSec,
+      maxToolCalls,
+      dryRun: hasFlag(flags, 'dry-run'),
+      onProgress: (line) => console.log(line),
+    });
+    if (result.status === 'dry-run') return;
+    const where = result.runDir ? displayPath(backlogDir, result.runDir) : '';
+    if (result.status === 'failed') {
+      printError(`Прогон run-${result.run} завершён со статусом failed: ${result.reason ?? 'причина неизвестна'}`);
+      printInfo(`Частичные результаты сохранены: ${where}/results.jsonl (строк: ${result.rows.length})`);
+      process.exitCode = 1;
+      return;
+    }
+    printSuccess(`Прогон run-${result.run} завершён: строк ${result.rows.length} (${where})`);
+    if (result.pricingMissing) {
+      printInfo('У части вариантов нет pricing в models.available — cost: null (не 0)');
+    }
+    if (result.costTotal !== null) printInfo(`Стоимость прогона: ${result.costTotal}`);
+    printInfo('Оценки ставит `experiment judge` (или человек через record); отчёт — `experiment report`');
   } catch (err) {
     printError((err as Error).message);
     process.exitCode = 1;
