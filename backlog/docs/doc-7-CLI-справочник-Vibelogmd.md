@@ -246,7 +246,7 @@ vibelog doc <subcommand> [опции]
 ```
 vibelog reference <subcommand> [опции]
 
-  list [--type repo|url|file|doc|spec] [--tags a,b] [--json]
+  list [--type repo|url|file|doc|spec|experiment] [--tags a,b] [--json]
   add <title> [--type T] [--url ...] [--url ...] [--path ...] [--tags ...] [-d desc] [--no-clone] [--cache]
 
   --url повторяется: первая ссылка → url, остальные → urls (VL-291). С --cache все ссылки
@@ -270,6 +270,8 @@ vibelog reference <subcommand> [опции]
 | `link` | Двусторонняя связь референс ↔ задача (`linked_tasks` ↔ `task.references`); `--remove` — разорвать |
 | `remove` | Удалить метаданные (клон в `data/` сохраняется) |
 | `sync` | Доклонировать отсутствующие репозитории для всех `type=repo` (для разработчиков, склонировавших проект без `data/`); с ID — перекачать кэш ссылок (мульти-url сравниваются общим `source_hash`) |
+
+**Тип `experiment`** (VL-294/VL-301) — референс на карточку эксперимента (`--path backlog/experiments/exp-<id>.md`). Связь «урок ↔ эксперимент» делается **через референс**, а не полем в схеме lesson: `reference add "…" --type experiment --path backlog/experiments/exp-1.md` + `reference link <refId> <taskId>` даёт двустороннюю связь (`linked_tasks` ↔ `task.references`). Схема lesson (`lesson.references`) намеренно не расширяется (doc-21 §16).
 
 ---
 
@@ -389,6 +391,7 @@ vibelog experiment <subcommand> [опции]
   run <exp-id> [--dry-run] [--variant A,B] [--recover [--reason <text>]]
   record <exp-id> --variant A --task <id> [--score n] [--run N] [--from-json <f>]
   report <exp-id> [--run N] [--compare run-M] [--json]
+  gc <exp-id> [--apply]
 ```
 
 A/B-эксперименты (спецификация — doc-21). Карточка эксперимента — `backlog/experiments/exp-<id>.md`; общие датасеты — `backlog/experiments/datasets/<name>.jsonl`, частные — `backlog/experiments/<exp-id>/datasets/<name>.jsonl`.
@@ -527,6 +530,26 @@ vibelog experiment report <exp-id> [--run N] [--compare run-M] [--json]
 **Завершение прогона.** Если для всех строк датасета × всех вариантов есть строка с `score` или `error`, прогон переводится в `completed` (заполняются `finished_at`, `n`, `dropped`, `cost_total` и `meta.summary = {n, dropped, cost_total}`), статус эксперимента пересчитывается (`draft` без прогонов | `running` | `completed` | `failed`). Если данных не хватает — печатается список недостающих пар `(task_id, variant)`, статус **не меняется**. `report.md` — производный файл: перегенерируется при каждом запуске (единственное исключение из «прогон неизменяем»), `results.jsonl` не трогается.
 
 **Правило `results.jsonl > 10 MB`** (doc-21 §15): файл всё равно парсится локально для отчёта, но в `meta.json` ставится `results_ignored: true` и в stderr печатается warning.
+
+### gc
+
+```
+vibelog experiment gc <exp-id> [--apply]
+```
+
+Показывает раны эксперимента, чей `results.jsonl` превысил **10 MB** (`RESULTS_SIZE_LIMIT_BYTES` — та же константа, что у правила `results_ignored`), и по явному `--apply` дописывает их в `.gitignore` (doc-21 §15).
+
+| Флаг | Описание |
+|---|---|
+| `--apply` | Дописать секцию в `.gitignore`. Без флага команда **ничего не меняет** — только печатает кандидатов и подсказку |
+
+Вывод — по строке на кандидата: `run-<N>  <MB> MB  <путь от корня проекта>`, в конце `кандидатов: N (порог 10 MB)`. Порог строгий (`>`): файл ровно 10 MB кандидатом не считается. Ран без `results.jsonl` пропускается молча — это не ошибка.
+
+**`.gitignore` правится только по `--apply` и только этой командой.** Автоматически при ране файл не меняется никогда: правка `.gitignore` — решение человека, а не побочный эффект прогона (doc-21 §15). Файл берётся рядом с `backlog/` (каталог-родитель `backlog/`), без подъёма к git-toplevel — путь правящегося файла печатается, чтобы не было сюрпризов в worktree.
+
+**Идемпотентность.** Секция обрамлена маркерами с `exp-id` (`# vibelog experiment exp-<id>: …` / `# /vibelog experiment exp-<id>`), поэтому повторный `--apply` не дублирует строки, а блок заменяется **на месте** — посторонние правила `.gitignore` сохраняются, блоки разных экспериментов не затирают друг друга. Если кандидатов больше нет, прежний блок удаляется (устаревшие строки не остаются навсегда). Запись атомарна (temp-файл + `rename`), обрыв не оставляет обрезанный `.gitignore`.
+
+В `.gitignore` попадает **каталог рана** (`backlog/experiments/exp-<id>/run-<N>/`), а не сам `results.jsonl` — чтобы будущие файлы рана тоже не попали в git.
 
 ---
 
