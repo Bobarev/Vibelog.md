@@ -630,7 +630,11 @@ function closePendingToolCalls(history: ChatMessage[]): number {
       tool_call_id: tc.id,
       // VL-262: машиночитаемая причина отказа (denied) + перечень неприменённых полей.
       // Прежняя подстрока «Отменено пользователем» живёт в message (тесты/промпты).
-      content: ackDenied('denied', { tool: tc.name, fields: Object.keys(tc.arguments ?? {}) }),
+      // VL-330: неотвеченный вопрос — не «отказ в записи», а отсутствие ответа:
+      // модель должна задать вопрос заново, а не решить, что получила решение.
+      content: isInteractiveTool(tc.name)
+        ? cancelledQuestionResult('cancelled')
+        : ackDenied('denied', { tool: tc.name, fields: Object.keys(tc.arguments ?? {}) }),
     });
     inserted++;
   }
