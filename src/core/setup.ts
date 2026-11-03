@@ -268,6 +268,28 @@ export function validatePrefix(value: string): string | null {
   return null;
 }
 
+/**
+ * Выводит prefix задач из имени проекта (VL-320): инициалы слов.
+ *
+ * «Vibelog Templates» → VT, «My Cool App» → MCA, одно слово — первые две
+ * буквы («api» → AP). Возвращает null, если вывести нечего или результат не
+ * проходит validatePrefix — вызывающий код берёт fallback (текущий/`VL`).
+ */
+export function derivePrefix(projectName: string): string | null {
+  const words = projectName
+    .split(/[^\p{L}\p{N}]+/u)
+    .map((w) => w.trim())
+    .filter((w) => w !== '');
+  if (words.length === 0) return null;
+  const raw =
+    words.length === 1
+      ? words[0].slice(0, 2)
+      : words.map((w) => Array.from(w)[0]).join('');
+  const candidate = raw.toUpperCase();
+  if (candidate === '' || validatePrefix(candidate) !== null) return null;
+  return candidate;
+}
+
 /** Валидация имени проекта: непустое, без переводов строк. */
 export function validateProjectName(value: string): string | null {
   if (!value || value.trim() === '') return 'Имя проекта не может быть пустым';

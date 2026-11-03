@@ -20,12 +20,14 @@ import { loadProjectEnv } from '../../bot/env.js';
 import { resolveActiveModel } from '../../core/models.js';
 import {
   applySetup,
+  derivePrefix,
   formatSetupLog,
   readSetupState,
   SetupError,
 } from '../../core/setup.js';
 import type { SetupAnswers, SetupMode } from '../../core/setup.js';
 import { answersFromFlags, runWizard } from './init-wizard.js';
+import { PromptCancelledError } from '../prompt.js';
 import { checkAgentBinary, checkTelegramToken, pingLlm } from '../../core/setup-check.js';
 
 /**
@@ -52,6 +54,14 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
   const existing = findBacklogDir(cwd);
   const force = flags.force === true;
 
+  // VL-320: --web полностью выключает консольный wizard — сразу web-мастер
+  // #/setup (как флаги в ref-25 выключают соответствующий промпт). Проверка
+  // стоит до «уже инициализирован»: web-мастер сам разберётся с режимом.
+  if (flags.web === true) {
+    await runWebWizard(cwd, flags);
+    return;
+  }
+
   // Прежняя защита «уже инициализирован» остаётся для неинтерактивного
   // запуска без --force: без TTY wizard не может спросить, а молча
   // перезаписывать чужой проект нельзя. С TTY это штатный upgrade-режим.
@@ -59,7 +69,8 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
     process.stdin.isTTY === true &&
     process.stdout.isTTY === true &&
     flags.yes !== true &&
-    flags['no-wizard'] !== true;
+    flags['no-wizard'] !== true &&
+    flags.web !== true;
 
   if (existing && !force && !interactive && modeOverride !== 'upgrade') {
     console.log(`✗ Проект уже инициализирован: ${existing}`);
@@ -98,8 +109,20 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
     if (positionalName && !getFlag(flags, 'project-name', '')) {
       answers.projectName = positionalName;
     }
-    if (getFlag(flags, 'prefix', '')) answers.prefix = getFlag(flags, 'prefix', '');
+    if (getFlag(flags, 'prefix', '')) {
+      answers.prefix = getFlag(flags, 'prefix', '');
+    } else if (!interactive && answers.mode === 'fresh') {
+      // VL-320: в non-interactive prefix выводим из имени проекта
+      // (Vibelog Templates → VT); не выводится — остаётся текущий/`VL`.
+      answers.prefix = derivePrefix(answers.projectName) ?? answers.prefix;
+    }
   } catch (err) {
+    // VL-320: отмена (Ctrl+C) — штатный выход, не ошибка и не стек-трейс
+    if (err instanceof PromptCancelledError) {
+      printInfo('Отменено. Настройки не изменены.');
+      process.exitCode = 0;
+      return;
+    }
     printError((err as Error)?.message ?? String(err));
     process.exitCode = 1;
     return;
@@ -145,31 +168,44 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
   // --- Проверки (шаг 7) ---
   await runChecks(cwd, answers, flags);
 
-  // --- Web wizard (VL-210): --web открывает браузер на #/setup ---
-  if (flags.web === true) {
-    try {
-      const { startWebServer } = await import('../../web/server.js');
-      const { resolveWebHost } = await import('../../web/host-binding.js');
-      const { loadSettings } = await import('../../core/settings.js');
-      let port = 3030;
-      try {
-        const { loadConfig } = await import('../../core/config.js');
-        port = (loadConfig(cwd).default_port as number) || 3030;
-      } catch { /* дефолтный порт */ }
-      let settings: Record<string, unknown> = {};
-      try {
-        settings = loadSettings(cwd);
-      } catch { /* дефолтный хост */ }
-      const host = resolveWebHost(flags, settings);
-      startWebServer(cwd, port, true, undefined, host, '#/setup');
-      printInfo(`Веб-мастер настройки: http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}/#/setup`);
-      return;
-    } catch (err) {
-      printError(`Не удалось запустить веб-мастер: ${(err as Error)?.message ?? String(err)}`);
-    }
-  }
-
   printInfo('Дальше: vibelog task create "Название" — или vibelog browser для веб-интерфейса');
+}
+
+/**
+ * Запускает web-мастер настройки (`vibelog init --web`, VL-210/VL-320).
+ *
+ * Порт берётся из config.yml (default_port), хост — из --host/settings
+ * (resolveWebHost). Сервер открывает браузер сразу на #/setup.
+ */
+async function runWebWizard(cwd: string, flags: FlagValues): Promise<void> {
+  try {
+    const { startWebServer } = await import('../../web/server.js');
+    const { resolveWebHost } = await import('../../web/host-binding.js');
+    const { loadSettings } = await import('../../core/settings.js');
+    let port = 3030;
+    try {
+      const { loadConfig } = await import('../../core/config.js');
+      port = (loadConfig(cwd).default_port as number) || 3030;
+    } catch { /* дефолтный порт */ }
+    // --port/--no-open — как у `vibelog browser`: нужны для тестов (port 0 —
+    // эфемерный порт, без конфликта параллельных прогонов) и для CI
+    const portFlag = getFlag(flags, 'port', '');
+    if (portFlag !== '') {
+      const parsed = Number(portFlag);
+      if (Number.isFinite(parsed) && parsed >= 0) port = parsed;
+    }
+    let settings: Record<string, unknown> = {};
+    try {
+      settings = loadSettings(cwd);
+    } catch { /* дефолтный хост */ }
+    const host = resolveWebHost(flags, settings);
+    const openBrowser = flags['no-open'] !== true;
+    startWebServer(cwd, port, openBrowser, undefined, host, '#/setup');
+    printInfo(`Веб-мастер настройки: http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}/#/setup`);
+  } catch (err) {
+    printError(`Не удалось запустить веб-мастер: ${(err as Error)?.message ?? String(err)}`);
+    process.exitCode = 1;
+  }
 }
 
 /**
