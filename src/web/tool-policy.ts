@@ -31,6 +31,7 @@ import type { ToolDef } from '../agent/llm.js';
 import { resolveInProject, truncateToolOutput, formatDirListing, formatFileSlice, parseReadPath, formatMissingPathHint } from '../agent/tools.js';
 import { searchProjectFiles } from '../agent/search-files.js';
 import { listTools } from '../mcp/tools.js';
+import { ASK_USER_TOOL, MAX_OPTIONS, MIN_OPTIONS } from './chat-question.js';
 
 /** Локальный инструмент чата: ToolDef + handler (ToolDef из llm.ts без handler — wire-описание). */
 export interface ChatLocalTool extends ToolDef {
@@ -57,7 +58,7 @@ export const CHAT_DISALLOWED_TOOLS: readonly string[] = [
 // VL-306: классификатор вынесен в core (`src/core/tool-classify.ts`) — он нужен
 // и веб-чату (approval-gate), и агентскому циклу (страховка appliedSignatures).
 // Реэкспорт сохраняет публичный API этого модуля: импортёры и тесты не меняются.
-export { isWriteOperation } from '../core/tool-classify.js';
+export { isWriteOperation, isInteractiveTool } from '../core/tool-classify.js';
 
 /**
  * Инструмент read_file чата: чтение файла проекта БЕЗ подтверждения
@@ -212,15 +213,71 @@ export function makeSearchFilesTool(cwd: string): ChatLocalTool {
 }
 
 /**
+ * Инструмент `ask_user` (VL-330): блокирующий вопрос с готовыми вариантами.
+ *
+ * Сервер его НЕ исполняет: вызов = пауза хода (как approval-gate), ответ
+ * приходит из UI и подставляется синтетическим tool-результатом. Поэтому у
+ * ToolDef нет handler'а — если вызов всё же дойдёт до `executeTool` (ошибка
+ * маршрутизации), MCP-реестр ответит «неизвестный инструмент», а не соврёт
+ * модели выдуманным ответом.
+ *
+ * В список инструментов попадает ТОЛЬКО через `chatToolDefs()` (интерактивный
+ * веб-чат). Агентская петля (`src/agent/loop.ts`) берёт `listTools()` из
+ * MCP-реестра, где этого имени нет, — в headless-фазах и TUI вопрос
+ * недоступен по построению (AC10).
+ */
+export function makeAskUserTool(): ToolDef {
+  return {
+    name: ASK_USER_TOOL,
+    description:
+      'Задаёт пользователю блокирующий вопрос с готовыми вариантами ответа. ' +
+      'Используй вместо вопроса текстом, когда ответ — выбор из известного набора ' +
+      '(да/нет, один из подходов, какой файл/задача). Вызов приостанавливает ход: ' +
+      'пользователь выбирает вариант или вводит свой текст, ответ приходит ' +
+      'результатом инструмента. Не спрашивай о том, что можно прочитать в проекте, ' +
+      'и не задавай больше 1–2 вопросов подряд без промежуточного прогресса. ' +
+      'Вариант «другое» добавлять не нужно — свободный ввод даёт сам интерфейс ' +
+      '(если allow_custom не false).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'Текст вопроса пользователю' },
+        options: {
+          type: 'array',
+          description: `Варианты ответа, от ${MIN_OPTIONS} до ${MAX_OPTIONS}`,
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Идентификатор варианта (уникальный в вопросе)' },
+              label: { type: 'string', description: 'Короткая подпись кнопки' },
+              description: { type: 'string', description: 'Пояснение под подписью (необязательно)' },
+            },
+            required: ['id', 'label'],
+          },
+        },
+        allow_custom: {
+          type: 'boolean',
+          description: 'Разрешить свободный ответ текстом (по умолчанию true)',
+        },
+      },
+      required: ['question', 'options'],
+    },
+  };
+}
+
+/**
  * Инструменты модели чата: все MCP-инструменты (кроме
- * CHAT_DISALLOWED_TOOLS) + локальные read_file/write_file/search_files. Схемы
- * совпадают с реестром listTools() — дублирования нет (Р2 плана VL-219).
+ * CHAT_DISALLOWED_TOOLS) + локальные read_file/write_file/search_files +
+ * интерактивный ask_user (VL-330). Схемы совпадают с реестром listTools() —
+ * дублирования нет (Р2 плана VL-219).
  */
 export function chatToolDefs(cwd: string): (ToolDef | ChatLocalTool)[] {
   const defs: (ToolDef | ChatLocalTool)[] = listTools()
     .filter(t => !CHAT_DISALLOWED_TOOLS.includes(t.name))
     .map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
   defs.push(makeReadFileTool(cwd), makeWriteFileTool(cwd), makeSearchFilesTool(cwd));
+  // VL-330: интерактивный вопрос — только в веб-чате (в headless его нет)
+  defs.push(makeAskUserTool());
   return defs;
 }
 

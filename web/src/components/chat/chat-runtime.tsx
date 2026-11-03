@@ -58,6 +58,14 @@ type ChatEvent =
       /** VL-268: данные карточки grant (состав прогона, инструменты, срок). */
       grant?: unknown
     }
+  /** VL-330: интерактивный вопрос — ход на паузе до ответа пользователя. */
+  | {
+      type: "question"
+      toolCallId: string
+      question: string
+      options: { id: string; label: string; description?: string }[]
+      allowCustom: boolean
+    }
   | { type: "done" }
   | { type: "error"; message: string }
   /** VL-313: расход токенов треда после очередного вызова модели. */
@@ -184,6 +192,37 @@ export function removeAlwaysAllowed(tool: string): void {
 export function setAlwaysAllowed(tools: readonly string[] | undefined): void {
   alwaysAllowed.clear()
   for (const tool of tools ?? []) alwaysAllowed.add(tool)
+}
+
+/**
+ * VL-330: ответ на интерактивный вопрос, ещё не отправленный на сервер.
+ *
+ * Хранение — module-state по образцу approval/allow-list: карточка вопроса
+ * (QuestionCard) кладёт ответ и перезапускает run (ActionBarPrimitive.Reload),
+ * а адаптер при сборке тела POST забирает его и уходит с полем `answer`.
+ * Прямой POST из карточки не годится: продолжение хода должно дописаться в ту
+ * же нить ассистента (updateMessage делает рантайм).
+ */
+let pendingAnswer:
+  | { toolCallId: string; optionId?: string; custom?: string }
+  | undefined
+
+/** Запомнить ответ пользователя (вызывает QuestionCard перед Reload). */
+export function setPendingAnswer(answer: {
+  toolCallId: string
+  optionId?: string
+  custom?: string
+}): void {
+  pendingAnswer = answer
+}
+
+/** Забрать ответ и очистить состояние (один POST = один ответ). */
+function takePendingAnswer():
+  | { toolCallId: string; optionId?: string; custom?: string }
+  | undefined {
+  const a = pendingAnswer
+  pendingAnswer = undefined
+  return a
 }
 
 /**
@@ -422,6 +461,31 @@ function applyEvent(
       })
       return true
     }
+    case "question": {
+      // VL-330: интерактивный вопрос — tool-call part с аргументами вопроса и
+      // пауза run (как approval). Ответ уходит следующим POST с полем `answer`,
+      // а результат приходит обычным tool_end и живёт в part.result — поэтому
+      // карточка восстанавливается после F5 уже отвеченной.
+      const exists = parts.findIndex(p => p.type === "tool-call" && p.toolCallId === ev.toolCallId)
+      const args = {
+        question: ev.question,
+        options: ev.options,
+        allow_custom: ev.allowCustom,
+      }
+      if (exists >= 0) {
+        const prev = parts[exists] as Extract<Part, { type: "tool-call" }>
+        parts[exists] = { ...prev, args: JSON.parse(JSON.stringify(args)) }
+        return true
+      }
+      parts.push({
+        type: "tool-call",
+        toolCallId: ev.toolCallId,
+        toolName: "ask_user",
+        args: JSON.parse(JSON.stringify(args)),
+        argsText: JSON.stringify(args),
+      })
+      return true
+    }
     case "error":
       // VL-264 (AC9): ошибка стрима — отдельная data-часть, а не текст
       // посреди ответа. Её рендерит ChatErrorState (единый вид с ошибками
@@ -496,7 +560,19 @@ const chatAdapter: ChatModelAdapter = {
 
       // --- тело очередного POST -------------------------------------------
       let body: Record<string, unknown>
-      if (decisions.length > 0 && autoContinues === 0) {
+      // VL-330: ответ на интерактивный вопрос — приоритетнее прочих форм
+      // (карточка вопроса перезапускает run именно за этим)
+      const answer = autoContinues === 0 ? takePendingAnswer() : undefined
+      if (answer !== undefined) {
+        body = {
+          ...(activeThreadId ? { threadId: activeThreadId } : {}),
+          answer: {
+            toolCallId: answer.toolCallId,
+            ...(answer.optionId !== undefined ? { optionId: answer.optionId } : {}),
+            ...(answer.custom !== undefined ? { custom: answer.custom } : {}),
+          },
+        }
+      } else if (decisions.length > 0 && autoContinues === 0) {
         const d = decisions[0]!
         sentApprovals.add(d.toolCallId)
         body = {

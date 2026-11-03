@@ -31,6 +31,7 @@
 import { toolRepeatTarget } from '../agent/repeat-tracker.js';
 import { loadSettings } from '../core/settings.js';
 import { isWriteOperation } from './tool-policy.js';
+import { isInteractiveTool } from '../core/tool-classify.js';
 
 /**
  * Дефолтный лимит tool-вызовов на один ответ модели.
@@ -263,6 +264,10 @@ export function createTurnToolGuard(options: TurnToolGuardOptions = {}): TurnToo
       // иначе повтор одной и той же пары не упирался бы в лимит никогда.
       responseCalls++;
       const signature = callSignature(name, args);
+      // VL-330: вопрос нельзя схлопнуть как дословный повтор — два одинаковых
+      // ask_user подряд обязаны дать две карточки (второй вопрос часто тот же
+      // по тексту: «Продолжить?», «Ещё раз?»). Лимит ответа при этом действует.
+      if (isInteractiveTool(name)) return 'execute';
       // VL-326: серия исчерпана — вызовы ТОГО ЖЕ инструмента не исполняем:
       // он уже отвечал «изменений нет», и смена аргументов на другой набор
       // уже применённых полей прогресса не даст (инцидент VL-324: модель

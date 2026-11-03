@@ -48,6 +48,28 @@ const READ_MARKERS = [
   'classify',
 ] as const;
 
+/**
+ * Интерактивные инструменты (VL-330): вызов НЕ исполняется сервером, а ставит
+ * ход на паузу до ответа пользователя (веб-чат: карточка вопроса).
+ *
+ * Отдельная категория, а не read/write: `ask_user` не имеет побочного эффекта
+ * (значит, не write — иначе карточка вопроса попала бы под Allow/Deny и
+ * allow-list «Always allow», что бессмысленно: вопрос нельзя разрешить
+ * заранее), но и не read (сервер ничего не читает — он ждёт человека).
+ * Без явной ветки fail-safe правило «неизвестное имя → write» отправило бы
+ * `ask_user` в approval-gate.
+ */
+const INTERACTIVE_TOOLS: ReadonlySet<string> = new Set(['ask_user']);
+
+/**
+ * Интерактивный ли инструмент: вызов = пауза хода, а не исполнение.
+ *
+ * @param name — имя инструмента (MCP-реестр или локальный файловый)
+ */
+export function isInteractiveTool(name: string): boolean {
+  return INTERACTIVE_TOOLS.has(name);
+}
+
 /** Токенизует имя инструмента: lowercase + split по не-буквенно-цифровым. */
 function tokenize(name: string): string[] {
   return name.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
@@ -63,6 +85,9 @@ function tokenize(name: string): string[] {
  * @param name — имя инструмента (MCP-реестр или локальный файловый)
  */
 export function isWriteOperation(name: string): boolean {
+  // VL-330: интерактивный инструмент (ask_user) — не write: пауза хода, а не
+  // побочный эффект. Проверяется ДО маркеров и до fail-safe.
+  if (isInteractiveTool(name)) return false;
   const tokens = tokenize(name);
   // Локальные файловые инструменты агента — явная ветка (ясность + не
   // зависит от порядка маркеров)

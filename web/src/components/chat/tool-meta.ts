@@ -32,6 +32,9 @@ const READ_MARKERS = [
   "status",
 ]
 
+/** Интерактивные инструменты (VL-330): не read и не write — пауза хода. */
+const INTERACTIVE_TOOLS = ["ask_user"]
+
 /** Токенизация имени инструмента: lowercase + split по не-буквенно-цифровым. */
 function tokenize(name: string): string[] {
   return name.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
@@ -43,6 +46,8 @@ function tokenize(name: string): string[] {
  * неизвестное имя → write).
  */
 export function isWriteTool(name: string): boolean {
+  // VL-330: интерактивный вопрос — не write (иначе попал бы под Allow/Deny)
+  if (INTERACTIVE_TOOLS.includes(name)) return false
   const tokens = tokenize(name)
   if (tokens.includes("write") || tokens.includes("edit") || tokens.includes("run")) return true
   if (tokens.includes("read") || tokens.includes("grep") || tokens.includes("glob")) return false
@@ -91,6 +96,9 @@ const TOOL_LABELS: Record<string, [string, string]> = {
   backlog_phase_status: ["Состояние фазы", "Читаю состояние фазы"],
   backlog_auto_queue: ["Изменил автоочередь", "Правлю автоочередь"],
   backlog_supervisor: ["Управление прогоном", "Управляю прогоном"],
+  // VL-330: интерактивный вопрос (карточку рендерит QuestionCard; подпись —
+  // для восстановленных тредов и на случай fallback-рендера строкой)
+  ask_user: ["Задал вопрос", "Задаю вопрос"],
 }
 
 /** Завершённое действие инструмента (для свёрнутой строки). */

@@ -124,6 +124,11 @@ export function historyToMessages(
         part.approval = { id: tc.id };
         if (allowList.has(tc.name)) part.providerMetadata = { vibelog: { auto: true } };
         pendingApproval = true;
+      } else if (tc.name === "ask_user") {
+        // VL-330: висящий вопрос — карточка снова ждёт ответа (как approval).
+        // Результата нет намеренно: QuestionCard по part.result отличает
+        // «ждёт ответа» от «отвечено», а {error:'Прервано'} показал бы отказ.
+        pendingApproval = true;
       } else {
         // Обрыв до получения результата — не оставляем «выполняется» навсегда
         part.result = { error: "Прервано" };
