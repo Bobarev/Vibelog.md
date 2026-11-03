@@ -551,6 +551,24 @@ export function comparePricing(
   return { status, input, output, cache };
 }
 
+/**
+ * Вендоры модели из кэша каталога БЕЗ сетевого запроса (VL-317).
+ *
+ * Нужна синхронным точкам (старт фазы в оркестраторе): там нельзя ждать сеть,
+ * но и молча игнорировать дрейф нельзя. `null` — в кэше нет записи (сверка
+ * невозможна, вызывающий решает по `pricing_guard.offline`).
+ */
+export function readCachedVendors(
+  cwd: string,
+  gatewayId: string,
+  modelId: string,
+): { vendors: CatalogVendor[]; fetchedAt: string } | null {
+  const cached = readCache(cwd).entries[cacheKey(gatewayId, 'vendors', modelId)];
+  const vendors = cached?.vendors[modelId];
+  if (!cached || !vendors) return null;
+  return { vendors, fetchedAt: cached.fetchedAt };
+}
+
 /** Отдаёт вендоров модели с той же деградацией, что и список моделей. */
 export async function listCatalogVendors(
   cwd: string,

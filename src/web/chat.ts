@@ -25,7 +25,7 @@
  */
 
 import { mkdirSync, appendFileSync, readFileSync, existsSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { ChatMessage, LlmClient, ToolCall } from '../agent/llm.js';
 import { createLlmClient } from '../agent/llm.js';
 import { loadApiMode } from '../agent/llm-env.js';
@@ -37,6 +37,15 @@ import { ackDenied } from '../mcp/tool-result.js';
 import { chatToolDefs, isWriteOperation, loadChatSystemTemplate } from './tool-policy.js';
 import type { ChatLocalTool } from './tool-policy.js';
 import { createCallGuard, formatChatLimitsErrors, resolveChatLimits } from './chat-limits.js';
+import {
+  acceptDrift,
+  checkPricingDrift,
+  decideDriftPolicy,
+  formatDriftMessage,
+  readAcceptedDrift,
+  resolvePricingGuard,
+  formatPricingGuardErrors,
+} from '../core/pricing-guard.js';
 import { recordThreadUsage, describeThreadUsage, resolveContextWindow, type ThreadUsageView } from './chat-usage.js';
 import {
   findCommand,
@@ -104,6 +113,26 @@ export type ChatEvent =
       limits: { maxIterations: number; maxWallTimeSec: number; maxAutoContinue: number; callTimeoutSec: number };
       /** История jsonl к этому моменту сохранена (все assistant/tool дописаны). */
       saved: boolean;
+    }
+  /**
+   * VL-317: цена вендора разошлась с каталогом (или сверка невозможна).
+   *
+   * `kind: 'ask'` — ход НЕ начинается: карточка в ленте предлагает
+   * «Продолжить» (расхождение принимается) или «Перейти на <вендор>».
+   * `kind: 'warn'` — ход продолжается, в ленте остаётся предупреждение.
+   * `kind: 'auto'` — вендор переключён автоматически (AC6), ход продолжается.
+   */
+  | {
+      type: 'pricing';
+      kind: 'ask' | 'warn' | 'auto';
+      state: 'ok' | 'drift' | 'unknown';
+      message: string;
+      model?: string;
+      vendor?: string;
+      /** Альтернативный вендор для кнопки «Перейти на …» (AC5). */
+      alternative?: string;
+      /** Максимальное отклонение, проценты (для принятия расхождения). */
+      maxDeltaPercent?: number;
     };
 
 /** Тело запроса: новый ход ЛИБО решение по approval (resume). */
@@ -133,6 +162,14 @@ export interface ChatRequestBody {
    * треде не появляется), LLM-цикл стартует по уже накопленным сообщениям.
    */
   continue?: unknown;
+  /**
+   * VL-317: ответ на карточку дрейфа цены. `pricingAck: true` — «Продолжить»
+   * (расхождение принимается и запоминается для треда);
+   * `pricingVendor` — «Перейти на <вендор>»: явный вендор для этого хода
+   * (уходит в wire-запрос `provider.order`).
+   */
+  pricingAck?: unknown;
+  pricingVendor?: unknown;
 }
 
 /** Зависимости для тестов: подменный LLM-клиент (паттерн runLoopOptions.llm). */
@@ -809,6 +846,14 @@ async function produce(
   // текстом: вызывающий сам решает, отдать их error-событием или ответом
   // команды (команда не должна ронять ход).
   let llm: Pick<LlmClient, 'streamChat'> | undefined = deps.llm;
+  /**
+   * VL-317: вендор, выбранный политикой `on_drift='auto'` (AC6). Передаётся
+   * в createLlmClient как `vendor` — уходит в wire-запрос `provider.order`
+   * (VL-315), формат запроса при этом не меняется (риск R4).
+   */
+  let vendorOverride: string | undefined;
+  /** Принятое автоматически расхождение — фиксируется в sidecar треда. */
+  let driftAcceptedPercent: number | undefined;
   const ensureLlm = (): { ok: true; client: Pick<LlmClient, 'streamChat'> } | { ok: false; error: string } => {
     if (llm) return { ok: true, client: llm };
     // VL-209: переопределение модели из body (id из models.available) —
@@ -857,6 +902,9 @@ async function produce(
         ...(override
           ? { model: override.model, baseUrl: override.baseUrl, apiKey: override.apiKey, apiMode: override.apiMode }
           : {}),
+        // VL-317: вендор, выбранный политикой on_drift='auto' (AC6) —
+        // приоритетнее vendor модели из settings (VL-315)
+        ...(vendorOverride !== undefined ? { vendor: vendorOverride } : {}),
       });
       return { ok: true, client: llm };
     } catch (err) {
@@ -903,6 +951,102 @@ async function produce(
     return;
   }
   llm = llmReady.client;
+
+  // --- сверка цены вендора с каталогом (VL-317) ----------------------------
+  // Проверка идёт ПЕРЕД ходом и только для нового сообщения (не для resume
+  // approval и не для авто-продолжения: там решение уже принято, а лишний
+  // вопрос посреди работы — это ровно то, чего просили избежать).
+  // Кэш сверки (pricing_guard.catalog_ttl_minutes) не даёт сети на каждый ход.
+  if (hasMessage) {
+    const guardConfig = resolvePricingGuard(cwd);
+    if (guardConfig.errors.length > 0) console.error(formatPricingGuardErrors(guardConfig.errors));
+    if (guardConfig.config.enabled) {
+      const overrideId = typeof body.model === 'string' && body.model !== '' ? body.model : undefined;
+      if (body.pricingAck === true) {
+        // Ответ на карточку дрейфа: «Продолжить» (согласие с расхождением)
+        // и/или «Перейти на <вендор>». Расхождение фиксируется в sidecar
+        // треда, чтобы следующие ходы не спрашивали то же самое.
+        const drift = await checkPricingDrift(cwd, overrideId);
+        if (drift.state === 'drift' && drift.modelId !== undefined) {
+          acceptDrift(cwd, threadId, drift.modelId, drift.maxDeltaPercent);
+          appendDriftLog(cwd, threadId, `accepted: ${formatDriftMessage(drift)}`);
+        }
+        if (typeof body.pricingVendor === 'string' && body.pricingVendor !== '') {
+          vendorOverride = body.pricingVendor;
+          appendDriftLog(cwd, threadId, `switch: вендор ${body.pricingVendor}`);
+        }
+      } else {
+        const drift = await checkPricingDrift(cwd, overrideId);
+        const accepted = readAcceptedDrift(cwd, threadId);
+        const action = decideDriftPolicy(guardConfig.config, drift, accepted);
+        if (action.kind === 'block') {
+          // AC10: offline='block' — отказ с понятным текстом, ход не начинается
+          queue.push({ type: 'error', message: action.message });
+          return;
+        }
+        if (action.kind === 'proceed') {
+          if (action.warning !== undefined) {
+            appendDriftLog(cwd, threadId, `warn: ${action.warning}`);
+            queue.push({
+              type: 'pricing',
+              kind: 'warn',
+              state: drift.state,
+              message: action.warning,
+              ...(drift.modelId !== undefined ? { model: drift.modelId } : {}),
+              ...(drift.vendor !== undefined ? { vendor: drift.vendor } : {}),
+              ...(drift.maxDeltaPercent !== 0 ? { maxDeltaPercent: drift.maxDeltaPercent } : {}),
+            });
+          }
+        } else if (action.kind === 'auto') {
+          // AC6: автопереезд на другого вендора в рамках того же хода —
+          // переключение обязательно остаётся в журнале треда (риск R4)
+          appendDriftLog(cwd, threadId, `auto: ${action.message}`);
+          vendorOverride = action.vendor;
+          driftAcceptedPercent = drift.maxDeltaPercent;
+          if (drift.modelId !== undefined) {
+            acceptDrift(cwd, threadId, drift.modelId, drift.maxDeltaPercent);
+          }
+          queue.push({
+            type: 'pricing',
+            kind: 'auto',
+            state: drift.state,
+            message: action.message,
+            ...(drift.modelId !== undefined ? { model: drift.modelId } : {}),
+            ...(drift.vendor !== undefined ? { vendor: drift.vendor } : {}),
+            alternative: action.vendor,
+            maxDeltaPercent: drift.maxDeltaPercent,
+          });
+        } else {
+          // AC5: 'ask' (в т.ч. деградация auto→ask, AC8) — ход НЕ начинается,
+          // карточка предлагает «Продолжить» или «Перейти на <вендор>»
+          appendDriftLog(cwd, threadId, `ask: ${action.message}`);
+          queue.push({
+            type: 'pricing',
+            kind: 'ask',
+            state: drift.state,
+            message: action.message,
+            ...(drift.modelId !== undefined ? { model: drift.modelId } : {}),
+            ...(drift.vendor !== undefined ? { vendor: drift.vendor } : {}),
+            ...(drift.alternative !== undefined ? { alternative: drift.alternative.vendor } : {}),
+            maxDeltaPercent: drift.maxDeltaPercent,
+          });
+          queue.push({ type: 'done' });
+          return;
+        }
+      }
+    }
+  }
+  // Вендор переключён политикой — клиент создаём заново с явным вендором
+  if (vendorOverride !== undefined) {
+    llm = undefined;
+    const rebuilt = ensureLlm();
+    if (!rebuilt.ok) {
+      queue.push({ type: 'error', message: rebuilt.error });
+      return;
+    }
+    llm = rebuilt.client;
+  }
+  void driftAcceptedPercent;
 
   const tools = chatToolDefs(cwd);
   // Локальные инструменты (read_file/write_file) имеют handler в chat-tool
