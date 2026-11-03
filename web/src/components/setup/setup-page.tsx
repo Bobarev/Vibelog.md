@@ -564,7 +564,7 @@ export function SetupPage() {
                 </p>
               </div>
               <div className="space-y-1">
-                <Label htmlFor="setup-bot-chats">chat_id через запятую</Label>
+                <Label htmlFor="setup-bot-chats">chat_id через запятую (сохранятся в .env)</Label>
                 <Input
                   id="setup-bot-chats"
                   value={form.botChats}

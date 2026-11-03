@@ -15,10 +15,10 @@
 
 import { createInterface } from 'node:readline';
 import { appendFileSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { handleToolCall, listTools } from './tools.js';
+import { tmpFile } from '../core/tmp.js';
 import { isNoopAck } from './tool-result.js';
 import type { ToolArgs } from './tools.js';
 
@@ -27,10 +27,20 @@ const packageJson = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf-8'),
 ) as { version: string };
 
-/** Журнал RPC (диагностика задержек VL-58): таймлайн in/out сообщений. */
-const rpcLogPath = join(tmpdir(), 'vibelog-mcp-rpc.log');
+/**
+ * Журнал RPC (диагностика задержек VL-58): таймлайн in/out сообщений.
+ *
+ * VL-329: файл живёт в `.vibelog/tmp/` проекта, а не в системном tmpdir —
+ * единое место временных артефактов проекта (core/tmp.ts), которое не
+ * попадает в git.
+ */
+let rpcLogPath: string | null = null;
+
+/** Ленивый путь: каталог создаётся при первой записи, не на импорте модуля. */
+
 function logRpc(dir: 'in' | 'out', payload: unknown): void {
   try {
+    if (rpcLogPath === null) rpcLogPath = tmpFile(process.cwd(), 'mcp-rpc.log');
     const ts = new Date().toTimeString().slice(0, 8);
     appendFileSync(rpcLogPath, `${ts} ${dir} ${JSON.stringify(payload).slice(0, 200)}\n`);
   } catch {

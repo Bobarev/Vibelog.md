@@ -82,15 +82,14 @@ describe('loadProjectEnv (VL-189)', () => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 
-  it('заполняет LLM-ключи из .env, приоритет: реальный env > .env > settings.json', () => {
-    // Секция env settings.json: только VL189_SETTINGS_ONLY (его нет в .env)
+  it('VL-329: грузит ключи ТОЛЬКО из .env, приоритет реальный env > .env', () => {
+    // Секция env settings.json больше не читается — ключ из неё не появится
     mkdirSync(join(testRoot, '.vibelog'), { recursive: true });
     writeFileSync(
       join(testRoot, '.vibelog', 'settings.json'),
       JSON.stringify({ env: { VL189_SETTINGS_ONLY: 'from-settings', VL189_LLM_KEY: 'settings-loses' } }),
       'utf-8'
     );
-    // .env: LLM-ключи + ключ, который в settings.json ( .env должен победить )
     writeFileSync(
       join(testRoot, '.env'),
       ['VL189_LLM_KEY=from-file', 'VL189_LLM_MODEL=test-model'].join('\n'),
@@ -101,17 +100,22 @@ describe('loadProjectEnv (VL-189)', () => {
 
     loadProjectEnv(testRoot);
 
-    assert.equal(process.env.VL189_LLM_KEY, 'from-file', '.env приоритетнее settings.json');
+    assert.equal(process.env.VL189_LLM_KEY, 'from-file', 'ключ берётся из .env');
     assert.equal(process.env.VL189_LLM_MODEL, 'from-real-env', 'реальный env приоритетнее .env');
-    assert.equal(process.env.VL189_SETTINGS_ONLY, 'from-settings', 'settings.json дополняет пустые ключи');
+    assert.equal(
+      process.env.VL189_SETTINGS_ONLY,
+      undefined,
+      'секция env settings.json игнорируется',
+    );
 
-    // VL-143: все записанные файловые ключи в учёте (для стриппинга рестарта)
+    // VL-143: записанные файловые ключи в учёте (для стриппинга рестарта)
     const tracked = fileLoadedEnvKeys();
     assert.ok(tracked.has('VL189_LLM_KEY'), '.env-ключ должен быть в учёте');
-    assert.ok(tracked.has('VL189_SETTINGS_ONLY'), 'settings-ключ должен быть в учёте');
+    assert.ok(!tracked.has('VL189_SETTINGS_ONLY'), 'ключи settings.json в учёт не попадают');
     assert.ok(!tracked.has('VL189_LLM_MODEL'), 'не записанный (задан в реальном env) не учтён');
 
     delete process.env.VL189_LLM_MODEL;
+    delete process.env.VL189_LLM_KEY;
   });
 
   it('отсутствие .env и settings.json — не ошибка', () => {

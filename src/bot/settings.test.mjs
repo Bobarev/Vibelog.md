@@ -37,39 +37,41 @@ describe('settings (VL-34, VL-143)', () => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 
-  it('roundtrip save/load', () => {
-    saveBotSettings(testRoot, { chats: [111, 222] });
+  it('roundtrip save/load: chats в settings.json больше не пишутся (VL-329)', () => {
+    saveBotSettings(testRoot, { default_agent: 'vb' });
     assert.ok(existsSync(botSettingsPath(testRoot)));
     const loaded = loadBotSettings(testRoot);
-    assert.deepEqual(loaded.chats, [111, 222]);
+    assert.equal(loaded.default_agent, 'vb');
+    // chat_id — личная привязка: её место в .env (TELEGRAM_CHAT_IDS)
+    assert.equal('chats' in loaded, false, 'chats не появляются в BotSettings');
+    assert.ok(!readFileSync(botSettingsPath(testRoot), 'utf-8').includes('chats'));
   });
 
   it('отсутствующий файл → пустые настройки', () => {
     const empty = loadBotSettings(join(testRoot, 'nonexistent-sub'));
-    assert.deepEqual(empty.chats, []);
     assert.equal(empty.default_agent, undefined);
+    assert.equal('chats' in empty, false);
   });
 
-  it('resolveToken: env приоритетнее env-секции settings.json (VL-143)', () => {
-    // Токен живёт в env-секции (telegram_token больше не топ-уровневое поле)
+  it('resolveToken: только окружение, env-секция settings.json игнорируется (VL-329)', () => {
     saveSettingsPatch(testRoot, { env: { TELEGRAM_BOT_TOKEN: 'tok-123' } });
     process.env.TELEGRAM_BOT_TOKEN = 'from-env';
     assert.equal(resolveToken(testRoot), 'from-env');
     delete process.env.TELEGRAM_BOT_TOKEN;
-    assert.equal(resolveToken(testRoot), 'tok-123');
+    // Секция env больше не читается: без окружения токена нет
+    assert.equal(resolveToken(testRoot), null);
   });
 
-  it('resolveProxy: env → env-секция settings.json → null (VL-37/VL-143)', () => {
+  it('resolveProxy: только окружение (VL-329)', () => {
     const savedProxy = process.env.TELEGRAM_PROXY;
     try {
       process.env.TELEGRAM_PROXY = 'http://127.0.0.1:7070';
       assert.equal(resolveProxy(testRoot), 'http://127.0.0.1:7070');
       delete process.env.TELEGRAM_PROXY;
-      // Env-секция без TELEGRAM_PROXY → null
       assert.equal(resolveProxy(testRoot), null);
-      // С TELEGRAM_PROXY в env-секции
+      // Секция env settings.json на прокси больше не влияет
       saveSettingsPatch(testRoot, { env: { TELEGRAM_PROXY: 'http://127.0.0.1:1080' } });
-      assert.equal(resolveProxy(testRoot), 'http://127.0.0.1:1080');
+      assert.equal(resolveProxy(testRoot), null);
     } finally {
       if (savedProxy === undefined) delete process.env.TELEGRAM_PROXY;
       else process.env.TELEGRAM_PROXY = savedProxy;

@@ -135,16 +135,27 @@ describe('git-политика .vibelog/ (VL-329)', () => {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
   /**
-   * Набор игнорируемых путей: `git check-ignore` печатает только
-   * игнорируемые, поэтому непришедший путь = коммитится.
+   * Набор игнорируемых путей по `git check-ignore -v`.
+   *
+   * Важная деталь: git печатает и совпадения по ОТРИЦАЮЩИМ правилам
+   * (`!config.json`), где путь как раз НЕ игнорируется. Поэтому решает
+   * не факт вывода, а сам паттерн: ведущий `!` → путь коммитится.
    */
   function checkIgnore(paths) {
-    const res = spawnSync('git', ['check-ignore', '--no-index', ...paths], {
+    const res = spawnSync('git', ['check-ignore', '--no-index', '-v', ...paths], {
       cwd: repoRoot,
       encoding: 'utf-8',
     });
-    const lines = (res.stdout || '').trim().split('\n').filter((l) => l !== '');
-    return new Set(lines);
+    const ignored = new Set();
+    for (const line of (res.stdout || '').split('\n')) {
+      if (line.trim() === '') continue;
+      const tab = line.lastIndexOf('\t');
+      if (tab === -1) continue;
+      const pattern = line.slice(0, tab).split(':').slice(2).join(':');
+      if (pattern.startsWith('!')) continue;
+      ignored.add(line.slice(tab + 1).trim());
+    }
+    return ignored;
   }
 
   it('конфигурация коммитится, локальные артефакты игнорируются', () => {
