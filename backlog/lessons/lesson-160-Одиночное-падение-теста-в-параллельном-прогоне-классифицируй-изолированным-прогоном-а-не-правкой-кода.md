@@ -10,8 +10,9 @@ source_tasks:
   - VL-290
 linked_tasks:
   - VL-290
+  - VL-300
 created_date: 2026-11-02
-updated_date: 2026-11-02
+updated_date: 2026-11-03
 supersedes: ''
 last_verified: ''
 verified_by: agent
