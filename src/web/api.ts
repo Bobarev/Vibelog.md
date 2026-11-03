@@ -79,6 +79,9 @@ import {
 } from './chat.js';
 // VL-313: расход токенов треда для панели (восстановление после перезагрузки)
 import { threadUsageView } from './chat-usage.js';
+// VL-314: реестр слэш-команд чата (GET /api/chat/commands) и точка сжатия
+import { commandsView } from './chat-commands.js';
+import { loadCompaction } from './chat-compaction.js';
 import { GRANTABLE_TOOLS, findActiveGrant, isValidRunId, latestGrantDraft, saveGrantDraft } from './supervisor-grant.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadSettings, saveSettingsPatch } from '../core/settings.js';
@@ -191,6 +194,12 @@ export function handleApi(
       return { status: 200, body: listChatThreads(cwd) };
     }
 
+    // GET /api/chat/commands — реестр слэш-команд чата (VL-314, AC1):
+    // только метаданные, БЕЗ исполнения. Понадобится и ComposerMenu позже.
+    if (method === 'GET' && url === '/api/chat/commands') {
+      return { status: 200, body: { commands: commandsView() } };
+    }
+
     // /api/chat/threads/:id/allow — allow-list треда (VL-264, «Always allow»
     // в approval-карточке). GET — прочитать, POST {tool} — разрешить,
     // DELETE ?tool=<name> — отозвать. Ветка стоит ДО общего regex истории:
@@ -240,6 +249,9 @@ export function handleApi(
           // VL-313: расход токенов треда — панель восстанавливает те же цифры
           // после перезагрузки без отдельного запроса (null — тред без ходов).
           usage: threadUsageView(cwd, chatThreadMatch[1]),
+          // VL-314: точка сжатия контекста — клиент показывает плашку
+          // «контекст сжат: в модель уходит с N-го сообщения» (null — не сжат).
+          compaction: loadCompaction(cwd, chatThreadMatch[1]),
         },
       };
     }

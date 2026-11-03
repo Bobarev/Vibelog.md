@@ -72,8 +72,9 @@ describe('VL-283: выбор роли только для нового тред�
     assert.match(thread, /persona\?: string \| null/, 'поле в ThreadHistoryResponse');
     assert.match(thread, /persona: data\.persona \?\? null/);
     // VL-313 добавил второй пропс (threadId — resetKey панели расхода),
-    // поэтому проверяем наличие пропса, а не дословный тег
-    assert.match(thread, /<ChatThread threadPersona=\{load\.persona \?\? null\}/);
+    // VL-314 — третий (compaction — плашка сжатия), поэтому проверяем
+    // наличие пропса, а не дословный тег
+    assert.match(thread, /<ChatThread[\s\S]{0,200}threadPersona=\{load\.persona \?\? null\}/);
   });
 });
 

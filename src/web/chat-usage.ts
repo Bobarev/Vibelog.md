@@ -88,6 +88,12 @@ export interface UsageEntry {
   output: number;
   cache: number;
   reasoning?: number;
+  /**
+   * Считать ли запрос в счётчике `requests` (VL-314, AC12): вызов саммари
+   * `/compact` — обычный расход (токены и ₽ входят в панель), но НЕ запрос
+   * хода, поэтому счётчик хода он не увеличивает. Дефолт — считать.
+   */
+  countRequest?: boolean;
 }
 
 /** Итоговый вид для панели (то, что уходит клиенту в SSE и GET истории). */
@@ -141,7 +147,7 @@ export function accumulateThreadUsage(usage: ThreadUsage | null, entry: UsageEnt
     output: prev.output + Math.max(0, entry.output),
     cache: prev.cache + Math.max(0, entry.cache),
     reasoning: prev.reasoning + Math.max(0, entry.reasoning ?? 0),
-    requests: prev.requests + 1,
+    requests: prev.requests + (entry.countRequest === false ? 0 : 1),
   };
   return {
     ...(entry.modelId ? { modelId: entry.modelId } : base.modelId ? { modelId: base.modelId } : {}),
