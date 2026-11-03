@@ -1,10 +1,15 @@
 /**
- * Тесты интерактивного слоя CLI (VL-320): навигация, переключение галочек,
- * отмена, дефолты в не-TTY.
+ * Тесты интерактивного слоя CLI (VL-322): обёртка над `@clack/prompts`.
  *
- * Потоки инъектируются (PassThrough) + forceInteractive: true — реальный TTY
- * в тестах недоступен, а raw-mode на PassThrough не нужен (setRawMode
- * отсутствует, слой это учитывает).
+ * Проверяем то, что принадлежит нам, а не clack: не-TTY-дефолты (AC4),
+ * маппинг параметров в промпты clack, превращение отмены в
+ * `PromptCancelledError` (AC5). Навигация/галочки/отрисовка — зона clack,
+ * их кадры здесь не проверяются (прежние тесты кадров удалены как избыточные).
+ *
+ * Маппинг проверяется через seam `prompts` (фейковая реализация clack) —
+ * реальный TTY в тестах недоступен, а фейк позволяет увидеть, какие опции
+ * ушли в промпт. Отмена реальным clack-промптом проверяется отдельно на
+ * PassThrough-потоках.
  */
 
 import { describe, it } from 'vitest';
@@ -13,34 +18,49 @@ import { PassThrough } from 'node:stream';
 
 import { createPromptSession, isInteractive, PromptCancelledError } from '../../dist/cli/prompt.js';
 
-/** Создаёт сессию на PassThrough-потоках и собирает вывод. */
-function makeSession() {
-  const input = new PassThrough();
-  const output = new PassThrough();
-  let text = '';
-  output.on('data', (chunk) => {
-    text += chunk.toString('utf8');
-  });
-  const session = createPromptSession({ input, output, forceInteractive: true });
-  return { session, input, output, getText: () => text };
+/** Символ отмены: у clack это приватный `CANCEL_SYMBOL`, для фейка — любой symbol. */
+const CANCEL = Symbol('clack:cancel');
+
+/**
+ * Фейковая реализация clack: запоминает опции каждого промпта и возвращает
+ * заранее заданный результат.
+ */
+function fakePrompts(result) {
+  const calls = [];
+  const record = (name) => async (opts) => {
+    calls.push({ name, opts });
+    return typeof result === 'function' ? result(name, opts) : result;
+  };
+  return {
+    calls,
+    prompts: {
+      text: record('text'),
+      confirm: record('confirm'),
+      select: record('select'),
+      multiselect: record('multiselect'),
+      isCancel: (value) => value === CANCEL,
+    },
+  };
 }
 
-/** Последний кадр списка: строки после последнего перевода курсора вверх. */
-function lastFrame(text) {
-  const chunks = text.split('\x1b[2A');
-  const tail = chunks[chunks.length - 1];
-  return tail
-    .split('\n')
-    .map((l) => l.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\r/g, ''))
-    .filter((l) => l.includes('❯') || l.includes('[x]') || l.includes('[ ]'));
+/** Сессия на фейковом clack (интерактивная ветка без TTY). */
+function makeFakeSession(result) {
+  const fake = fakePrompts(result);
+  const session = createPromptSession({
+    input: new PassThrough(),
+    output: new PassThrough(),
+    forceInteractive: true,
+    prompts: fake.prompts,
+  });
+  return { session, calls: fake.calls };
 }
 
 /** Даёт event loop прокрутить запись в поток (иначе данные теряются). */
-function tick(ms = 20) {
+function tick(ms = 50) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-describe('VL-320 — интерактивный слой prompt', () => {
+describe('VL-322 — интерактивный слой prompt (обёртка над clack)', () => {
   it('isInteractive: не-TTY потоки — false', () => {
     assert.equal(isInteractive(new PassThrough(), new PassThrough()), false);
   });
@@ -71,118 +91,122 @@ describe('VL-320 — интерактивный слой prompt', () => {
     session.close();
   });
 
-  it('askText: Enter — дефолт, ввод — значение', async () => {
-    const { session, input } = makeSession();
-    const p1 = session.askText('Имя проекта', 'templares');
-    input.write('\r');
-    assert.equal(await p1, 'templares');
+  it('не-TTY: askSelect с disabled стартовым пунктом берёт первый доступный', async () => {
+    const session = createPromptSession({
+      input: new PassThrough(),
+      output: new PassThrough(),
+    });
+    assert.equal(
+      await session.askSelect('Выбор', [
+        { value: 'a', label: 'A', disabled: true },
+        { value: 'b', label: 'B' },
+      ], 0),
+      'b',
+    );
+  });
 
-    const p2 = session.askText('Имя проекта', 'templares');
-    input.write('Vibelog Templates\r');
-    assert.equal(await p2, 'Vibelog Templates');
+  it('askSelect с пустым списком — ошибка', async () => {
+    const session = createPromptSession({
+      input: new PassThrough(),
+      output: new PassThrough(),
+    });
+    await assert.rejects(() => session.askSelect('Выбор', [], 0), /пустой список/);
+  });
+
+  it('askText: в clack уходят message, defaultValue, placeholder и валидация итогового значения', async () => {
+    const { session, calls } = makeFakeSession('VT');
+    const value = await session.askText('Prefix', 'VL', (v) => (/^[A-Z]+$/.test(v) ? null : 'только заглавные'));
+    assert.equal(value, 'VT');
+    const [call] = calls;
+    assert.equal(call.name, 'text');
+    assert.equal(call.opts.message, 'Prefix');
+    assert.equal(call.opts.defaultValue, 'VL');
+    assert.ok(String(call.opts.placeholder).includes('VL'), call.opts.placeholder);
+    // Пустой ввод валидируется как дефолт, невалидный — возвращает текст ошибки
+    assert.equal(call.opts.validate(''), undefined);
+    assert.equal(call.opts.validate('ab'), 'только заглавные');
+    assert.equal(call.opts.validate('VT'), undefined);
     session.close();
   });
 
-  it('askText: валидация в цикле — невалидный ввод переспрашивает', async () => {
-    const { session, input } = makeSession();
-    const p = session.askText('Prefix', 'VL', (v) => (/^[A-Z]+$/.test(v) ? null : 'только заглавные'));
-    input.write('ab\r');
-    await tick();
-    input.write('VT\r');
-    assert.equal(await p, 'VT');
+  it('askText: пустой ввод превращается в дефолт, пробелы обрезаются', async () => {
+    const { session } = makeFakeSession('   ');
+    assert.equal(await session.askText('Имя', 'templares'), 'templares');
     session.close();
   });
 
-  it('askMultiselect: ↓ двигает активный пункт, space переключает, Enter подтверждает', async () => {
-    const { session, input, getText } = makeSession();
-    const p = session.askMultiselect('Агенты', [
-      { value: 'vb', label: 'vb' },
-      { value: 'qwen', label: 'qwen' },
-    ], []);
-    input.write('\u001b[B'); // вниз → qwen
-    input.write(' '); // отметить qwen
-    input.write('\r');
-    assert.deepEqual(await p, ['qwen']);
-    // Курсор отрисован на активном пункте: последний кадр содержит ❯ у qwen
-    const frame = lastFrame(getText());
-    const active = frame.filter((l) => l.includes('❯'));
-    assert.equal(active.length, 1, `активная строка одна: ${JSON.stringify(frame)}`);
-    assert.ok(active[0].includes('qwen'), `курсор на qwen: ${active[0]}`);
+  it('askConfirm: initialValue из дефолта', async () => {
+    const { session, calls } = makeFakeSession(false);
+    assert.equal(await session.askConfirm('Бот?', false), false);
+    assert.equal(calls[0].name, 'confirm');
+    assert.equal(calls[0].opts.initialValue, false);
     session.close();
   });
 
-  it('askMultiselect: ↑ с первого пункта уходит на последний (по кругу)', async () => {
-    const { session, input } = makeSession();
-    const p = session.askMultiselect('Агенты', [
-      { value: 'a', label: 'A' },
-      { value: 'b', label: 'B' },
-    ], []);
-    input.write('\u001b[A'); // вверх → b
-    input.write(' ');
-    input.write('\r');
-    assert.deepEqual(await p, ['b']);
-    session.close();
-  });
-
-  it('askMultiselect: disabled-пункт пропускается навигацией и не переключается', async () => {
-    const { session, input } = makeSession();
-    const p = session.askMultiselect('Агенты', [
-      { value: 'vb', label: 'vb' },
-      { value: 'opencode', label: 'opencode', hint: 'Скоро', disabled: true },
-      { value: 'qwen', label: 'qwen' },
-    ], []);
-    input.write('\u001b[B'); // вниз: opencode disabled → qwen
-    input.write(' ');
-    input.write('\r');
-    assert.deepEqual(await p, ['qwen']);
-    session.close();
-  });
-
-  it('askMultiselect: initial отмечает пункты, space снимает галочку', async () => {
-    const { session, input } = makeSession();
-    const p = session.askMultiselect('Агенты', [
-      { value: 'vb', label: 'vb' },
-      { value: 'qwen', label: 'qwen' },
-    ], ['qwen']);
-    input.write('\u001b[B'); // на qwen
-    input.write(' '); // снять
-    input.write('\r');
-    assert.deepEqual(await p, []);
-    session.close();
-  });
-
-  it('askSelect: Enter возвращает активный пункт', async () => {
-    const { session, input } = makeSession();
-    const p = session.askSelect('Секреты', [
+  it('askSelect: initialValue — значение пункта по initialIndex, disabled пропускается', async () => {
+    const { session, calls } = makeFakeSession('settings');
+    const value = await session.askSelect('Секреты', [
       { value: 'env', label: '.env' },
-      { value: 'settings', label: 'settings.json' },
-    ], 0);
-    input.write('\u001b[B');
-    input.write('\r');
-    assert.equal(await p, 'settings');
+      { value: 'settings', label: 'settings.json', hint: 'в settings' },
+    ], 1);
+    assert.equal(value, 'settings');
+    const [call] = calls;
+    assert.equal(call.name, 'select');
+    assert.equal(call.opts.initialValue, 'settings');
+    assert.deepEqual(call.opts.options, [
+      { value: 'env', label: '.env' },
+      { value: 'settings', label: 'settings.json', hint: 'в settings' },
+    ]);
     session.close();
   });
 
-  it('Ctrl+C в списке — PromptCancelledError', async () => {
-    const { session, input } = makeSession();
-    const p = session.askMultiselect('Агенты', [{ value: 'vb', label: 'vb' }], []);
-    input.write('\u0003');
-    await assert.rejects(p, (err) => err instanceof PromptCancelledError);
+  it('askMultiselect: initialValues отфильтрованы по disabled, required: false', async () => {
+    const { session, calls } = makeFakeSession(['qwen']);
+    const value = await session.askMultiselect('Агенты', [
+      { value: 'vb', label: 'vb' },
+      { value: 'qwen', label: 'qwen' },
+      { value: 'opencode', label: 'opencode', hint: 'Скоро', disabled: true },
+    ], ['qwen', 'opencode']);
+    assert.deepEqual(value, ['qwen']);
+    const [call] = calls;
+    assert.equal(call.name, 'multiselect');
+    assert.deepEqual(call.opts.initialValues, ['qwen']);
+    assert.equal(call.opts.required, false, 'пустой выбор должен быть допустим');
+    assert.equal(call.opts.options[2].disabled, true);
     session.close();
   });
 
-  it('Ctrl+C в текстовом вопросе — PromptCancelledError', async () => {
-    const { session, input } = makeSession();
+  it('отмена (CANCEL_SYMBOL) в любом промпте — PromptCancelledError', async () => {
+    for (const run of [
+      (s) => s.askText('Имя', 'x'),
+      (s) => s.askConfirm('Бот?', true),
+      (s) => s.askSelect('Выбор', [{ value: 'a', label: 'A' }], 0),
+      (s) => s.askMultiselect('Агенты', [{ value: 'vb', label: 'vb' }], []),
+    ]) {
+      const { session } = makeFakeSession(CANCEL);
+      await assert.rejects(() => run(session), (err) => err instanceof PromptCancelledError);
+      session.close();
+    }
+  });
+
+  it('Ctrl+C в реальном clack-промпте — PromptCancelledError', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const session = createPromptSession({ input, output, forceInteractive: true });
     const p = session.askText('Имя', 'x');
+    await tick();
     input.write('\u0003');
     await assert.rejects(p, (err) => err instanceof PromptCancelledError);
     session.close();
   });
 
-  it('Esc в списке — отмена', async () => {
-    const { session, input } = makeSession();
+  it('Ctrl+C в реальном clack-списке — PromptCancelledError', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const session = createPromptSession({ input, output, forceInteractive: true });
     const p = session.askSelect('Выбор', [{ value: 'a', label: 'A' }], 0);
-    input.write('\u001b');
+    await tick();
+    input.write('\u0003');
     await assert.rejects(p, (err) => err instanceof PromptCancelledError);
     session.close();
   });
