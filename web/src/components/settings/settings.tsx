@@ -55,6 +55,12 @@ interface FormState {
   chat_max_wall_time: string;
   chat_max_auto_continue: string;
   chat_call_timeout: string;
+  /* VL-317: сверка цены вендора с каталогом */
+  pricing_enabled: boolean;
+  pricing_threshold: string;
+  pricing_on_drift: "ask" | "auto" | "warn";
+  pricing_ttl: string;
+  pricing_offline: "allow" | "block";
 }
 
 /** Настройки → состояние формы: undefined-числа → пустая строка, compact default-on. */
@@ -76,6 +82,16 @@ function toFormState(s: SettingsData): FormState {
     chat_max_wall_time: s.chat?.max_wall_time != null ? String(s.chat.max_wall_time) : "",
     chat_max_auto_continue: s.chat?.max_auto_continue != null ? String(s.chat.max_auto_continue) : "",
     chat_call_timeout: s.chat?.call_timeout != null ? String(s.chat.call_timeout) : "",
+    // VL-317: отсутствие ключа = дефолт из core/pricing-guard.ts
+    pricing_enabled: s.pricing_guard?.enabled !== false,
+    pricing_threshold:
+      s.pricing_guard?.threshold_percent != null ? String(s.pricing_guard.threshold_percent) : "",
+    pricing_on_drift: s.pricing_guard?.on_drift ?? "ask",
+    pricing_ttl:
+      s.pricing_guard?.catalog_ttl_minutes != null
+        ? String(s.pricing_guard.catalog_ttl_minutes)
+        : "",
+    pricing_offline: s.pricing_guard?.offline ?? "allow",
   };
 }
 
@@ -83,6 +99,17 @@ function toFormState(s: SettingsData): FormState {
 function parseLimit(raw: string): number | null {
   const n = Number(raw.trim());
   return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * VL-317: неотрицательное число для секции pricing_guard. Пустое поле → null
+ * (сброс к дефолту); 0 — валидное значение («любое расхождение» для порога,
+ * «без кэша» для TTL).
+ */
+function parseNonNegative(raw: string): number | null {
+  if (raw.trim() === "") return null;
+  const n = Number(raw.trim());
+  return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
 export function SettingsPage() {
@@ -163,6 +190,15 @@ export function SettingsPage() {
           max_wall_time: parseLimit(form.chat_max_wall_time),
           max_auto_continue: parseLimit(form.chat_max_auto_continue),
           call_timeout: parseLimit(form.chat_call_timeout),
+        },
+        // VL-317: секция сверки цен целиком (null по ключу — сброс к дефолту).
+        // enabled=false пишется явно (осмысленное выключение, а не «не задано»).
+        pricing_guard: {
+          enabled: form.pricing_enabled,
+          threshold_percent: parseNonNegative(form.pricing_threshold),
+          on_drift: form.pricing_on_drift,
+          catalog_ttl_minutes: parseNonNegative(form.pricing_ttl),
+          offline: form.pricing_offline,
         },
       });
       setForm(toFormState(updated));
@@ -454,6 +490,105 @@ export function SettingsPage() {
               />
               <p className="text-muted-foreground text-xs">
                 Ожидание без единого токена. Живой стрим таймаут не срабатывает.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* VL-317: сверка цены вендора с каталогом */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Сверка цены вендора</CardTitle>
+          <CardDescription>
+            Перед ходом чата и запуском фазы Vibelog сверяет тариф модели в
+            .vibelog/settings.json с ценой её вендора в каталоге шлюза. При
+            расхождении выше порога — предупреждение, предложение или автопереезд
+            на другого вендора.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              <Label htmlFor="pricing-enabled">Сверять цену</Label>
+              <p className="text-muted-foreground text-xs">
+                Выключено — сверка не выполняется, сетевых запросов нет.
+              </p>
+            </div>
+            <Switch
+              id="pricing-enabled"
+              checked={form.pricing_enabled}
+              onCheckedChange={(v) => update("pricing_enabled", v)}
+            />
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="pricing-threshold">Порог расхождения, %</Label>
+              <Input
+                id="pricing-threshold"
+                type="number"
+                min={0}
+                placeholder="10"
+                value={form.pricing_threshold}
+                onChange={(e) => update("pricing_threshold", e.target.value)}
+              />
+              <p className="text-muted-foreground text-xs">
+                По модулю: снижение цены тоже показывается, но работу не
+                останавливает.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="pricing-ttl">Кэш сверки, мин</Label>
+              <Input
+                id="pricing-ttl"
+                type="number"
+                min={0}
+                placeholder="15"
+                value={form.pricing_ttl}
+                onChange={(e) => update("pricing_ttl", e.target.value)}
+              />
+              <p className="text-muted-foreground text-xs">
+                Повторная сверка в пределах TTL не делает сетевых запросов.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="pricing-on-drift">При расхождении</Label>
+              <Select
+                value={form.pricing_on_drift}
+                onValueChange={(v) =>
+                  update("pricing_on_drift", v as "ask" | "auto" | "warn")
+                }
+              >
+                <SelectTrigger id="pricing-on-drift">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ask">Спросить (дефолт)</SelectItem>
+                  <SelectItem value="auto">Автопереезд на вендора</SelectItem>
+                  <SelectItem value="warn">Только предупредить</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-muted-foreground text-xs">
+                «Автопереезд» без альтернативного вендора спрашивает — молчаливое
+                продолжение по выросшей цене недопустимо.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="pricing-offline">Каталог недоступен</Label>
+              <Select
+                value={form.pricing_offline}
+                onValueChange={(v) => update("pricing_offline", v as "allow" | "block")}
+              >
+                <SelectTrigger id="pricing-offline">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="allow">Продолжить без сверки</SelectItem>
+                  <SelectItem value="block">Отказать</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-muted-foreground text-xs">
+                Причина недоступности всегда пишется в лог.
               </p>
             </div>
           </div>

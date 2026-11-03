@@ -35,6 +35,12 @@ import {
   normalizePricing,
   comparePricing,
 } from '../core/provider-catalog.js';
+import {
+  checkPricingDrift,
+  refreshModelPricing,
+  resolvePricingGuard,
+  formatPricingGuardErrors,
+} from '../core/pricing-guard.js';
 import type {
   CatalogDeps,
   CatalogVendor,
@@ -103,7 +109,10 @@ export async function handleCatalogApi(
   queryString: string = '',
   deps: CatalogDeps = {},
 ): Promise<ApiResponse | null> {
-  if (!url.startsWith('/api/catalog/')) return null;
+  // VL-317: сверка цены — тот же async-слой (ходит в каталог через сеть)
+  const isCatalog = url.startsWith('/api/catalog/');
+  const isPricing = url.startsWith('/api/pricing/');
+  if (!isCatalog && !isPricing) return null;
   const query = parseQuery(queryString);
 
   // GET /api/catalog/models — поиск по каталогу шлюза (AC5).
@@ -359,6 +368,56 @@ export async function handleCatalogApi(
         previous: conf.pricing ?? null,
       },
     };
+  }
+
+  // GET /api/pricing/drift?model=<id> — состояние цены модели (AC11):
+  // ok | drift | unknown с подробностями и решением политики. Используется
+  // страницей «Модели» и диагностикой.
+  if (method === 'GET' && url === '/api/pricing/drift') {
+    const modelId = (query.model ?? '').trim();
+    const guard = resolvePricingGuard(cwd);
+    if (guard.errors.length > 0) console.error(formatPricingGuardErrors(guard.errors));
+    const result = await checkPricingDrift(
+      cwd,
+      modelId === '' ? undefined : modelId,
+      { ...deps, force: query.force === '1' || query.force === 'true' },
+    );
+    return {
+      status: 200,
+      body: {
+        state: result.state,
+        model: result.modelId ?? null,
+        gateway: result.gateway ?? null,
+        vendor: result.vendor ?? null,
+        direction: result.direction ?? null,
+        maxDeltaPercent: result.maxDeltaPercent,
+        components: result.components,
+        alternative: result.alternative ?? null,
+        reason: result.reason ?? null,
+        stale: result.stale === true,
+        checkedAt: result.checkedAt,
+        config: guard.config,
+        configErrors: guard.errors,
+      },
+    };
+  }
+
+  // POST /api/pricing/refresh — обновить тариф из каталога (AC12). Валидация
+  // ДО записи (внутри refreshModelPricing): каталог обязан отдать цену именно
+  // пары (gateway, model, vendor), иначе файл не меняется.
+  if (method === 'POST' && url === '/api/pricing/refresh') {
+    const id = typeof body?.id === 'string' ? body.id.trim() : '';
+    if (id === '') {
+      return { status: 400, body: { error: 'id: обязательное поле — id модели из models.available' } };
+    }
+    try {
+      const result = await refreshModelPricing(cwd, id, deps);
+      return { status: 200, body: result };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // 404 — нет модели/вендора/цены в каталоге, 400 — запрос неприменим
+      return { status: /отсутствует/.test(message) ? 404 : 400, body: { error: message } };
+    }
   }
 
   // Прочие /api/catalog/* — не наш маршрут, пусть решает handleApi (404)

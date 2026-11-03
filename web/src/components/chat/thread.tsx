@@ -62,7 +62,8 @@ import type { ThreadUsageView } from "@/lib/chat-usage"
 import { useChatThreadId } from "@/lib/use-hash-route"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { ApprovalCard } from "./approval-card"
-import { CHAT_ERROR_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider, getActivePersonaId } from "./chat-runtime"
+import { CHAT_ERROR_PART, CHAT_PRICING_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider, getActivePersonaId } from "./chat-runtime"
+import { PricingDriftCard } from "./pricing-drift-card"
 import { ChatErrorState } from "./error-state"
 import { ModelPicker, PersonaBadge, PersonaPicker } from "./pickers"
 import { StoppedRun } from "./stopped-run"
@@ -165,6 +166,29 @@ function PartView({ part }: { part: GroupedPartLike }) {
   if (part.type === "data" && part.name === CHAT_ERROR_PART) {
     const payload = part.data as { message?: unknown; retryable?: unknown } | undefined
     return <ChatErrorState message={typeof payload?.message === "string" ? payload.message : "Неизвестная ошибка"} />
+  }
+  if (part.type === "data" && part.name === CHAT_PRICING_PART) {
+    // VL-317: дрейф цены вендора — карточка (ask) или предупреждение (warn/auto)
+    const payload = part.data as
+      | {
+          kind?: unknown
+          message?: unknown
+          vendor?: unknown
+          alternative?: unknown
+          maxDeltaPercent?: unknown
+        }
+      | undefined
+    return (
+      <PricingDriftCard
+        kind={payload?.kind === "ask" || payload?.kind === "auto" ? payload.kind : "warn"}
+        message={typeof payload?.message === "string" ? payload.message : "Цена вендора изменилась"}
+        vendor={typeof payload?.vendor === "string" ? payload.vendor : undefined}
+        alternative={typeof payload?.alternative === "string" ? payload.alternative : undefined}
+        maxDeltaPercent={
+          typeof payload?.maxDeltaPercent === "number" ? payload.maxDeltaPercent : undefined
+        }
+      />
+    )
   }
   if (part.type === "data" && part.name === CHAT_TRUNCATED_PART) {
     // VL-269 (AC9/AC10): авто-продолжения исчерпаны — вместо них явная
