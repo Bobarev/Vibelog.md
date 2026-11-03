@@ -1,12 +1,15 @@
 /**
- * Слой данных веб-мастера настройки проекта (VL-210).
+ * Слой данных веб-мастера настройки проекта (VL-210, расширен VL-328).
  *
  * Ходит в REST API Vibelog (src/web/setup-api.ts):
  * - GET  /api/setup           — состояние проекта (режим, дефолты, агенты,
- *   провайдеры/модели) БЕЗ значений секретов;
+ *   шлюзы/модели) БЕЗ значений секретов;
  * - POST /api/setup           — применить ответы формы;
  * - POST /api/setup/ping      — ping LLM (модель, задержка, usage);
  * - POST /api/setup/check-bot — getMe Telegram.
+ *
+ * VL-328: каталог моделей и вендоров берём из /api/catalog/* (VL-316) —
+ * мастер показывает те же цены и варианты, что CLI-wizard после VL-324/327.
  */
 
 /** Агент в списке wizard-а. */
@@ -29,6 +32,29 @@ export interface SetupGateway {
 /** @deprecated VL-315: переименовано в SetupGateway. */
 export type SetupProvider = SetupGateway;
 
+/** Пресет шлюза LLM из ядра (VL-328) — один и тот же у CLI-wizard-а и веба. */
+export interface GatewayPreset {
+  /** id пресета (= id шлюза, кроме custom). */
+  id: string;
+  label: string;
+  /** base_url пресета; null — свой ввод (OpenAI-совместимый). */
+  base_url: string | null;
+  /** Дефолтное имя env-переменной с ключом ('' — выводится из id). */
+  api_key_env: string;
+  /** true — шлюз умеет каталог моделей. */
+  catalog: boolean;
+  /** true — модель/вендор вводит пользователь. */
+  manualModel: boolean;
+  /** true — «свой base_url», id шлюза выводится из домена. */
+  custom: boolean;
+}
+
+/** Предлагаемая локация секретов (VL-328: только system и env). */
+export interface SecretsLocationOption {
+  id: "system" | "env";
+  label: string;
+}
+
 /** Модель из models.available. */
 export interface SetupModel {
   id: string;
@@ -50,7 +76,11 @@ export interface SetupStateData {
   agents: SetupAgent[];
   defaultAgent: string | null;
   secrets: { envFile: boolean; envKeys: string[]; settingsEnvKeys: string[] };
-  bot: { configured: boolean; chats: number[] };
+  bot: { configured: boolean; chats: number[]; proxySet: boolean };
+  /** VL-328: перечень шлюзов из ядра (core/llm-presets.ts). */
+  gatewayPresets: GatewayPreset[];
+  /** VL-328: предлагаемые локации секретов (без settings/both). */
+  secretsLocations: SecretsLocationOption[];
   gateways: SetupGateway[];
   models: { default: string | null; available: SetupModel[] };
   mcp: { qwen: boolean; opencode: boolean };
@@ -64,9 +94,17 @@ export interface SetupAnswersPayload {
   prefix: string;
   agents: string[];
   defaultAgent?: string;
-  secretsLocation: "env" | "settings" | "both";
-  bot?: { token?: string; chats: number[] };
-  gateway?: { id: string; base_url: string; api_key_env?: string; apiKey?: string };
+  /** VL-328: UI предлагает system|env, но API принимает и legacy-значения. */
+  secretsLocation: "system" | "env" | "settings" | "both";
+  bot?: { token?: string; chats: number[]; proxy?: string };
+  gateway?: {
+    id: string;
+    /** VL-328: пресет шлюза — сервер валидирует по нему base_url. */
+    preset?: string;
+    base_url: string;
+    api_key_env?: string;
+    apiKey?: string;
+  };
   model?: {
     id: string;
     label?: string;
@@ -75,6 +113,8 @@ export interface SetupAnswersPayload {
     model: string;
     api_mode?: "chat" | "responses";
   };
+  /** VL-328: подтверждение перезаписи уже существующих секретов (AC7). */
+  secretsOverwrite?: boolean;
   mcp: boolean;
   force?: boolean;
 }
@@ -103,6 +143,29 @@ export interface BotCheckResult {
   ok: boolean;
   username?: string;
   error?: string;
+}
+
+/** Тариф модели в каталоге: рубли за 1M токенов (VL-316). */
+export interface CatalogPricing {
+  input_per_1m: number;
+  output_per_1m: number;
+  cache_per_1m: number;
+}
+
+/** Модель каталога шлюза (ответ /api/catalog/models). */
+export interface CatalogModel {
+  id: string;
+  name: string;
+  pricing: CatalogPricing;
+  contextWindow?: number;
+}
+
+/** Вендор (апстрим) модели — ответ /api/catalog/vendors. */
+export interface CatalogVendor {
+  id: string;
+  name: string;
+  pricing: CatalogPricing;
+  contextWindow?: number;
 }
 
 /** Состояние проекта. Бросает при ошибке — вызывающий показывает сообщение. */
@@ -150,4 +213,44 @@ export async function checkBot(token?: string): Promise<BotCheckResult> {
   const data = (await res.json().catch(() => ({}))) as BotCheckResult;
   if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
   return data;
+}
+
+/**
+ * Каталог моделей шлюза (VL-328, AC3).
+ *
+ * `query` — поиск на стороне сервера; пустой запрос отдаёт каталог целиком,
+ * но `listCatalogModels` режет выдачу по CATALOG_SEARCH_LIMIT только когда
+ * запрос непустой. Для двухступенчатого выбора мастер просит конкретного
+ * автора (`<author>/`) — так обрезка не срабатывает.
+ */
+export async function fetchCatalogModels(
+  gateway: string,
+  query = "",
+): Promise<{ models: CatalogModel[]; stale: boolean }> {
+  const params = new URLSearchParams({ gateway });
+  if (query !== "") params.set("query", query);
+  const res = await fetch(`/api/catalog/models?${params.toString()}`);
+  const data = (await res.json().catch(() => ({}))) as {
+    models?: CatalogModel[];
+    stale?: boolean;
+    error?: string;
+  };
+  if (!res.ok) throw new Error(data.error || `GET /api/catalog/models: ${res.status}`);
+  return { models: data.models ?? [], stale: data.stale === true };
+}
+
+/** Вендоры (апстримы) модели с ценами (VL-328, AC3). */
+export async function fetchCatalogVendors(
+  gateway: string,
+  model: string,
+): Promise<{ vendors: CatalogVendor[]; stale: boolean }> {
+  const params = new URLSearchParams({ gateway, model });
+  const res = await fetch(`/api/catalog/vendors?${params.toString()}`);
+  const data = (await res.json().catch(() => ({}))) as {
+    vendors?: CatalogVendor[];
+    stale?: boolean;
+    error?: string;
+  };
+  if (!res.ok) throw new Error(data.error || `GET /api/catalog/vendors: ${res.status}`);
+  return { vendors: data.vendors ?? [], stale: data.stale === true };
 }

@@ -14,6 +14,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import type { ActiveModel } from './models.js';
 
 /** Результат ping-а LLM. */
@@ -244,26 +245,39 @@ export function checkAgentBinary(
  *
  * Токен НЕ попадает в текст ошибки (он в URL запроса — секрет).
  *
+ * VL-328 (AC8): при заданном `proxy` запрос идёт через undici `ProxyAgent` —
+ * тот же путь, которым бот работает в `vibelog bot` (VL-327: прямой доступ к
+ * api.telegram.org часто заблокирован, и проверка отдавала ложный timeout).
+ *
  * @param token — токен бота
  * @param opts.fetchImpl — подмена fetch (тесты)
  * @param opts.timeoutMs — таймаут запроса (дефолт 10 с)
+ * @param opts.proxy — URL прокси (http://host:port); пусто — напрямую
  */
 export async function checkTelegramToken(
   token: string,
-  opts: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+  opts: { fetchImpl?: typeof fetch; timeoutMs?: number; proxy?: string } = {},
 ): Promise<BotCheckResult> {
   if (!token || token.trim() === '') {
     return { ok: false, error: 'Токен не задан. Проверьте TELEGRAM_BOT_TOKEN.' };
   }
-  const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+  const proxy = (opts.proxy ?? '').trim();
+  // С прокси берём undici-fetch: globalThis.fetch не умеет dispatcher,
+  // а ProxyAgent — штатный способ пустить запрос через прокси в Node 20.
+  const fetchImpl = opts.fetchImpl ?? (proxy !== '' ? undiciFetch : globalThis.fetch);
+  const dispatcher = proxy !== '' ? new ProxyAgent(proxy) : undefined;
   const timeoutMs = opts.timeoutMs ?? PING_TIMEOUT_MS;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetchImpl(`https://api.telegram.org/bot${token.trim()}/getMe`, {
-      method: 'GET',
-      signal: controller.signal,
-    });
+    // Каст через any: типы Request у undici и globalThis.fetch несовместимы
+    // (прецедент — src/cli/commands/bot.ts)
+    const init: Record<string, unknown> = { method: 'GET', signal: controller.signal };
+    if (dispatcher !== undefined) init.dispatcher = dispatcher;
+    const res = (await fetchImpl(
+      `https://api.telegram.org/bot${token.trim()}/getMe`,
+      init as never,
+    )) as Response;
     const text = await res.text();
     let parsed: unknown = null;
     try {

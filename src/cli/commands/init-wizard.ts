@@ -24,7 +24,17 @@ import type { PromptOption, PromptSession } from '../prompt.js';
 import { loadGateways, resolveModelById } from '../../core/models.js';
 import { CATALOG_SEARCH_LIMIT, getCatalogAdapter } from '../../core/provider-catalog.js';
 import { readEnvFile } from '../../core/setup-secrets.js';
+import {
+  PROPOSED_SECRETS_LOCATIONS,
+  SECRETS_LOCATION_LABELS,
+} from '../../core/setup-secrets.js';
 import { readSettingsEnv } from '../../core/settings.js';
+import {
+  LLM_GATEWAY_PRESETS,
+  deriveApiKeyEnv,
+  deriveGatewayId,
+} from '../../core/llm-presets.js';
+import type { GatewayPreset } from '../../core/llm-presets.js';
 import type { SetupAnswers, SetupState, AgentId } from '../../core/setup.js';
 import { derivePrefix, validatePrefix, validateProjectName } from '../../core/setup.js';
 import type { SecretsLocation } from '../../core/setup-secrets.js';
@@ -71,89 +81,20 @@ function parseSecretsLocation(raw: string): SecretsLocation | null {
   return null;
 }
 
-/** Описание хардкод-шлюза LLM (VL-324). */
-interface GatewayPreset {
-  /** id в settings.gateways. */
-  id: string;
-  label: string;
-  /** base_url из пресета; у openai-совместимого пустой — спрашиваем. */
-  base_url?: string;
-  /** Дефолтное имя env-переменной с ключом. */
-  api_key_env: string;
-  /** true — модель/вендор вводит пользователь (Selectel, openai-совместимый). */
-  manualModel?: boolean;
-  /** true — можно загрузить каталог моделей RouterAI. */
-  catalog?: boolean;
-}
-
 /**
- * Хардкод-список шлюзов LLM (AC4).
- *
- * Почему хардкод, а не ввод id текстом: пользователь (см. описание VL-324)
- * не знает id/base_url шлюза наизусть — три реально используемых варианта
- * покрывают практику, а кастомный base_url остаётся третьим пунктом.
+ * VL-328 (AC9): перечень шлюзов, вывод id из домена и вывод имени env-ключа
+ * переехали в `core/llm-presets.ts` — их импортирует и веб-мастер `#/setup`.
+ * Здесь остаются только имена, которыми пользовались тесты VL-324
+ * (`gatewayIdFromUrl`, `defaultApiKeyEnv`, `LLM_GATEWAYS`): это тонкие
+ * алиасы ядра, а не вторая копия констант.
  */
-const LLM_GATEWAYS: GatewayPreset[] = [
-  {
-    id: 'routerai',
-    label: 'RouterAI (агрегатор моделей)',
-    base_url: 'https://routerai.ru/api/v1',
-    api_key_env: 'ROUTERAI_API_KEY',
-    catalog: true,
-  },
-  {
-    id: 'selectel_router',
-    label: 'Selectel ИИ-роутер',
-    base_url: 'https://api.selectel.ru/aig/v1',
-    api_key_env: 'SELECTEL_ROUTER_API_KEY',
-    manualModel: true,
-  },
-  {
-    id: 'openai_compatible',
-    label: 'OpenAI-совместимый (свой base_url)',
-    api_key_env: '',
-    manualModel: true,
-  },
-];
+const LLM_GATEWAYS: GatewayPreset[] = LLM_GATEWAY_PRESETS;
 
-/**
- * Выводит id шлюза из домена base_url (AC4): `https://api.cloud.ru/aig/v1`
- * → `cloud_ru`.
- *
- * Берём первое имя домена без служебных меток (`api`, `www`, `aig` — это
- * поддомены-функции, а не бренд), склеиваем через `_` и чистим до
- * [a-z0-9_]. Так `api.cloud.ru` и `cloud.ru` дают один id.
- */
-export function gatewayIdFromUrl(baseUrl: string): string {
-  let host = '';
-  try {
-    host = new URL(baseUrl.trim()).hostname.toLowerCase();
-  } catch {
-    // Не URL — попробуем вытащить домен регуляркой, чтобы не падать
-    const m = /^(?:https?:\/\/)?([^/?#]+)/i.exec(baseUrl.trim());
-    host = m ? m[1].toLowerCase() : '';
-  }
-  const SERVICE_LABELS = new Set(['api', 'www', 'aig', 'v1', 'llm', 'gateway', 'openai']);
-  const parts = host
-    .split('.')
-    .filter((p) => p !== '')
-    .filter((p) => !SERVICE_LABELS.has(p));
-  // Последний элемент — доменная зона (ru/com/ai); «ru» сам по себе не
-  // осмысленный id, но если ничего не осталось — используем, что есть
-  const usable = parts.length > 0 ? parts : host.split('.').filter((p) => p !== '');
-  const id = usable
-    .join('_')
-    .replace(/[^a-z0-9_]/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_|_$/g, '');
-  return id || 'custom';
-}
+/** Алиас ядра `deriveGatewayId` (прежнее имя в CLI-wizard-е, VL-324). */
+export const gatewayIdFromUrl = deriveGatewayId;
 
-/** Дефолтное имя env-переменной с ключом для произвольного шлюза (AC7). */
-export function defaultApiKeyEnv(gatewayId: string): string {
-  const upper = gatewayId.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
-  return `${upper || 'LLM'}_API_KEY`;
-}
+/** Алиас ядра `deriveApiKeyEnv` (прежнее имя в CLI-wizard-е, VL-324). */
+export const defaultApiKeyEnv = deriveApiKeyEnv;
 
 /** Имя модели без `@`-хвоста (VL-315: в `model` его быть не должно). */
 function stripModelSuffix(model: string): string {
@@ -452,12 +393,9 @@ export async function runWizard(
     // «ничего не писать, пользователь сам заводит переменные окружения»
     // (чтение и так идёт env → .env). Секция env в settings.json остаётся
     // читаемой ради старых проектов, но новым wizard-ом не предлагается.
-    const secretsOptions: PromptOption<SecretsLocation>[] = [
-      { value: 'system', label: 'env (Приоритет: env → .env)', hint: 'ничего не писать' },
-      { value: 'env', label: '.env (файл в корне проекта)', hint: 'по умолчанию' },
-      { value: 'settings', label: '.vibelog/settings.json (секция env)' },
-      { value: 'both', label: 'оба места (.env + settings.json)' },
-    ];
+    const secretsOptions: PromptOption<SecretsLocation>[] = PROPOSED_SECRETS_LOCATIONS.map(
+      (loc) => ({ value: loc, label: SECRETS_LOCATION_LABELS[loc] }),
+    );
     let secretsLocation: SecretsLocation = 'env';
     if (state.secrets.envKeys.length > 0) {
       const keep = await session.askConfirm(

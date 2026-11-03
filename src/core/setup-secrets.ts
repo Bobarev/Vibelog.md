@@ -39,6 +39,31 @@ export type SecretsLocation = 'system' | 'env' | 'settings' | 'both';
 /** Все допустимые локации (валидация флагов и тела web-формы). */
 export const SECRETS_LOCATIONS: SecretsLocation[] = ['system', 'env', 'settings', 'both'];
 
+/**
+ * Локации, которые ПРЕДЛАГАЮТ wizard-ы (VL-328, AC5).
+ *
+ * `settings` и `both` остаются в `SECRETS_LOCATIONS` и принимаются API/флагами
+ * ради старых проектов (VL-143), но в новом wizard-е не предлагаются: секция
+ * `env` внутри settings.json — лишний путь для секретов, читаемый только как
+ * fallback. Один перечень для консольного wizard-а и веб-мастера `#/setup`
+ * (AC9) — иначе фронты снова разъедутся.
+ */
+export const PROPOSED_SECRETS_LOCATIONS: ('system' | 'env')[] = ['system', 'env'];
+
+/**
+ * Подписи предлагаемых локаций (VL-328, AC5).
+ *
+ * Живут рядом с перечнем, чтобы консольный wizard и веб-мастер показывали
+ * ОДИН текст: пользователь, настроивший проект в терминале, узнает те же
+ * пункты в браузере. Формулировка «env (Приоритет: env → .env)» описывает не
+ * место записи, а фактический порядок чтения (VL-143) — иначе кажется, что
+ * пункт пишет в .env.
+ */
+export const SECRETS_LOCATION_LABELS: Record<'system' | 'env', string> = {
+  system: 'env (Приоритет: env → .env)',
+  env: '.env (файл в корне проекта)',
+};
+
 /** Шапка нового .env — объясняет, что файл не коммитится. */
 const ENV_HEADER = [
   '# Vibelog: секреты проекта (не коммитить — .env в .gitignore)',
