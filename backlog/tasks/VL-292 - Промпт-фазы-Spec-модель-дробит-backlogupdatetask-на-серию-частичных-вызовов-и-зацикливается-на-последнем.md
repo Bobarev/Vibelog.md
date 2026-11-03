@@ -5,13 +5,13 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-02 00:51'
-updated_date: '2026-11-02 01:06'
+updated_date: '2026-11-03 22:31'
 due_date: ''
 labels:
   - prompt
   - agent
 dependencies: []
-milestone: ''
+milestone: v1.12
 references: []
 priority: high
 type: bug

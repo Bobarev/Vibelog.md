@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-03 02:49'
-updated_date: '2026-11-03 13:37'
+updated_date: '2026-11-03 22:30'
 due_date: ''
 labels:
   - models
@@ -15,7 +15,7 @@ labels:
   - routerai
   - settings
 dependencies: []
-milestone: ''
+milestone: v1.12
 references: []
 priority: high
 type: feature

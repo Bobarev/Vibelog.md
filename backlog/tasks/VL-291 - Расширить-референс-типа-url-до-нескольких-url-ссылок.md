@@ -5,13 +5,13 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-02 00:42'
-updated_date: '2026-11-02 01:23'
+updated_date: '2026-11-03 22:31'
 due_date: ''
 labels:
   - core
   - mcp
 dependencies: []
-milestone: ''
+milestone: v1.12
 references: []
 priority: medium
 type: enhancement

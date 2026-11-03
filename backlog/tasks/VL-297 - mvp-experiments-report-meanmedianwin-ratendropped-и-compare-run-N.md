@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-02 02:04'
-updated_date: '2026-11-02 03:34'
+updated_date: '2026-11-03 22:30'
 due_date: ''
 labels:
   - mvp
   - experiments
 dependencies:
   - VL-296
-milestone: ''
+milestone: v1.12
 references: []
 priority: high
 type: feature

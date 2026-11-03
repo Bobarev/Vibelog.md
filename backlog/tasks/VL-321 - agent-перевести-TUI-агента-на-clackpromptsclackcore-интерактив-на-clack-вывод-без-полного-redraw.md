@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-03 18:39'
-updated_date: '2026-11-03 21:17'
+updated_date: '2026-11-03 22:30'
 due_date: ''
 labels:
   - agent
@@ -13,7 +13,7 @@ labels:
   - tui
   - ux
 dependencies: []
-milestone: ''
+milestone: v1.12
 references: []
 priority: medium
 type: feature

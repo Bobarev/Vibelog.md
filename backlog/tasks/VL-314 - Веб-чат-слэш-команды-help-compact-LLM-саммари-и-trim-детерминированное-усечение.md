@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-03 02:30'
-updated_date: '2026-11-03 08:59'
+updated_date: '2026-11-03 22:30'
 due_date: ''
 labels:
   - chat
@@ -14,7 +14,7 @@ labels:
   - context
   - llm
 dependencies: []
-milestone: ''
+milestone: v1.12
 references:
   - ref-24
 priority: medium

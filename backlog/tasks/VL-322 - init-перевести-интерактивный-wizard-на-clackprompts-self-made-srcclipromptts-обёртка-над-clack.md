@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-03 19:07'
-updated_date: '2026-11-03 20:01'
+updated_date: '2026-11-03 22:30'
 due_date: ''
 labels:
   - cli
@@ -13,7 +13,7 @@ labels:
   - wizard
   - ux
 dependencies: []
-milestone: ''
+milestone: v1.12
 references:
   - ref-25
 priority: medium
