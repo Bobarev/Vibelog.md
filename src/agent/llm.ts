@@ -25,7 +25,7 @@
 import { truncateToolOutput } from './tools.js';
 // VL-209: реестр models/providers; models.ts импортирует тип ApiMode из
 // этого файла только как type — рантайм-цикла нет
-import { resolveActiveModel } from '../core/models.js';
+import { resolveActiveModel, parseVendorSuffix } from '../core/models.js';
 
 /** Роль сообщения в диалоге (wire-формат OpenAI chat/completions). */
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
@@ -155,12 +155,18 @@ export interface LlmClientOptions {
    */
   apiMode?: ApiMode;
   /**
-   * Директория проекта для чтения секций models/providers settings.json
+   * Директория проекта для чтения секций models/gateways settings.json
    * (VL-209). Дефолт — process.cwd(); в branch-mode вызывающий передаёт
    * VIBELOG_CWD ?? cwd (settings.json в главном репо, не в worktree).
    * Без секции models — никакого эффекта (env-fallback).
    */
   cwd?: string;
+  /**
+   * VL-315: апстрим внутри шлюза (vendor). Переопределяет vendor активной
+   * модели; при наличии в теле запроса уходит структурное
+   * `provider: { order: [vendor], allow_fallbacks: false }`.
+   */
+  vendor?: string;
 }
 
 /** Публичный интерфейс клиента (loop зависит только от него). */
@@ -842,7 +848,14 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
     DEFAULT_BASE_URL
   ).replace(/\/+$/, '');
   const apiKey = options.apiKey ?? active?.apiKey ?? process.env.VIBELOG_LLM_API_KEY ?? '';
-  const model = options.model ?? active?.model ?? process.env.VIBELOG_LLM_MODEL ?? '';
+  // VL-315: `@`-хвост в имени модели (старый способ выбора апстрима)
+  // разбирается той же функцией, что и при чтении settings.json — правило
+  // одно (риск R3 плана). В wire-запрос имя уходит БЕЗ хвоста (AC7).
+  const rawModel = options.model ?? active?.model ?? process.env.VIBELOG_LLM_MODEL ?? '';
+  const parsedModel = parseVendorSuffix(rawModel);
+  const model = parsedModel.model;
+  // Приоритет апстрима: явная опция → vendor модели из settings → `@`-хвост
+  const vendor = options.vendor ?? active?.vendor ?? parsedModel.vendor;
   const fetchImpl: typeof fetch = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const maxRetries = options.maxRetries ?? MAX_RETRIES_DEFAULT;
   const baseRetryDelay = options.retryDelayMs ?? RETRY_DELAY_DEFAULT;
@@ -933,20 +946,33 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
     tools: ToolDef[] | undefined,
     opts: StreamChatOptions = {},
   ): Promise<LlmResponse> {
-    const buildBody = (msgs: ChatMessage[]): Record<string, unknown> =>
-      apiMode === 'responses'
+    const buildBody = (msgs: ChatMessage[]): Record<string, unknown> => {
+      // VL-315: выбор апстрима — СТРУКТУРНО в теле запроса (ref-18:
+      // provider.order/allow_fallbacks), а не `@`-хвостом в имени модели.
+      // Проверено живым запросом (VL-315, шаг 1): POST /v1/responses
+      // принимает provider — HTTP 200, meta.provider = запрошенный вендор;
+      // несуществующий вендор → 404 «No endpoints found matching your
+      // provider preferences». Поэтому деградация к `@`-хвосту для
+      // responses-режима НЕ нужна: поле уходит в оба режима.
+      const providerField = vendor
+        ? { provider: { order: [vendor], allow_fallbacks: false } }
+        : {};
+      return apiMode === 'responses'
         ? {
             model,
             input: messagesToInput(msgs, truncateToolOutput),
             ...(tools && tools.length > 0 ? { tools: toWireToolsResponses(tools) } : {}),
             // session_id в теле (VL-205, ref-18): приоритет тела над заголовком
             ...(sessionId ? { session_id: sessionId } : {}),
+            ...providerField,
           }
         : {
             model,
             messages: toWireMessages(msgs),
             ...(tools && tools.length > 0 ? { tools: toWireTools(tools) } : {}),
+            ...providerField,
           };
+    };
 
     // VL-178: внешний цикл усечения при отказе провайдера «high risk».
     // Детект — по телу не-ok ответа (apiError включает фрагмент тела, маркер

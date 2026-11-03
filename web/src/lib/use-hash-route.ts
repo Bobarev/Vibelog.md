@@ -7,7 +7,8 @@
  *
  * Маршруты: 'board' (#/ и всё, кроме явных), 'tasks' (#/tasks — таблица
  * задач с сортировкой/пагинацией, VL-175), 'settings' (#/settings,
- * .vibelog/settings.json), 'config' (#/config, backlog/config.yml — VL-165),
+ * .vibelog/settings.json), 'models' (#/models — каталог шлюза и CRUD моделей,
+ * VL-316), 'config' (#/config, backlog/config.yml — VL-165),
  * 'references' (#/references — список sources, VL-174), 'reference'
  * (#/reference/<id> — детальная страница, VL-174), 'documents'
  * (#/documents — список документов, VL-181) и 'document'
@@ -25,6 +26,7 @@ export type Route =
   | 'tasks'
   | 'chat'
   | 'settings'
+  | 'models'
   | 'config'
   | 'setup'
   | 'references'
@@ -38,6 +40,8 @@ export type Route =
 function parseHash(hash: string): Route {
   const path = hash.replace(/^#/, '').replace(/^\//, '');
   if (path === 'settings') return 'settings';
+  // Страница «Модели» (VL-316): #/models — каталог шлюза и CRUD моделей
+  if (path === 'models') return 'models';
   if (path === 'config') return 'config';
   // Мастер настройки проекта (VL-210): #/setup — точное совпадение
   if (path === 'setup') return 'setup';

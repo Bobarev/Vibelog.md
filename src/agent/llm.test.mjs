@@ -666,6 +666,62 @@ describe('отказ «high risk» → shrink-повтор (VL-178)', () => {
   });
 });
 
+// ── VL-315: апстрим (vendor) — структурно в теле, имя модели без @-хвоста ──
+
+describe('vendor в wire-body (VL-315)', () => {
+  /** Пустой успешный SSE-ответ (текста нет — нам нужен только wire-body). */
+  const okStream = () => sseResponse([JSON.stringify({ choices: [{ delta: { content: 'ok' } }] })]);
+
+  it('chat: provider.order + allow_fallbacks=false, имя модели без @-хвоста', async () => {
+    const { impl, state } = fakeFetch([okStream()]);
+    const client = createLlmClient({
+      ...CLIENT_OPTS,
+      model: 'deepseek/deepseek-v4.1-flash@provider=baidu&allow_fallbacks=false',
+      fetchImpl: impl,
+    });
+    await client.streamChat([{ role: 'user', content: 'x' }], []);
+    const body = JSON.parse(state.bodies[0]);
+    assert.equal(body.model, 'deepseek/deepseek-v4.1-flash', 'имя без @-хвоста');
+    assert.deepEqual(body.provider, { order: ['baidu'], allow_fallbacks: false });
+  });
+
+  it('responses: provider тоже уходит в тело (проверено живым запросом)', async () => {
+    const { impl, state } = fakeFetch([okStream()]);
+    const client = createLlmClient({
+      ...CLIENT_OPTS,
+      apiMode: 'responses',
+      vendor: 'makora',
+      fetchImpl: impl,
+    });
+    await client.streamChat([{ role: 'user', content: 'x' }], []);
+    const body = JSON.parse(state.bodies[0]);
+    assert.equal(body.model, 'm');
+    assert.deepEqual(body.provider, { order: ['makora'], allow_fallbacks: false });
+  });
+
+  it('без vendor поля provider в теле нет (поведение как раньше)', async () => {
+    const { impl, state } = fakeFetch([okStream()]);
+    const client = createLlmClient({ ...CLIENT_OPTS, fetchImpl: impl });
+    await client.streamChat([{ role: 'user', content: 'x' }], []);
+    const body = JSON.parse(state.bodies[0]);
+    assert.equal('provider' in body, false);
+  });
+
+  it('явная опция vendor приоритетнее @-хвоста', async () => {
+    const { impl, state } = fakeFetch([okStream()]);
+    const client = createLlmClient({
+      ...CLIENT_OPTS,
+      model: 'm@provider=baidu',
+      vendor: 'morph',
+      fetchImpl: impl,
+    });
+    await client.streamChat([{ role: 'user', content: 'x' }], []);
+    const body = JSON.parse(state.bodies[0]);
+    assert.equal(body.model, 'm');
+    assert.deepEqual(body.provider, { order: ['morph'], allow_fallbacks: false });
+  });
+});
+
 // ── VL-205: Responses API — переключатель api_mode ──
 
 describe('messagesToInput (VL-205)', () => {

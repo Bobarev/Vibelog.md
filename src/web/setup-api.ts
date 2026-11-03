@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { applySetup, readSetupState, SetupError } from '../core/setup.js';
 import type { AgentId, SetupAnswers, SetupMode } from '../core/setup.js';
 import type { SecretsLocation } from '../core/setup-secrets.js';
-import { loadProviders, resolveActiveModel, resolveModelById } from '../core/models.js';
+import { loadGateways, resolveActiveModel, resolveModelById } from '../core/models.js';
 import { pingLlm, checkTelegramToken } from '../core/setup-check.js';
 import type { ApiResponse } from './api.js';
 
@@ -95,39 +95,40 @@ export function parseSetupBody(
     if (token !== undefined || chats.length > 0) bot = { token, chats };
   }
 
-  // Провайдер: id обязателен, base_url обязателен для нового провайдера
-  let provider: SetupAnswers['provider'];
-  if (body.provider !== null && typeof body.provider === 'object' && !Array.isArray(body.provider)) {
-    const raw = body.provider as Record<string, unknown>;
+  // Шлюз (VL-315; раньше provider): id обязателен, base_url обязателен для нового
+  let gateway: SetupAnswers['gateway'];
+  if (body.gateway !== null && typeof body.gateway === 'object' && !Array.isArray(body.gateway)) {
+    const raw = body.gateway as Record<string, unknown>;
     const id = typeof raw.id === 'string' ? raw.id.trim() : '';
-    if (id === '') return { error: 'provider.id: не задан идентификатор провайдера' };
-    const known = loadProviders(cwd)[id];
+    if (id === '') return { error: 'gateway.id: не задан идентификатор шлюза' };
+    const known = loadGateways(cwd)[id];
     const baseUrl = typeof raw.base_url === 'string' && raw.base_url !== ''
       ? raw.base_url
       : known?.base_url ?? '';
     if (baseUrl === '') {
-      return { error: `Провайдер ${id} не найден. Добавьте: vibelog provider add ${id} --base-url <url>` };
+      return { error: `Шлюз ${id} не найден. Добавьте секцию gateways.${id} в .vibelog/settings.json` };
     }
     const apiKeyEnv = typeof raw.api_key_env === 'string' && raw.api_key_env !== ''
       ? raw.api_key_env
       : known?.api_key_env;
     const apiKey = typeof raw.apiKey === 'string' && raw.apiKey !== '' ? raw.apiKey : undefined;
-    provider = { id, base_url: baseUrl, api_key_env: apiKeyEnv, apiKey };
+    gateway = { id, base_url: baseUrl, api_key_env: apiKeyEnv, apiKey };
   }
 
-  // Модель: id + provider + wire-имя
+  // Модель: id + gateway (+ vendor) + wire-имя
   let model: SetupAnswers['model'];
   if (body.model !== null && typeof body.model === 'object' && !Array.isArray(body.model)) {
     const raw = body.model as Record<string, unknown>;
     const id = typeof raw.id === 'string' ? raw.id.trim() : '';
     if (id === '') return { error: 'model.id: не задан идентификатор модели' };
     const existing = readSetupState(cwd).models.available[id];
-    const providerId = typeof raw.provider === 'string' && raw.provider !== ''
-      ? raw.provider
-      : provider?.id ?? existing?.provider ?? '';
-    if (providerId === '') {
-      return { error: `Модель ${id}: не указан провайдер` };
+    const gatewayId = typeof raw.gateway === 'string' && raw.gateway !== ''
+      ? raw.gateway
+      : gateway?.id ?? existing?.gateway ?? '';
+    if (gatewayId === '') {
+      return { error: `Модель ${id}: не указан шлюз (gateway)` };
     }
+    const vendorRaw = typeof raw.vendor === 'string' ? raw.vendor.trim() : '';
     const apiModeRaw = typeof raw.api_mode === 'string' ? raw.api_mode : '';
     if (apiModeRaw !== '' && apiModeRaw !== 'chat' && apiModeRaw !== 'responses') {
       return { error: 'model.api_mode: ожидается chat|responses' };
@@ -135,7 +136,8 @@ export function parseSetupBody(
     model = {
       id,
       label: typeof raw.label === 'string' && raw.label !== '' ? raw.label : existing?.label,
-      provider: providerId,
+      gateway: gatewayId,
+      ...(vendorRaw !== '' ? { vendor: vendorRaw } : existing?.vendor ? { vendor: existing.vendor } : {}),
       model: typeof raw.model === 'string' && raw.model !== '' ? raw.model : existing?.model ?? id,
       api_mode: apiModeRaw === 'responses' ? 'responses' : apiModeRaw === 'chat' ? 'chat' : existing?.api_mode,
     };
@@ -150,7 +152,7 @@ export function parseSetupBody(
       defaultAgent: defaultAgentRaw !== '' ? (defaultAgentRaw as AgentId) : undefined,
       secretsLocation: secretsRaw as SecretsLocation,
       bot,
-      provider,
+      gateway,
       model,
       mcp: body.mcp !== false,
       force: body.force === true,
@@ -174,7 +176,7 @@ export function handleSetupApi(
 
   if (method === 'GET') {
     const state = readSetupState(cwd);
-    const providers = loadProviders(cwd);
+    const gateways = loadGateways(cwd);
     return {
       status: 200,
       body: {
@@ -191,7 +193,7 @@ export function handleSetupApi(
         },
         bot: state.bot,
         // Провайдеры — БЕЗ значений ключей: только факт наличия (паттерн /api/models)
-        providers: Object.entries(providers).map(([id, p]) => ({
+        gateways: Object.entries(gateways).map(([id, p]) => ({
           id,
           base_url: p.base_url,
           api_key_env: p.api_key_env ?? null,
@@ -202,7 +204,8 @@ export function handleSetupApi(
           available: Object.entries(state.models.available).map(([id, m]) => ({
             id,
             label: m.label ?? id,
-            provider: m.provider,
+            gateway: m.gateway,
+            ...(m.vendor ? { vendor: m.vendor } : {}),
             model: m.model,
             api_mode: m.api_mode ?? 'chat',
           })),

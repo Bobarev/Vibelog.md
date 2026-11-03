@@ -267,7 +267,7 @@ export function SettingsPage() {
         <CardHeader>
           <CardTitle>Модель LLM</CardTitle>
           <CardDescription>
-            Активная модель для фаз и чата (секции models/providers
+            Активная модель для фаз и чата (секции models/gateways
             settings.json). Ключи хранятся в env — здесь не отображаются.
           </CardDescription>
         </CardHeader>
@@ -287,7 +287,7 @@ export function SettingsPage() {
                   <SelectContent>
                     {models.available.map((m) => (
                       <SelectItem key={m.id} value={m.id}>
-                        {m.label} ({m.provider}, {m.api_mode})
+                        {m.label} ({m.gateway}, {m.api_mode})
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -295,12 +295,12 @@ export function SettingsPage() {
               </div>
               {(() => {
                 const active = models.available.find((m) => m.id === models.default);
-                const provider = active && models.providers.find((p) => p.id === active.provider);
-                if (!provider) return null;
+                const gateway = active && models.gateways.find((p) => p.id === active.gateway);
+                if (!gateway) return null;
                 return (
                   <p className="text-muted-foreground text-xs">
-                    Провайдер {provider.id}: {provider.base_url} — ключ{" "}
-                    {provider.keySet ? "задан" : "НЕ ЗАДАН (env / .env / settings.json)"}
+                    Шлюз {gateway.id}: {gateway.base_url} — ключ{" "}
+                    {gateway.keySet ? "задан" : "НЕ ЗАДАН (env / .env / settings.json)"}
                   </p>
                 );
               })()}

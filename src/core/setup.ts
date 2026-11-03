@@ -21,8 +21,8 @@ import { findBacklogDir } from './paths.js';
 import { getGitUserName } from './git.js';
 import { saveProjectSettings } from './project-settings.js';
 import { loadSettings, readSettingsEnv, saveSettingsPatch } from './settings.js';
-import { loadModels, loadProviders } from './models.js';
-import type { ModelsConfig, ProviderConfig } from './models.js';
+import { loadGateways, loadModels } from './models.js';
+import type { GatewayConfig, ModelsConfig } from './models.js';
 import { loadWorkflows } from './workflow.js';
 import { readEnvFile, writeSecrets } from './setup-secrets.js';
 import type { SecretsLocation } from './setup-secrets.js';
@@ -46,11 +46,15 @@ export interface SetupAnswers {
   defaultAgent?: AgentId;
   secretsLocation: SecretsLocation;
   bot?: { token?: string; chats: number[] };
-  provider?: { id: string; base_url: string; api_key_env?: string; apiKey?: string };
+  /** VL-315: шлюз (раньше provider). */
+  gateway?: { id: string; base_url: string; api_key_env?: string; apiKey?: string };
   model?: {
     id: string;
     label?: string;
-    provider: string;
+    /** VL-315: id шлюза (раньше provider). */
+    gateway: string;
+    /** VL-315: апстрим внутри шлюза (необязателен). */
+    vendor?: string;
     model: string;
     api_mode?: 'chat' | 'responses';
   };
@@ -69,7 +73,8 @@ export interface SetupState {
   defaultAgent?: string;
   secrets: { envFile: boolean; envKeys: string[]; settingsEnvKeys: string[] };
   bot: { configured: boolean; chats: number[] };
-  providers: Record<string, ProviderConfig>;
+  /** VL-315: шлюзы (раньше providers). */
+  gateways: Record<string, GatewayConfig>;
   models: ModelsConfig;
   mcp: { qwen: boolean; opencode: boolean };
   /** Текст проблемы с backlog/config.yml (битый YAML) — wizard её покажет. */
@@ -175,7 +180,7 @@ export function readSetupState(cwd: string, modeOverride?: SetupMode): SetupStat
 
   // --- settings.json: провайдеры, модели, секреты, бот, MCP ---
   const settings = loadSettings(cwd);
-  const providers = loadProviders(cwd);
+  const gateways = loadGateways(cwd);
   const models = loadModels(cwd);
   const settingsEnv = readSettingsEnv(cwd);
   const envFile = readEnvFile(cwd);
@@ -220,7 +225,7 @@ export function readSetupState(cwd: string, modeOverride?: SetupMode): SetupStat
       settingsEnvKeys: Object.keys(settingsEnv),
     },
     bot: { configured: botConfigured, chats },
-    providers,
+    gateways,
     models,
     mcp: {
       qwen: hasVibelogMcp(cwd, 'qwen'),
@@ -360,7 +365,7 @@ export function applySetup(cwd: string, answers: SetupAnswers): SetupResult {
     }
   }
 
-  // --- 2. settings.json: default_agent, providers, models ---
+  // --- 2. settings.json: default_agent, gateways, models ---
   const settings = loadSettings(cwd);
   const patch: Record<string, unknown> = {};
 
@@ -382,17 +387,22 @@ export function applySetup(cwd: string, answers: SetupAnswers): SetupResult {
     }
   }
 
-  // providers: дополняем, существующий id не перезаписываем без force
-  if (answers.provider) {
-    const currentProviders = (settings.providers ?? {}) as Record<string, unknown>;
-    const id = answers.provider.id;
-    if (currentProviders[id] !== undefined && !answers.force) {
-      result.skipped.push(`providers.${id} (уже настроен)`);
+  // gateways: дополняем, существующий id не перезаписываем без force.
+  // VL-315: читаем оба ключа (gateways приоритетнее providers), пишем только
+  // gateways — старый ключ остаётся как есть, чтобы не потерять записи.
+  if (answers.gateway) {
+    const currentGateways = {
+      ...((settings.providers ?? {}) as Record<string, unknown>),
+      ...((settings.gateways ?? {}) as Record<string, unknown>),
+    };
+    const id = answers.gateway.id;
+    if (currentGateways[id] !== undefined && !answers.force) {
+      result.skipped.push(`gateways.${id} (уже настроен)`);
     } else {
-      const entry: Record<string, unknown> = { base_url: answers.provider.base_url };
-      if (answers.provider.api_key_env) entry.api_key_env = answers.provider.api_key_env;
-      patch.providers = { ...currentProviders, [id]: entry };
-      result.written.push(`.vibelog/settings.json (providers.${id})`);
+      const entry: Record<string, unknown> = { base_url: answers.gateway.base_url };
+      if (answers.gateway.api_key_env) entry.api_key_env = answers.gateway.api_key_env;
+      patch.gateways = { ...currentGateways, [id]: entry };
+      result.written.push(`.vibelog/settings.json (gateways.${id})`);
     }
   }
 
@@ -406,9 +416,10 @@ export function applySetup(cwd: string, answers: SetupAnswers): SetupResult {
       result.skipped.push(`models.available.${id} (уже настроена)`);
     } else {
       const entry: Record<string, unknown> = {
-        provider: answers.model.provider,
+        gateway: answers.model.gateway,
         model: answers.model.model,
       };
+      if (answers.model.vendor) entry.vendor = answers.model.vendor;
       if (answers.model.label) entry.label = answers.model.label;
       if (answers.model.api_mode) entry.api_mode = answers.model.api_mode;
       nextAvailable[id] = entry;
@@ -426,8 +437,8 @@ export function applySetup(cwd: string, answers: SetupAnswers): SetupResult {
   // --- 3. секреты (только имена ключей в отчёте) ---
   const secrets: Record<string, string> = {};
   if (answers.bot?.token) secrets.TELEGRAM_BOT_TOKEN = answers.bot.token;
-  if (answers.provider?.apiKey && answers.provider.api_key_env) {
-    secrets[answers.provider.api_key_env] = answers.provider.apiKey;
+  if (answers.gateway?.apiKey && answers.gateway.api_key_env) {
+    secrets[answers.gateway.api_key_env] = answers.gateway.apiKey;
   }
   if (Object.keys(secrets).length > 0) {
     const res = writeSecrets(cwd, secrets, answers.secretsLocation);
@@ -481,19 +492,19 @@ export function formatSetupLog(answers: SetupAnswers, state: SetupState, cwd: st
     : answers.agents
         .map((a) => (a === answers.defaultAgent ? `${a} (default)` : a))
         .join(', ');
-  const provider = answers.provider ? answers.provider.id : '—';
+  const gateway = answers.gateway ? answers.gateway.id : '—';
   const model = answers.model ? answers.model.id : '—';
   const bot = answers.bot?.token ? 'да' : 'нет';
   const mcp = answers.mcp && answers.agents.some((a) => MCP_AGENTS.includes(a)) ? 'да' : 'нет';
 
   const lines = [
     `Режим: ${answers.mode}${answers.mode === 'upgrade' ? ' (backlog/ найден)' : ''}. ` +
-      `Агенты: ${agents}. Провайдер: ${provider}, модель: ${model}. ` +
+      `Агенты: ${agents}. Шлюз: ${gateway}, модель: ${model}. ` +
       `Секреты: ${secretsLabel(answers.secretsLocation)}. Бот: ${bot}. MCP: ${mcp}`,
   ];
 
   if (answers.mode === 'upgrade') {
-    const providersCount = Object.keys(state.providers).length;
+    const gatewaysCount = Object.keys(state.gateways).length;
     const modelsCount = Object.keys(state.models.available).length;
     let workflowsLabel = '—';
     try {
@@ -503,7 +514,7 @@ export function formatSetupLog(answers: SetupAnswers, state: SetupState, cwd: st
       workflowsLabel = '—';
     }
     lines.push(
-      `Существующие настройки: providers=${providersCount > 0 ? 'да' : 'нет'}, ` +
+      `Существующие настройки: gateways=${gatewaysCount > 0 ? 'да' : 'нет'}, ` +
         `models=${modelsCount}, workflows=${workflowsLabel}. Дополняю недостающее`,
     );
   }

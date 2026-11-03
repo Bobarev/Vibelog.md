@@ -60,7 +60,7 @@ interface FormState {
   botEnabled: boolean
   botToken: string
   botChats: string
-  providerId: string
+  gatewayId: string
   baseUrl: string
   apiKeyEnv: string
   apiKey: string
@@ -72,7 +72,7 @@ interface FormState {
 /** Состояние → форма (текущие значения как дефолты). */
 function toFormState(s: SetupStateData): FormState {
   const enabled = s.agents.filter((a) => a.enabled).map((a) => a.id)
-  const firstProvider = s.providers[0]
+  const firstGateway = s.gateways[0]
   const firstModel = s.models.available[0]
   return {
     projectName: s.projectName,
@@ -83,9 +83,9 @@ function toFormState(s: SetupStateData): FormState {
     botEnabled: s.bot.configured,
     botToken: "",
     botChats: s.bot.chats.join(","),
-    providerId: firstProvider?.id ?? "",
-    baseUrl: firstProvider?.base_url ?? "",
-    apiKeyEnv: firstProvider?.api_key_env ?? "",
+    gatewayId: firstGateway?.id ?? "",
+    baseUrl: firstGateway?.base_url ?? "",
+    apiKeyEnv: firstGateway?.api_key_env ?? "",
     apiKey: "",
     modelId: s.models.default ?? firstModel?.id ?? "",
     apiMode: firstModel?.api_mode ?? "chat",
@@ -159,9 +159,9 @@ export function SetupPage() {
         bot: form.botEnabled
           ? { token: form.botToken || undefined, chats }
           : undefined,
-        provider: form.providerId
+        gateway: form.gatewayId
           ? {
-              id: form.providerId,
+              id: form.gatewayId,
               base_url: form.baseUrl,
               api_key_env: form.apiKeyEnv || undefined,
               apiKey: form.apiKey || undefined,
@@ -170,7 +170,7 @@ export function SetupPage() {
         model: form.modelId
           ? {
               id: form.modelId,
-              provider: form.providerId,
+              gateway: form.gatewayId,
               model: form.modelId,
               api_mode: form.apiMode,
             }
@@ -424,8 +424,8 @@ export function SetupPage() {
           <CardHeader>
             <CardTitle>LLM: провайдер и модель</CardTitle>
             <CardDescription>
-              {state.providers.length > 0
-                ? `Провайдеры: ${state.providers.map((p) => p.id).join(", ")}`
+              {state.gateways.length > 0
+                ? `Шлюзы: ${state.gateways.map((p) => p.id).join(", ")}`
                 : "Провайдеров пока нет — заполните id и base_url"}
             </CardDescription>
           </CardHeader>
@@ -434,8 +434,8 @@ export function SetupPage() {
               <Label htmlFor="setup-provider">Провайдер (id)</Label>
               <Input
                 id="setup-provider"
-                value={form.providerId}
-                onChange={(e) => set("providerId", e.target.value)}
+                value={form.gatewayId}
+                onChange={(e) => set("gatewayId", e.target.value)}
               />
             </div>
             <div className="space-y-1">

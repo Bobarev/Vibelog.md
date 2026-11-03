@@ -9,14 +9,14 @@
  * матчат тесты (cli.test.mjs: /VIBELOG_LLM_API_KEY/) и их видит пользователь.
  *
  * VL-209: два режима проверки. Если в settings.json настроен реестр
- * models/providers (resolveActiveModel вернул конфиг) — валидируются СЕКЦИИ
+ * models/gateways (resolveActiveModel вернул конфиг) — валидируются СЕКЦИИ
  * (провайдер существует, api_key_env задан) с новыми понятными текстами.
  * Нет секции models — СТАРОЕ поведение и старые тексты дословно 1:1
  * (fallback-контракт плана VL-209: env-only пользователи не ломаются).
  */
 
 import { loadSettings } from '../core/settings.js';
-import { findModelByProviderName, resolveActiveModel, resolveModelById, validateModelsConfig } from '../core/models.js';
+import { findModelByGatewayName, resolveActiveModel, resolveModelById, validateModelsConfig } from '../core/models.js';
 import type { ActiveModel } from '../core/models.js';
 import type { ApiMode } from './llm.js';
 import type { SessionMeta } from './session.js';
@@ -38,8 +38,10 @@ export interface ResolvedRunModel {
   label: string;
   /** Wire-имя модели (поле model запроса). */
   model: string;
-  /** id провайдера (только models-путь). */
-  providerId?: string;
+  /** id шлюза (только models-путь; VL-315 — раньше providerId). */
+  gatewayId?: string;
+  /** Апстрим внутри шлюза (VL-315); undefined — шлюз выбирает сам. */
+  vendor?: string;
   /** base_url провайдера (только models-путь); undefined — взять из env. */
   baseUrl?: string;
   /** API-ключ (только models-путь); undefined — взять из env. */
@@ -67,7 +69,8 @@ function fromActive(
     id: active.id,
     label: active.label,
     model: active.model,
-    providerId: active.providerId,
+    gatewayId: active.gatewayId,
+    ...(active.vendor !== undefined ? { vendor: active.vendor } : {}),
     baseUrl: active.baseUrl,
     apiKey: active.apiKey,
     apiKeyEnv: active.apiKeyEnv,
@@ -140,8 +143,10 @@ export function resolveRunModel(
       // затем по стабильной паре provider+wire-имя (id могли переименовать)
       let found =
         meta.model_id !== undefined ? resolveModelById(cwd, meta.model_id) : null;
-      if (found === null && meta.model_provider && meta.model_name) {
-        found = findModelByProviderName(cwd, meta.model_provider, meta.model_name);
+      // VL-315: model_gateway — новое имя, model_provider — deprecated-алиас
+      const metaGateway = meta.model_gateway ?? meta.model_provider;
+      if (found === null && metaGateway && meta.model_name) {
+        found = findModelByGatewayName(cwd, metaGateway, meta.model_name);
       }
       if (found !== null) {
         const apiMode = meta.api_mode ?? found.apiMode;
@@ -165,7 +170,7 @@ export function resolveRunModel(
         );
       }
       // Мета есть, но модель/провайдер в settings больше не разрешаются — fail-open
-      const wanted = meta.model_id ?? `${meta.model_provider ?? '?'}/${meta.model_name ?? '?'}`;
+      const wanted = meta.model_id ?? `${metaGateway ?? '?'}/${meta.model_name ?? '?'}`;
       return fromActive(
         active,
         'settings',
@@ -236,7 +241,7 @@ export function modelLogLine(resolved: ResolvedRunModel): string {
  *
  * @param subject — получатель доступа в тексте ошибки: 'агенту' (headless
  *   запуск фаз) либо 'чату с агентом' (TUI-чат) — сохраняет старые формулировки
- * @param cwd — директория проекта для чтения settings.json (models/providers);
+ * @param cwd — директория проекта для чтения settings.json (models/gateways);
  *   в branch-mode вызывающий передаёт VIBELOG_CWD ?? cwd; необязателен —
  *   без него проверяется только env (старое поведение)
  * @param opts.active — VL-239: проверять КОНКРЕТНУЮ модель (модель сессии,
@@ -255,7 +260,7 @@ export function ensureLlmEnv(
   if (opts?.active !== undefined) {
     if (!opts.active.apiKey) {
       console.error(
-        `Ошибка: не задан API-ключ провайдера "${opts.active.providerId}" — ${subject} нужен доступ к LLM (env ${opts.active.apiKeyEnv ?? 'VIBELOG_LLM_API_KEY'}/.env/settings.json env-секция)`,
+        `Ошибка: не задан API-ключ шлюза "${opts.active.gatewayId}" — ${subject} нужен доступ к LLM (env ${opts.active.apiKeyEnv ?? 'VIBELOG_LLM_API_KEY'}/.env/settings.json env-секция)`,
       );
       return false;
     }
@@ -274,7 +279,7 @@ export function ensureLlmEnv(
       // если провайдер вообще без api_key_env и без api_key
       if (!active.apiKey) {
         console.error(
-          `Ошибка: не задан API-ключ провайдера "${active.providerId}" — ${subject} нужен доступ к LLM (env ${active.apiKeyEnv ?? 'VIBELOG_LLM_API_KEY'}/.env/settings.json env-секция)`
+          `Ошибка: не задан API-ключ шлюза "${active.gatewayId}" — ${subject} нужен доступ к LLM (env ${active.apiKeyEnv ?? 'VIBELOG_LLM_API_KEY'}/.env/settings.json env-секция)`
         );
         return false;
       }

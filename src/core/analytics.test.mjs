@@ -96,7 +96,7 @@ describe('getActiveModelPricing (VL-209)', () => {
 
   it('pricing активной модели из models.available[default]', () => {
     writeSettings({
-      providers: { p: { base_url: 'https://p/v1', api_key: 'k' } },
+      gateways: { p: { base_url: 'https://p/v1', api_key: 'k' } },
       models: {
         default: 'p/M',
         available: {
@@ -109,7 +109,7 @@ describe('getActiveModelPricing (VL-209)', () => {
 
   it('нет pricing у модели → fallback на legacy-секцию pricing по wire-имени', () => {
     writeSettings({
-      providers: { p: { base_url: 'https://p/v1', api_key: 'k' } },
+      gateways: { p: { base_url: 'https://p/v1', api_key: 'k' } },
       models: { default: 'p/M', available: { 'p/M': { provider: 'p', model: 'wire-name' } } },
       pricing: { 'wire-name': { input_per_1m: 1, output_per_1m: 2, cache_per_1m: 3 } },
     });

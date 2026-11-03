@@ -336,19 +336,19 @@ describe('учёт токенов сессии (VL-198)', () => {
     assert.equal(again.taskId, 'VL-251');
   });
 
-  it('VL-239: model-поля сессии (model_id/provider/name/api_mode) пишутся и переживают merge-обновления', async () => {
+  it('VL-239/VL-315: model-поля сессии (model_id/gateway/name/api_mode) пишутся и переживают merge-обновления', async () => {
     await saveSessionMeta(dir, 'agent-239', {
       taskId: 'VL-239',
       phase: 'plan',
       cwd: '/wt',
       model_id: 'pb/ModelB',
-      model_provider: 'pb',
+      model_gateway: 'pb',
       model_name: 'wire-b',
       api_mode: 'responses',
     });
     const created = loadSessionMetaSync(dir, 'agent-239');
     assert.equal(created.model_id, 'pb/ModelB');
-    assert.equal(created.model_provider, 'pb');
+    assert.equal(created.model_gateway, 'pb');
     assert.equal(created.model_name, 'wire-b');
     assert.equal(created.api_mode, 'responses');
     // Пост-ран пишет фактическую модель рана в `model` — модель СЕССИИ не трогает
@@ -359,7 +359,7 @@ describe('учёт токенов сессии (VL-198)', () => {
     });
     assert.equal(merged.model, 'wire-b');
     assert.equal(merged.model_id, 'pb/ModelB', 'модель сессии не перезаписана пост-раном');
-    assert.equal(merged.model_provider, 'pb');
+    assert.equal(merged.model_gateway, 'pb');
     assert.equal(merged.model_name, 'wire-b');
     assert.equal(merged.api_mode, 'responses');
     assert.equal(merged.taskId, 'VL-239');

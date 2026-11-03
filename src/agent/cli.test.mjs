@@ -630,7 +630,7 @@ describe('vibelog-agent CLI (VL-85)', () => {
   });
 
   it('VL-209: лог старта фазы «Модель: <label> (<id>), api_mode: …» из settings.json', async () => {
-    // Секции models/providers в testDir; env VIBELOG_LLM_MODEL убран —
+    // Секции models/gateways в testDir; env VIBELOG_LLM_MODEL убран —
     // источник модели ТОЛЬКО settings.json (models-путь)
     const env = llmEnv();
     delete env.VIBELOG_LLM_MODEL;
@@ -638,11 +638,11 @@ describe('vibelog-agent CLI (VL-85)', () => {
     writeFileSync(
       join(testDir, '.vibelog', 'settings.json'),
       JSON.stringify({
-        providers: { mockp: { base_url: `http://127.0.0.1:${mock.port}/v1`, api_key: 'test-key' } },
+        gateways: { mockp: { base_url: `http://127.0.0.1:${mock.port}/v1`, api_key: 'test-key' } },
         models: {
           default: 'mockp/Test/Model',
           available: {
-            'mockp/Test/Model': { label: 'Test Model', provider: 'mockp', model: 'test-model', api_mode: 'chat' },
+            'mockp/Test/Model': { label: 'Test Model', gateway: 'mockp', model: 'test-model', api_mode: 'chat' },
           },
         },
       }),
@@ -869,8 +869,8 @@ describe('vibelog-agent CLI (VL-85)', () => {
         models: {
           default: defaultId,
           available: {
-            'mockp/ModelA': { label: 'Model A', provider: 'mockp', model: 'wire-a', api_mode: 'chat' },
-            'mockp/ModelB': { label: 'Model B', provider: 'mockp', model: 'wire-b', api_mode: 'chat' },
+            'mockp/ModelA': { label: 'Model A', gateway: 'mockp', model: 'wire-a', api_mode: 'chat' },
+            'mockp/ModelB': { label: 'Model B', gateway: 'mockp', model: 'wire-b', api_mode: 'chat' },
           },
         },
       }),
@@ -885,7 +885,7 @@ describe('vibelog-agent CLI (VL-85)', () => {
     return env;
   }
 
-  it('VL-239 (AC1): мета сессии фиксирует model_id/model_provider/model_name/api_mode', async () => {
+  it('VL-239/VL-315 (AC1): мета сессии фиксирует model_id/model_gateway/model_name/api_mode', async () => {
     const projDir = mkdtempSync(join(tmpdir(), 'vibelog-agent-vl239meta-'));
     try {
       mkdirSync(join(projDir, 'backlog', 'tasks'), { recursive: true });
@@ -903,7 +903,7 @@ describe('vibelog-agent CLI (VL-85)', () => {
         readFileSync(join(projDir, '.vibelog', 'agent-sessions', `${sid}.meta.json`), 'utf-8'),
       );
       assert.equal(meta.model_id, 'mockp/ModelB');
-      assert.equal(meta.model_provider, 'mockp');
+      assert.equal(meta.model_gateway, 'mockp');
       assert.equal(meta.model_name, 'wire-b');
       assert.equal(meta.api_mode, 'chat');
       assert.equal(meta.taskId, 'VL-239');

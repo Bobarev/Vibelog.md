@@ -620,6 +620,8 @@ export async function main(argv: string[]): Promise<void> {
       ? { apiKey: resolvedModel.apiKey }
       : {}),
     ...(resolvedModel.source !== 'env' ? { model: resolvedModel.model } : {}),
+    // VL-315: апстрим модели сессии/настроек уходит структурно в теле запроса
+    ...(resolvedModel.vendor !== undefined ? { vendor: resolvedModel.vendor } : {}),
     apiMode: opts.apiMode ?? resolvedModel.apiMode,
   });
 
@@ -635,10 +637,10 @@ export async function main(argv: string[]): Promise<void> {
     // её из меты, а не текущий models.default. Для env-пути id/провайдера нет
     // (их неоткуда взять) — закрепляем хотя бы wire-имя (model_name).
     const modelFields: Partial<SessionMeta> = {
-      ...(resolvedModel.source !== 'env' && resolvedModel.providerId
+      ...(resolvedModel.source !== 'env' && resolvedModel.gatewayId
         ? {
             model_id: resolvedModel.id,
-            model_provider: resolvedModel.providerId,
+            model_gateway: resolvedModel.gatewayId,
             model_name: resolvedModel.model,
           }
         : resolvedModel.model

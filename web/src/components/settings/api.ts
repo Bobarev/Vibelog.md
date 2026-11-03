@@ -83,22 +83,29 @@ export interface ModelInfo {
   label: string;
   /** Короткое описание для второй строки пикера (VL-265), необязательно. */
   description?: string;
-  provider: string;
+  /** VL-315: id шлюза (раньше provider). */
+  gateway: string;
+  /** VL-315: апстрим внутри шлюза (необязателен). */
+  vendor?: string;
   api_mode: "chat" | "responses";
 }
 
-/** Провайдер: БЕЗ значений ключей — только факт их наличия. */
-export interface ProviderInfo {
+/** Шлюз: БЕЗ значений ключей — только факт их наличия. */
+export interface GatewayInfo {
   id: string;
   base_url: string;
   keySet: boolean;
 }
 
+/** @deprecated VL-315: переименовано в GatewayInfo. */
+export type ProviderInfo = GatewayInfo;
+
 /** Ответ GET /api/models. */
 export interface ModelsData {
   default: string | null;
   available: ModelInfo[];
-  providers: ProviderInfo[];
+  /** VL-315: шлюзы (раньше providers). */
+  gateways: GatewayInfo[];
 }
 
 /** Список моделей/провайдеров. Бросает при ошибке — вызывающий показывает сообщение. */

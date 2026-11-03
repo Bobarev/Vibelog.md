@@ -67,7 +67,7 @@ describe('VL-210 — ядро setup', () => {
     assert.ok(vb, 'vb всегда в списке');
     assert.equal(vb?.enabled, false, 'vb по умолчанию не отмечен');
     assert.equal(state.agents.find((a) => a.id === 'qwen'), undefined, 'qwen скрыт без .qwen/');
-    assert.deepEqual(state.providers, {});
+    assert.deepEqual(state.gateways, {});
     assert.equal(state.secrets.envFile, false);
   });
 
@@ -81,7 +81,7 @@ describe('VL-210 — ядро setup', () => {
     assert.equal(opencode?.reason, 'Скоро');
   });
 
-  it('readSetupState читает config.yml, providers, models, секреты и MCP', () => {
+  it('readSetupState читает config.yml, gateways, models, секреты и MCP', () => {
     mkdirSync(join(testDir, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(
       join(testDir, 'backlog', 'config.yml'),
@@ -92,7 +92,7 @@ describe('VL-210 — ядро setup', () => {
     writeFileSync(
       join(testDir, '.vibelog', 'settings.json'),
       JSON.stringify({
-        providers: { p1: { base_url: 'https://api.example/v1', api_key_env: 'P1_KEY' } },
+        gateways: { p1: { base_url: 'https://api.example/v1', api_key_env: 'P1_KEY' } },
         models: {
           default: 'p1/m1',
           available: { 'p1/m1': { provider: 'p1', model: 'm1', api_mode: 'chat' } },
@@ -113,7 +113,7 @@ describe('VL-210 — ядро setup', () => {
     assert.equal(state.mode, 'upgrade');
     assert.equal(state.projectName, 'Existing');
     assert.equal(state.prefix, 'EX');
-    assert.equal(Object.keys(state.providers).length, 1);
+    assert.equal(Object.keys(state.gateways).length, 1);
     assert.equal(state.models.default, 'p1/m1');
     assert.equal(state.bot.configured, true);
     assert.deepEqual(state.bot.chats, [1, 2]);
@@ -159,7 +159,7 @@ describe('VL-210 — ядро setup', () => {
     assert.equal(settings.default_agent, undefined);
   });
 
-  it('applySetup upgrade НЕ трогает задачи и существующие providers/models', () => {
+  it('applySetup upgrade НЕ трогает задачи и существующие gateways/models', () => {
     mkdirSync(join(testDir, 'backlog', 'tasks'), { recursive: true });
     writeFileSync(join(testDir, 'backlog', 'config.yml'), 'project_name: Old\ntask_prefix: OLD\n', 'utf-8');
     const taskPath = join(testDir, 'backlog', 'tasks', 'OLD-1 - Задача.md');
@@ -170,7 +170,7 @@ describe('VL-210 — ядро setup', () => {
     writeFileSync(
       join(testDir, '.vibelog', 'settings.json'),
       JSON.stringify({
-        providers: { p1: { base_url: 'https://old.example/v1' } },
+        gateways: { p1: { base_url: 'https://old.example/v1' } },
         models: { default: 'p1/m1', available: { 'p1/m1': { provider: 'p1', model: 'm1' } } },
       }),
       'utf-8',
@@ -183,15 +183,15 @@ describe('VL-210 — ядро setup', () => {
         projectName: 'Old',
         prefix: 'OLD',
         agents: ['qwen'],
-        provider: { id: 'p1', base_url: 'https://new.example/v1' },
-        model: { id: 'p1/m1', provider: 'p1', model: 'm1' },
+        gateway: { id: 'p1', base_url: 'https://new.example/v1' },
+        model: { id: 'p1/m1', gateway: 'p1', model: 'm1' },
       }),
     );
 
     assert.equal(readFileSync(taskPath, 'utf-8'), taskBefore, 'задача не изменилась');
     const settings = JSON.parse(readFileSync(join(testDir, '.vibelog', 'settings.json'), 'utf-8'));
-    assert.equal(settings.providers.p1.base_url, 'https://old.example/v1', 'провайдер не перезаписан');
-    assert.ok(result.skipped.some((s) => s.includes('providers.p1')));
+    assert.equal(settings.gateways.p1.base_url, 'https://old.example/v1', 'шлюз не перезаписан');
+    assert.ok(result.skipped.some((s) => s.includes('gateways.p1')));
     assert.ok(result.skipped.some((s) => s.includes('models.available.p1/m1')));
   });
 

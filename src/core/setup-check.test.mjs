@@ -15,7 +15,7 @@ function active(over = {}) {
   return {
     id: 'p1/m1',
     label: 'M1',
-    providerId: 'p1',
+    gatewayId: 'p1',
     model: 'm1',
     apiMode: 'chat',
     baseUrl: 'https://api.example/v1',

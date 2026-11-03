@@ -19,6 +19,7 @@ import { exec } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { handleApi } from './api.js';
 import { handleSetupCheckBot, handleSetupPing } from './setup-api.js';
+import { handleCatalogApi } from './catalog-api.js';
 import { runChat } from './chat.js';
 import { getAssetsHtml } from './assets.js';
 import { serveStatic } from './static.js';
@@ -139,6 +140,29 @@ export function startWebServer(
               if (!res.destroyed && !res.writableEnded) res.end();
             }
           })();
+          return;
+        }
+
+        // Async-эндпоинты каталога моделей (VL-316): ходят в сеть, поэтому не
+        // могут жить в синхронном handleApi. Ветка ДО общего вызова — иначе
+        // GET /api/catalog/models ушёл бы в handleApi и получил 404.
+        if (url.startsWith('/api/catalog/')) {
+          handleCatalogApi(method, url, parsed, cwd, queryString)
+            .then((result) => {
+              if (res.destroyed || res.writableEnded) return;
+              if (result === null) {
+                res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ error: 'Not found' }));
+                return;
+              }
+              res.writeHead(result.status, { 'Content-Type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify(result.body));
+            })
+            .catch((err) => {
+              if (res.destroyed || res.writableEnded) return;
+              res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify({ error: (err as Error)?.message ?? String(err) }));
+            });
           return;
         }
 
