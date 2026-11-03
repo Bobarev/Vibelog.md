@@ -1320,12 +1320,24 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       if (!toolError) {
         let applied = false;
         let noop = false;
+        // VL-318: третий исход — JSON-отказ (ok:false, ackError/ackDenied).
+        // Такой ответ НЕ применён: сигнатура не пополняет appliedSignatures,
+        // повтор исполняется заново и модель получает свежий текст ошибки.
+        let failed = false;
         try {
           const parsed = JSON.parse(output) as { ok?: unknown; noop?: unknown } | null;
           if (parsed && typeof parsed === 'object' && parsed.noop === true) {
             noop = true;
           } else if (parsed && typeof parsed === 'object' && parsed.ok === true) {
             applied = true;
+          } else if (parsed && typeof parsed === 'object' && parsed.ok === false) {
+            // VL-318: ackError/ackDenied — отказ, а не «применено». Инцидент
+            // agent-1793705489953 (Close VL-316): git_commit вернул
+            // {"ok":false,"error":"… передай allowForeign: true"}, страховка
+            // VL-306 сочла его применённым, и модель 4 раза получила ложное
+            // «уже применено» вместо подсказки, как починить вызов → кап
+            // MAX_APPLIED_REPEATS_PER_RUN → fail.
+            failed = true;
           }
         } catch {
           // не JSON — решает страховка ниже
@@ -1345,7 +1357,9 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         //   упавшего вызова закрывал бы фазу как успешную.
         // VL-309: noop-JSON страховкой НЕ перекрывается — noop означает
         // «изменений нет», его нельзя превращать в «применён».
-        if (!applied && !noop && spec && isMcpWriteTool(call.name) && !/^\s*Ошибка/.test(output)) {
+        // VL-318: JSON-отказ (ok:false) — тоже не «применено»: страховка
+        // существует ровно для не-JSON ответов, а не для распознанного отказа.
+        if (!applied && !noop && !failed && spec && isMcpWriteTool(call.name) && !/^\s*Ошибка/.test(output)) {
           applied = true;
         }
         if (applied) {

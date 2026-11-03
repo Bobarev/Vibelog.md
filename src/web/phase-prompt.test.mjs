@@ -1247,3 +1247,49 @@ describe('VL-312 — структура шаблонов фаз и отсутс�
   });
 });
 
+describe('VL-318 — git_commit документации в close-шаблонах несёт allowForeign', () => {
+  /**
+   * Вырезает из текста шаблона все вызовы `git_commit {…}` с балансировкой
+   * фигурных скобок: JSON-аргументы в шаблонах многострочные и содержат
+   * вложенные объекты/массивы, поэтому регуляркой «до конца строки» не взять.
+   */
+  function gitCommitCalls(text) {
+    const calls = [];
+    const marker = 'git_commit {';
+    let from = 0;
+    for (;;) {
+      const start = text.indexOf(marker, from);
+      if (start === -1) break;
+      let depth = 0;
+      let end = -1;
+      for (let i = start + marker.length - 1; i < text.length; i++) {
+        if (text[i] === '{') depth++;
+        else if (text[i] === '}') {
+          depth--;
+          if (depth === 0) {
+            end = i;
+            break;
+          }
+        }
+      }
+      if (end === -1) break;
+      calls.push(text.slice(start, end + 1));
+      from = end + 1;
+    }
+    return calls;
+  }
+
+  it('AC5: каждый git_commit с CHANGELOG.md/backlog/docs/ в путях передаёт allowForeign: true', () => {
+    for (const file of ['phase-close.md', 'phase-close-worktree.md']) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      const calls = gitCommitCalls(text);
+      assert.ok(calls.length > 0, `${file}: вызовы git_commit найдены`);
+      const docCalls = calls.filter((c) => c.includes('CHANGELOG.md') || c.includes('backlog/docs/'));
+      assert.ok(docCalls.length > 0, `${file}: шаг документации коммитит CHANGELOG.md/backlog/docs`);
+      for (const call of docCalls) {
+        assert.match(call, /"allowForeign":\s*true/, `${file}: коммит документации без allowForeign — ${call.slice(0, 120)}`);
+      }
+    }
+  });
+});
+

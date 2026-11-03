@@ -2402,3 +2402,74 @@ describe('VL-306 — страховка appliedSignatures для не-JSON от�
     assert.match(res.result, /Loop detection/);
   });
 });
+
+describe('VL-318 — ackError (ok:false) не считается применённым', () => {
+  it('AC1/AC2/AC3: регресс сессии agent-1793705489953 — повтор git_commit с ackError исполняется заново и отдаёт текст ошибки', async () => {
+    // Реальная сессия Close VL-316: git_commit вернул
+    // {"ok":false,"error":"… передай allowForeign: true"}, страховка VL-306
+    // сочла JSON-отказ «применённым», и модель вместо подсказки получала
+    // «вызов уже применён ранее» → 4 повтора → кап applied-повторов → fail.
+    const state = { calls: 0 };
+    const spec = {
+      name: 'git_commit',
+      description: 'write-заглушка с ackError',
+      inputSchema: { type: 'object', properties: { paths: { type: 'array' }, message: { type: 'string' } } },
+      handler: async (args) => {
+        state.calls++;
+        if (args.allowForeign !== true) {
+          return JSON.stringify({
+            ok: false,
+            error: 'git_commit: эти файлы не принадлежат задаче VL-316: CHANGELOG.md; передай allowForeign: true',
+          });
+        }
+        return JSON.stringify({ ok: true, message: 'закоммичено' });
+      },
+    };
+    const bad = { paths: ['CHANGELOG.md'], message: 'docs: VL-316 — документация' };
+    const good = { ...bad, allowForeign: true };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'git_commit', arguments: bad }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'git_commit', arguments: bad }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'git_commit', arguments: good }] },
+      { text: 'Готово' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false, `ран не должен падать: ${res.result}`);
+    assert.equal(res.result, 'Готово');
+    // Повтор отказа исполнен заново (не заблокирован как «уже применён»).
+    assert.equal(state.calls, 3, 'оба отказа и успешный вызов дошли до handler');
+    const second = res.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'c2');
+    assert.ok(second, 'модель получила tool-результат на повтор');
+    assert.match(String(second.content), /allowForeign: true/, 'модель видит исходный текст ошибки');
+    for (const m of res.messages) {
+      assert.doesNotMatch(String(m.content ?? ''), /уже применён ранее/, 'ложной директивы «уже применено» нет');
+    }
+  });
+
+  it('AC3: 4 дословных повтора ackError → обычный loop detection, а не кап applied-повторов', async () => {
+    const state = { calls: 0 };
+    const spec = {
+      name: 'git_commit',
+      description: 'write-заглушка с ackError',
+      inputSchema: { type: 'object', properties: { paths: { type: 'array' } } },
+      handler: async () => {
+        state.calls++;
+        return JSON.stringify({ ok: false, error: 'git_commit: чужой путь; передай allowForeign: true' });
+      },
+    };
+    const same = { paths: ['CHANGELOG.md'], message: 'docs: VL-316' };
+    const { llm } = fakeLlm(
+      Array.from({ length: 6 }, (_, i) => ({
+        text: '',
+        toolCalls: [{ id: `c${i + 1}`, name: 'git_commit', arguments: same }],
+      })),
+    );
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, true, 'вечный повтор отказа обязан прерывать ран');
+    assert.match(res.result, /Loop detection/, 'причина — loop detection, а не кап applied-повторов');
+    assert.doesNotMatch(res.result, /уже применённый вызов/);
+    assert.ok(state.calls >= 2, `отказ исполнялся повторно (${state.calls})`);
+    const first = res.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'c1');
+    assert.match(String(first.content), /allowForeign: true/, 'текст ошибки дошёл до модели');
+  });
+});
