@@ -1,11 +1,11 @@
 ---
 id: VL-318
 title: ackError-ответ write-инструмента попадает в appliedSignatures как «применён» — модель теряет текст ошибки и падает по капу повторов (Close VL-316)
-status: Review
+status: In Progress
 assignee: []
 reporter: ''
 created_date: '2026-11-03 16:11'
-updated_date: '2026-11-03 16:48'
+updated_date: '2026-11-03 17:43'
 due_date: ''
 labels:
   - agent
@@ -30,13 +30,13 @@ modified_files:
 lessons:
   - lesson-191
 token_usage:
-  input: 3685726
-  output: 18584
-  cache: 3570688
-  total: 3704310
-  requests: 79
-  duration_ms: 650609
-  reasoning: 4633
+  input: 4087528
+  output: 21446
+  cache: 3898368
+  total: 4108974
+  requests: 89
+  duration_ms: 822475
+  reasoning: 6574
   by_phase:
     code:
       input: 1121588
@@ -44,10 +44,10 @@ token_usage:
       cache: 1083392
       requests: 24
     close:
-      input: 2564138
-      output: 9825
-      cache: 2487296
-      requests: 55
+      input: 2965940
+      output: 12687
+      cache: 2814976
+      requests: 65
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
