@@ -1,54 +1,40 @@
 /**
- * TUI агента на чистом Node.js (VL-155): стриминг токенов, карточки tool
- * calls, счётчики и блок ошибок. Zero deps — без Ink/React: только ANSI-коды
- * и записи в stderr (Ink 7 требует Node >=22 и ломал установку на Node 20).
+ * TUI агента (VL-321): append-вывод + статусная строка, интерактив на clack.
  *
- * Контракт вывода (унаследован от Ink-версии VL-86): TUI рендерится ТОЛЬКО
- * в интерактивном режиме (cli.ts: stdout.isTTY, без --headless/--output-format
- * json/--no-tui) и живёт на stderr в альтернативном буфере терминала — stdout
- * остаётся под единственную JSON-строку результата (контракт оркестратора
- * VL-63 не меняется).
+ * История: VL-86 — Ink/React; VL-155 — собственный ANSI-рендер на чистом
+ * Node.js; VL-321 — интерактивные элементы переведены на `@clack/prompts`
+ * (`intro`/`outro`/`log.*`/`spinner`), ввод чата — промпт на `@clack/core`
+ * (`tui-input.ts`), а вывод перестал быть «кадром».
  *
- * Обновление — на событиях loop (VL-83): onToken/onToolStart/onToolEnd/
- * onUsage/onError. Состояние — простые переменные в store; колбэки loop
- * вызываются вне какого-либо рантайма и напрямую меняют состояние + вызывают
- * redraw(). Стриминг токенов дописывается в stderr напрямую (без полной
- * перерисовки); карточки/счётчики/ошибки — полная перерисовка кадра.
+ * Почему без полного redraw: прежняя модель рисовала ВЕСЬ экран заново
+ * (`\x1b[2J\x1b[H`) на каждом событии и на тике раз в секунду — отсюда
+ * мигание, «прыгающий» курсор и потерянный скролл. Теперь вывод append-only
+ * (как в обычном терминале): шапка один раз, токены и карточки дописываются
+ * в конец, а обновляется только нижняя строка счётчиков (`\r\x1b[2K`) —
+ * она не мешает уже выведенному тексту и не стирает его.
+ *
+ * Контракт вывода (унаследован от VL-86/VL-155) не меняется: TUI рендерится
+ * ТОЛЬКО в интерактивном режиме (cli.ts: stdout.isTTY, без --headless/
+ * --output-format json/--no-tui) и живёт на stderr в альтернативном буфере —
+ * stdout остаётся под единственную JSON-строку результата (контракт
+ * оркестратора VL-63). `TuiHandle`, `renderTui`, `renderInteractiveTui` и
+ * `InteractiveTuiHandle.setBusy` сохранены дословно — cli.ts и interactive.ts
+ * не переписываются.
  */
+import { intro, log, outro, spinner } from '@clack/prompts';
 import type { LlmUsage } from './llm.js';
 import {
-  assembleAssistantText,
   formatCounters,
-  formatErrorBlock,
   formatToolCard,
   formatUserMessage,
   type ToolCallView,
 } from './tui-format.js';
+import { createChatPrompt, createConfirmPrompt } from './tui-input.js';
 
-/** Хвост стриминга: сколько последних строк текста показывать (автопрокрутка). */
-const STREAM_TAIL_LINES = 10;
-
-/** Сколько последних записей ленты чата показывать (VL-113). */
-const CHAT_VISIBLE = 30;
-
-/** Сколько последних карточек tool calls показывать. */
-const TOOL_CARDS_VISIBLE = 8;
-
-/** Сколько последних ошибок показывать. */
-const ERRORS_VISIBLE = 5;
-
-/** Максимум символов в строке ввода (защита от случайной вставки гигантского текста). */
-const INPUT_MAX_CHARS = 500;
-
-// ANSI-цвета — замена <Text color=...> из Ink. Применяются только когда
-// stderr.isTTY; в pipe/файле — голый текст (управпоследовательности в
-// не-терминале — мусор).
+// ANSI-цвета для тех мест, где clack не красит сам (стрим, карточки).
+// Только при stderr.isTTY: в pipe управпоследовательности — мусор.
 const CYAN = '\x1b[36m';
-const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
-const RED = '\x1b[31m';
-const MAGENTA = '\x1b[35m';
-const BLUE_BOLD = '\x1b[1;34m';
 const RESET = '\x1b[0m';
 
 /** Обернуть текст ANSI-цветом (вне TTY — вернуть как есть). */
@@ -56,175 +42,110 @@ function paint(color: string, text: string, useColor: boolean): string {
   return useColor ? color + text + RESET : text;
 }
 
-/** Внутренняя карточка: ToolCallView + служебные поля рендера. */
-interface ToolCardState extends ToolCallView {
-  /** Стабильный id карточки (счётчик store) — различает повторные вызовы имени. */
-  id: number;
-  /** Момент onToolStart — для live-длительности pending-карточки. */
-  startedAt?: number;
-}
-
-/**
- * Запись ленты чата (VL-113): завершённая реплика пользователя или
- * ассистента. Лента переживает ходы — реплика пользователя не стирается,
- * ответы не склеиваются между ходами.
- */
-interface ChatEntry {
-  /** Стабильный id записи (счётчик msgSeq store). */
-  id: number;
-  /** Кто говорил. */
-  role: 'user' | 'assistant';
-  /** Текст реплики; переносы строк сохраняются. */
-  text: string;
-}
-
-/** Состояние TUI; обновляется только через store (иммутабельно). */
+/** Состояние TUI: только то, что нужно для нижней строки счётчиков. */
 interface TuiState {
-  /** Завершённые куски текста модели (промежуточный текст до tool calls). */
-  chunks: string[];
-  /** Стриминг текущего хода (onToken, накапливается). */
-  stream: string;
-  /** Лента завершённых реплик чата (VL-113): user/assistant, сквозь ходы. */
-  messages: ChatEntry[];
-  /** Счётчик id записей ленты — стабильные идентификаторы записей. */
-  msgSeq: number;
-  /** Карточки tool calls (последние вызовы). */
-  tools: ToolCardState[];
   /** Накопленный usage модели (onUsage). */
   usage: LlmUsage | null;
   /** Номер текущего хода. */
   turn: number;
   /** Момент старта TUI — для счётчика времени фазы. */
   startedAt: number;
-  /** Тексты ошибок фазы (лимиты, LLM API) — блок ошибок. */
-  errors: string[];
-  /** Строка ввода интерактивного TUI (VL-102); пустая в оркестраторном режиме. */
-  input: string;
-  /** Идёт ли ход чата: строка ввода блокируется (VL-102). */
+  /** Идёт ли ход чата (интерактивный чат). */
   busy: boolean;
 }
 
 /**
- * Мини-store: колбэки loop пишут состояние через update(); колбэк redraw
- * назначается при сборке TUI. Режим silent — для стриминга: состояние
- * меняется без полной перерисовки (токен и так дописан в stderr напрямую).
+ * Мини-store: колбэки loop пишут состояние через update(); перерисовка
+ * статусной строки — отдельным шагом (её вызывает тик и сами колбэки).
  */
 function createStore(): {
   get: () => TuiState;
-  setRedraw: (fn: () => void) => void;
-  update: (patch: Partial<TuiState>, options?: { silent?: boolean }) => void;
+  update: (patch: Partial<TuiState>) => void;
 } {
   let state: TuiState = {
-    chunks: [],
-    stream: '',
-    messages: [],
-    msgSeq: 0,
-    tools: [],
     usage: null,
     turn: 0,
     startedAt: Date.now(),
-    errors: [],
-    input: '',
     busy: false,
   };
-  /** Полная перерисовка кадра; назначается в buildTui (до первого update). */
-  let redraw: () => void = () => {};
   return {
     get: () => state,
-    setRedraw: (fn) => {
-      redraw = fn;
-    },
-    update: (patch, options) => {
+    update: (patch) => {
       state = { ...state, ...patch };
-      // silent — стриминг: токен уже дописан в stderr, полный redraw не нужен
-      if (options?.silent !== true) redraw();
     },
   };
 }
 
 type Store = ReturnType<typeof createStore>;
 
+/** Аппендер: единственная точка записи в поток TUI. */
+interface Appender {
+  /** Дописать токен стрима (без перерисовки чего-либо ранее выведенного). */
+  appendStream(token: string): void;
+  /** Закрыть незавершённую строку стрима (перевод строки, если её нет). */
+  endLine(): void;
+  /** Дописать цельный блок (карточка, ошибка, реплика) отдельной строкой. */
+  appendBlock(text: string): void;
+  /** Нарисовать/перерисовать нижнюю строку (только она, без очистки экрана). */
+  drawStatus(text: string): void;
+  /** Убрать нарисованную нижнюю строку (перед append-выводом). */
+  clearStatus(): void;
+}
+
 /**
- * Отрисовка кадра целиком из состояния: очистка экрана + запись блоков.
- * Порядок блоков — как в Ink-версии AgentApp: header, лента чата, счётчики,
- * стрим (хвост), карточки, ошибки, строка ввода.
+ * Append-аппендер. Ключевой инвариант: перед любой дописью снятая «живая»
+ * строка очищается (`\r\x1b[2K`), а статус не рисуется, пока открыта
+ * частичная строка стрима — иначе счётчики затирали бы текст модели.
  */
-function createRedraw(options: {
-  store: Store;
+function createAppender(options: {
   out: NodeJS.WriteStream;
-  /** Заголовок шапки (интерактивный чат); в оркестраторном режиме — undefined */
-  header?: string;
-  /** Рисовать ли строку ввода (интерактивный чат, VL-102) */
-  interactive: boolean;
-  /** ANSI-цвета включены (stderr.isTTY) */
   useColor: boolean;
-}): () => void {
-  const { store, out, header, interactive, useColor } = options;
-  return () => {
-    // \x1b[2J — очистить экран, \x1b[H — курсор в начало; пишем всё заново
-    out.write('\x1b[2J\x1b[H');
-    const state = store.get();
-    const now = Date.now();
-    const lines: string[] = [];
-    if (header !== undefined) lines.push(paint(BLUE_BOLD, header, useColor));
-    // Лента чата: реплики пользователя cyan с префиксом '> ' (акцентная
-    // раскраска qwen code), ответы ассистента без цвета; пустые пропускаются
-    for (const m of state.messages.slice(-CHAT_VISIBLE)) {
-      if (m.text.length === 0) continue;
-      lines.push(m.role === 'user' ? paint(CYAN, formatUserMessage(m.text), useColor) : m.text);
-    }
-    // Счётчики: ход, токены in/out/cache, время фазы
-    lines.push(
-      paint(
-        MAGENTA,
-        formatCounters({
-          turn: state.turn,
-          inputTokens: state.usage?.input_tokens ?? 0,
-          outputTokens: state.usage?.output_tokens ?? 0,
-          cacheTokens: state.usage?.cache_read_input_tokens ?? 0,
-          elapsedMs: now - state.startedAt,
-        }),
-        useColor,
-      ),
-    );
-    // Стрим текущего хода: хвост завершённых кусков + текущий поток (cyan)
-    const all = [...state.chunks, state.stream].filter((s) => s.length > 0).join('\n');
-    const tail = all.split('\n').slice(-STREAM_TAIL_LINES);
-    for (const line of tail) lines.push(paint(CYAN, line, useColor));
-    // Карточки tool calls: иконка статуса, имя, аргументы, длительность.
-    // У pending длительность тикает «на лету» по мере выполнения вызова
-    for (const card of state.tools.slice(-TOOL_CARDS_VISIBLE)) {
-      const view: ToolCallView = {
-        name: card.name,
-        args: card.args,
-        status: card.status,
-        durationMs:
-          card.status === 'pending' && card.startedAt !== undefined
-            ? now - card.startedAt
-            : card.durationMs,
-      };
-      const color = card.status === 'pending' ? YELLOW : card.status === 'ok' ? GREEN : RED;
-      lines.push(paint(color, formatToolCard(view), useColor));
-    }
-    // Блок ошибок фазы: русские тексты с префиксом ✖
-    for (const line of formatErrorBlock(state.errors.slice(-ERRORS_VISIBLE))) {
-      lines.push(paint(RED, line, useColor));
-    }
-    if (interactive) {
-      lines.push(
-        state.busy
-          ? paint(YELLOW, '⏳ выполняется… Ctrl+C — выход', useColor)
-          : paint(GREEN, `> ${state.input}_`, useColor),
-      );
-    }
-    out.write(lines.join('\n') + '\n');
+}): Appender {
+  const { out, useColor } = options;
+  /** Открыта ли частичная строка (стрим без завершающего \n). */
+  let lineOpen = false;
+  /** Нарисована ли сейчас нижняя статусная строка. */
+  let statusDrawn = false;
+
+  const clearStatus = (): void => {
+    if (!statusDrawn) return;
+    out.write('\r\x1b[2K');
+    statusDrawn = false;
+  };
+  const endLine = (): void => {
+    if (!lineOpen) return;
+    out.write('\n');
+    lineOpen = false;
+  };
+
+  return {
+    appendStream(token: string): void {
+      if (token.length === 0) return;
+      clearStatus();
+      out.write(paint(CYAN, token, useColor));
+      lineOpen = !token.endsWith('\n');
+    },
+    endLine,
+    appendBlock(text: string): void {
+      clearStatus();
+      endLine();
+      out.write(text.endsWith('\n') ? text : text + '\n');
+    },
+    drawStatus(text: string): void {
+      // Не-TTY (pipe/файл): статусную строку не рисуем — \r там мусор
+      if (!out.isTTY) return;
+      // Открытая частичная строка стрима: счётчики не должны её затирать
+      if (lineOpen) return;
+      out.write('\r\x1b[2K' + text);
+      statusDrawn = true;
+    },
+    clearStatus,
   };
 }
 
 /**
  * Публичный handle TUI: колбэки loop (VL-83) + завершение.
- * Сигнатуры не менялись относительно Ink-версии — cli.ts/interactive.ts
- * не переписывались.
+ * Сигнатуры не менялись с Ink-версии — cli.ts/interactive.ts не переписаны.
  */
 export interface TuiHandle {
   onToken(token: string): void;
@@ -233,122 +154,166 @@ export interface TuiHandle {
   onUsage(usage: LlmUsage, turn: number): void;
   onError(text: string): void;
   /**
-   * Завершить ход чата (VL-113): перенести собранный стрим в ленту
-   * сообщений ассистента и сбросить stream/chunks/tools — ответы ходов
-   * не склеиваются. No-op при пустом стриме (повторный вызов безопасен).
+   * Завершить ход чата (VL-113): ответ уже выведен стримом — закрываем
+   * только открытую строку и сбрасываем «pending»-состояние.
    */
   finishTurn(): void;
   /** Размонтировать TUI: остановить тик, выйти из альтернативного буфера. */
   unmount(): void;
 }
 
+/** Внутренний результат сборки: handle + управление «занятостью» ввода. */
+interface BuiltTui {
+  store: Store;
+  handle: TuiHandle;
+  /** Идёт ли ход чата: спиннер «модель думает…» / статусная строка. */
+  setBusy(busy: boolean): void;
+}
+
 /**
- * Сборка TUI: альтернативный буфер, стор, redraw, тик раз в секунду и handle
- * колбэков loop. Общий каркас для renderTui/renderInteractiveTui — логика
- * карточек идентична, отличия только в раскладке/вводе.
+ * Сборка TUI: альтернативный буфер, аппендер, тик счётчиков и handle
+ * колбэков loop. Общий каркас для renderTui/renderInteractiveTui.
  */
-function buildTui(options: {
-  /** Заголовок шапки; задаётся только интерактивным чатом (VL-102) */
-  header?: string;
-  /** Рисовать строку ввода (интерактивный чат, VL-102) */
-  interactive: boolean;
-}): { store: Store; handle: TuiHandle } {
+function buildTui(options: { header?: string; interactive: boolean }): BuiltTui {
   const store = createStore();
   const out = process.stderr;
   const useColor = Boolean(out.isTTY);
-  // Альтернативный буфер: скролл основного буфера не засоряется кадрами TUI;
-  // \x1b[2J\x1b[H — очистка + курсор в начало для первого кадра
+  const interactive = options.interactive;
+  // Альтернативный буфер: скролл основного буфера не засоряется выводом TUI
+  // (сохранено с VL-155; при unmount возвращаемся в основной буфер).
   const useAltBuffer = useColor;
-  if (useAltBuffer) out.write('\u001b[?1049h\u001b[2J\u001b[H');
-  const redraw = createRedraw({
-    store,
-    out,
-    header: options.header,
-    interactive: options.interactive,
-    useColor,
-  });
-  store.setRedraw(redraw);
-  // Тик раз в секунду: время фазы и pending-длительности обновляются live
-  const timer = setInterval(() => redraw(), 1000);
+  if (useAltBuffer) out.write('\u001b[?1049h');
+  const app = createAppender({ out, useColor });
+
+  const counters = (): string => {
+    const state = store.get();
+    return formatCounters({
+      turn: state.turn,
+      inputTokens: state.usage?.input_tokens ?? 0,
+      outputTokens: state.usage?.output_tokens ?? 0,
+      cacheTokens: state.usage?.cache_read_input_tokens ?? 0,
+      elapsedMs: Date.now() - state.startedAt,
+    });
+  };
+
+  // Шапка — один раз за сессию (только интерактивный чат); в оркестраторном
+  // режиме её нет — там stderr уходит в logTail и лишние строки мешают.
+  if (options.header !== undefined) intro(options.header, { output: out });
+
   /** Имя → момент onToolStart (последний вызов имени — задержки редки). */
   const started = new Map<string, number>();
-  /** Счётчик id карточек — стабильные идентификаторы карточек. */
+  /** Pending-инструмент: показывается в нижней строке, пока вызов идёт. */
+  let pendingTool: string | null = null;
+
+  /**
+   * Спиннер «модель думает…» (clack): живёт между началом хода и первым
+   * токеном/карточкой. Как только пошёл стрим — снимается и уступает место
+   * обычной дописи текста и статусной строке со счётчиками.
+   */
+  let spin: ReturnType<typeof spinner> | null = null;
+  const stopSpinner = (): void => {
+    if (!spin) return;
+    // clear() убирает строку спиннера, не оставляя сообщения о завершении
+    spin.clear();
+    spin = null;
+  };
+  const beginThinking = (): void => {
+    if (!interactive || spin) return;
+    app.clearStatus();
+    app.endLine();
+    spin = spinner({ output: out, delay: 100 });
+    spin.start('модель думает…');
+  };
+
+  const showStatus = (): void => {
+    if (spin) {
+      // Пока виден спиннер — обновляем его подпись, отдельная строка не нужна
+      spin.message(`${pendingTool !== null ? `⏳ ${pendingTool} · ` : ''}${counters()}`);
+      return;
+    }
+    const pending = pendingTool !== null ? `⏳ ${pendingTool} · ` : '';
+    app.drawStatus(paint(YELLOW, pending, useColor) + counters());
+  };
+
+  // Тик раз в секунду: время фазы и pending-длительность обновляются live.
+  // Обновляется ТОЛЬКО нижняя строка (никаких \x1b[2J).
+  const timer = setInterval(showStatus, 1000);
+
   let cardSeq = 0;
   const handle: TuiHandle = {
     onToken(token: string): void {
-      // Стриминг: токен дописывается напрямую в stderr без перерисовки кадра;
-      // состояние молча обновляется, чтобы redraw восстановил стрим из state
-      store.update({ stream: store.get().stream + token }, { silent: true });
-      out.write(paint(CYAN, token, useColor));
+      // Первый токен хода — спиннер уступает место стриму
+      stopSpinner();
+      app.appendStream(token);
     },
-    onToolStart(name: string, args: Record<string, unknown>): void {
-      const state = store.get();
-      cardSeq++;
-      const startedAt = Date.now();
-      started.set(name, startedAt);
-      store.update({
-        // Текущий стрим — промежуточный текст модели до tool call, уходит в хвост
-        chunks: state.stream ? [...state.chunks, state.stream] : state.chunks,
-        stream: '',
-        tools: [...state.tools, { id: cardSeq, name, args, status: 'pending', startedAt }],
-      });
+    onToolStart(name: string, _args: Record<string, unknown>): void {
+      stopSpinner();
+      app.endLine();
+      started.set(name, Date.now());
+      pendingTool = name;
+      showStatus();
     },
     onToolEnd(name: string, _output: string, isError?: boolean): void {
-      const state = store.get();
       const startAt = started.get(name);
       started.delete(name);
       const durationMs = startAt !== undefined ? Date.now() - startAt : undefined;
-      // Карточка ищется с конца: повторные вызовы имени обновляют последний
-      const tools = [...state.tools];
-      let updated = false;
-      for (let i = tools.length - 1; i >= 0; i--) {
-        if (tools[i].name === name && tools[i].status === 'pending') {
-          tools[i] = { ...tools[i], status: isError ? 'error' : 'ok', durationMs };
-          updated = true;
-          break;
-        }
-      }
-      if (!updated) {
-        // Неизвестный инструмент: loop шлёт onToolEnd без onToolStart —
-        // карточка создаётся на лету, чтобы вызов модели не потерялся
-        cardSeq++;
-        tools.push({ id: cardSeq, name, status: isError ? 'error' : 'ok', durationMs });
-      }
-      store.update({ tools });
+      const view: ToolCallView = {
+        name,
+        status: isError === true ? 'error' : 'ok',
+        ...(durationMs !== undefined ? { durationMs } : {}),
+      };
+      cardSeq++;
+      app.endLine();
+      // Карточка — append по завершении вызова (не перерисовка кадра).
+      // log.message сохраняет наши иконки ✅/❌ из formatToolCard.
+      log.message(paint(isError === true ? '\x1b[31m' : '\x1b[32m', formatToolCard(view), useColor), {
+        output: out,
+      });
+      if (pendingTool === name) pendingTool = null;
+      showStatus();
     },
     onUsage(usage: LlmUsage, turn: number): void {
       store.update({ usage, turn });
+      showStatus();
     },
     onError(text: string): void {
-      store.update({ errors: [...store.get().errors, text] });
+      stopSpinner();
+      app.endLine();
+      log.error(text, { output: out });
     },
     finishTurn(): void {
-      const state = store.get();
-      // Собрать завершённый ответ: хвост chunks + текущий стрим; пустые
-      // куски отбрасываются, переносы строк сохраняются (VL-113)
-      const text = assembleAssistantText(state.chunks, state.stream);
-      const hasText = text.length > 0;
-      store.update({
-        // Пустой ход (ошибка до первого токена) — no-op по тексту,
-        // но служебное состояние всё равно сбрасываем
-        messages: hasText
-          ? [...state.messages, { id: state.msgSeq + 1, role: 'assistant' as const, text }]
-          : state.messages,
-        msgSeq: hasText ? state.msgSeq + 1 : state.msgSeq,
-        chunks: [],
-        stream: '',
-        // Карточки tool calls предыдущего хода не должны копиться между ходами
-        tools: [],
-      });
+      stopSpinner();
+      pendingTool = null;
+      app.endLine();
+      showStatus();
     },
     unmount(): void {
       clearInterval(timer);
+      stopSpinner();
+      app.clearStatus();
+      app.endLine();
+      // Итоговая строка счётчиков — один раз, в лог фазы (видна в logTail)
+      log.message(counters(), { output: out });
+      if (interactive) outro('выход', { output: out });
       if (useAltBuffer) out.write('\u001b[?1049l');
     },
   };
-  // Первый кадр — сразу при сборке (в Ink это делал render())
-  redraw();
-  return { store, handle };
+  // Первый кадр статуса — сразу при сборке
+  showStatus();
+  return {
+    store,
+    handle,
+    setBusy(busy: boolean): void {
+      store.update({ busy });
+      if (busy) {
+        // Ход начался: пока нет токенов, индикатор — спиннер clack
+        beginThinking();
+      } else {
+        stopSpinner();
+        showStatus();
+      }
+    },
+  };
 }
 
 /**
@@ -363,18 +328,21 @@ export function renderTui(): TuiHandle {
 
 /** Handle интерактивного TUI (VL-102): колбэки loop + управление строкой ввода. */
 export interface InteractiveTuiHandle extends TuiHandle {
-  /** Идёт ли ход чата: строка ввода блокируется, показывается «⏳ выполняется…». */
+  /** Идёт ли ход чата: строка ввода блокируется, показывается спиннер. */
   setBusy(busy: boolean): void;
 }
 
 /**
- * Интерактивный TUI чата (VL-102): шапка с sessionId, строка ввода внизу.
- * Отличия от renderTui — только раскладка и ввод; колбэки loop те же.
+ * Интерактивный TUI чата (VL-102/VL-321): шапка с sessionId, ввод на clack.
  *
- * Ввод — process.stdin в raw mode (без readline: нужен посимвольный разбор
- * управляющих клавиш вне потока строк). Ctrl+C (\u0003)/Ctrl+D (\u0004) —
- * onExit: чат корректно закрывает MCP и завершает процесс. При busy ввод
- * игнорируется (кроме Ctrl+C/Ctrl+D) — второй запрос сломал бы историю.
+ * Ввод — промпт `ChatInputPrompt` на `@clack/core` (tui-input.ts): clack
+ * владеет readline и raw-mode целиком (lesson-195 — один владелец stdin),
+ * редактирование строки, история по ↑/↓, Ctrl+C и Ctrl+D — отмена промпта.
+ * Отмена = выход из чата через существующий onExit (interactive.ts закрывает
+ * MCP и завершает процесс без стектрейса).
+ *
+ * Промпт открывается только когда ход не идёт (`busy === false`): во время
+ * выполнения ввод не принимается, как и раньше (VL-102).
  */
 export function renderInteractiveTui(options: {
   /** Отправить текст пользователя в чат (Enter). */
@@ -384,86 +352,91 @@ export function renderInteractiveTui(options: {
   /** Идентификатор сессии — в шапке TUI. */
   sessionId: string;
 }): InteractiveTuiHandle {
-  const { store, handle } = buildTui({
+  const built = buildTui({
     header: `vibelog-agent · сессия ${options.sessionId}`,
     interactive: true,
   });
   const out = process.stderr;
-  const stdin = process.stdin;
-  // Вне TTY (pipe/файл) raw mode недоступен — ввод просто не подключаем
+  const stdin = process.stdin as unknown as import('./tui-input.js').InputLike;
+  // Вне TTY (pipe/файл) raw mode недоступен — ввод не подключаем (как раньше)
   const useStdin = Boolean(stdin.isTTY);
   const useColor = Boolean(out.isTTY);
-  /** Перерисовать только нижнюю строку ввода — отзывчивый ввод без полного redraw. */
-  const redrawInputLine = (): void => {
-    const state = store.get();
-    const line = state.busy
-      ? paint(YELLOW, '⏳ выполняется… Ctrl+C — выход', useColor)
-      : paint(GREEN, `> ${state.input}_`, useColor);
-    // \r — в начало строки, \x1b[2K — очистить её
-    out.write('\r\x1b[2K' + line);
+
+  /** Отправленные сообщения — история ↑/↓ (последнее в конце). */
+  const history: string[] = [];
+  /** Отмена промпта при unmount: открытый ввод резолвится отменой. */
+  const inputAbort = new AbortController();
+  let exited = false;
+  /** Резолвер ожидания конца хода (ввод не открывается во время хода). */
+  let busyResolve: (() => void) | null = null;
+  let busy = false;
+
+  const waitIdle = (): Promise<void> =>
+    busy ? new Promise<void>((resolve) => (busyResolve = resolve)) : Promise.resolve();
+
+  /** Реплика пользователя остаётся в транскрипте (VL-113) — append-выводом. */
+  const echoUserMessage = (text: string): void => {
+    if (!useColor) return;
+    // Печатается до промпта: сам ввод в clack-промпте, поэтому реплику
+    // дописываем блоком, чтобы она осталась в прокрутке.
+    process.stderr.write(paint(CYAN, formatUserMessage(text), true) + '\n');
   };
-  /** Разбор ввода посимвольно: буфер может содержать несколько клавиш (вставка). */
-  const onStdinData = (data: Buffer): void => {
-    for (const ch of data.toString('utf8')) {
-      // Выход работает всегда — не зависит от busy
-      if (ch === '\u0003' || ch === '\u0004') {
-        options.onExit();
-        return;
-      }
-      const state = store.get();
-      if (state.busy) return;
-      if (ch === '\r' || ch === '\n') {
-        const text = state.input.trim();
-        if (text.length > 0) {
-          // Реплика пользователя навсегда остаётся в ленте чата (VL-113):
-          // id растёт через msgSeq store — стабильные идентификаторы
-          store.update({
-            input: '',
-            msgSeq: state.msgSeq + 1,
-            messages: [...state.messages, { id: state.msgSeq + 1, role: 'user', text }],
-          });
-          options.onSubmit(text);
-        } else {
-          store.update({ input: '' });
+
+  const inputLoop = async (): Promise<void> => {
+    while (!exited) {
+      if (!useStdin) return;
+      const text = await createChatPrompt({
+        input: stdin,
+        output: out,
+        message: 'сообщение',
+        history,
+        signal: inputAbort.signal,
+      });
+      if (text === null) {
+        // Ctrl+C / Ctrl+D / Esc / unmount — выход из чата (onExit)
+        if (!exited) {
+          exited = true;
+          options.onExit();
         }
         return;
       }
-      if (ch === '\u007f' || ch === '\u0008') {
-        // По символам, а не по байлам: slice(0,-1) сломал бы суррогатные пары (эмодзи)
-        store.update({ input: Array.from(state.input).slice(0, -1).join('') }, { silent: true });
-        redrawInputLine();
-        return;
-      }
-      // Печатаемые символы (вставка приходит одной строкой); управляющие пропускаем
-      const printable = ch.replace(/[\u0000-\u001f\u007f]/g, '');
-      if (printable.length > 0) {
-        store.update(
-          { input: (state.input + printable).slice(0, INPUT_MAX_CHARS) },
-          { silent: true },
-        );
-        redrawInputLine();
-      }
+      const trimmed = text.trim();
+      if (trimmed.length === 0) continue;
+      history.push(trimmed);
+      if (history.length > 50) history.shift();
+      echoUserMessage(trimmed);
+      options.onSubmit(trimmed);
+      await waitIdle();
     }
   };
-  if (useStdin) {
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.on('data', onStdinData);
-  }
-  // unmount: снять обработчик ввода и вернуть нормальный режим stdin
-  const baseUnmount = handle.unmount;
-  handle.unmount = (): void => {
-    if (useStdin) {
-      stdin.off('data', onStdinData);
-      stdin.setRawMode(false);
-      stdin.pause();
-    }
-    baseUnmount();
-  };
+
+  void inputLoop();
+
   return {
-    ...handle,
-    setBusy(busy: boolean): void {
-      store.update({ busy });
+    ...built.handle,
+    setBusy(next: boolean): void {
+      busy = next;
+      built.setBusy(next);
+      if (!next && busyResolve) {
+        const resolve = busyResolve;
+        busyResolve = null;
+        resolve();
+      }
+    },
+    unmount(): void {
+      exited = true;
+      inputAbort.abort();
+      built.handle.unmount();
     },
   };
 }
+
+/**
+ * Подтверждение да/нет в стиле TUI агента (clack confirm).
+ *
+ * Экспортируется как готовая точка для tool-approval: у loop пока нет
+ * потока подтверждений (инструменты выполняются без согласования), поэтому
+ * сегодня обёртка используется тестами и будущими интерактивными ветками,
+ * а не самим TUI — см. doc-10.
+ */
+export { createConfirmPrompt };
