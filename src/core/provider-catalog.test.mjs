@@ -18,6 +18,7 @@ import { join } from 'node:path';
 
 import {
   normalizePricing,
+  comparePricing,
   createOpenAiCompatibleCatalog,
   getCatalogAdapter,
   CATALOG_ADAPTERS,
@@ -372,8 +373,72 @@ describe('кэш каталога и TTL (AC4)', () => {
   });
 });
 
-describe('offline-деградация (AC4, риск R2)', () => {
-  it('апстрим упал, кэш есть → данные из кэша со stale: true', async () => {
+describe('comparePricing — сверка тарифа с каталогом (AC15)', () => {
+  const settingsPricing = (input, output, cache) => ({
+    input_per_1m: input,
+    output_per_1m: output,
+    cache_per_1m: cache,
+  });
+
+  it('одинаковые цены → status same по всем компонентам', () => {
+    const cmp = comparePricing(settingsPricing(20, 60, 3), settingsPricing(20, 60, 3));
+    assert.equal(cmp.status, 'same');
+    assert.equal(cmp.input.status, 'same');
+    assert.equal(cmp.output.status, 'same');
+    assert.equal(cmp.cache.status, 'same');
+    assert.equal(cmp.input.percent, 0);
+  });
+
+  it('расхождение меньше 0.5% считается совпадением (float каталога)', () => {
+    const cmp = comparePricing(settingsPricing(15.79, 60, 0), settingsPricing(15.789813, 60, 0));
+    assert.equal(cmp.input.status, 'same');
+    assert.equal(cmp.status, 'same');
+  });
+
+  it('цена в settings выше каталога → increased с процентом', () => {
+    const cmp = comparePricing(settingsPricing(30, 60, 0), settingsPricing(20, 60, 0));
+    assert.equal(cmp.input.status, 'increased');
+    assert.equal(cmp.input.percent, 50);
+    assert.equal(cmp.status, 'increased');
+  });
+
+  it('цена в settings ниже каталога → decreased с отрицательным процентом', () => {
+    const cmp = comparePricing(settingsPricing(10, 60, 0), settingsPricing(20, 60, 0));
+    assert.equal(cmp.input.status, 'decreased');
+    assert.equal(cmp.input.percent, -50);
+    assert.equal(cmp.status, 'decreased');
+  });
+
+  it('рост приоритетнее снижения в общем статусе', () => {
+    const cmp = comparePricing(settingsPricing(30, 30, 0), settingsPricing(20, 60, 0));
+    assert.equal(cmp.input.status, 'increased');
+    assert.equal(cmp.output.status, 'decreased');
+    assert.equal(cmp.status, 'increased', 'рост важнее: денег уйдёт больше ожидаемого');
+  });
+
+  it('нет данных каталога → unknown, не «совпадает»', () => {
+    const cmp = comparePricing(settingsPricing(10, 20, 0), undefined);
+    assert.equal(cmp.status, 'unknown');
+    assert.equal(cmp.input.status, 'unknown');
+    assert.equal(cmp.input.current, 10);
+    assert.equal(cmp.input.catalog, undefined);
+  });
+
+  it('нет тарифа в settings → unknown (модель без цены)', () => {
+    const cmp = comparePricing(undefined, settingsPricing(10, 20, 0));
+    assert.equal(cmp.status, 'unknown');
+    assert.equal(cmp.input.current, undefined);
+    assert.equal(cmp.input.catalog, 10);
+  });
+
+  it('нули с обеих сторон → same, а не деление на ноль', () => {
+    const cmp = comparePricing(settingsPricing(0, 0, 0), settingsPricing(0, 0, 0));
+    assert.equal(cmp.status, 'same');
+    assert.equal(cmp.input.percent, 0);
+  });
+});
+
+describe('offline-деградация (AC4, риск R2)', () => {  it('апстрим упал, кэш есть → данные из кэша со stale: true', async () => {
     writeSettings();
     const ok = fakeFetch([['/models', MODELS_RESPONSE]]);
     const t0 = Date.parse('2026-01-01T00:00:00.000Z');

@@ -65,8 +65,10 @@ describe('GET /api/models (VL-209)', () => {
       assert.equal(res.status, 200);
       assert.equal(res.body.default, 'routerai/MiMo/Pro');
       assert.deepEqual(res.body.available, [
-        { id: 'routerai/MiMo/Pro', label: 'MiMo Pro', gateway: 'routerai', api_mode: 'chat' },
-        { id: 'direct/plain', label: 'direct/plain', gateway: 'direct', api_mode: 'chat' },
+        // VL-316: добавлено поле model (имя модели у шлюза без @-хвоста) —
+        // оно нужно странице «Модели» и пикеру чата
+        { id: 'routerai/MiMo/Pro', label: 'MiMo Pro', gateway: 'routerai', model: 'MiMo/Pro', api_mode: 'chat' },
+        { id: 'direct/plain', label: 'direct/plain', gateway: 'direct', model: 'plain', api_mode: 'chat' },
       ]);
       const router = res.body.gateways.find(p => p.id === 'routerai');
       assert.equal(router.base_url, 'https://routerai.ru/api/v1');

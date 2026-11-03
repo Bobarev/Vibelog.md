@@ -18,15 +18,30 @@
  * сети (guard VL-132 в src/test-setup.mjs отклоняет не-loopback).
  */
 
-import { loadGateways, buildModelId, toStoredModel } from '../core/models.js';
+import {
+  loadGateways,
+  buildModelId,
+  toStoredModel,
+  loadModels,
+  validateModelInput,
+  upsertModel,
+  removeModel,
+} from '../core/models.js';
 import type { ModelInput } from '../core/models.js';
 import { loadSettings } from '../core/settings.js';
 import {
   listCatalogModels,
   listCatalogVendors,
   normalizePricing,
+  comparePricing,
 } from '../core/provider-catalog.js';
-import type { CatalogDeps, CatalogVendor } from '../core/provider-catalog.js';
+import type {
+  CatalogDeps,
+  CatalogVendor,
+  CatalogModel,
+  PriceComparison,
+} from '../core/provider-catalog.js';
+import type { ModelPricing } from '../core/analytics.js';
 import type { ApiResponse } from './api.js';
 
 /** Разбирает query string в объект (декодирование + первое значение ключа). */
@@ -233,6 +248,115 @@ export async function handleCatalogApi(
         pricingSource,
         unsupportedUnits: vendor?.unsupportedUnits ?? [],
         ...(catalogError !== undefined ? { warning: catalogError } : {}),
+      },
+    };
+  }
+
+  // GET /api/catalog/prices — сверка тарифов всех моделей шлюза с каталогом
+  // (AC15). Один запрос на страницу: каталог моделей берётся из кэша, цены
+  // вендоров — по каждой модели (тоже кэшируются).
+  if (method === 'GET' && url === '/api/catalog/prices') {
+    const gw = resolveGateway(cwd, query.gateway ?? '');
+    if ('error' in gw) return { status: 400, body: { error: gw.error } };
+    const models = loadModels(cwd);
+    const own = Object.entries(models.available).filter(([, m]) => m.gateway === gw.id);
+    if (own.length === 0) {
+      return { status: 200, body: { gateway: gw.id, stale: false, prices: {} } };
+    }
+    let catalogModels: CatalogModel[] = [];
+    let stale = false;
+    let warning: string | undefined;
+    try {
+      const listed = await listCatalogModels(cwd, gw.id, deps);
+      catalogModels = listed.items;
+      stale = listed.stale;
+    } catch (err) {
+      // Каталог недоступен и кэша нет: сверка невозможна, но страница
+      // моделей должна остаться рабочей (риск R2) — отдаём warning
+      warning = errorText(err, gw.id);
+    }
+
+    const prices: Record<string, PriceComparison & { catalogPricing?: ModelPricing }> = {};
+    for (const [id, conf] of own) {
+      const catalogModel = catalogModels.find((m) => m.id === conf.model);
+      let catalogPricing = catalogModel?.pricing;
+      // Цена вендора точнее цены модели: у разных апстримов она разная
+      if (conf.vendor !== undefined) {
+        try {
+          const vendors = await listCatalogVendors(cwd, gw.id, conf.model, deps);
+          const vendor = vendors.items.find((v) => v.id === conf.vendor);
+          if (vendor) catalogPricing = vendor.pricing;
+        } catch {
+          // Вендоров не получили — сверяем по цене модели (если она есть)
+        }
+      }
+      const comparison = comparePricing(conf.pricing, catalogPricing);
+      prices[id] = { ...comparison, ...(catalogPricing ? { catalogPricing } : {}) };
+    }
+
+    return {
+      status: 200,
+      body: { gateway: gw.id, stale, prices, ...(warning !== undefined ? { warning } : {}) },
+    };
+  }
+
+  // POST /api/catalog/refresh-pricing — обновить тариф одной модели из
+  // каталога (AC16). Валидация ПЕРЕД записью: тариф из каталога проходит
+  // validateModelInput (те же правила, что у ручного сохранения — риск R4),
+  // файл не меняется, если каталог не дал валидной цены.
+  if (method === 'POST' && url === '/api/catalog/refresh-pricing') {
+    const id = typeof body?.id === 'string' ? body.id.trim() : '';
+    if (id === '') return { status: 400, body: { error: 'id: обязательное поле — id модели из models.available' } };
+    const models = loadModels(cwd);
+    const conf = models.available[id];
+    if (!conf) return { status: 404, body: { error: `Модель "${id}" отсутствует в models.available` } };
+    const gateways = loadGateways(cwd);
+    if (!gateways[conf.gateway]) {
+      return { status: 400, body: { error: `Шлюз "${conf.gateway}" отсутствует в settings.gateways` } };
+    }
+
+    let catalogPricing: ModelPricing | undefined;
+    try {
+      const vendors = await listCatalogVendors(cwd, conf.gateway, conf.model, deps);
+      const vendor = conf.vendor === undefined ? undefined : vendors.items.find((v) => v.id === conf.vendor);
+      catalogPricing = vendor?.pricing;
+      if (catalogPricing === undefined) {
+        const listed = await listCatalogModels(cwd, conf.gateway, { query: conf.model, ...deps });
+        catalogPricing = listed.items.find((m) => m.id === conf.model)?.pricing;
+      }
+    } catch (err) {
+      return { status: 503, body: { error: errorText(err, conf.gateway) } };
+    }
+    if (catalogPricing === undefined) {
+      return {
+        status: 404,
+        body: { error: `Каталог не отдал тариф для ${conf.gateway}/${conf.model}` },
+      };
+    }
+
+    const input: ModelInput = {
+      id,
+      label: conf.label,
+      description: conf.description,
+      gateway: conf.gateway,
+      model: conf.model,
+      vendor: conf.vendor,
+      api_mode: conf.api_mode,
+      context_window: conf.context_window,
+      pricing: catalogPricing,
+    };
+    const validated = validateModelInput(models, gateways, input, { excludeId: id, keepId: true });
+    if ('error' in validated) return { status: 400, body: { error: validated.error } };
+    upsertModel(cwd, validated.id, input);
+    // keepId сохраняет id, поэтому удалять старый ключ не нужно — но запись
+    // могла быть в старом формате (ключ с @-хвостом): upsertModel заменит
+    // ровно этот ключ, остальные записи не затрагиваются
+    return {
+      status: 200,
+      body: {
+        id: validated.id,
+        pricing: catalogPricing,
+        previous: conf.pricing ?? null,
       },
     };
   }

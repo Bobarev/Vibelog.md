@@ -20,7 +20,7 @@
 
 import * as React from "react";
 
-import { Command, FileText, FolderCog, Kanban, Library, Lightbulb, MessageSquare, PlusCircle, Settings, SlidersHorizontal, Wand2 } from "lucide-react";
+import { Command, Cpu, FileText, FolderCog, Kanban, Library, Lightbulb, MessageSquare, PlusCircle, Settings, SlidersHorizontal, Wand2 } from "lucide-react";
 
 import { Sidebar, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarRail } from "@/components/ui/sidebar";
 import { NavMain, type NavGroup } from "@/components/layout/nav-main";
@@ -83,6 +83,10 @@ const NAV_GROUPS: NavGroup[] = [
         icon: Settings,
         subItems: [
           { id: "bot", title: "Бот", url: "settings", icon: SlidersHorizontal },
+          // Модели (VL-316): #/models — каталог шлюза, добавление/редактирование
+          // моделей с ценами из API. Отдельная страница, не секция #/settings
+          // (решение из плана: много состояния — каталог, поиск, цены)
+          { id: "models", title: "Модели", url: "models", icon: Cpu },
           { id: "config", title: "Конфиг проекта", url: "config", icon: FolderCog },
           // Мастер настройки проекта (VL-210): #/setup — агенты, LLM, секреты, бот, MCP
           { id: "setup", title: "Мастер настройки", url: "setup", icon: Wand2 },

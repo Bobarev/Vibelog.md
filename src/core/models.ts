@@ -515,13 +515,15 @@ export function toStoredModel(input: ModelInput): Record<string, unknown> {
  * @param gateways — известные шлюзы
  * @param input — приходящая запись
  * @param opts.excludeId — id, который разрешено «занять» (редактирование себя)
+ * @param opts.keepId — не пересчитывать id из полей (обновление тарифа:
+ *   id модели менять нельзя, на него ссылаются models.default и меты сессий)
  * @returns { id } с вычисленным id либо { error } с понятным текстом (400)
  */
 export function validateModelInput(
   models: ModelsConfig,
   gateways: Record<string, GatewayConfig>,
   input: ModelInput,
-  opts: { excludeId?: string } = {},
+  opts: { excludeId?: string; keepId?: boolean } = {},
 ): { id: string } | { error: string } {
   if (typeof input.gateway !== 'string' || input.gateway === '') {
     return { error: 'gateway: ожидается id шлюза из секции gateways' };
@@ -561,7 +563,11 @@ export function validateModelInput(
   // id ВСЕГДА вычисляется из gateway/model/vendor: при редактировании смена
   // вендора меняет и id (разные вендоры — разные записи available), поэтому
   // брать id из тела нельзя — запись осталась бы под старым ключом.
-  const id = buildModelId({ gateway: input.gateway, model, vendor: input.vendor });
+  // Исключение — keepId (обновление тарифа, AC16): id не должен меняться,
+  // иначе models.default и меты сессий (VL-239) указывали бы в пустоту.
+  const id = opts.keepId && input.id !== undefined && input.id !== ''
+    ? input.id
+    : buildModelId({ gateway: input.gateway, model, vendor: input.vendor });
   if (id.trim() === '') return { error: 'id: пустой идентификатор модели' };
   if (id !== opts.excludeId && models.available[id]) {
     return { error: `Модель "${id}" уже есть в models.available — выберите другой id или отредактируйте её` };

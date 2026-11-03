@@ -9,7 +9,7 @@
 
 import { describe, it, beforeAll, afterAll, beforeEach } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -216,7 +216,166 @@ describe('GET /api/catalog/vendors (AC3)', () => {
   });
 });
 
+describe('GET /api/catalog/prices и POST /api/catalog/refresh-pricing (AC15/AC16)', () => {
+  /** settings с двумя моделями шлюза routerai. */
+  function writeModelsSettings() {
+    writeSettings({
+      models: {
+        default: 'routerai/a/cheap',
+        available: {
+          'routerai/a/cheap': {
+            gateway: 'routerai',
+            model: 'a/cheap',
+            vendor: 'baidu',
+            pricing: { input_per_1m: 20, output_per_1m: 60, cache_per_1m: 0 },
+          },
+          'routerai/a/pricey': {
+            gateway: 'routerai',
+            model: 'a/pricey',
+            pricing: { input_per_1m: 999, output_per_1m: 60, cache_per_1m: 0 },
+          },
+        },
+      },
+    });
+  }
+
+  it('сверяет тарифы всех моделей шлюза с каталогом', async () => {
+    writeModelsSettings();
+    const fetchFn = fakeFetch([
+      ['/endpoints', ENDPOINTS_RESPONSE],
+      [
+        '/models',
+        {
+          data: [
+            { id: 'a/cheap', pricing: { prompt: 0.00002, completion: 0.00006 }, pricing_units: { prompt: 'token', completion: 'token' } },
+            { id: 'a/pricey', pricing: { prompt: 0.00002, completion: 0.00006 }, pricing_units: { prompt: 'token', completion: 'token' } },
+          ],
+        },
+      ],
+    ]);
+    const res = await handleCatalogApi(
+      'GET',
+      '/api/catalog/prices',
+      null,
+      cwd,
+      'gateway=routerai',
+      { fetchFn },
+    );
+    assert.equal(res.status, 200);
+    // a/cheap: настройки 20/60 совпадают с вендором baidu из каталога
+    assert.equal(res.body.prices['routerai/a/cheap'].status, 'same');
+    // a/pricey: 999 против 20 → рост
+    assert.equal(res.body.prices['routerai/a/pricey'].status, 'increased');
+    assert.ok(res.body.prices['routerai/a/pricey'].input.percent > 0);
+  });
+
+  it('неизвестный шлюз → 400', async () => {
+    writeModelsSettings();
+    const res = await handleCatalogApi('GET', '/api/catalog/prices', null, cwd, 'gateway=ghost', {});
+    assert.equal(res.status, 400);
+  });
+
+  it('каталог недоступен → 200 с warning, страница моделей жива', async () => {
+    writeModelsSettings();
+    const fetchFn = fakeFetch([['/models', new Error('ECONNREFUSED')]]);
+    const res = await handleCatalogApi(
+      'GET',
+      '/api/catalog/prices',
+      null,
+      cwd,
+      'gateway=routerai',
+      { fetchFn },
+    );
+    assert.equal(res.status, 200);
+    assert.match(res.body.warning, /недоступен/);
+    assert.equal(res.body.prices['routerai/a/pricey'].status, 'unknown');
+  });
+
+  it('refresh-pricing обновляет тариф модели из каталога', async () => {
+    writeModelsSettings();
+    const fetchFn = fakeFetch([
+      [
+        '/endpoints',
+        {
+          data: {
+            endpoints: [
+              {
+                provider_name: 'Baidu',
+                tag: 'baidu',
+                pricing: { prompt: 0.000025, completion: 0.00007 },
+                pricing_units: { prompt: 'token', completion: 'token' },
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+    const res = await handleCatalogApi(
+      'POST',
+      '/api/catalog/refresh-pricing',
+      { id: 'routerai/a/cheap' },
+      cwd,
+      '',
+      { fetchFn },
+    );
+    assert.equal(res.status, 200);
+    assert.equal(res.body.pricing.input_per_1m, 25);
+    assert.equal(res.body.pricing.output_per_1m, 70);
+    // В файле тариф заменён, остальные модель-поля сохранены
+    const settings = JSON.parse(readFileSync(join(cwd, '.vibelog', 'settings.json'), 'utf-8'));
+    const stored = settings.models.available['routerai/a/cheap'];
+    assert.equal(stored.pricing.input_per_1m, 25);
+    assert.equal(stored.vendor, 'baidu');
+    assert.equal(settings.models.available['routerai/a/pricey'].pricing.input_per_1m, 999, 'соседняя модель не тронута');
+  });
+
+  it('refresh-pricing: неизвестная модель → 404, каталог без цены → 404', async () => {
+    writeModelsSettings();
+    const missing = await handleCatalogApi(
+      'POST',
+      '/api/catalog/refresh-pricing',
+      { id: 'routerai/ghost' },
+      cwd,
+      '',
+      {},
+    );
+    assert.equal(missing.status, 404);
+
+    const noPrice = fakeFetch([
+      ['/endpoints', { data: { endpoints: [] } }],
+      ['/models', { data: [] }],
+    ]);
+    const res = await handleCatalogApi(
+      'POST',
+      '/api/catalog/refresh-pricing',
+      { id: 'routerai/a/pricey' },
+      cwd,
+      '',
+      { fetchFn: noPrice },
+    );
+    assert.equal(res.status, 404);
+  });
+
+  it('refresh-pricing: пустой id → 400, каталог недоступен → 503', async () => {
+    writeModelsSettings();
+    const empty = await handleCatalogApi('POST', '/api/catalog/refresh-pricing', {}, cwd, '', {});
+    assert.equal(empty.status, 400);
+    const broken = fakeFetch([['/endpoints', new Error('ETIMEDOUT')]]);
+    const res = await handleCatalogApi(
+      'POST',
+      '/api/catalog/refresh-pricing',
+      { id: 'routerai/a/cheap' },
+      cwd,
+      '',
+      { fetchFn: broken },
+    );
+    assert.equal(res.status, 503);
+    assert.match(res.body.error, /недоступен/);
+  });
+});
+
 describe('POST /api/catalog/resolve (AC6)', () => {
+
   it('отдаёт готовую запись: id, gateway, model, vendor, pricing, context_window', async () => {
     writeSettings();
     const fetchFn = fakeFetch([

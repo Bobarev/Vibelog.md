@@ -117,9 +117,12 @@ export function ModelPicker() {
             </span>
             <span className="flex min-w-0 flex-1 flex-col">
               <span className="truncate text-sm">{m.label}</span>
-              {m.description ? (
-                <span className="text-xs text-muted-foreground">{m.description}</span>
-              ) : null}
+              {/* VL-316: вендор второй строкой — у одной модели бывают
+                  разные апстримы с разными ценами, видно, какой выбран */}
+              <span className="truncate text-xs text-muted-foreground">
+                {m.vendor ? `${m.gateway} · ${m.vendor}` : m.gateway}
+                {m.description ? ` — ${m.description}` : ""}
+              </span>
             </span>
           </DropdownMenuItem>
         ))}

@@ -478,6 +478,79 @@ function filterAndLimit(models: CatalogModel[], query?: string): CatalogModel[] 
   return filtered.slice(0, CATALOG_SEARCH_LIMIT);
 }
 
+// ── Сверка цен: settings.json vs каталог (AC15) ──
+
+/** Состояние одной компоненты тарифа. */
+export type PriceStatus = 'same' | 'increased' | 'decreased' | 'unknown';
+
+/** Отклонение одной компоненты тарифа. */
+export interface PriceComponentDelta {
+  /** Текущая цена в settings.json (undefined — тариф не задан). */
+  current?: number;
+  /** Цена из каталога (undefined — каталог цену не дал). */
+  catalog?: number;
+  /** Отклонение в процентах (положительное — цена выросла). */
+  percent?: number;
+  status: PriceStatus;
+}
+
+/** Сверка тарифа модели с каталогом. */
+export interface PriceComparison {
+  /** Общий статус: худший из компонент (increased важнее decreased). */
+  status: PriceStatus;
+  input: PriceComponentDelta;
+  output: PriceComponentDelta;
+  cache: PriceComponentDelta;
+}
+
+/**
+ * Сравнивает тариф модели с каталожным (AC15).
+ *
+ * Сравнение по компонентам, а не по сумме: у модели может подорожать только
+ * вывод — сумма это смажет. «Совпадает» — расхождение меньше 0.5%: каталог
+ * отдаёт цены с плавающей точкой, точное равенство после нормализации
+ * недостижимо (0.000015789813 * 1e6 = 15.789813, в settings могло попасть
+ * 15.79 при ручном вводе).
+ *
+ * @param current — тариф из settings.json (undefined — не задан)
+ * @param catalog — тариф из каталога (undefined — каталог не ответил)
+ */
+export function comparePricing(
+  current: ModelPricing | undefined,
+  catalog: ModelPricing | undefined,
+): PriceComparison {
+  /** Порог «это та же цена» в процентах. */
+  const EPSILON_PERCENT = 0.5;
+
+  const component = (cur?: number, cat?: number): PriceComponentDelta => {
+    if (cur === undefined || cat === undefined) return { current: cur, catalog: cat, status: 'unknown' };
+    if (cur === 0 && cat === 0) return { current: 0, catalog: 0, percent: 0, status: 'same' };
+    // База — цена каталога: «выросла» значит «в settings дешевле, чем реально»
+    const percent = cat === 0 ? (cur === 0 ? 0 : 100) : Math.round(((cur - cat) / cat) * 1000) / 10;
+    let status: PriceStatus;
+    if (Math.abs(percent) < EPSILON_PERCENT) status = 'same';
+    else status = percent > 0 ? 'increased' : 'decreased';
+    return { current: cur, catalog: cat, percent, status };
+  };
+
+  const input = component(current?.input_per_1m, catalog?.input_per_1m);
+  const output = component(current?.output_per_1m, catalog?.output_per_1m);
+  const cache = component(current?.cache_per_1m, catalog?.cache_per_1m);
+
+  // Общий статус: сначала изменения (расхождение важнее совпадения),
+  // из изменений приоритет — рост цены (деньги тратятся больше ожидаемого)
+  const statuses = [input.status, output.status, cache.status];
+  const status: PriceStatus = statuses.includes('increased')
+    ? 'increased'
+    : statuses.includes('decreased')
+      ? 'decreased'
+      : statuses.includes('same')
+        ? 'same'
+        : 'unknown';
+
+  return { status, input, output, cache };
+}
+
 /** Отдаёт вендоров модели с той же деградацией, что и список моделей. */
 export async function listCatalogVendors(
   cwd: string,
