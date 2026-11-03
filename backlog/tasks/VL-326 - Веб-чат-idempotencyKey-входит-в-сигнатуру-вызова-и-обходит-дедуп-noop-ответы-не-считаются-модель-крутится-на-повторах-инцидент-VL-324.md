@@ -1,11 +1,11 @@
 ---
 id: VL-326
 title: 'Веб-чат: idempotencyKey входит в сигнатуру вызова и обходит дедуп, noop-ответы не считаются — модель крутится на повторах (инцидент VL-324)'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-03 23:08'
-updated_date: '2026-11-04 00:10'
+updated_date: '2026-11-04 00:16'
 due_date: ''
 labels:
   - web
@@ -34,13 +34,13 @@ modified_files:
 lessons:
   - lesson-205
 token_usage:
-  input: 23697380
-  output: 96315
-  cache: 22167552
-  total: 23793695
-  requests: 212
-  duration_ms: 2050964
-  reasoning: 38801
+  input: 24700760
+  output: 102667
+  cache: 23055872
+  total: 24803427
+  requests: 233
+  duration_ms: 2185619
+  reasoning: 40235
   by_phase:
     code:
       input: 23483426
@@ -48,10 +48,10 @@ token_usage:
       cache: 21979136
       requests: 206
     close:
-      input: 213954
-      output: 856
-      cache: 188416
-      requests: 6
+      input: 1217334
+      output: 7208
+      cache: 1076736
+      requests: 27
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -85,13 +85,13 @@ token_usage:
 - [x] #5 AC5: `ackNoopDetailed` (`src/mcp/tool-result.ts`) отдаёт поле `hint` с текстом «переданные поля уже такие; если нужны другие — передай их в этом же вызове» — как минимум для `backlog_update_task`; существующие тексты `ackNoop` сохранены (совместимость с 9 сценариями `NOOP_SCENARIOS`)
 - [x] #6 AC6: `templates/prompts/chat-system.md` описывает четвёртую форму ответа write-инструмента (`ok:false, noop:true, reason:'noop'`) и правило: noop ≠ ошибка, повтор с теми же аргументами бессмыслен, нужно проверить полноту переданных полей или перейти к следующему шагу
 - [x] #7 AC7: Регресс-тест в `src/web/tool-dedup.test.mjs` и `src/web/chat.test.mjs` воспроизводит инцидент: 5 вызовов `backlog_update_task` с разными `idempotencyKey` и уже применёнными полями → второй и последующие не исполняются как `duplicate`, а при обходе дедупа noop-серия упирается в кап, а не в лимит tool-вызовов
-- [ ] #8 AC8: `pnpm build` (tsc strict) чистый, `pnpm test` зелёный; в CHANGELOG добавлена строка, создан lesson с правилом чтения noop-ответа
+- [x] #8 AC8: `pnpm build` (tsc strict) чистый, `pnpm test` зелёный; в CHANGELOG добавлена строка, создан lesson с правилом чтения noop-ответа
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -172,5 +172,30 @@ created: 2026-11-03 23:56
 - AC8 частично: `pnpm build`/`pnpm test` зелёные, lesson создан (`lesson-205`), но строку CHANGELOG и документы `backlog/docs/doc-8`, `doc-10 §6` по правилам фазы Code не писал — это делает Фаза Close после слияния. Поэтому AC8 и DoD «Документация обновлена» не отмечены.
 - Ручной прогон веб-чата (сценарий VL-324 живьём в UI) не выполнялся — регресс воспроизведён интеграционным тестом `chat.test.mjs` с фейковым LLM.
 **Lessons:** создан и связан `lesson-205` («Читай noop-ответ write-инструмента как "поля уже такие"»).
+---
+author: @agent
+created: 2026-11-04 00:10
+---
+Фаза close не удалась (код выхода 1): нет, блокировок=0, payload последнего запроса=155708 байт (макс 155708), usage={"input_tokens":213954,"output_tokens":856,"cache_read_input_tokens":188416,"total_tokens":214810,"reasoning_tokens":182} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-04 00:16
+---
+Фаза Close выполнена.
+**Merge:** ветка `vb/vl-326` слита в master коммитом merge (`c4730d1`, `5cfdec6` — 2 коммита, 8 файлов: `src/web/tool-dedup.ts` +172, `src/web/chat.ts` +25, `src/mcp/tool-result.ts` +19, `src/mcp/tools.ts` +24, `templates/prompts/chat-system.md`, 3 тест-файла +301). Конфликтов не было.
+**Проверки после merge:**
+- `pnpm build` (tsc strict) — чисто, один прогон.
+- Ранний точечный фильтр по `git diff --name-only HEAD^1..HEAD`: `src/web/tool-dedup.test.mjs`, `src/web/chat.test.mjs`, `src/mcp/write-ack.test.mjs` — 120 тестов passed.
+- Полный `pnpm test` — зелёный: 163 файла, 3148 тестов passed, 4 skipped (штатные `it.skip` проекта), исключённых файлов нет, повторных полных прогонов не было.
+**Уборка:** worktree `.vibelog/worktrees/vl-326` удалена (в ней был только untracked-симлинк `backlog/references/data`, `--force` без потери данных), ветка `vb/vl-326` удалена (`branch -d`, was c4730d1), `git worktree prune` выполнен.
+**Документация (шаг 8, коммит `893fbec` «docs: VL-326 — документация и CHANGELOG»):**
+- `CHANGELOG.md` → `Unreleased → Исправлено`: запись VL-326 (сигнатура дедупа без `NON_SEMANTIC_ARGS`, noop-серия `MAX_NOOP_REPEATS_PER_TURN = 3`, `hint` в `ackNoopDetailed`, промпт chat-system).
+- `backlog/docs/doc-8-MCP-справочник-Vibelogmd.md`: noop-контракт дополнен обязательным `hint` (VL-326) + абзац «`hint` обязателен в noop-ответе» с `missingTaskFields()` и регресс-инвариантом текстов `NOOP_SCENARIOS`.
+- `backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md` §6: новый пункт «Дедуп веб-чата: служебные аргументы вне сигнатуры и noop-серия (VL-326)».
+**Refs и lessons (коммит `831a962` «docs(task): VL-326 — refs и lessons»):** references у задачи нет; lesson-205 («Читай noop-ответ write-инструмента как "поля уже такие" — повтор с теми же аргументами бесполезен») создан в фазе Code, связан с VL-326 в обе стороны, добавлен в коммит.
+**DoD:** #1 «Тесты проходят» — полный прогон зелёный; #2 «Документация обновлена» — CHANGELOG + doc-8 + doc-10 обновлены в этой фазе; #3 «Нет регрессий» — 163/163 файлов, полный прогон после merge чистый.
+**AC8** отмечен: build/test зелёные, строка CHANGELOG добавлена, lesson создан.
+Ручной прогон веб-чата в UI не выполнялся (не входит в DoD задачи): сценарий VL-324 воспроизведён интеграционным регресс-тестом `src/web/chat.test.mjs` с фейковым LLM (5×`backlog_update_task` с разными `idempotencyKey` → 1 исполнение + 4 `duplicate`; обход дедупа упирается в `noop_repeat`, а не в лимит 16).
+Код в фазе Close не правился.
 ---
 <!-- COMMENTS:END -->
