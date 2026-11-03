@@ -1,11 +1,11 @@
 ---
 id: VL-318
 title: ackError-ответ write-инструмента попадает в appliedSignatures как «применён» — модель теряет текст ошибки и падает по капу повторов (Close VL-316)
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-03 16:11'
-updated_date: '2026-11-03 17:43'
+updated_date: '2026-11-03 17:44'
 due_date: ''
 labels:
   - agent
@@ -30,13 +30,13 @@ modified_files:
 lessons:
   - lesson-191
 token_usage:
-  input: 4087528
-  output: 21446
-  cache: 3898368
-  total: 4108974
-  requests: 89
-  duration_ms: 822475
-  reasoning: 6574
+  input: 4709058
+  output: 26104
+  cache: 4440576
+  total: 4735162
+  requests: 104
+  duration_ms: 847089
+  reasoning: 9222
   by_phase:
     code:
       input: 1121588
@@ -44,10 +44,10 @@ token_usage:
       cache: 1083392
       requests: 24
     close:
-      input: 2965940
-      output: 12687
-      cache: 2814976
-      requests: 65
+      input: 3587470
+      output: 17345
+      cache: 3357184
+      requests: 80
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -92,13 +92,13 @@ VL-306 (страховка appliedSignatures — источник дефекта
 - [x] #3 Регресс-тест на сессию agent-1793705489953: git_commit с чужим путём (ackError) + 4 дословных повтора → модель видит текст ошибки с подсказкой allowForeign, ран не падает по капу applied-повторов
 - [x] #4 Шаг документации в templates/phases/phase-close.md и phase-close-worktree.md коммитит CHANGELOG.md и backlog/docs/* с allowForeign: true
 - [x] #5 Тест-инвариант в src/web/phase-prompt.test.mjs: каждый git_commit в close-шаблонах, чьи пути включают CHANGELOG.md или backlog/docs/, несёт allowForeign: true
-- [ ] #6 Тесты проходят (pnpm build && pnpm test), документация обновлена (doc-10 §6 — классификация ответов write-инструментов, CHANGELOG)
+- [x] #6 Тесты проходят (pnpm build && pnpm test), документация обновлена (doc-10 §6 — классификация ответов write-инструментов, CHANGELOG)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -173,5 +173,19 @@ author: @agent
 created: 2026-11-03 16:36
 ---
 Фаза close не удалась (код выхода 1):  блокировок=0, payload последнего запроса=232387 байт (макс 232387), usage={"input_tokens":1083369,"output_tokens":4138,"cache_read_input_tokens":1047040,"total_tokens":1087507,"reasoning_tokens":626} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-03 17:43
+---
+Фаза close не удалась (код выхода 1): т, блокировок=0, payload последнего запроса=178283 байт (макс 178283), usage={"input_tokens":401802,"output_tokens":2862,"cache_read_input_tokens":327680,"total_tokens":404664,"reasoning_tokens":1941} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-03 17:44
+---
+Фаза Close выполнена. Статус: Done.
+Коммиты: fix 8e34e53 — «ackError (ok:false) не считается применённым; allowForeign в close-шаблонах» (код + тесты + шаблоны, уже в master); docs — CHANGELOG (запись VL-318 в Unreleased/Исправлено) и doc-10 §6 (три исхода классификации ответа write-инструмента) вошли в коммиты a5f538a/7b9e313; docs(task) f9d83a7 — lesson-191 (тело урока заполнено, kind=rule).
+Проверка: полный `pnpm test` (build + vitest) — 160 файлов, 3032 теста passed, 4 skipped, 0 failed. Сборка прошла в составе pnpm test.
+Не закоммичено: backlog/references/ref-25-Svelte-CLI.md — не относится к VL-318 (ref задачи VL-320, оставлен её фазе); файл задачи VL-318 коммитит framework после записи token_usage.
+DoD: тесты проходят, документация обновлена (CHANGELOG + doc-10 §6), регрессий нет.
 ---
 <!-- COMMENTS:END -->
