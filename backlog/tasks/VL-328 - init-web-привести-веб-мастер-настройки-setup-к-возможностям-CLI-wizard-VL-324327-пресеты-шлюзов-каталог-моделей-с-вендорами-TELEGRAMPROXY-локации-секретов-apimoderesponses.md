@@ -1,11 +1,11 @@
 ---
 id: VL-328
 title: 'init --web: привести веб-мастер настройки #/setup к возможностям CLI-wizard (VL-324/327) — пресеты шлюзов, каталог моделей с вендорами, TELEGRAM_PROXY, локации секретов, api_mode=responses'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-03 23:33'
-updated_date: '2026-11-04 00:32'
+updated_date: '2026-11-04 00:47'
 due_date: 2026-03-31
 labels:
   - web
@@ -39,15 +39,16 @@ modified_files:
   - web/dist/index.html
   - web/dist/assets/index-DBRNwANH.css
   - web/dist/assets/index-PYUvZz7L.js
-lessons: []
+lessons:
+  - lesson-208
 token_usage:
-  input: 11527144
-  output: 85802
-  cache: 10917888
-  total: 11612946
-  requests: 132
-  duration_ms: 1130810
-  reasoning: 39775
+  input: 12702430
+  output: 91436
+  cache: 11990528
+  total: 12793866
+  requests: 159
+  duration_ms: 1486824
+  reasoning: 41150
   by_phase:
     code:
       input: 11320242
@@ -55,10 +56,10 @@ token_usage:
       cache: 10756608
       requests: 126
     close:
-      input: 206902
-      output: 1716
-      cache: 161280
-      requests: 6
+      input: 1382188
+      output: 7350
+      cache: 1233920
+      requests: 33
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -106,13 +107,13 @@ token_usage:
 - [x] #7 AC7: Ввод ключа LLM записывается в выбранную локацию с явным подтверждением перезаписи (`secretsOverwrite` в UI: если ключ уже задан, спрашиваем), значение нигде не отдаётся наружу кроме `keySet`
 - [x] #8 AC8: Проверки в веб-мастере работают на актуальном окружении: после POST `/api/setup` сервер перечитывает env, поэтому «Проверить» (ping LLM, getMe) не даёт ложный 401/timeout; при `TELEGRAM_PROXY` проверка бота идёт через прокси (совместно с VL-327)
 - [x] #9 AC9: Веб-форма и CLI-wizard используют одно ядро и один перечень шлюзов/локаций: константы (`LLM_GATEWAY_PRESETS`, `SECRETS_LOCATIONS`, `deriveGatewayId`) живут в `src/core/*` и импортируются обоими фронтами — дублирования нет
-- [ ] #10 AC10: `pnpm build` чистый (tsc strict + vite build), `pnpm test` зелёный (включая `src/web/setup-api.test.mjs`); обновлены doc-6 (§1 мастер настройки) и CHANGELOG
+- [x] #10 AC10: `pnpm build` чистый (tsc strict + vite build), `pnpm test` зелёный (включая `src/web/setup-api.test.mjs`); обновлены doc-6 (§1 мастер настройки) и CHANGELOG
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -206,5 +207,28 @@ created: 2026-11-04 00:32
 Остальные файлы ветки слиты автоматически (src/core/llm-presets.ts, src/core/llm-presets.test.mjs, src/core/provider-catalog.ts, src/core/setup-secrets.ts, src/web/setup-api.ts, src/web/setup-api.test.mjs, src/web/setup-page-parity.test.mjs, src/web/catalog-api.ts, web/src/components/setup/api.ts, web/src/components/setup/setup-page.tsx, web/dist/*).
 Конфликты НЕ резолвились и merge НЕ откатывался (по регламенту фазы) — рабочее дерево главного репозитория остаётся в состоянии незавершённого merge, конфликтные файлы с маркерами на месте.
 Что нужно сделать человеку/следующей фазе Code: конфликт возник из-за пересечения правок VL-328 с уже влитыми VL-324/VL-327 в тех же функциях init-wizard.ts (хардкод-пресеты шлюзов) и setup-check.ts (перечитывание env/прокси). Нужно вручную разрешить оба UU-файла, сохранив общее ядро из src/core/llm-presets.ts (импорт констант вместо локального хардкода) и правки VL-327 в setup-check.ts, затем `git add src/cli/commands/init-wizard.ts src/core/setup-check.ts && git commit` (сообщение merge) и повторить Фазу Close. DoD и статус задачи не менялись.
+---
+author: @agent
+created: 2026-11-04 00:32
+---
+Фаза close прервана агентом (aborted): Фаза Close прервана: конфликт слияния vb/vl-328 → master. `git merge --no-ff vb/vl-328` остановился на CONFLICT (content) в двух файлах:
+- UU src/cli/commands/init-wizard.ts
+- UU src/core/setup-check.ts
+Остальные файлы ветки слиты автоматически (src/core/llm-presets.ts, src/core/llm-presets.test.mjs, src/core/provider-catalog.ts, src/core/setup-secrets.ts, src/web/setup-api.ts, src/web/setup-api.test.mjs, src/web/setup-page-parity.test.mjs, src/web/catalog-api.ts, web/src/components/setup/api.t — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-04 00:47
+---
+Фаза Close выполнена.
+**Merge.** Ветка `vb/vl-328` (2 коммита: d2cb513 feat + dccd2dc merge-резолв конфликтов) уже влита в master — конфликты в `src/cli/commands/init-wizard.ts` и `src/core/setup-check.ts` разрешены коммитом dccd2dc, повторное слияние не потребовалось (`git log master..vb/vl-328` пуст, `MERGE_HEAD` отсутствует).
+**Проверки после merge.**
+- `pnpm build` — чистый (tsc strict).
+- Ранний точечный фильтр по `git diff --name-only HEAD^1..HEAD`: `src/core/llm-presets.test.mjs`, `src/web/setup-api.test.mjs`, `src/web/setup-page-parity.test.mjs` — 44 теста зелёные.
+- Полный `pnpm test` — 165 файлов / 3177 тестов passed, 4 skipped, 0 fail (полный прогон один, повторов не было; параллельных vitest не обнаружено).
+**Уборка.** Worktree `.vibelog/worktrees/vl-328` удалён (потребовался `--force`: внутри были только untracked `backlog/references/data` — gitignored каталог клона refs, данные не теряются), ветка `vb/vl-328` удалена (`-d`, была слита), `git worktree prune` выполнен.
+**DoD:** 1 (Тесты проходят) ✓, 2 (Документация обновлена) ✓ — doc-6 §1 «Мастер настройки» дополнен разделом про паритет веб-мастера с CLI-wizard, CHANGELOG `Unreleased → Добавлено` получил запись VL-328, коммит **46b7c66**; 3 (Нет регрессий) ✓.
+**AC10** закрыт: build чистый, тесты зелёные, doc-6 и CHANGELOG обновлены.
+**Lessons:** создан lesson-208 («Выноси константы настройки в src/core до правки второго фронта…»), связан с задачей, закоммичен — **c1e523e**.
+Примечание: в главном репо остался untracked файл задачи `VL-329` (не подзадача VL-328) — не коммитил.
 ---
 <!-- COMMENTS:END -->
