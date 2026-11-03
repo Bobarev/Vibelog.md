@@ -21,12 +21,15 @@ tags:
 ```
 vibelog init [name] [--prefix LB] [--mode fresh|upgrade] [--yes] [--web]
   [--project-name N] [--agents vb,qwen,opencode] [--default-agent ID]
-  [--secrets-location env|settings|both] [--bot] [--bot-token T] [--bot-chats IDS]
-  [--provider ID] [--base-url URL] [--api-key-env VAR] [--model ID] [--api-mode chat|responses]
+  [--secrets-location system|env|settings|both] [--secrets-overwrite]
+  [--bot] [--bot-token T] [--bot-chats IDS] [--bot-proxy URL]
+  [--provider ID] [--base-url URL] [--api-key-env VAR] [--api-key K] [--model ID] [--vendor V] [--api-mode chat|responses]
   [--no-mcp] [--skip-llm-check] [--skip-bot-check] [--force] [--no-wizard]
 ```
 
 Инициализирует backlog-директорию и конфиг. В TTY запускает интерактивный wizard настройки проекта (VL-210): имя/prefix → агенты → где хранить секреты → Telegram-бот → LLM (если выбран `vb`) → MCP → проверки. Без TTY (или с `--yes`/`--no-wizard`) работает как прежний init: создаёт `backlog/` и настраивает MCP.
+
+С VL-324 этап LLM — выбор шлюза из трёх хардкод-вариантов (RouterAI `https://routerai.ru/api/v1` / Selectel ИИ-роутер `https://api.selectel.ru/aig/v1` / OpenAI-совместимый с вводом `base_url` и выводом gateway из домена), для RouterAI — развилка «каталог моделей и вендоров с ценами / вручную / без вендора»; `api_mode` по умолчанию `responses`, имя переменной с ключом выводится из шлюза (`ROUTERAI_API_KEY`, `SELECTEL_ROUTER_API_KEY`, иначе `<GATEWAY_UPPER>_API_KEY`), при файловой локации секретов ключ вводится с маскировкой и пишется в `.env` (с подтверждением перезаписи). Подробнее об этапах — в [руководстве пользователя](user-guide.md#мастер-настройки-vl-210).
 
 Интерактивный слой построен на [`@clack/prompts`](https://github.com/bombshell-dev/clack) (VL-322): `src/cli/prompt.ts` — тонкая обёртка над ним, сохраняющая контракт `PromptSession` (списки, галочки, скрытие курсора, обработка `resize` и ширины символов — целиком на стороне clack). Пакет — чистый JS без нативной сборки, поэтому ограничение «никаких нативных зависимостей» (README) соблюдено. Поведение прежнее (VL-320): `↑`/`↓` пропускают недоступные пункты (по кругу), `space` переключает галочку только у доступного, `Enter` подтверждает выбор, `Esc`/`Ctrl+C` — отмена с сообщением «Отменено. Настройки не изменены.» и кодом выхода 0 (без стектрейса). Недоступные пункты (например, агент, помеченный «Скоро») навигацией не выбираются.
 
@@ -45,10 +48,11 @@ vibelog init [name] [--prefix LB] [--mode fresh|upgrade] [--yes] [--web]
 | `--web` | Сразу открыть браузер на веб-мастере `#/setup` — консольный wizard при этом не запускается (флаг приоритетнее интерактива и проверки «уже инициализирован») |
 | `--agents vb,qwen,opencode` | Список агентов через запятую; пустая строка — без агента (только таск-менеджер) |
 | `--default-agent` | Агент по умолчанию (спрашивается, только если выбрано больше одного) |
-| `--secrets-location env\|settings\|both` | Где хранить ключи: `.env` (по умолчанию), секция `env` в `.vibelog/settings.json`, оба |
-| `--bot`, `--bot-token`, `--bot-chats` | Настройка Telegram-бота (токен и чаты) |
-| `--provider`, `--base-url`, `--api-key-env` | LLM-провайдер (только если выбран `vb`) |
-| `--model`, `--api-mode chat\|responses` | Модель и режим API |
+| `--secrets-location system\|env\|settings\|both` | Где хранить ключи: `system` — ничего не писать, только сообщить имена переменных (приоритет чтения `env → .env`), `env` — `.env` (по умолчанию), `settings` — секция `env` в `.vibelog/settings.json`, `both` — оба |
+| `--secrets-overwrite` | Перезаписать уже существующие в `.env`/`settings.json` секреты (по умолчанию существующая строка не меняется) |
+| `--bot`, `--bot-token`, `--bot-chats`, `--bot-proxy` | Настройка Telegram-бота (токен, чаты, прокси `TELEGRAM_PROXY`; пустой прокси не записывается) |
+| `--provider`, `--base-url`, `--api-key-env`, `--api-key` | LLM-провайдер (только если выбран `vb`); `--api-key` пишет значение в `.env` |
+| `--model`, `--vendor`, `--api-mode chat\|responses` | Модель, вендор (поле `vendor`, необязательное) и режим API (по умолчанию `responses`) |
 | `--no-mcp` | Не настраивать MCP-сервер (`.qwen/settings.json`, `.opencode/settings.json`) |
 | `--skip-llm-check`, `--skip-bot-check` | Не проверять LLM (ping) / бота (getMe) |
 | `--force` | Перезаписать существующие настройки |
