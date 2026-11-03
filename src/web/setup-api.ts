@@ -18,12 +18,17 @@ import { join } from 'node:path';
 import { applySetup, readSetupState, SetupError } from '../core/setup.js';
 import type { AgentId, SetupAnswers, SetupMode } from '../core/setup.js';
 import type { SecretsLocation } from '../core/setup-secrets.js';
+import { SECRETS_LOCATIONS } from '../core/setup-secrets.js';
 import { loadGateways, resolveActiveModel, resolveModelById } from '../core/models.js';
 import { pingLlm, checkTelegramToken } from '../core/setup-check.js';
 import type { ApiResponse } from './api.js';
 
-/** Допустимые локации секретов (валидация тела POST /api/setup). */
-const SECRETS_LOCATIONS: SecretsLocation[] = ['env', 'settings', 'both'];
+/**
+ * Допустимые локации секретов (валидация тела POST /api/setup).
+ * VL-324: список живёт в core/setup-secrets.ts — добавилась локация `system`
+ * (ничего не писать), и дублировать перечень в веб-слое нельзя.
+ */
+const LOCATIONS: SecretsLocation[] = SECRETS_LOCATIONS;
 
 /** Допустимые агенты. */
 const AGENT_IDS: AgentId[] = ['vb', 'qwen', 'opencode', 'claude'];
@@ -82,17 +87,20 @@ export function parseSetupBody(
   }
 
   const secretsRaw = typeof body.secretsLocation === 'string' ? body.secretsLocation : 'env';
-  if (!(SECRETS_LOCATIONS as string[]).includes(secretsRaw)) {
-    return { error: `secretsLocation: ожидается ${SECRETS_LOCATIONS.join('|')}` };
+  if (!(LOCATIONS as string[]).includes(secretsRaw)) {
+    return { error: `secretsLocation: ожидается ${LOCATIONS.join('|')}` };
   }
 
-  // Бот: объект { token?, chats? } либо отсутствует
+  // Бот: объект { token?, chats?, proxy? } либо отсутствует
   let bot: SetupAnswers['bot'];
   if (body.bot !== null && typeof body.bot === 'object' && !Array.isArray(body.bot)) {
     const raw = body.bot as Record<string, unknown>;
     const token = typeof raw.token === 'string' && raw.token !== '' ? raw.token : undefined;
+    const proxy = typeof raw.proxy === 'string' && raw.proxy !== '' ? raw.proxy : undefined;
     const chats = asNumberArray(raw.chats);
-    if (token !== undefined || chats.length > 0) bot = { token, chats };
+    if (token !== undefined || proxy !== undefined || chats.length > 0) {
+      bot = { token, chats, ...(proxy !== undefined ? { proxy } : {}) };
+    }
   }
 
   // Шлюз (VL-315; раньше provider): id обязателен, base_url обязателен для нового
@@ -151,6 +159,7 @@ export function parseSetupBody(
       agents,
       defaultAgent: defaultAgentRaw !== '' ? (defaultAgentRaw as AgentId) : undefined,
       secretsLocation: secretsRaw as SecretsLocation,
+      secretsOverwrite: body.secretsOverwrite === true,
       bot,
       gateway,
       model,

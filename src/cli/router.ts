@@ -213,12 +213,14 @@ vibelog init [name] [--prefix LB] [--mode fresh|upgrade] [--yes] [--web]
   --no-mcp                   — не настраивать MCP-сервер (.qwen/.opencode settings.json)
 
 Секреты и бот:
-  --secrets-location env|settings|both  — где хранить ключи (по умолчанию env)
-  --bot, --bot-token <t>, --bot-chats <ids>  — настройка Telegram-бота
+  --secrets-location system|env|settings|both  — где хранить ключи
+                        (system — не писать, завести переменные самому; env — .env)
+  --secrets-overwrite   — перезаписать уже существующие секреты
+  --bot, --bot-token <t>, --bot-chats <ids>, --bot-proxy <url>  — Telegram-бот
 
 LLM (только если выбран vb):
-  --provider <id> --base-url <url> --api-key-env <VAR>
-  --model <id> --api-mode chat|responses
+  --gateway <id> --base-url <url> --api-key-env <VAR> --api-key <key>
+  --model <id> --vendor <v> --api-mode chat|responses (по умолчанию responses)
 
 Проверки и запись:
   --skip-llm-check, --skip-bot-check  — не проверять LLM/бота

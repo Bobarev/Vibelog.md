@@ -1,14 +1,20 @@
 /**
- * Запись секретов wizard-а настройки проекта (VL-210).
+ * Запись секретов wizard-а настройки проекта (VL-210, VL-324).
  *
- * Секреты (API-ключи LLM, токен Telegram-бота) можно хранить в двух местах
- * (VL-143 — приоритет чтения: реальный env → .env → секция `env`
+ * Секреты (API-ключи LLM, токен Telegram-бота, прокси бота) можно хранить в
+ * трёх местах (VL-143 — приоритет чтения: реальный env → .env → секция `env`
  * settings.json):
  *
+ * - `system` (VL-324) — НИЧЕГО не писать: пользователь сам заводит
+ *   переменные окружения (например в ~/.zshrc или через CI-secrets).
+ *   Wizard только сообщает, какие имена ключей нужно завести;
  * - `.env` в корне проекта (gitignored) — рекомендуемый вариант;
  * - секция `env` в `.vibelog/settings.json` (тоже gitignored) — удобно,
  *   если .env в проекте не используется;
  * - оба — .env как основной источник, settings.json как fallback.
+ *
+ * Значение `'env'` сохраняет прежний смысл «писать в .env» (переименования
+ * нет — на него завязаны флаги `--secrets-location env` и web-форма).
  *
  * Модуль намеренно НЕ пишет в process.env: wizard только сохраняет значения
  * на диск, а загрузка в окружение — задача loadProjectEnv (src/bot/env.ts)
@@ -23,8 +29,15 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readSettingsEnv, saveSettingsPatch } from './settings.js';
 
-/** Куда писать секреты (шаг 3 wizard-а). */
-export type SecretsLocation = 'env' | 'settings' | 'both';
+/**
+ * Куда писать секреты (шаг 3 wizard-а).
+ *
+ * `system` — не писать никуда (переменные окружения заводит пользователь).
+ */
+export type SecretsLocation = 'system' | 'env' | 'settings' | 'both';
+
+/** Все допустимые локации (валидация флагов и тела web-формы). */
+export const SECRETS_LOCATIONS: SecretsLocation[] = ['system', 'env', 'settings', 'both'];
 
 /** Шапка нового .env — объясняет, что файл не коммитится. */
 const ENV_HEADER = [
@@ -88,33 +101,42 @@ function formatEnvValue(value: string): string {
  *
  * Файл создаётся с шапкой-комментарием, если его нет. Существующие ключи
  * остаются как есть (в skipped) — wizard не должен молча менять рабочий
- * ключ пользователя; явная перезапись — только через --force на уровне
- * вызывающего кода (он передаёт новое значение под другим ключом либо
- * удаляет строку вручную).
+ * ключ пользователя. Явная перезапись — только по подтверждению
+ * пользователя (`opts.overwrite`, VL-324): тогда строка ключа заменяется
+ * на месте, а не дописывается второй раз (иначе парсер прочитал бы первое
+ * значение и новый ключ «не применился»).
  *
- * @returns written — имена дописанных ключей, skipped — уже существовавших
+ * @returns written — имена записанных ключей, skipped — уже существовавших
  */
 function writeEnvFile(
   cwd: string,
   secrets: Record<string, string>,
+  opts: { overwrite?: boolean } = {},
 ): { written: string[]; skipped: string[] } {
   const path = join(cwd, '.env');
   const existing = readEnvFile(cwd);
   const written: string[] = [];
   const skipped: string[] = [];
   const lines: string[] = [];
+  /** Ключи, которые надо заменить в существующем содержимом. */
+  const replace = new Map<string, string>();
 
   for (const [key, value] of Object.entries(secrets)) {
     if (key === '') continue;
     if (existing[key] !== undefined) {
-      skipped.push(key);
+      if (opts.overwrite !== true) {
+        skipped.push(key);
+        continue;
+      }
+      replace.set(key, value);
+      written.push(key);
       continue;
     }
     lines.push(`${key}=${formatEnvValue(value)}`);
     written.push(key);
   }
 
-  if (lines.length === 0) return { written, skipped };
+  if (lines.length === 0 && replace.size === 0) return { written, skipped };
 
   let content = '';
   if (existsSync(path)) {
@@ -126,9 +148,32 @@ function writeEnvFile(
   } else {
     content = `${ENV_HEADER}\n`;
   }
-  // Гарантируем перевод строки перед дописыванием (файл мог не заканчиваться им)
-  if (content !== '' && !content.endsWith('\n')) content += '\n';
-  content += `${lines.join('\n')}\n`;
+
+  // Замена существующих строк: идём по строкам и подменяем значение у
+  // совпавшего ключа (учитывая `export ` и кавычки — их снимает readEnvFile).
+  if (replace.size > 0) {
+    const out: string[] = [];
+    for (const line of content.split('\n')) {
+      let trimmed = line.trim();
+      const exported = trimmed.startsWith('export ');
+      if (exported) trimmed = trimmed.slice(7).trim();
+      const eq = trimmed.indexOf('=');
+      const key = eq === -1 ? '' : trimmed.slice(0, eq).trim();
+      if (key !== '' && replace.has(key)) {
+        out.push(`${exported ? 'export ' : ''}${key}=${formatEnvValue(replace.get(key) as string)}`);
+        replace.delete(key);
+        continue;
+      }
+      out.push(line);
+    }
+    content = out.join('\n');
+  }
+
+  if (lines.length > 0) {
+    // Гарантируем перевод строки перед дописыванием (файл мог не заканчиваться им)
+    if (content !== '' && !content.endsWith('\n')) content += '\n';
+    content += `${lines.join('\n')}\n`;
+  }
   writeFileSync(path, content, 'utf-8');
   return { written, skipped };
 }
@@ -138,13 +183,16 @@ function writeEnvFile(
  *
  * @param cwd — директория проекта
  * @param secrets — пары ключ→значение (пустые значения игнорируются)
- * @param loc — .env | settings.json env | оба
+ * @param loc — system (ничего не писать) | .env | settings.json env | оба
+ * @param opts.overwrite — заменять существующие значения (по подтверждению
+ *   пользователя, VL-324); без него существующие ключи попадают в skipped
  * @returns имена записанных и пропущенных (уже существующих) ключей
  */
 export function writeSecrets(
   cwd: string,
   secrets: Record<string, string>,
   loc: SecretsLocation,
+  opts: { overwrite?: boolean } = {},
 ): { written: string[]; skipped: string[] } {
   // Пустые значения не пишем: пустой ключ в .env сломал бы приоритет
   // (loadDotEnv записал бы пустую строку в process.env и перекрыл settings.json)
@@ -154,11 +202,15 @@ export function writeSecrets(
   }
   if (Object.keys(clean).length === 0) return { written: [], skipped: [] };
 
+  // system: пользователь заводит переменные окружения сам — на диск не пишем
+  // ничего (AC2). Имена ключей вызывающий код сообщает пользователю.
+  if (loc === 'system') return { written: [], skipped: [] };
+
   const written: string[] = [];
   const skipped: string[] = [];
 
   if (loc === 'env' || loc === 'both') {
-    const res = writeEnvFile(cwd, clean);
+    const res = writeEnvFile(cwd, clean, opts);
     written.push(...res.written);
     skipped.push(...res.skipped);
   }
@@ -168,6 +220,11 @@ export function writeSecrets(
     const next: Record<string, string> = { ...current };
     for (const [key, value] of Object.entries(clean)) {
       if (current[key] !== undefined) {
+        if (opts.overwrite === true) {
+          next[key] = value;
+          if (!written.includes(key)) written.push(key);
+          continue;
+        }
         // В режиме both ключ уже мог быть записан в .env — это не «пропуск»,
         // а штатное дублирование (fallback VL-143)
         if (!skipped.includes(key) && loc === 'settings') skipped.push(key);

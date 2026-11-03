@@ -66,7 +66,7 @@ describe('VL-210 — ядро setup', () => {
     assert.ok(state.projectName.length > 0, 'имя проекта — имя директории');
     const vb = state.agents.find((a) => a.id === 'vb');
     assert.ok(vb, 'vb всегда в списке');
-    assert.equal(vb?.enabled, false, 'vb по умолчанию не отмечен');
+    assert.equal(vb?.enabled, true, 'VL-324: vb отмечен по умолчанию (других агентов нет)');
     assert.equal(state.agents.find((a) => a.id === 'qwen'), undefined, 'qwen скрыт без .qwen/');
     assert.deepEqual(state.gateways, {});
     assert.equal(state.secrets.envFile, false);
@@ -251,8 +251,92 @@ describe('VL-210 — ядро setup', () => {
     assert.ok(log.includes('Дополняю недостающее'), log);
   });
 
-  it('derivePrefix: инициалы слов имени проекта (VL-320)', () => {
-    assert.equal(derivePrefix('Vibelog Templates'), 'VT');
+  it('VL-324: vb не навязывается, если в проекте есть внешний агент', () => {
+    mkdirSync(join(testDir, '.qwen'), { recursive: true });
+    const state = readSetupState(testDir);
+    assert.equal(state.agents.find((a) => a.id === 'vb')?.enabled, false);
+    assert.equal(state.agents.find((a) => a.id === 'qwen')?.enabled, true);
+  });
+
+  it('VL-324: локация system не пишет секреты на диск, но сообщает имена', () => {
+    const result = applySetup(
+      testDir,
+      baseAnswers({
+        agents: ['vb'],
+        secretsLocation: 'system',
+        bot: { token: '123:abc', chats: [] },
+      }),
+    );
+    assert.ok(!existsSync(join(testDir, '.env')), '.env не создаётся');
+    const settings = JSON.parse(readFileSync(join(testDir, '.vibelog', 'settings.json'), 'utf-8'));
+    assert.equal(settings.env, undefined, 'секция env не пишется');
+    assert.ok(
+      result.warnings.some((w) => w.includes('TELEGRAM_BOT_TOKEN')),
+      `в предупреждении должно быть имя ключа: ${result.warnings.join('; ')}`,
+    );
+    assert.ok(!JSON.stringify(result).includes('123:abc'), 'значение секрета не утекло');
+  });
+
+  it('VL-324: TELEGRAM_PROXY пишется в .env, пустой — не пишется вовсе', () => {
+    applySetup(
+      testDir,
+      baseAnswers({
+        agents: [],
+        secretsLocation: 'env',
+        bot: { token: '1:a', chats: [], proxy: 'socks5://127.0.0.1:1080' },
+      }),
+    );
+    const env = readFileSync(join(testDir, '.env'), 'utf-8');
+    assert.ok(env.includes('TELEGRAM_PROXY=socks5://127.0.0.1:1080'), env);
+
+    fresh();
+    applySetup(
+      testDir,
+      baseAnswers({ agents: [], secretsLocation: 'env', bot: { token: '1:a', chats: [] } }),
+    );
+    const env2 = readFileSync(join(testDir, '.env'), 'utf-8');
+    assert.ok(!env2.includes('TELEGRAM_PROXY'), `пустой прокси не пишется: ${env2}`);
+  });
+
+  it('VL-324: secretsOverwrite заменяет существующий ключ, без него — пропуск', () => {
+    writeFileSync(join(testDir, '.env'), 'ROUTERAI_API_KEY=old\n', 'utf-8');
+    const answers = baseAnswers({
+      agents: ['vb'],
+      secretsLocation: 'env',
+      gateway: {
+        id: 'routerai',
+        base_url: 'https://routerai.ru/api/v1',
+        api_key_env: 'ROUTERAI_API_KEY',
+        apiKey: 'new',
+      },
+    });
+    const skipped = applySetup(testDir, answers);
+    assert.ok(skipped.skipped.some((s) => s.includes('ROUTERAI_API_KEY')));
+    assert.ok(readFileSync(join(testDir, '.env'), 'utf-8').includes('ROUTERAI_API_KEY=old'));
+
+    applySetup(testDir, { ...answers, secretsOverwrite: true });
+    const env = readFileSync(join(testDir, '.env'), 'utf-8');
+    assert.ok(env.includes('ROUTERAI_API_KEY=new'), env);
+    assert.ok(!env.includes('ROUTERAI_API_KEY=old'), 'старое значение заменено, а не дописано');
+  });
+
+  it('VL-324: formatSetupLog отражает локацию system и вендора модели', () => {
+    const state = readSetupState(testDir);
+    const log = formatSetupLog(
+      baseAnswers({
+        agents: ['vb'],
+        secretsLocation: 'system',
+        gateway: { id: 'routerai', base_url: 'https://routerai.ru/api/v1' },
+        model: { id: 'openai/gpt-4o', gateway: 'routerai', vendor: 'openai', model: 'openai/gpt-4o' },
+      }),
+      state,
+      testDir,
+    );
+    assert.ok(log.includes('env (системные переменные'), log);
+    assert.ok(log.includes('вендор: openai'), log);
+  });
+
+  it('derivePrefix: инициалы слов имени проекта (VL-320)', () => {    assert.equal(derivePrefix('Vibelog Templates'), 'VT');
     assert.equal(derivePrefix('My Cool App'), 'MCA');
     assert.equal(derivePrefix('api'), 'AP', 'одно слово — первые две буквы');
     assert.equal(derivePrefix('vibelog-templates'), 'VT', 'дефис — разделитель');
