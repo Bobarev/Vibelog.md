@@ -196,7 +196,11 @@ export function pickTrimIndex(messages: readonly ChatMessage[], targetTokens: nu
   let acc = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     acc += estimateTokens([messages[i]!]);
-    if (acc > target) return i + 1;
+    if (acc > target) {
+      // Последнее сообщение само больше цели: хвост — ровно оно (не пустой
+      // и не «ничего не отсекаем»: иначе сжатие молча не сработает).
+      return Math.min(i + 1, messages.length - 1);
+    }
   }
   return messages.length; // вся история влезает в цель — сжимать нечего
 }

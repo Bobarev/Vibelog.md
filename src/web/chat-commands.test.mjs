@@ -42,7 +42,7 @@ import {
   saveCompaction,
 } from '../../dist/web/chat-compaction.js';
 import { loadThreadUsage } from '../../dist/web/chat-usage.js';
-import { handleApiRequest } from '../../dist/web/api.js';
+import { handleApi } from '../../dist/web/api.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { zeroUsage } from '../../dist/agent/llm.js';
 
@@ -61,6 +61,14 @@ beforeAll(() => {
       definition_of_done: [],
     }),
     'utf-8',
+  );
+  // Цель сжатия — маленькая, чтобы тестовые истории заведомо её превышали
+  // (иначе /trim и /compact отвечают «сжимать нечего» и проверять нечего).
+  mkdirSync(join(cwd, '.vibelog'), { recursive: true });
+  writeFileSync(
+    join(cwd, '.vibelog', 'settings.json'),
+    JSON.stringify({ chat: { compact_target_tokens: 2000 } }),
+    'utf8',
   );
 });
 
@@ -173,7 +181,7 @@ describe('реестр команд и /help (AC1, AC2, AC3)', () => {
   });
 
   it('GET /api/chat/commands отдаёт реестр без исполнения', async () => {
-    const res = await handleApiRequest('GET', '/api/chat/commands', null, cwd);
+    const res = handleApi('GET', '/api/chat/commands', null, cwd);
     assert.equal(res.status, 200);
     assert.equal(res.body.commands.length, CHAT_COMMANDS.length);
     assert.deepEqual(
@@ -339,9 +347,18 @@ describe('/compact (AC6, AC7, AC12)', () => {
     // Промпт второго вызова содержит предыдущее саммари (инкрементальность)
     const prompt = state.messages[1][0].content;
     assert.ok(prompt.includes('первое саммари'), 'нет prior-summary в промпте');
-    assert.ok(prompt.includes('новый вопрос'), 'нет новых сообщений в промпте');
-    // Саммари переписано, а не накоплено
+    // Инкрементальность: пересказываются только сообщения, выпавшие из хвоста
+    // (от прежней точки до новой), а не вся история заново.
     const secondState = loadCompaction(cwd, threadId);
+    assert.ok(secondState.fromIndex >= firstState.fromIndex);
+    const fellOut = extended[firstState.fromIndex];
+    assert.ok(
+      prompt.includes(fellOut.content.slice(0, 20)),
+      'нет сообщений, выпавших из хвоста',
+    );
+    // Новые сообщения остаются в хвосте дословно — их в промпте саммари нет
+    assert.ok(!prompt.includes('новый вопрос'), 'новые сообщения не должны пересказываться');
+    // Саммари переписано, а не накоплено
     assert.equal(secondState.summary, '## Задача\nвторое саммари');
     assert.ok(!secondState.summary.includes('первое саммари'));
   });
@@ -603,6 +620,20 @@ describe('утилиты сжатия', () => {
 
   it('loadCompaction: невалидный threadId → null', () => {
     assert.equal(loadCompaction(cwd, '../etc/passwd'), null);
+  });
+});
+
+describe('плашка сжатия в клиенте (AC10)', () => {
+  it('thread.tsx рендерит плашку по данным GET /api/chat/threads/:id', () => {
+    const src = readFileSync(new URL('../../web/src/components/chat/thread.tsx', import.meta.url), 'utf8');
+    // Поле в ответе API и в состоянии загрузки
+    assert.match(src, /compaction\?: CompactionState \| null/);
+    assert.match(src, /compaction: data\.compaction \?\? null/);
+    // Компонент плашки и её текст
+    assert.match(src, /function CompactionBanner\(/);
+    assert.match(src, /Контекст сжат: в модель уходит с \{compaction\.fromIndex \+ 1\}-го сообщения/);
+    // Плашка внутри непустого треда (полная история в ленте остаётся)
+    assert.match(src, /<CompactionBanner compaction=\{compaction \?\? null\} \/>/);
   });
 });
 
