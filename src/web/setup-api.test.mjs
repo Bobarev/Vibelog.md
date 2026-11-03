@@ -48,7 +48,7 @@ describe('VL-210 — REST API /api/setup', () => {
     writeFileSync(
       join(testDir, '.vibelog', 'settings.json'),
       JSON.stringify({
-        providers: { p1: { base_url: 'https://api.example/v1', api_key_env: 'P1_KEY' } },
+        gateways: { p1: { base_url: 'https://api.example/v1', api_key_env: 'P1_KEY' } },
         env: { TELEGRAM_BOT_TOKEN: 'super-secret' },
       }),
       'utf-8',
@@ -58,9 +58,9 @@ describe('VL-210 — REST API /api/setup', () => {
     const serialized = JSON.stringify(res.body);
     assert.ok(!serialized.includes('super-secret'), 'значение секрета не должно утекать');
     assert.equal(res.body.mode, 'fresh');
-    assert.equal(res.body.providers[0].id, 'p1');
-    assert.equal(res.body.providers[0].api_key_env, 'P1_KEY');
-    assert.equal(typeof res.body.providers[0].keySet, 'boolean');
+    assert.equal(res.body.gateways[0].id, 'p1');
+    assert.equal(res.body.gateways[0].api_key_env, 'P1_KEY');
+    assert.equal(typeof res.body.gateways[0].keySet, 'boolean');
     assert.ok(Array.isArray(res.body.agents));
   });
 
@@ -118,7 +118,7 @@ describe('VL-210 — REST API /api/setup', () => {
   });
 
   it('POST /api/setup: провайдер без base_url и без записи в settings → 400', () => {
-    const res = handleSetupApi('POST', '/api/setup', body({ provider: { id: 'unknown' } }), testDir);
+    const res = handleSetupApi('POST', '/api/setup', body({ gateway: { id: 'unknown' } }), testDir);
     assert.equal(res.status, 400);
     assert.ok(res.body.error.includes('не найден'), res.body.error);
   });
@@ -127,7 +127,7 @@ describe('VL-210 — REST API /api/setup', () => {
     const res = handleSetupApi(
       'POST',
       '/api/setup',
-      body({ model: { id: 'm1', provider: 'p1', model: 'm1', api_mode: 'grpc' } }),
+      body({ model: { id: 'm1', gateway: 'p1', model: 'm1', api_mode: 'grpc' } }),
       testDir,
     );
     assert.equal(res.status, 400);

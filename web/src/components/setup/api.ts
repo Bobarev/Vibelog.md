@@ -18,19 +18,25 @@ export interface SetupAgent {
   reason?: string;
 }
 
-/** Провайдер: БЕЗ значений ключей — только факт наличия. */
-export interface SetupProvider {
+/** Шлюз: БЕЗ значений ключей — только факт наличия. */
+export interface SetupGateway {
   id: string;
   base_url: string;
   api_key_env: string | null;
   keySet: boolean;
 }
 
+/** @deprecated VL-315: переименовано в SetupGateway. */
+export type SetupProvider = SetupGateway;
+
 /** Модель из models.available. */
 export interface SetupModel {
   id: string;
   label: string;
-  provider: string;
+  /** VL-315: id шлюза (раньше provider). */
+  gateway: string;
+  /** VL-315: апстрим внутри шлюза. */
+  vendor?: string;
   model: string;
   api_mode: "chat" | "responses";
 }
@@ -45,7 +51,7 @@ export interface SetupStateData {
   defaultAgent: string | null;
   secrets: { envFile: boolean; envKeys: string[]; settingsEnvKeys: string[] };
   bot: { configured: boolean; chats: number[] };
-  providers: SetupProvider[];
+  gateways: SetupGateway[];
   models: { default: string | null; available: SetupModel[] };
   mcp: { qwen: boolean; opencode: boolean };
   envFileExists: boolean;
@@ -60,11 +66,12 @@ export interface SetupAnswersPayload {
   defaultAgent?: string;
   secretsLocation: "env" | "settings" | "both";
   bot?: { token?: string; chats: number[] };
-  provider?: { id: string; base_url: string; api_key_env?: string; apiKey?: string };
+  gateway?: { id: string; base_url: string; api_key_env?: string; apiKey?: string };
   model?: {
     id: string;
     label?: string;
-    provider: string;
+    gateway: string;
+    vendor?: string;
     model: string;
     api_mode?: "chat" | "responses";
   };

@@ -83,7 +83,7 @@ export function ModelPicker() {
       })
       .catch(() => {
         // Пикер — не критично: при недоступности API прячем
-        if (!cancelled) setData({ default: null, available: [], providers: [] })
+        if (!cancelled) setData({ default: null, available: [], gateways: [] })
       })
     return () => {
       cancelled = true

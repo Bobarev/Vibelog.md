@@ -1,9 +1,9 @@
 /**
  * Тесты REST API реестра моделей (VL-209): GET/PUT /api/models.
  *
- * - GET отдаёт default/available/providers с keySet (БЕЗ значений ключей);
+ * - GET отдаёт default/available/gateways с keySet (БЕЗ значений ключей);
  * - PUT валидирует id (400 на мусор, файл не меняется), пишет models.default,
- *   сохраняя providers/env/прочие ключи (read-modify-write);
+ *   сохраняя gateways/env/прочие ключи (read-modify-write);
  * - битые/отсутствующие секции → пустые списки, без исключений.
  */
 
@@ -29,15 +29,15 @@ function writeSettingsFile(data) {
 }
 
 const baseSettings = () => ({
-  providers: {
+  gateways: {
     routerai: { base_url: 'https://routerai.ru/api/v1', api_key_env: 'VL209_API_KEY_TEST' },
     direct: { base_url: 'https://example.com/v1', api_key: 'direct-plain-key' },
   },
   models: {
     default: 'routerai/MiMo/Pro',
     available: {
-      'routerai/MiMo/Pro': { label: 'MiMo Pro', provider: 'routerai', model: 'MiMo/Pro', api_mode: 'chat' },
-      'direct/plain': { provider: 'direct', model: 'plain' },
+      'routerai/MiMo/Pro': { label: 'MiMo Pro', gateway: 'routerai', model: 'MiMo/Pro', api_mode: 'chat' },
+      'direct/plain': { gateway: 'direct', model: 'plain' },
     },
   },
   env: { TELEGRAM_BOT_TOKEN: 'secret-token-xyz' },
@@ -57,7 +57,7 @@ beforeEach(() => {
 });
 
 describe('GET /api/models (VL-209)', () => {
-  it('отдаёт default, available (id/label/provider/api_mode) и providers с keySet', () => {
+  it('отдаёт default, available (id/label/gateway/api_mode) и gateways с keySet', () => {
     writeSettingsFile(baseSettings());
     process.env.VL209_API_KEY_TEST = 'from-env';
     try {
@@ -65,13 +65,13 @@ describe('GET /api/models (VL-209)', () => {
       assert.equal(res.status, 200);
       assert.equal(res.body.default, 'routerai/MiMo/Pro');
       assert.deepEqual(res.body.available, [
-        { id: 'routerai/MiMo/Pro', label: 'MiMo Pro', provider: 'routerai', api_mode: 'chat' },
-        { id: 'direct/plain', label: 'direct/plain', provider: 'direct', api_mode: 'chat' },
+        { id: 'routerai/MiMo/Pro', label: 'MiMo Pro', gateway: 'routerai', api_mode: 'chat' },
+        { id: 'direct/plain', label: 'direct/plain', gateway: 'direct', api_mode: 'chat' },
       ]);
-      const router = res.body.providers.find(p => p.id === 'routerai');
+      const router = res.body.gateways.find(p => p.id === 'routerai');
       assert.equal(router.base_url, 'https://routerai.ru/api/v1');
       assert.equal(router.keySet, true, 'ключ из env задан');
-      const direct = res.body.providers.find(p => p.id === 'direct');
+      const direct = res.body.gateways.find(p => p.id === 'direct');
       assert.equal(direct.keySet, true, 'прямой api_key считается заданным');
     } finally {
       delete process.env.VL209_API_KEY_TEST;
@@ -86,7 +86,7 @@ describe('GET /api/models (VL-209)', () => {
     assert.ok(!raw.includes('direct-plain-key'), 'api_key не отдан');
     assert.ok(!raw.includes('secret-token-xyz'), 'токен не отдан');
     assert.ok(!raw.includes('VL209_API_KEY_TEST'), 'имя env-переменной не отдано'); 
-    assert.equal(res.body.providers.find(p => p.id === 'routerai').keySet, false);
+    assert.equal(res.body.gateways.find(p => p.id === 'routerai').keySet, false);
   });
 
   it('без секций → default null, пустые списки (не падает)', () => {
@@ -95,7 +95,7 @@ describe('GET /api/models (VL-209)', () => {
     assert.equal(res.status, 200);
     assert.equal(res.body.default, null);
     assert.deepEqual(res.body.available, []);
-    assert.deepEqual(res.body.providers, []);
+    assert.deepEqual(res.body.gateways, []);
   });
 
   it('отдаёт description модели, если задано (VL-265), и не добавляет пустой ключ', () => {
@@ -119,7 +119,7 @@ describe('PUT /api/models (VL-209)', () => {
     assert.equal(res.body.default, 'direct/plain');
     const s = readSettingsFile();
     assert.equal(s.models.default, 'direct/plain');
-    assert.ok(s.providers.routerai, 'providers сохранены');
+    assert.ok(s.gateways.routerai, 'gateways сохранены');
     assert.equal(s.env.TELEGRAM_BOT_TOKEN, 'secret-token-xyz', 'env-секция сохранена');
     assert.equal(s.git_user_name, 'Tester');
   });

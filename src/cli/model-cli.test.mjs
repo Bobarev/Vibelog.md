@@ -45,15 +45,15 @@ function readSettings() {
 }
 
 const baseSettings = () => ({
-  providers: {
+  gateways: {
     routerai: { base_url: 'https://routerai.ru/api/v1', api_key_env: 'VL209_CLI_KEY' },
     cloudru: { base_url: 'https://foundation-models.api.cloud.ru/v1', api_key_env: 'VL209_CLOUD_KEY' },
   },
   models: {
     default: 'routerai/xiaomi/mimo-v2.6-pro',
     available: {
-      'routerai/xiaomi/mimo-v2.6-pro': { label: 'MiMo Pro', provider: 'routerai', model: 'xiaomi/mimo-v2.6-pro', api_mode: 'chat' },
-      'cloudru/giga-chat': { label: 'GigaChat', provider: 'cloudru', model: 'giga-chat', api_mode: 'responses' },
+      'routerai/xiaomi/mimo-v2.6-pro': { label: 'MiMo Pro', gateway: 'routerai', model: 'xiaomi/mimo-v2.6-pro', api_mode: 'chat' },
+      'cloudru/giga-chat': { label: 'GigaChat', gateway: 'cloudru', model: 'giga-chat', api_mode: 'responses' },
     },
   },
   git_user_name: 'Tester', // не должен потеряться при model use
@@ -73,7 +73,7 @@ describe('VL-209 — CLI model/provider', () => {
     writeSettings(baseSettings());
     const out = runCli('model', 'list');
     assert.match(out, /\* routerai\/xiaomi\/mimo-v2\.6-pro — MiMo Pro/);
-    assert.match(out, /cloudru\/giga-chat — GigaChat \(provider: cloudru, api_mode: responses\)/);
+    assert.match(out, /cloudru\/giga-chat — GigaChat \(gateway: cloudru, api_mode: responses\)/);
   });
 
   it('model use: пишет models.default, сохраняет providers/available/прочие ключи', () => {
@@ -84,7 +84,7 @@ describe('VL-209 — CLI model/provider', () => {
     const s = readSettings();
     assert.equal(s.models.default, 'cloudru/giga-chat');
     // read-modify-write: ничего не потерялось
-    assert.ok(s.providers.routerai, 'providers сохранены');
+    assert.ok(s.gateways.routerai, 'gateways сохранены');
     assert.ok(s.models.available['routerai/xiaomi/mimo-v2.6-pro'], 'available сохранён');
     assert.equal(s.git_user_name, 'Tester', 'прочие ключи settings.json сохранены');
     // current отражает переключение

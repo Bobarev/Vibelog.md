@@ -159,10 +159,15 @@ export interface SessionMeta {
    * (иначе смена default между plan и code незаметно меняла модель на
    * середине задачи). id из models.available на момент создания — подпись;
    * если пользователь его переименовал, резолв падает на пару
-   * model_provider + model_name (стабильная идентичность).
+   * model_gateway + model_name (стабильная идентичность).
    */
   model_id?: string;
-  /** VL-239: id провайдера модели сессии (providers[<id>]). */
+  /** VL-239: id шлюза модели сессии (gateways[<id>]; VL-315 — раньше provider). */
+  model_gateway?: string;
+  /**
+   * @deprecated VL-315: старое имя model_gateway. Читается как алиас
+   * (старые сессии возобновляются без ошибок, AC9), не пишется.
+   */
   model_provider?: string;
   /** VL-239: wire-имя модели сессии (что уходит в поле model запроса). */
   model_name?: string;

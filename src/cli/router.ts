@@ -122,6 +122,9 @@ export async function route(args: string[]): Promise<void> {
       return runModel(subcommand, positional, flags, cwd);
     case 'provider':
       return runProvider(subcommand, positional, flags, cwd);
+    // VL-315: gateway — новое имя команды provider (алиас сохранён)
+    case 'gateway':
+      return runProvider(subcommand, positional, flags, cwd);
     case 'draft':
       return runDraft(subcommand, positional, flags, cwd);
     case 'decision':
@@ -160,7 +163,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('experiment', colors.cyan)} create|list|dataset|run|record|report|judge  Эксперименты (A/B): карточки, прогоны, judge, отчёт
   ${colorize('config', colors.cyan)} get|set|list             Конфиг проекта
   ${colorize('model', colors.cyan)} list|use|current          LLM-модели: список, переключение
-  ${colorize('provider', colors.cyan)} list                   LLM-провайдеры (base_url, ключ)
+  ${colorize('provider', colors.cyan)} list                   LLM-шлюзы (base_url, ключ); алиас: gateway
   ${colorize('draft', colors.cyan)} create|promote|...       Черновики задач
   ${colorize('decision', colors.cyan)} create|list|...         Решения (ADR)
   ${colorize('doctor', colors.cyan)} [--json]                    Диагностика окружения
@@ -349,6 +352,18 @@ vibelog config <subcommand> [опции]
   set <key> <value>   Изменить значение (массивы: JSON или через запятую)
   list                Все ключи конфига`,
 
+    provider: `
+vibelog provider <subcommand>
+
+Шлюзы LLM (.vibelog/settings.json, секция gateways; старое имя — providers, VL-315):
+  list      id, base_url, api_key_env + статус ключа (значения не выводятся)`,
+
+    gateway: `
+vibelog gateway <subcommand>
+
+Шлюзы LLM (.vibelog/settings.json, секция gateways, VL-315):
+  list      id, base_url, api_key_env + статус ключа (значения не выводятся)`,
+
     model: `
 vibelog model <subcommand>
 
@@ -357,13 +372,10 @@ vibelog model <subcommand>
   use <id>  Переключить активную модель (записывает models.default)
   current   Активная модель (или env VIBELOG_LLM_MODEL при fallback)
 
+Модель ссылается на шлюз полем gateway; апстрим внутри шлюза — поле vendor
+(VL-315). Старый @-хвост в имени модели читается как vendor, но не пишется.
+
 Без секции models используется env VIBELOG_LLM_MODEL (как раньше).`,
-
-    provider: `
-vibelog provider <subcommand>
-
-Провайдеры LLM (.vibelog/settings.json, секция providers, VL-209):
-  list      id, base_url, api_key_env + статус ключа (значения не выводятся)`,
 
     bot: `
 vibelog bot

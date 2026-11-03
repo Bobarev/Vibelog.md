@@ -133,7 +133,7 @@ describe('VL-210 — консольный wizard init', () => {
     }
   });
 
-  it('init --provider/--model пишет providers и models в settings.json', () => {
+  it('init --provider/--model пишет gateways и models в settings.json', () => {
     runCli(
       'init', 'Llm', '--prefix', 'll', '--yes',
       '--agents', 'vb', '--skip-llm-check',
@@ -141,8 +141,8 @@ describe('VL-210 — консольный wizard init', () => {
       '--model', 'p1/m1', '--api-mode', 'chat',
     );
     const settings = JSON.parse(readFileSync(join(testDir, '.vibelog', 'settings.json'), 'utf-8'));
-    assert.equal(settings.providers.p1.base_url, 'https://api.example/v1');
-    assert.equal(settings.providers.p1.api_key_env, 'P1_KEY');
+    assert.equal(settings.gateways.p1.base_url, 'https://api.example/v1');
+    assert.equal(settings.gateways.p1.api_key_env, 'P1_KEY');
     assert.equal(settings.models.default, 'p1/m1');
     assert.equal(settings.models.available['p1/m1'].api_mode, 'chat');
   });

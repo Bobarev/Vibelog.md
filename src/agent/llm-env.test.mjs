@@ -38,15 +38,15 @@ function writeSettings(obj) {
 /** Две модели у разных провайдеров: default — A, вторая — B. */
 function settingsTwoModels() {
   return {
-    providers: {
+    gateways: {
       pa: { base_url: 'https://pa.example/v1', api_key: 'key-a' },
       pb: { base_url: 'https://pb.example/v1', api_key: 'key-b' },
     },
     models: {
       default: 'pa/ModelA',
       available: {
-        'pa/ModelA': { label: 'Model A', provider: 'pa', model: 'wire-a', api_mode: 'chat' },
-        'pb/ModelB': { label: 'Model B', provider: 'pb', model: 'wire-b', api_mode: 'responses' },
+        'pa/ModelA': { label: 'Model A', gateway: 'pa', model: 'wire-a', api_mode: 'chat' },
+        'pb/ModelB': { label: 'Model B', gateway: 'pb', model: 'wire-b', api_mode: 'responses' },
       },
     },
   };
@@ -92,7 +92,7 @@ describe('resolveRunModel (VL-239)', () => {
     const resolved = resolveRunModel(dir, {
       cwd: dir,
       model_id: 'pb/ModelB',
-      model_provider: 'pb',
+      model_gateway: 'pb',
       model_name: 'wire-b',
       api_mode: 'responses',
     });
@@ -117,19 +117,19 @@ describe('resolveRunModel (VL-239)', () => {
 
   it('model_id переименован, но пара provider+wire-имя совпадает → резолв по паре', () => {
     writeSettings({
-      providers: { pa: { base_url: 'https://pa.example/v1', api_key: 'key-a' } },
+      gateways: { pa: { base_url: 'https://pa.example/v1', api_key: 'key-a' } },
       models: {
         default: 'pa/Other',
         available: {
-          'pa/Other': { label: 'Other', provider: 'pa', model: 'wire-other' },
-          'pa/Renamed': { label: 'Renamed', provider: 'pa', model: 'wire-a' },
+          'pa/Other': { label: 'Other', gateway: 'pa', model: 'wire-other' },
+          'pa/Renamed': { label: 'Renamed', gateway: 'pa', model: 'wire-a' },
         },
       },
     });
     const resolved = resolveRunModel(dir, {
       cwd: dir,
       model_id: 'pa/Old-Name',
-      model_provider: 'pa',
+      model_gateway: 'pa',
       model_name: 'wire-a',
     });
     assert.equal(resolved.source, 'session');
@@ -142,7 +142,7 @@ describe('resolveRunModel (VL-239)', () => {
     const resolved = resolveRunModel(dir, {
       cwd: dir,
       model_id: 'gone/Model',
-      model_provider: 'gone',
+      model_gateway: 'gone',
       model_name: 'wire-gone',
     });
     assert.equal(resolved.source, 'settings');
@@ -154,16 +154,16 @@ describe('resolveRunModel (VL-239)', () => {
 
   it('провайдер модели сессии удалён → fail-open на активную + warning', () => {
     writeSettings({
-      providers: { pa: { base_url: 'https://pa.example/v1', api_key: 'key-a' } },
+      gateways: { pa: { base_url: 'https://pa.example/v1', api_key: 'key-a' } },
       models: {
         default: 'pa/ModelA',
-        available: { 'pa/ModelA': { provider: 'pa', model: 'wire-a' } },
+        available: { 'pa/ModelA': { gateway: 'pa', model: 'wire-a' } },
       },
     });
     const resolved = resolveRunModel(dir, {
       cwd: dir,
       model_id: 'pb/ModelB',
-      model_provider: 'pb',
+      model_gateway: 'pb',
       model_name: 'wire-b',
     });
     assert.equal(resolved.source, 'settings');
@@ -174,7 +174,7 @@ describe('resolveRunModel (VL-239)', () => {
     writeSettings(settingsTwoModels());
     const resolved = resolveRunModel(
       dir,
-      { cwd: dir, model_id: 'pb/ModelB', model_provider: 'pb', model_name: 'wire-b' },
+      { cwd: dir, model_id: 'pb/ModelB', model_gateway: 'pb', model_name: 'wire-b' },
       { modelId: 'pa/ModelA' },
     );
     assert.equal(resolved.source, 'explicit');
@@ -195,7 +195,7 @@ describe('resolveRunModel (VL-239)', () => {
     writeSettings(settingsTwoModels());
     const resolved = resolveRunModel(
       dir,
-      { cwd: dir, model_id: 'pb/ModelB', model_provider: 'pb', model_name: 'wire-b' },
+      { cwd: dir, model_id: 'pb/ModelB', model_gateway: 'pb', model_name: 'wire-b' },
       { followSettings: true },
     );
     assert.equal(resolved.source, 'settings');
@@ -208,7 +208,7 @@ describe('resolveRunModel (VL-239)', () => {
     const resolved = resolveRunModel(dir, {
       cwd: dir,
       model_id: 'pa/ModelA',
-      model_provider: 'pa',
+      model_gateway: 'pa',
       model_name: 'wire-a',
       api_mode: 'responses',
     });

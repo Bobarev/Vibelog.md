@@ -94,9 +94,19 @@ export async function pingLlm(
   const baseUrl = active.baseUrl.replace(/\/+$/, '');
   const isResponses = active.apiMode === 'responses';
   const url = isResponses ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
+  // VL-315: апстрим шлюза — структурно в теле (проверено живым запросом:
+  // /v1/responses принимает provider, несуществующий вендор → 404)
+  const providerField = active.vendor
+    ? { provider: { order: [active.vendor], allow_fallbacks: false } }
+    : {};
   const body = isResponses
-    ? { model: active.model, input: 'ping', max_output_tokens: 16 }
-    : { model: active.model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 };
+    ? { model: active.model, input: 'ping', max_output_tokens: 16, ...providerField }
+    : {
+        model: active.model,
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 1,
+        ...providerField,
+      };
 
   const started = Date.now();
   const controller = new AbortController();

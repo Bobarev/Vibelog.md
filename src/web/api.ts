@@ -80,7 +80,7 @@ import {
 import { GRANTABLE_TOOLS, findActiveGrant, isValidRunId, latestGrantDraft, saveGrantDraft } from './supervisor-grant.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadSettings, saveSettingsPatch } from '../core/settings.js';
-import { loadModels, loadProviders } from '../core/models.js';
+import { loadModels, loadGateways } from '../core/models.js';
 import { DEFAULT_PERSONA_ID, listPersonas } from './personas.js';
 import { CHAT_SECTION_KEYS, loadBotSettings, saveBotSettings } from '../bot/settings.js';
 import type { BotSettings } from '../bot/settings.js';
@@ -300,7 +300,7 @@ export function handleApi(
     // GET /api/settings).
     if (method === 'GET' && url === '/api/models') {
       const models = loadModels(cwd);
-      const providers = loadProviders(cwd);
+      const gateways = loadGateways(cwd);
       return {
         status: 200,
         body: {
@@ -310,10 +310,11 @@ export function handleApi(
             label: m.label ?? id,
             // VL-265: описание модели для пикера чата (undefined — ключ не сериализуется)
             ...(m.description ? { description: m.description } : {}),
-            provider: m.provider,
+            gateway: m.gateway,
+            ...(m.vendor ? { vendor: m.vendor } : {}),
             api_mode: m.api_mode ?? 'chat',
           })),
-          providers: Object.entries(providers).map(([id, p]) => ({
+          gateways: Object.entries(gateways).map(([id, p]) => ({
             id,
             base_url: p.base_url,
             keySet: Boolean((p.api_key_env && process.env[p.api_key_env]) || p.api_key),
@@ -336,7 +337,7 @@ export function handleApi(
           body: { error: `Неизвестная модель: ${id} — отсутствует в models.available` },
         };
       }
-      // Read-modify-write: сохраняем providers/env/прочие ключи settings.json
+      // Read-modify-write: сохраняем gateways/env/прочие ключи settings.json
       const settings = loadSettings(cwd);
       saveSettingsPatch(cwd, {
         models: { ...((settings.models ?? {}) as Record<string, unknown>), default: id },

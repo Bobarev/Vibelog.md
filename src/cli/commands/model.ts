@@ -13,7 +13,7 @@
 
 import { printSuccess, printError, printInfo } from '../ui.js';
 import { loadSettings, saveSettingsPatch } from '../../core/settings.js';
-import { loadModels, loadProviders, resolveActiveModel } from '../../core/models.js';
+import { loadGateways, loadModels, resolveActiveModel } from '../../core/models.js';
 import type { FlagValues } from '../args.js';
 
 /**
@@ -70,7 +70,8 @@ function modelList(cwd: string): void {
     const m = models.available[id];
     const marker = id === models.default ? '* ' : '  ';
     const label = m.label ? ` — ${m.label}` : '';
-    console.log(`${marker}${id}${label} (provider: ${m.provider}, api_mode: ${m.api_mode ?? 'chat'})`);
+    const vendor = m.vendor ? `, vendor: ${m.vendor}` : '';
+    console.log(`${marker}${id}${label} (gateway: ${m.gateway}${vendor}, api_mode: ${m.api_mode ?? 'chat'})`);
   }
   console.log('');
   printInfo(`* — активная модель (models.default)`);
@@ -90,7 +91,7 @@ function modelUse(positional: string[], cwd: string): void {
     printInfo(`Доступные: ${Object.keys(models.available).join(', ') || '(нет)'}`);
     return;
   }
-  // Read-modify-write через saveSettingsPatch: сохраняем providers/available,
+  // Read-modify-write через saveSettingsPatch: сохраняем gateways/available,
   // env-секцию и прочие ключи — меняем только models.default
   const currentModels = (settings.models ?? {}) as Record<string, unknown>;
   saveSettingsPatch(cwd, { models: { ...currentModels, default: id } });
@@ -101,7 +102,8 @@ function modelUse(positional: string[], cwd: string): void {
 function modelCurrent(cwd: string): void {
   const active = resolveActiveModel(cwd);
   if (active !== null) {
-    console.log(`${active.id} — ${active.label} (api_mode: ${active.apiMode}, provider: ${active.providerId})`);
+    const vendor = active.vendor ? `, vendor: ${active.vendor}` : '';
+    console.log(`${active.id} — ${active.label} (api_mode: ${active.apiMode}, gateway: ${active.gatewayId}${vendor})`);
     return;
   }
   const envModel = process.env.VIBELOG_LLM_MODEL;
@@ -114,15 +116,15 @@ function modelCurrent(cwd: string): void {
 
 /** provider list: id, base_url, api_key_env + статус ключа (без значений). */
 function providerList(cwd: string): void {
-  const providers = loadProviders(cwd);
-  const ids = Object.keys(providers);
+  const gateways = loadGateways(cwd);
+  const ids = Object.keys(gateways);
   if (ids.length === 0) {
-    printInfo('Провайдеры не настроены: секция providers отсутствует в .vibelog/settings.json');
+    printInfo('Шлюзы не настроены: секция gateways отсутствует в .vibelog/settings.json');
     return;
   }
   console.log('');
   for (const id of ids) {
-    const p = providers[id];
+    const p = gateways[id];
     // Статус ключа — только факт: значения env/api_key в вывод не попадают
     const keySet = (p.api_key_env && process.env[p.api_key_env]) || p.api_key;
     const keyStatus = keySet ? 'задан' : 'НЕ ЗАДАН';

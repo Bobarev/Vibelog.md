@@ -19,7 +19,7 @@ import { createInterface } from 'node:readline';
 import { getFlag, getFlagArray } from '../args.js';
 import type { FlagValues } from '../args.js';
 import { printInfo, printError } from '../ui.js';
-import { loadProviders, resolveModelById } from '../../core/models.js';
+import { loadGateways, resolveModelById } from '../../core/models.js';
 import type { SetupAnswers, SetupState, AgentId } from '../../core/setup.js';
 import { validatePrefix, validateProjectName } from '../../core/setup.js';
 import type { SecretsLocation } from '../../core/setup-secrets.js';
@@ -75,7 +75,7 @@ function parseSecretsLocation(raw: string): SecretsLocation | null {
  *
  * @param flags — флаги CLI
  * @param state — текущее состояние проекта (дефолты)
- * @param cwd — директория проекта (чтение providers)
+ * @param cwd — директория проекта (чтение gateways)
  */
 export function answersFromFlags(flags: FlagValues, state: SetupState, cwd: string): SetupAnswers {
   const modeFlag = getFlag(flags, 'mode', '');
@@ -121,10 +121,11 @@ export function answersFromFlags(flags: FlagValues, state: SetupState, cwd: stri
   const bot = botEnabled ? { token: botToken || undefined, chats: botChats } : undefined;
 
   // LLM: только если выбран vb
-  let provider: SetupAnswers['provider'];
+  let gateway: SetupAnswers['gateway'];
   let model: SetupAnswers['model'];
   if (agents.includes('vb')) {
-    const providerId = getFlag(flags, 'provider', '');
+    // VL-315: флаг --provider оставлен как алиас --gateway (совместимость CLI)
+    const providerId = getFlag(flags, 'gateway', '') || getFlag(flags, 'provider', '');
     const baseUrl = getFlag(flags, 'base-url', '');
     const apiKeyEnv = getFlag(flags, 'api-key-env', '');
     const modelId = getFlag(flags, 'model', '');
@@ -132,8 +133,8 @@ export function answersFromFlags(flags: FlagValues, state: SetupState, cwd: stri
     const apiMode = apiModeRaw === 'responses' ? 'responses' : apiModeRaw === 'chat' ? 'chat' : undefined;
 
     if (providerId) {
-      const known = loadProviders(cwd)[providerId];
-      provider = {
+      const known = loadGateways(cwd)[providerId];
+      gateway = {
         id: providerId,
         base_url: baseUrl || known?.base_url || '',
         api_key_env: apiKeyEnv || known?.api_key_env,
@@ -144,7 +145,8 @@ export function answersFromFlags(flags: FlagValues, state: SetupState, cwd: stri
       model = {
         id: modelId,
         label: existing?.label,
-        provider: provider?.id ?? existing?.provider ?? '',
+        gateway: gateway?.id ?? existing?.gateway ?? '',
+        ...(existing?.vendor ? { vendor: existing.vendor } : {}),
         model: existing?.model ?? modelId,
         api_mode: apiMode ?? existing?.api_mode ?? 'chat',
       };
@@ -159,7 +161,7 @@ export function answersFromFlags(flags: FlagValues, state: SetupState, cwd: stri
     defaultAgent,
     secretsLocation,
     bot,
-    provider,
+    gateway,
     model,
     mcp: flags['no-mcp'] !== true,
     force: flags.force === true,
@@ -384,21 +386,21 @@ export async function runWizard(
     }
 
     // --- 5. LLM (только если vb) ---
-    let provider: SetupAnswers['provider'];
+    let gateway: SetupAnswers['gateway'];
     let model: SetupAnswers['model'];
     if (agents.includes('vb')) {
-      const providers = loadProviders(cwd);
-      const providerIds = Object.keys(providers);
+      const gateways = loadGateways(cwd);
+      const providerIds = Object.keys(gateways);
       const defProvider = providerIds[0] ?? '';
       const providerId = await p.ask(
-        `Провайдер LLM${providerIds.length > 0 ? ` (${providerIds.join('/')})` : ' (id)'}`,
+        `Шлюз LLM${providerIds.length > 0 ? ` (${providerIds.join('/')})` : ' (id)'}`,
         defProvider,
       );
       if (providerId) {
-        const known = providers[providerId];
+        const known = gateways[providerId];
         const baseUrl = await p.ask('base_url провайдера', known?.base_url ?? '');
         const apiKeyEnv = await p.ask('Имя env-переменной с ключом', known?.api_key_env ?? '');
-        provider = { id: providerId, base_url: baseUrl, api_key_env: apiKeyEnv || undefined };
+        gateway = { id: providerId, base_url: baseUrl, api_key_env: apiKeyEnv || undefined };
 
         const modelIds = Object.keys(state.models.available);
         const defModel = state.models.default ?? modelIds[0] ?? '';
@@ -415,7 +417,7 @@ export async function runWizard(
           model = {
             id: modelId,
             label: existing?.label,
-            provider: provider.id,
+            gateway: gateway.id,
             model: existing?.model ?? modelId,
             api_mode: apiModeRaw === 'responses' ? 'responses' : 'chat',
           };
@@ -442,7 +444,7 @@ export async function runWizard(
       defaultAgent,
       secretsLocation,
       bot,
-      provider,
+      gateway,
       model,
       mcp,
       force: flags.force === true,
