@@ -146,4 +146,47 @@ describe('VL-210 — консольный wizard init', () => {
     assert.equal(settings.models.default, 'p1/m1');
     assert.equal(settings.models.available['p1/m1'].api_mode, 'chat');
   });
+
+  it('VL-320: без --prefix prefix выводится из имени проекта (Vibelog Templates → VT)', () => {
+    const out = runCli('init', 'Vibelog Templates', '--yes');
+    const config = readFileSync(join(testDir, 'backlog', 'config.yml'), 'utf-8');
+    assert.ok(config.includes('task_prefix: VT'), `${config}\n${out}`);
+  });
+
+  it('VL-320: явный --prefix приоритетнее вывода из имени', () => {
+    runCli('init', 'Vibelog Templates', '--prefix', 'zz', '--yes');
+    const config = readFileSync(join(testDir, 'backlog', 'config.yml'), 'utf-8');
+    assert.ok(config.includes('task_prefix: zz'), config);
+  });
+
+  it('VL-320: --web запускает web-мастер, а не консольный wizard', async () => {
+    // Сервер держит процесс — запускаем асинхронно, ждём строку и гасим
+    const { spawn } = await import('node:child_process');
+    const child = spawn('node', [cliPath, 'init', '--web', '--port', '0', '--no-open'], {
+      cwd: testDir,
+      env: testSpawnEnv(),
+    });
+    let out = '';
+    const done = new Promise((resolve) => {
+      const timer = setTimeout(() => resolve('timeout'), 15000);
+      const onData = (chunk) => {
+        out += chunk.toString('utf8');
+        if (out.includes('Веб-мастер настройки')) {
+          clearTimeout(timer);
+          resolve('ok');
+        }
+      };
+      child.stdout.on('data', onData);
+      child.stderr.on('data', onData);
+      child.on('exit', () => {
+        clearTimeout(timer);
+        resolve('exit');
+      });
+    });
+    const result = await done;
+    child.kill('SIGKILL');
+    assert.equal(result, 'ok', `web-мастер не стартовал: ${out}`);
+    assert.ok(out.includes('Веб-мастер настройки'), out);
+    assert.ok(!out.includes('Режим: fresh'), `консольный wizard не должен запускаться: ${out}`);
+  });
 });

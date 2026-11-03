@@ -14,6 +14,7 @@ import { join } from 'node:path';
 
 import {
   applySetup,
+  derivePrefix,
   detectSetupMode,
   formatSetupLog,
   readSetupState,
@@ -248,5 +249,17 @@ describe('VL-210 — ядро setup', () => {
     const log = formatSetupLog(baseAnswers({ mode: 'upgrade' }), state, testDir);
     assert.ok(log.includes('Существующие настройки'), log);
     assert.ok(log.includes('Дополняю недостающее'), log);
+  });
+
+  it('derivePrefix: инициалы слов имени проекта (VL-320)', () => {
+    assert.equal(derivePrefix('Vibelog Templates'), 'VT');
+    assert.equal(derivePrefix('My Cool App'), 'MCA');
+    assert.equal(derivePrefix('api'), 'AP', 'одно слово — первые две буквы');
+    assert.equal(derivePrefix('vibelog-templates'), 'VT', 'дефис — разделитель');
+    assert.equal(derivePrefix('a'), 'A');
+    // Не выводится: пусто/мусор → null (вызывающий код берёт fallback)
+    assert.equal(derivePrefix(''), null);
+    assert.equal(derivePrefix('---'), null);
+    assert.equal(derivePrefix('123'), null, 'prefix должен начинаться с латинской буквы');
   });
 });

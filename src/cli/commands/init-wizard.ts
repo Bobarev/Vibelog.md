@@ -1,13 +1,13 @@
 /**
- * Консольный wizard настройки проекта (VL-210, шаг 2 плана).
+ * Консольный wizard настройки проекта (VL-210, переписан в VL-320).
  *
  * Два режима сбора ответов:
  * - `answersFromFlags` — non-interactive (--yes и/или явные флаги): ничего
  *   не спрашивает, берёт дефолты из состояния проекта;
- * - `runWizard` — интерактив на readline: текстовые вопросы с дефолтом
- *   (Enter — оставить), чекбоксы агентов — посимвольный raw-mode список
- *   (space — toggle, ↑/↓ — курсор, Enter — подтвердить). При отсутствии
- *   TTY (тесты, пайпы) чекбоксы деградируют в нумерованный ввод.
+ * - `runWizard` — интерактив через `createPromptSession` (src/cli/prompt.ts):
+ *   текстовые вопросы с дефолтом (Enter — оставить), списки выбора и
+ *   мультивыбор агентов (space — галочка, ↑/↓ — курсор, Enter — подтвердить).
+ *   Без TTY промпты возвращают дефолты — wizard не падает (AC7).
  *
  * Порядок вопросов — из описания задачи: имя/prefix → агенты → default_agent
  * → секреты → бот → LLM (только если vb) → MCP (только если qwen/opencode).
@@ -15,13 +15,13 @@
  * чтобы wizard оставался чистым сборщиком ответов.
  */
 
-import { createInterface } from 'node:readline';
 import { getFlag, getFlagArray } from '../args.js';
 import type { FlagValues } from '../args.js';
-import { printInfo, printError } from '../ui.js';
+import { createPromptSession } from '../prompt.js';
+import type { PromptOption, PromptSession } from '../prompt.js';
 import { loadGateways, resolveModelById } from '../../core/models.js';
 import type { SetupAnswers, SetupState, AgentId } from '../../core/setup.js';
-import { validatePrefix, validateProjectName } from '../../core/setup.js';
+import { derivePrefix, validatePrefix, validateProjectName } from '../../core/setup.js';
 import type { SecretsLocation } from '../../core/setup-secrets.js';
 
 /** Все известные агенту идентификаторы (для валидации --agents). */
@@ -168,142 +168,34 @@ export function answersFromFlags(flags: FlagValues, state: SetupState, cwd: stri
   };
 }
 
-/** Обёртка над readline: один вопрос с дефолтом (Enter — дефолт). */
-function createPrompter() {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return {
-    async ask(question: string, def: string): Promise<string> {
-      const suffix = def !== '' ? ` [${def}]` : '';
-      const answer = await new Promise<string>((resolve) => {
-        rl.question(`${question}${suffix}: `, (a) => resolve(a.trim()));
-      });
-      return answer === '' ? def : answer;
-    },
-    async askYesNo(question: string, def: boolean): Promise<boolean> {
-      const answer = await new Promise<string>((resolve) => {
-        rl.question(`${question} (${def ? 'Y/n' : 'y/N'}): `, (a) => resolve(a.trim().toLowerCase()));
-      });
-      if (answer === '') return def;
-      return answer === 'y' || answer === 'yes' || answer === 'д' || answer === 'да';
-    },
-    close(): void {
-      rl.close();
-    },
-  };
-}
-
 /**
- * Чекбокс-список агентов.
+ * Чекбокс-список агентов (VL-320).
  *
- * В TTY — raw-mode: space переключает, стрелки двигают курсор, Enter
- * подтверждает. Без TTY (тесты, пайпы) — нумерованный ввод: «1,2» через
- * запятую, пустая строка — ничего не отмечено.
+ * Пункты берутся из состояния проекта: vb всегда доступен, внешние агенты
+ * появляются только при наличии их папки (setup.ts) — необнаруженные скрыты.
+ * `enabled` в состоянии означает «отмечен по умолчанию»: vb там false, поэтому
+ * по умолчанию он НЕ отмечен (AC4). Пункты с `reason` («Скоро») видны, но
+ * disabled — навигация их пропускает.
  *
- * @param items — доступные агенты (disabled не переключаются)
+ * @param session — сессия промптов
+ * @param items — доступные агенты из состояния проекта
  * @param initial — изначально отмеченные id
- * @param ask — функция текстового вопроса (fallback без TTY)
  */
 async function chooseAgents(
+  session: PromptSession,
   items: SetupState['agents'],
   initial: AgentId[],
-  ask: (q: string, def: string) => Promise<string>,
 ): Promise<AgentId[]> {
-  const selectable = items.filter((i) => !i.reason);
-  const selected = new Set<AgentId>(initial.filter((id) => selectable.some((s) => s.id === id)));
-
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    // Fallback: нумерованный ввод
-    printInfo('Агенты (номера через запятую, пусто — без агента):');
-    items.forEach((item, idx) => {
-      const mark = selected.has(item.id) ? 'x' : ' ';
-      const note = item.reason ? ` — ${item.reason}` : '';
-      console.log(`  ${idx + 1}) [${mark}] ${AGENT_LABELS[item.id]}${note}`);
-    });
-    const def = items
-      .map((item, idx) => (selected.has(item.id) ? String(idx + 1) : ''))
-      .filter(Boolean)
-      .join(',');
-    const raw = await ask('Номера', def);
-    const out: AgentId[] = [];
-    for (const part of raw.split(',')) {
-      const idx = Number(part.trim()) - 1;
-      const item = items[idx];
-      if (item && !item.reason && !out.includes(item.id)) out.push(item.id);
-    }
-    return out;
-  }
-
-  // TTY: посимвольный raw-mode список
-  let cursor = 0;
-  const render = (): void => {
-    process.stdout.write('\x1b[?25l'); // скрыть курсор
-    items.forEach((item, idx) => {
-      const pointer = idx === cursor ? '❯' : ' ';
-      const mark = selected.has(item.id) ? 'x' : ' ';
-      const note = item.reason ? ` — ${item.reason}` : '';
-      process.stdout.write(`\r\x1b[2K${pointer} [${mark}] ${AGENT_LABELS[item.id]}${note}\n`);
-    });
-    process.stdout.write('\x1b[?25h');
-  };
-  const clear = (): void => {
-    // Перерисовка: поднимаемся на число строк списка и чистим
-    for (let i = 0; i < items.length; i++) {
-      process.stdout.write('\x1b[1A\r\x1b[2K');
-    }
-  };
-
-  printInfo('Агенты (space — отметить, ↑/↓ — выбор, Enter — подтвердить):');
-  render();
-
-  return new Promise<AgentId[]>((resolve) => {
-    const stdin = process.stdin;
-    const wasRaw = stdin.isRaw;
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.setEncoding('utf8');
-
-    const onData = (chunk: string): void => {
-      // Стрелки приходят как ESC-последовательности
-      if (chunk === '\u001b[A') {
-        cursor = (cursor - 1 + items.length) % items.length;
-        clear();
-        render();
-        return;
-      }
-      if (chunk === '\u001b[B') {
-        cursor = (cursor + 1) % items.length;
-        clear();
-        render();
-        return;
-      }
-      if (chunk === ' ') {
-        const item = items[cursor];
-        if (item && !item.reason) {
-          if (selected.has(item.id)) selected.delete(item.id);
-          else selected.add(item.id);
-        }
-        clear();
-        render();
-        return;
-      }
-      if (chunk === '\r' || chunk === '\n') {
-        stdin.removeListener('data', onData);
-        stdin.setRawMode(wasRaw ?? false);
-        stdin.pause();
-        resolve(items.filter((i) => selected.has(i.id)).map((i) => i.id));
-        return;
-      }
-      // Ctrl+C — выходим без изменений (ответы не применяются)
-      if (chunk === '\u0003') {
-        stdin.removeListener('data', onData);
-        stdin.setRawMode(wasRaw ?? false);
-        stdin.pause();
-        process.stdout.write('\n');
-        resolve([]);
-      }
-    };
-    stdin.on('data', onData);
-  });
+  const options: PromptOption<AgentId>[] = items.map((item) => ({
+    value: item.id,
+    label: AGENT_LABELS[item.id],
+    ...(item.reason ? { hint: item.reason, disabled: true } : {}),
+  }));
+  return session.askMultiselect(
+    'Агенты (space — отметить, ↑/↓ — выбор, Enter — подтвердить):',
+    options,
+    initial,
+  );
 }
 
 /**
@@ -318,33 +210,22 @@ export async function runWizard(
   flags: FlagValues,
   state: SetupState,
 ): Promise<SetupAnswers> {
-  const p = createPrompter();
+  const session = createPromptSession();
   try {
     // --- 1. Имя проекта и prefix ---
-    let projectName = state.projectName;
-    for (;;) {
-      const raw = await p.ask('Имя проекта', projectName);
-      const err = validateProjectName(raw);
-      if (!err) {
-        projectName = raw;
-        break;
-      }
-      printError(err);
-    }
-    let prefix = state.prefix;
-    for (;;) {
-      const raw = await p.ask('Prefix задач', prefix);
-      const err = validatePrefix(raw);
-      if (!err) {
-        prefix = raw;
-        break;
-      }
-      printError(err);
-    }
+    const projectName = await session.askText(
+      'Имя проекта',
+      state.projectName,
+      validateProjectName,
+    );
+    // VL-320: prefix выводим из имени проекта (Vibelog Templates → VT),
+    // fallback — текущее значение (для fresh это 'VL' из readState).
+    const defPrefix = derivePrefix(projectName) ?? state.prefix;
+    const prefix = await session.askText('Prefix задач', defPrefix, validatePrefix);
 
     // --- 2. Агенты ---
     const initialAgents = state.agents.filter((a) => a.enabled).map((a) => a.id);
-    const agents = await chooseAgents(state.agents, initialAgents, p.ask);
+    const agents = await chooseAgents(session, state.agents, initialAgents);
 
     let defaultAgent: AgentId | undefined;
     if (agents.length === 1) {
@@ -353,24 +234,40 @@ export async function runWizard(
       const def = state.defaultAgent && (agents as string[]).includes(state.defaultAgent)
         ? state.defaultAgent
         : agents[0];
-      const raw = await p.ask(`Агент по умолчанию (${agents.join('/')})`, def);
-      defaultAgent = (agents as string[]).includes(raw) ? (raw as AgentId) : (def as AgentId);
+      defaultAgent = await session.askSelect<AgentId>(
+        'Агент по умолчанию:',
+        agents.map((id) => ({ value: id, label: AGENT_LABELS[id] })),
+        Math.max(0, agents.indexOf(def as AgentId)),
+      );
     }
 
     // --- 3. Где хранить ключи ---
+    // VL-320: выбор из списка вместо текстового ввода с парсингом — шаг, на
+    // котором падал прежний wizard, стал предсказуемым (стрелки + Enter).
+    const secretsOptions: PromptOption<SecretsLocation>[] = [
+      { value: 'env', label: '.env (файл в корне проекта)', hint: 'по умолчанию' },
+      { value: 'settings', label: '.vibelog/settings.json (секция env)' },
+      { value: 'both', label: 'оба места' },
+    ];
     let secretsLocation: SecretsLocation = 'env';
     if (state.secrets.envKeys.length > 0) {
-      const keep = await p.askYesNo(
+      const keep = await session.askConfirm(
         `Секреты: .env (${state.secrets.envKeys.length} ключей). Оставить?`,
         true,
       );
       if (!keep) {
-        const raw = await p.ask('Где хранить ключи (env|settings|both)', 'env');
-        secretsLocation = parseSecretsLocation(raw) ?? 'env';
+        secretsLocation = await session.askSelect(
+          'Где хранить API-ключи и токены:',
+          secretsOptions,
+          0,
+        );
       }
     } else {
-      const raw = await p.ask('Где хранить API-ключи и токены (env|settings|both)', 'env');
-      secretsLocation = parseSecretsLocation(raw) ?? 'env';
+      secretsLocation = await session.askSelect(
+        'Где хранить API-ключи и токены:',
+        secretsOptions,
+        0,
+      );
     }
 
     // --- 4. Telegram-бот ---
@@ -378,10 +275,10 @@ export async function runWizard(
     const botQuestion = state.bot.configured
       ? `Бот уже настроен (чаты: ${state.bot.chats.length}). Перенастроить?`
       : 'Настроить Telegram-бота?';
-    const wantBot = await p.askYesNo(botQuestion, false);
+    const wantBot = await session.askConfirm(botQuestion, false);
     if (wantBot) {
-      const token = await p.ask('Токен бота (TELEGRAM_BOT_TOKEN)', '');
-      const chatsRaw = await p.ask('chat_id через запятую (опционально)', '');
+      const token = await session.askText('Токен бота (TELEGRAM_BOT_TOKEN)', '');
+      const chatsRaw = await session.askText('chat_id через запятую (опционально)', '');
       bot = { token: token || undefined, chats: parseChats(chatsRaw) };
     }
 
@@ -392,25 +289,28 @@ export async function runWizard(
       const gateways = loadGateways(cwd);
       const providerIds = Object.keys(gateways);
       const defProvider = providerIds[0] ?? '';
-      const providerId = await p.ask(
+      const providerId = await session.askText(
         `Шлюз LLM${providerIds.length > 0 ? ` (${providerIds.join('/')})` : ' (id)'}`,
         defProvider,
       );
       if (providerId) {
         const known = gateways[providerId];
-        const baseUrl = await p.ask('base_url провайдера', known?.base_url ?? '');
-        const apiKeyEnv = await p.ask('Имя env-переменной с ключом', known?.api_key_env ?? '');
+        const baseUrl = await session.askText('base_url провайдера', known?.base_url ?? '');
+        const apiKeyEnv = await session.askText(
+          'Имя env-переменной с ключом',
+          known?.api_key_env ?? '',
+        );
         gateway = { id: providerId, base_url: baseUrl, api_key_env: apiKeyEnv || undefined };
 
         const modelIds = Object.keys(state.models.available);
         const defModel = state.models.default ?? modelIds[0] ?? '';
-        const modelId = await p.ask(
+        const modelId = await session.askText(
           `Модель${modelIds.length > 0 ? ` (${modelIds.join('/')})` : ' (id)'}`,
           defModel,
         );
         if (modelId) {
           const existing = state.models.available[modelId];
-          const apiModeRaw = await p.ask(
+          const apiModeRaw = await session.askText(
             'api_mode (chat|responses)',
             existing?.api_mode ?? 'chat',
           );
@@ -430,7 +330,7 @@ export async function runWizard(
     let mcp = false;
     if (needsMcp) {
       const already = state.mcp.qwen || state.mcp.opencode;
-      mcp = await p.askYesNo(
+      mcp = await session.askConfirm(
         already ? 'MCP уже настроен (trust: true). Оставить?' : 'Настроить vibelog MCP?',
         true,
       );
@@ -450,7 +350,7 @@ export async function runWizard(
       force: flags.force === true,
     };
   } finally {
-    p.close();
+    session.close();
   }
 }
 
