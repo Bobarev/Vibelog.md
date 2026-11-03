@@ -1,26 +1,33 @@
 /**
- * Интерактивный слой CLI (VL-320): текстовый ввод, подтверждение, одиночный
- * и множественный выбор.
+ * Интерактивный слой CLI (VL-320, переписан на `@clack/prompts` в VL-322):
+ * текстовый ввод, подтверждение, одиночный и множественный выбор.
  *
- * Почему свой слой, а не `@clack/prompts` (ref-25): проект держит zero runtime
- * dependencies (см. src/cli/args.ts) — переносим только модель поведения
- * Svelte CLI: `initialValue`/`hint` у пунктов, отмена как исключение (аналог
- * `p.isCancel`), «флаг выключает промпт» реализует вызывающий код.
+ * Почему обёртка, а не прямой вызов clack в wizard-е: `init-wizard.ts` знает
+ * только контракт `PromptSession` (`askText`/`askConfirm`/`askSelect`/
+ * `askMultiselect`/`close`) и не должен зависеть от API сторонней библиотеки —
+ * при смене TUI-движка правится один этот файл.
  *
- * Ключевое отличие от прежнего wizard-а (VL-210): НЕТ readline. Прежний код
- * держал один `readline.Interface` на всю сессию, а raw-mode список агентов
- * делал `stdin.pause()` на общем stdin и не возвращал поток readline — после
- * этого ввод стоял, event loop пустел и Node завершал процесс посреди
- * следующего вопроса (дефект 1 VL-320, «оборванный» промпт без стек-трейса).
- * Здесь весь ввод идёт через один raw-mode обработчик: никаких двух
- * конкурирующих потребителей stdin, никакого `setEncoding` (декодируем Buffer
- * сами — иначе readline/поток получают строки вместо байтов).
+ * Почему clack (ref-25, Svelte CLI): ширина символов (CJK/эмодзи), resize
+ * терминала, Windows-консоль, скролл длинных списков и инверсия активной
+ * строки уже решены там. Прежний самописный слой (VL-320) держал raw-mode и
+ * ANSI-отрисовку вручную — каждую из этих проблем пришлось бы доводить
+ * самостоятельно. Ограничение проекта — «никаких нативных зависимостей»
+ * (README:27) — соблюдено: clack и его транзитивные пакеты (`@clack/core`,
+ * `fast-string-width`, `fast-wrap-ansi`, `sisteransi`) это чистый JS.
+ *
+ * Про stdin (lesson-195): общего readline-инстанса больше нет — clack создаёт
+ * и закрывает свой readline на каждый промпт, поэтому ручной lifecycle
+ * (`setRawMode`, `pause`/`resume`, скрытие курсора) не нужен и не дублируется.
  *
  * Не-TTY (пайп, CI, тесты без forceInteractive): промпты не читают stdin и
- * возвращают дефолты — wizard не падает (AC7).
+ * возвращают дефолты — wizard не падает (AC7 VL-320).
  */
 
-/** Ошибка отмены: Ctrl+C (или Esc в списке) в любом промпте. */
+import { confirm, isCancel, multiselect, select, text } from '@clack/prompts';
+import type { Option } from '@clack/prompts';
+import type { Readable, Writable } from 'node:stream';
+
+/** Ошибка отмены: Ctrl+C (или Esc) в любом промпте. */
 export class PromptCancelledError extends Error {
   constructor(message = 'Отменено пользователем') {
     super(message);
@@ -62,12 +69,27 @@ type InputLike = NodeJS.ReadableStream & {
 /** Минимальный контракт выходного потока. */
 type OutputLike = NodeJS.WritableStream & { isTTY?: boolean };
 
+/**
+ * Подмножество API `@clack/prompts`, которое использует обёртка.
+ * Отдельный тип (а не `typeof import(...)`) — чтобы тесты могли подставить
+ * фейковую реализацию и проверить маппинг параметров без реального TTY.
+ */
+export interface ClackPrompts {
+  text: typeof text;
+  confirm: typeof confirm;
+  select: typeof select;
+  multiselect: typeof multiselect;
+  isCancel: typeof isCancel;
+}
+
 /** Опции сессии (потоки инъектируются в тестах). */
 export interface PromptSessionOptions {
   input?: InputLike;
   output?: OutputLike;
   /** Тесты: включить интерактивную ветку на не-TTY потоках. */
   forceInteractive?: boolean;
+  /** Только тесты: подмена реализации clack (проверка маппинга параметров). */
+  prompts?: ClackPrompts;
 }
 
 /** Признак интерактивного терминала: оба потока — TTY. */
@@ -77,260 +99,124 @@ export function isInteractive(input?: InputLike, output?: OutputLike): boolean {
   return i.isTTY === true && o.isTTY === true;
 }
 
-/** Управляющие последовательности терминала. */
-const HIDE_CURSOR = '\x1b[?25l';
-const SHOW_CURSOR = '\x1b[?25h';
-const CLEAR_LINE = '\r\x1b[2K';
-const INVERSE = '\x1b[7m';
-const RESET = '\x1b[0m';
-
-/** Следующий доступный (не disabled) индекс по кругу. */
-function stepIndex(options: PromptOption<unknown>[], from: number, dir: 1 | -1): number {
-  const n = options.length;
-  let idx = from;
-  for (let k = 0; k < n; k++) {
-    idx = (idx + dir + n) % n;
-    if (!options[idx].disabled) return idx;
-  }
-  return from;
-}
-
-/** Приводит стартовый курсор к первому доступному пункту. */
-function clampCursor(options: PromptOption<unknown>[], wanted: number): number {
+/**
+ * Индекс стартового пункта: `wanted`, если он доступен, иначе первый
+ * не-disabled. Нужен для маппинга `initialIndex` → `initialValue` у `select`
+ * (clack сам переезжает с disabled-пункта, но нам важно совпасть с прежним
+ * поведением `clampCursor` и в не-TTY-ветке).
+ */
+function firstEnabledIndex<T>(options: PromptOption<T>[], wanted: number): number {
   if (wanted >= 0 && wanted < options.length && !options[wanted].disabled) return wanted;
   const first = options.findIndex((o) => !o.disabled);
   return first === -1 ? 0 : first;
 }
 
+/** Пункты для clack: отбрасываем `undefined`-поля, чтобы не затирать дефолты. */
+function toClackOptions<T>(options: PromptOption<T>[]): Option<T>[] {
+  return options.map((o) => ({
+    value: o.value,
+    label: o.label,
+    ...(o.hint !== undefined ? { hint: o.hint } : {}),
+    ...(o.disabled !== undefined ? { disabled: o.disabled } : {}),
+  })) as Option<T>[];
+}
+
 /**
  * Создаёт сессию промптов.
  *
- * @param opts — потоки и флаг принудительного интерактива (тесты)
+ * @param opts — потоки, флаг принудительного интерактива и seam для тестов
  */
 export function createPromptSession(opts: PromptSessionOptions = {}): PromptSession {
   const input = opts.input ?? (process.stdin as unknown as InputLike);
   const output = opts.output ?? (process.stdout as unknown as OutputLike);
   const interactive = opts.forceInteractive === true || isInteractive(input, output);
+  const p: ClackPrompts = opts.prompts ?? { text, confirm, select, multiselect, isCancel };
+  // clack ждёт node-потоки (`Readable`/`Writable`), а в тестах передаётся
+  // `PassThrough` — по контракту это они и есть; приводим тип один раз здесь,
+  // чтобы не повторять приведение в каждом промпте.
+  const promptInput = input as unknown as Readable;
+  const promptOutput = output as unknown as Writable;
 
   /**
-   * Выполняет `run` в raw-mode, отдавая ему установщик обработчика клавиш.
-   * Восстановление режима — в `finally`: при отмене/исключении терминал не
-   * остаётся в raw-mode (иначе после Ctrl+C ломается оболочка пользователя).
+   * Резолвит результат промпта clack: отмена (Ctrl+C или Esc — оба алиаса
+   * `cancel` в `@clack/core`) приходит символом `CANCEL_SYMBOL`, а не
+   * исключением, поэтому превращаем её в `PromptCancelledError` — наверх
+   * wizard пробрасывает её, а `init.ts` печатает «Отменено…» с кодом 0.
    */
-  function rawScope<T>(
-    run: (setHandler: (h: (chunk: string) => void) => void) => Promise<T>,
-  ): Promise<T> {
-    const wasRaw = input.isRaw === true;
-    let handler: ((chunk: string) => void) | null = null;
-    const onData = (chunk: Buffer | string): void => {
-      handler?.(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
-    };
-    if (typeof input.setRawMode === 'function') input.setRawMode(true);
-    input.resume();
-    input.on('data', onData);
-    const restore = (): void => {
-      input.removeListener('data', onData);
-      if (typeof input.setRawMode === 'function') input.setRawMode(wasRaw);
-      input.pause();
-    };
-    return run((h) => {
-      handler = h;
-    }).finally(restore);
-  }
-
-  /** Текстовый ввод в raw-mode: печатаемые символы, backspace, Enter. */
-  function readLine(question: string, def: string): Promise<string> {
-    const suffix = def !== '' ? ` [${def}]` : '';
-    const head = `${question}${suffix}: `;
-    output.write(head);
-    let buf = '';
-    const redraw = (): void => {
-      output.write(`${CLEAR_LINE}${head}${buf}`);
-    };
-    return rawScope(
-      (setHandler) =>
-        new Promise<string>((resolve, reject) => {
-          setHandler((chunk) => {
-            let i = 0;
-            while (i < chunk.length) {
-              const ch = chunk[i];
-              if (ch === '\u0003') {
-                output.write('\n');
-                reject(new PromptCancelledError());
-                return;
-              }
-              if (ch === '\r' || ch === '\n') {
-                output.write('\n');
-                resolve(buf.trim() === '' ? def : buf.trim());
-                return;
-              }
-              if (ch === '\u007f' || ch === '\b') {
-                buf = Array.from(buf).slice(0, -1).join('');
-                redraw();
-                i += 1;
-                continue;
-              }
-              if (ch === '\u001b') {
-                // Стрелки/Home/End в текстовом вводе игнорируем: отмена — только
-                // Ctrl+C, иначе нажатие «влево» обрывало бы весь wizard.
-                i += 3;
-                continue;
-              }
-              const printable = ch.replace(/[\u0000-\u001f\u007f]/g, '');
-              if (printable.length > 0) {
-                buf += printable;
-                redraw();
-              }
-              i += 1;
-            }
-          });
-        }),
-    );
-  }
-
-  /**
-   * Общий движок списка: отрисовка блока из N строк, навигация, галочки.
-   *
-   * Отрисовка: заголовок печатается один раз, затем блок из N строк. Каждая
-   * перерисовка поднимает курсор на N строк вверх (`\x1b[NA`) и перерисовывает
-   * блок целиком — поэтому активная строка (инверсная, с `❯`) всегда совпадает
-   * с состоянием курсора (дефект 3 VL-320: прежний код считал строки без
-   * заголовка и мигал видимостью курсора на каждой итерации).
-   */
-  function runList<T>(
-    question: string,
-    options: PromptOption<T>[],
-    initialCursor: number,
-    initialSelected: number[],
-    multi: boolean,
-  ): Promise<{ cursor: number; selected: number[] }> {
-    if (options.length === 0) return Promise.resolve({ cursor: 0, selected: [] });
-    const selected = new Set<number>(initialSelected);
-    let cursor = clampCursor(options as PromptOption<unknown>[], initialCursor);
-
-    const frame = (): string[] =>
-      options.map((opt, idx) => {
-        const pointer = idx === cursor ? '❯' : ' ';
-        const mark = multi ? `[${selected.has(idx) ? 'x' : ' '}] ` : '';
-        const hint = opt.hint ? ` — ${opt.hint}` : '';
-        const text = `${pointer} ${mark}${opt.label}${hint}`;
-        return idx === cursor ? `${INVERSE}${text}${RESET}` : text;
-      });
-
-    const draw = (first: boolean): void => {
-      const body = frame()
-        .map((line) => `${CLEAR_LINE}${line}`)
-        .join('\n');
-      output.write(first ? `${body}\n` : `\x1b[${options.length}A${body}\n`);
-    };
-
-    output.write(`${question}\n`);
-    output.write(HIDE_CURSOR);
-    draw(true);
-
-    return rawScope(
-      (setHandler) =>
-        new Promise<{ cursor: number; selected: number[] }>((resolve, reject) => {
-          const done = (): void => {
-            output.write(SHOW_CURSOR);
-          };
-          setHandler((chunk) => {
-            let i = 0;
-            while (i < chunk.length) {
-              const ch = chunk[i];
-              if (ch === '\u001b') {
-                const seq = chunk.slice(i, i + 3);
-                if (seq === '\u001b[A') {
-                  cursor = stepIndex(options as PromptOption<unknown>[], cursor, -1);
-                  draw(false);
-                  i += 3;
-                  continue;
-                }
-                if (seq === '\u001b[B') {
-                  cursor = stepIndex(options as PromptOption<unknown>[], cursor, 1);
-                  draw(false);
-                  i += 3;
-                  continue;
-                }
-                // Одиночный Esc — отмена (как p.cancel в ref-25)
-                done();
-                reject(new PromptCancelledError());
-                return;
-              }
-              if (ch === '\u0003') {
-                done();
-                reject(new PromptCancelledError());
-                return;
-              }
-              if (ch === ' ') {
-                const opt = options[cursor];
-                if (multi && opt && !opt.disabled) {
-                  if (selected.has(cursor)) selected.delete(cursor);
-                  else selected.add(cursor);
-                  draw(false);
-                }
-                i += 1;
-                continue;
-              }
-              if (ch === '\r' || ch === '\n') {
-                done();
-                resolve({ cursor, selected: [...selected].sort((a, b) => a - b) });
-                return;
-              }
-              i += 1;
-            }
-          });
-        }),
-    );
+  function orCancel<T>(result: T | symbol): T {
+    if (p.isCancel(result)) throw new PromptCancelledError();
+    return result as T;
   }
 
   return {
     async askText(question, def, validate) {
       if (!interactive) return def;
-      for (;;) {
-        const value = await readLine(question, def);
-        const err = validate ? validate(value) : null;
-        if (!err) return value;
-        output.write(`${err}\n`);
-      }
+      const raw = orCancel(
+        await p.text({
+          message: question,
+          input: promptInput,
+          output: promptOutput,
+          ...(def !== '' ? { placeholder: `Enter — оставить «${def}»`, defaultValue: def } : {}),
+          // Валидация — на итоговом значении (пустой ввод = дефолт), как в
+          // прежнем слое; clack сам переспрашивает, пока не вернём undefined.
+          validate: (value) => {
+            const resolved = (value ?? '').trim() || def;
+            const err = validate ? validate(resolved) : null;
+            return err ?? undefined;
+          },
+        }),
+      );
+      return String(raw ?? '').trim() || def;
     },
 
     async askConfirm(question, def) {
       if (!interactive) return def;
-      for (;;) {
-        const raw = await readLine(`${question} (${def ? 'Y/n' : 'y/N'})`, '');
-        const answer = raw.trim().toLowerCase();
-        if (answer === '') return def;
-        if (answer === 'y' || answer === 'yes' || answer === 'д' || answer === 'да') return true;
-        if (answer === 'n' || answer === 'no' || answer === 'н' || answer === 'нет') return false;
-        output.write('Ответьте y или n\n');
-      }
+      return orCancel(
+        await p.confirm({
+          message: question,
+          initialValue: def,
+          input: promptInput,
+          output: promptOutput,
+        }),
+      );
     },
 
     async askSelect(question, options, initialIndex = 0) {
       if (options.length === 0) throw new Error('askSelect: пустой список вариантов');
-      if (!interactive) {
-        const idx = clampCursor(options as PromptOption<unknown>[], initialIndex);
-        return options[idx].value;
-      }
-      const result = await runList(question, options, initialIndex, [], false);
-      return options[result.cursor].value;
+      const start = firstEnabledIndex(options, initialIndex);
+      if (!interactive) return options[start].value;
+      return orCancel(
+        await p.select({
+          message: question,
+          options: toClackOptions(options),
+          initialValue: options[start].value,
+          input: promptInput,
+          output: promptOutput,
+        }),
+      );
     },
 
     async askMultiselect(question, options, initial) {
-      if (!interactive) {
-        const allowed = new Set(options.filter((o) => !o.disabled).map((o) => o.value));
-        return initial.filter((v) => allowed.has(v));
-      }
-      const initialSelected = options
-        .map((opt, idx) => (initial.includes(opt.value) && !opt.disabled ? idx : -1))
-        .filter((idx) => idx >= 0);
-      const result = await runList(question, options, 0, initialSelected, true);
-      return result.selected.map((idx) => options[idx].value);
+      const allowed = new Set(options.filter((o) => !o.disabled).map((o) => o.value));
+      const initialValues = initial.filter((v) => allowed.has(v));
+      if (!interactive) return initialValues;
+      return orCancel(
+        await p.multiselect({
+          message: question,
+          options: toClackOptions(options),
+          initialValues,
+          // Пустой выбор допустим (можно снять все галочки, например «без
+          // агентов»): у clack по умолчанию требуется хотя бы один пункт.
+          required: false,
+          input: promptInput,
+          output: promptOutput,
+        }),
+      );
     },
 
     close() {
-      // Ресурсов вне промптов нет: raw-mode восстанавливается в rawScope.
+      // Ресурсов вне промптов нет: clack создаёт и закрывает свой readline на
+      // каждый промпт, общего инстанса для освобождения не остаётся.
     },
   };
 }

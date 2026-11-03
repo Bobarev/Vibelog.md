@@ -54,6 +54,7 @@
     "vitest": "^5.0.4"
   },
   "dependencies": {
+    "@clack/prompts": "1.5.0",
     "grammy": "^1.46.0",
     "undici": "^6.29.0"
   }
