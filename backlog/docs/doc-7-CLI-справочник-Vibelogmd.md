@@ -50,7 +50,7 @@ vibelog init [name] [--prefix LB] [--mode fresh|upgrade] [--yes] [--web]
 | `--default-agent` | Агент по умолчанию (спрашивается, только если выбрано больше одного) |
 | `--secrets-location system\|env\|settings\|both` | Где хранить ключи: `system` — ничего не писать, только сообщить имена переменных (приоритет чтения `env → .env`), `env` — `.env` (по умолчанию), `settings` — секция `env` в `.vibelog/settings.json`, `both` — оба |
 | `--secrets-overwrite` | Перезаписать уже существующие в `.env`/`settings.json` секреты (по умолчанию существующая строка не меняется) |
-| `--bot`, `--bot-token`, `--bot-chats`, `--bot-proxy` | Настройка Telegram-бота (токен, чаты, прокси `TELEGRAM_PROXY`; пустой прокси не записывается) |
+| `--bot`, `--bot-token`, `--bot-chats`, `--bot-proxy` | Настройка Telegram-бота (токен, чаты, прокси `TELEGRAM_PROXY`; пустой прокси не записывается). С VL-329 токен, прокси и `--bot-chats` пишутся в `.env` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_PROXY`, `TELEGRAM_CHAT_IDS`), а не в `.vibelog/settings.json` |
 | `--provider`, `--base-url`, `--api-key-env`, `--api-key` | LLM-провайдер (только если выбран `vb`); `--api-key` пишет значение в `.env` |
 | `--model`, `--vendor`, `--api-mode chat\|responses` | Модель, вендор (поле `vendor`, необязательное) и режим API (по умолчанию `responses`) |
 | `--no-mcp` | Не настраивать MCP-сервер (`.qwen/settings.json`, `.opencode/settings.json`) |
