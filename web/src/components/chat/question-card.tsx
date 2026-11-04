@@ -11,10 +11,12 @@
  * jsonl треда (синтетический tool-результат), поэтому после F5 карточка
  * восстанавливается уже отвеченной, а не «ждёт» ответ, который дан.
  *
- * Возобновление хода: кнопка ответа обёрнута в `ActionBarPrimitive.Reload` —
- * клик сначала кладёт ответ в module-state рантайма (`setPendingAnswer`),
- * затем Reload перезапускает run, и адаптер отправляет POST с полем `answer`
- * (тот же механизм, что «Продолжить» после лимита, VL-269).
+ * Возобновление хода (VL-331): `ask_user` — human-tool. Кнопка ответа
+ * завершает вызов через `part.addResult({answer:{id,label}})` (свободный
+ * ввод — `{answer:{custom}}`): результат пишется в ТОТ ЖЕ tool-call part, и
+ * рантайм продолжает run в том же сообщении. Раньше ответ шёл через
+ * `ActionBarPrimitive.Reload`, а Reload = startRun — он создавал sibling-
+ * сообщение, из-за чего под вопросом появлялся переключатель веток «< 2/2 >».
  *
  * Доступность (AC7): `role="radiogroup"` + `role="radio"` с `aria-checked`,
  * стрелки вверх/вниз двигают фокус, Enter выбирает; receipt — `role="status"`
@@ -23,11 +25,9 @@
  */
 
 import * as React from "react"
-import { ActionBarPrimitive } from "@assistant-ui/react"
-import { CheckIcon, HelpCircleIcon, Loader2Icon, XIcon } from "lucide-react"
+import { CheckIcon, HelpCircleIcon, XIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
-import { setPendingAnswer } from "./chat-runtime"
 import { useReceiptFocus } from "./approval-card"
 import { field, ghostButton, inkButton, mono, paper } from "./surfaces"
 import type { ToolPart } from "./tool-call"
@@ -102,7 +102,6 @@ export function QuestionCard({ part }: { part: ToolPart }) {
   const { receiptRef, focusHandlers } = useReceiptFocus<HTMLDivElement>()
   const [custom, setCustom] = React.useState("")
   const [customOpen, setCustomOpen] = React.useState(false)
-  const [busy, setBusy] = React.useState(false)
   const optionRefs = React.useRef<(HTMLButtonElement | null)[]>([])
 
   if (args === null) {
@@ -118,10 +117,19 @@ export function QuestionCard({ part }: { part: ToolPart }) {
   const answered = answer !== null
   const cancelled = answer !== null && answer.answer === null
 
-  /** Отправка ответа: module-state рантайма + Reload (перезапуск хода). */
+  /**
+   * Отправка ответа (VL-331): завершаем human-tool через `addResult` — форма
+   * результата совпадает с серверной (`answerToolResult` в
+   * `src/web/chat-question.ts`): `{answer:{id,label}}` либо `{answer:{custom}}`.
+   * Метку берём из аргументов part'а, чтобы receipt и модель видели одно и то же.
+   */
   const submit = (payload: { optionId?: string; custom?: string }) => {
-    setBusy(true)
-    setPendingAnswer({ toolCallId: part.toolCallId, ...payload })
+    if (payload.optionId !== undefined) {
+      const option = args.options.find(o => o.id === payload.optionId)
+      part.addResult({ answer: { id: payload.optionId, label: option?.label ?? payload.optionId } })
+      return
+    }
+    part.addResult({ answer: { custom: payload.custom ?? "" } })
   }
 
   /** Стрелки вверх/вниз двигают фокус по вариантам (AC7). */
@@ -159,29 +167,27 @@ export function QuestionCard({ part }: { part: ToolPart }) {
         <>
           <div role="radiogroup" aria-label={args.question} className="flex flex-col gap-1.5">
             {args.options.map((option, index) => (
-              <ActionBarPrimitive.Reload asChild key={option.id}>
-                <button
-                  type="button"
-                  ref={el => {
-                    optionRefs.current[index] = el
-                  }}
-                  role="radio"
-                  aria-checked={false}
-                  data-slot="question-card-option"
-                  disabled={busy}
-                  onClick={() => submit({ optionId: option.id })}
-                  onKeyDown={event => onOptionKeyDown(event, index)}
-                  className={cn(
-                    field,
-                    "flex w-full flex-col items-start gap-0.5 rounded-xl px-3.5 py-2.5 text-start outline-none transition-colors hover:bg-foreground/[0.07] focus-visible:ring-1 focus-visible:ring-foreground/20 disabled:opacity-50",
-                  )}
-                >
-                  <span className="text-[13px] font-medium">{option.label}</span>
-                  {option.description !== undefined && (
-                    <span className="text-xs text-muted-foreground">{option.description}</span>
-                  )}
-                </button>
-              </ActionBarPrimitive.Reload>
+              <button
+                type="button"
+                key={option.id}
+                ref={el => {
+                  optionRefs.current[index] = el
+                }}
+                role="radio"
+                aria-checked={false}
+                data-slot="question-card-option"
+                onClick={() => submit({ optionId: option.id })}
+                onKeyDown={event => onOptionKeyDown(event, index)}
+                className={cn(
+                  field,
+                  "flex w-full flex-col items-start gap-0.5 rounded-xl px-3.5 py-2.5 text-start outline-none transition-colors hover:bg-foreground/[0.07] focus-visible:ring-1 focus-visible:ring-foreground/20",
+                )}
+              >
+                <span className="text-[13px] font-medium">{option.label}</span>
+                {option.description !== undefined && (
+                  <span className="text-xs text-muted-foreground">{option.description}</span>
+                )}
+              </button>
             ))}
           </div>
 
@@ -211,34 +217,30 @@ export function QuestionCard({ part }: { part: ToolPart }) {
                   <div className="flex items-center justify-end gap-2">
                     <button
                       type="button"
-                      disabled={busy}
                       onClick={() => setCustomOpen(false)}
                       className={cn(ghostButton, "h-8 px-3.5 text-xs font-medium whitespace-nowrap")}
                     >
                       Отмена
                     </button>
-                    <ActionBarPrimitive.Reload asChild>
-                      <button
-                        type="button"
-                        data-slot="question-card-custom-send"
-                        disabled={busy || custom.trim() === ""}
-                        onClick={() => submit({ custom: custom.trim() })}
-                        className={cn(
-                          inkButton,
-                          "flex h-8 items-center rounded-full px-3.5 text-xs font-medium whitespace-nowrap",
-                          (busy || custom.trim() === "") && "opacity-50",
-                        )}
-                      >
-                        {busy ? <Loader2Icon className="size-3.5 animate-spin" /> : "Отправить"}
-                      </button>
-                    </ActionBarPrimitive.Reload>
+                    <button
+                      type="button"
+                      data-slot="question-card-custom-send"
+                      disabled={custom.trim() === ""}
+                      onClick={() => submit({ custom: custom.trim() })}
+                      className={cn(
+                        inkButton,
+                        "flex h-8 items-center rounded-full px-3.5 text-xs font-medium whitespace-nowrap",
+                        custom.trim() === "" && "opacity-50",
+                      )}
+                    >
+                      Отправить
+                    </button>
                   </div>
                 </>
               ) : (
                 <button
                   type="button"
                   data-slot="question-card-custom-toggle"
-                  disabled={busy}
                   onClick={() => setCustomOpen(true)}
                   className={cn(ghostButton, "h-8 self-start px-3.5 text-xs font-medium whitespace-nowrap")}
                 >
@@ -273,14 +275,7 @@ export function QuestionCard({ part }: { part: ToolPart }) {
         </div>
       )}
 
-      {!answered && busy && (
-        <div role="status" aria-live="polite" className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Loader2Icon className="size-3.5 animate-spin motion-reduce:animate-none" />
-          Отправляю ответ…
-        </div>
-      )}
-
-      {!answered && !busy && (
+      {!answered && (
         <p className={cn(mono, "text-muted-foreground")}>Стрелки — выбор, Enter — ответ</p>
       )}
     </div>

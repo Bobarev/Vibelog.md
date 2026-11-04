@@ -16,6 +16,12 @@
  *   (tool-call с approval.approved) и шлём POST { threadId, approval } —
  *   сервер продолжает LLM-цикл, новый текст докидывается в ту же нить
  *   (updateMessage = [...initialContent, ...yield.content]);
+ * - ответ на `ask_user` (VL-331) — human-tool, а НЕ Reload: инструмент
+ *   объявлен в `unstable_humanToolNames`, карточка завершает вызов через
+ *   `part.addResult({answer:{id,label}} | {answer:{custom}})`, результат
+ *   пишется в тот же tool-call part, и рантайм продолжает run в ТОМ ЖЕ
+ *   сообщении (Reload создавал sibling-сообщение → переключатель «< 2/2 >»).
+ *   Адаптер читает ответ из unstable_getMessage().content и шлёт POST { answer };
  * - обычный ход: POST { message, threadId }, события text/tool_start/
  *   tool_end/done/error маппятся в content-части.
  *
@@ -195,34 +201,49 @@ export function setAlwaysAllowed(tools: readonly string[] | undefined): void {
 }
 
 /**
- * VL-330: ответ на интерактивный вопрос, ещё не отправленный на сервер.
+ * VL-331: ответы на интерактивный вопрос, уже отправленные на сервер.
  *
- * Хранение — module-state по образцу approval/allow-list: карточка вопроса
- * (QuestionCard) кладёт ответ и перезапускает run (ActionBarPrimitive.Reload),
- * а адаптер при сборке тела POST забирает его и уходит с полем `answer`.
- * Прямой POST из карточки не годится: продолжение хода должно дописаться в ту
- * же нить ассистента (updateMessage делает рантайм).
+ * Ответ на `ask_user` — human-tool: карточка завершает вызов через
+ * `part.addResult(...)`, результат ложится в тот же tool-call part, и рантайм
+ * сам продолжает run в том же сообщении (без sibling-ветки). Адаптер при
+ * повторном вызове читает результат из `unstable_getMessage().content` и шлёт
+ * POST с полем `answer`. Набор защищает от повторной отправки того же ответа
+ * (по образцу `sentApprovals`).
  */
-let pendingAnswer:
-  | { toolCallId: string; optionId?: string; custom?: string }
-  | undefined
+const sentAnswers = new Set<string>()
 
-/** Запомнить ответ пользователя (вызывает QuestionCard перед Reload). */
-export function setPendingAnswer(answer: {
-  toolCallId: string
-  optionId?: string
-  custom?: string
-}): void {
-  pendingAnswer = answer
-}
-
-/** Забрать ответ и очистить состояние (один POST = один ответ). */
-function takePendingAnswer():
-  | { toolCallId: string; optionId?: string; custom?: string }
-  | undefined {
-  const a = pendingAnswer
-  pendingAnswer = undefined
-  return a
+/**
+ * Ответ на вопрос из текущего сообщения, ещё не отправленный на сервер.
+ *
+ * Читаем `part.result` (его положил `addResult`), а не module-state: так
+ * состояние переживает перерисовку и совпадает с тем, что видит карточка.
+ * `{answer:null}` (вопрос снят/TTL) ответом не считается — отправлять нечего.
+ */
+function pendingAnswerDecision(
+  options: ChatModelRunOptions,
+): { toolCallId: string; optionId?: string; custom?: string } | undefined {
+  let current
+  try {
+    current = options.unstable_getMessage()
+  } catch {
+    return undefined // сообщение может быть недоступно — не роняем run
+  }
+  if (current.role !== "assistant") return undefined
+  for (const part of current.content) {
+    if (part.type !== "tool-call" || part.toolName !== "ask_user") continue
+    if (part.result === undefined || part.result === null) continue
+    if (sentAnswers.has(part.toolCallId)) continue
+    const result = part.result as { answer?: unknown }
+    const answer = result.answer
+    if (typeof answer !== "object" || answer === null) continue
+    if (typeof (answer as { id?: unknown }).id === "string") {
+      return { toolCallId: part.toolCallId, optionId: (answer as { id: string }).id }
+    }
+    if (typeof (answer as { custom?: unknown }).custom === "string") {
+      return { toolCallId: part.toolCallId, custom: (answer as { custom: string }).custom }
+    }
+  }
+  return undefined
 }
 
 /**
@@ -560,10 +581,11 @@ const chatAdapter: ChatModelAdapter = {
 
       // --- тело очередного POST -------------------------------------------
       let body: Record<string, unknown>
-      // VL-330: ответ на интерактивный вопрос — приоритетнее прочих форм
-      // (карточка вопроса перезапускает run именно за этим)
-      const answer = autoContinues === 0 ? takePendingAnswer() : undefined
+      // VL-331: ответ на интерактивный вопрос — human-tool: результат уже в
+      // part.result (его положил addResult), отправляем его серверу первым.
+      const answer = autoContinues === 0 ? pendingAnswerDecision(options) : undefined
       if (answer !== undefined) {
+        sentAnswers.add(answer.toolCallId)
         body = {
           ...(activeThreadId ? { threadId: activeThreadId } : {}),
           answer: {
@@ -741,7 +763,13 @@ export function ChatRuntimeProvider({
   onThreadCreated?: (id: string) => void
   children: React.ReactNode
 }) {
-  const runtime = useLocalRuntime(chatAdapter, { initialMessages })
+  const runtime = useLocalRuntime(chatAdapter, {
+    initialMessages,
+    // VL-331: `ask_user` — human-tool: run встаёт на паузу, пока карточка не
+    // завершит вызов через `part.addResult(...)`. Без этого списка рантайм
+    // считал бы вызов «незавершённым обычным инструментом» и продолжал ход.
+    unstable_humanToolNames: ["ask_user"],
+  })
 
   // Колбэк через ref: adapter — module-level, не пересоздаём его на каждый рендер
   const createdRef = React.useRef(onThreadCreated)
@@ -752,6 +780,8 @@ export function ChatRuntimeProvider({
   React.useEffect(() => {
     activeThreadId = threadId
     sentApprovals.clear()
+    // VL-331: отправленные ответы на вопросы — тоже свойство треда
+    sentAnswers.clear()
     // VL-264: allow-list — свойство треда, при смене сбрасываем (иначе
     // «разрешено всегда» из другого треда дало бы ложную пометку)
     setAlwaysAllowed(allowList)
