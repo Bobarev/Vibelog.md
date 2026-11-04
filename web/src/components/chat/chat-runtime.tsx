@@ -643,7 +643,6 @@ const chatAdapter: ChatModelAdapter = {
       // треда (рантайм размонтируется → сигнал абортится) убивало ход вместе
       // с ответом, который сервер так и не записывал в jsonl. Теперь ход
       // живёт на сервере, а здесь мы лишь прекращаем читать поток.
-      const runThreadId = activeThreadId
       let res: Response
       try {
         res = await fetch("/api/chat", {
