@@ -20,7 +20,8 @@ import { fileURLToPath } from 'node:url';
 import { handleApi } from './api.js';
 import { handleSetupCheckBot, handleSetupPing } from './setup-api.js';
 import { handleCatalogApi } from './catalog-api.js';
-import { runChat } from './chat.js';
+import { runChat, resetOrphanedChatRuns, streamChatRun } from './chat.js';
+import { cancelChatRun, getChatRun } from './chat-runs.js';
 import { getAssetsHtml } from './assets.js';
 import { serveStatic } from './static.js';
 import { recoverStalePhaseStatuses } from '../core/phase-transient.js';
@@ -59,6 +60,14 @@ export function startWebServer(
   } catch (err) {
     console.log(`[phase-transient] recovery при старте web не удалась: ${(err as Error).message}`);
   }
+  // VL-332: ходы, прерванные перезапуском сервера, честно помечаются
+  // interrupted — иначе UI показывал бы вечный индикатор «выполняется».
+  try {
+    resetOrphanedChatRuns(cwd);
+  } catch (err) {
+    console.log(`[chat-runs] recovery при старте web не удалась: ${(err as Error).message}`);
+  }
+
   const server = createServer((req, res) => {
     // Сырой URL сохраняем ДО отрезки '?': handleApi получает query string
     // отдельным 5-м параметром (VL-185 — GET /api/search?q=...)
@@ -112,18 +121,25 @@ export function startWebServer(
 
         // POST /api/chat — SSE-стриминг чата (VL-204): ответ не JSON,
         // поэтому ветка ДО handleApi (он синхронный и всегда отдаёт JSON).
+        // VL-332: ход отвязан от запроса — `runChat` подписывается на прогон
+        // из реестра, обрыв SSE (переключение треда, F5) его не убивает;
+        // повторный POST по тому же треду джойнится к идущему ходу.
         if (method === 'POST' && url === '/api/chat') {
           res.writeHead(200, {
             'Content-Type': 'text/event-stream; charset=utf-8',
             'Cache-Control': 'no-cache',
             Connection: 'keep-alive',
           });
+          const since =
+            typeof (parsed as { since?: unknown } | null)?.since === 'number'
+              ? ((parsed as { since: number }).since as number)
+              : 0;
           (async () => {
             try {
-              const events = runChat(parsed ?? {}, cwd);
+              const events = runChat(parsed ?? {}, cwd, {}, Number.isFinite(since) ? since : 0);
               for await (const ev of events) {
-                // Клиент отключился — прерываем генератор (finally в runChat
-                // дожидается продюсера, чтобы LLM-вызов не завис)
+                // Клиент отключился — просто отписываемся: прогон продолжает
+                // работать и дописывает jsonl (VL-332, AC1/AC2)
                 if (res.destroyed || res.writableEnded) break;
                 res.write(`data: ${JSON.stringify(ev)}\n\n`);
               }
@@ -140,6 +156,51 @@ export function startWebServer(
               if (!res.destroyed && !res.writableEnded) res.end();
             }
           })();
+          return;
+        }
+
+        // GET /api/chat/threads/:id/stream?since=N — переподключение к идущему
+        // ходу (VL-332, AC4): возврат в тред или F5 не теряют стрим. 404 —
+        // живого прогона нет, клиент просто грузит историю из jsonl.
+        const chatStreamMatch = url.match(/^\/api\/chat\/threads\/([^/]+)\/stream$/);
+        if (method === 'GET' && chatStreamMatch) {
+          const streamThreadId = chatStreamMatch[1]!;
+          const liveRun = getChatRun(streamThreadId);
+          // Живого прогона нет — отдаём 404 через handleApi ниже (клиент
+          // просто загрузит историю из jsonl)
+          if (liveRun !== null && !liveRun.done) {
+            res.writeHead(200, {
+              'Content-Type': 'text/event-stream; charset=utf-8',
+              'Cache-Control': 'no-cache',
+              Connection: 'keep-alive',
+            });
+            const sinceParam = Number(new URLSearchParams(queryString).get('since') ?? '0');
+            (async () => {
+              try {
+                for await (const ev of streamChatRun(
+                  streamThreadId,
+                  Number.isFinite(sinceParam) ? sinceParam : 0,
+                )) {
+                  if (res.destroyed || res.writableEnded) break;
+                  res.write(`data: ${JSON.stringify(ev)}\n\n`);
+                }
+              } catch {
+                // поток закрыт — не ошибка сервера
+              } finally {
+                if (!res.destroyed && !res.writableEnded) res.end();
+              }
+            })();
+            return;
+          }
+        }
+
+        // POST /api/chat/threads/:id/cancel — явная остановка хода (VL-332):
+        // абортит текущий LLM-вызов, sidecar получает статус `cancelled`.
+        const chatCancelMatch = url.match(/^\/api\/chat\/threads\/([^/]+)\/cancel$/);
+        if (method === 'POST' && chatCancelMatch) {
+          const cancelled = cancelChatRun(chatCancelMatch[1]!);
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true, cancelled }));
           return;
         }
 

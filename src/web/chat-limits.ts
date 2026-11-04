@@ -172,10 +172,22 @@ export interface CallGuard {
  * @param timeoutMs — окно неактивности; 0/отрицательное — таймаута нет
  *   (полезно в тестах и при выключенном лимите)
  */
-export function createCallGuard(timeoutMs: number): CallGuard {
+export function createCallGuard(timeoutMs: number, external?: AbortSignal): CallGuard {
   const controller = new AbortController();
   let fired = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+
+  // VL-332: отмена пользователем (кнопка «Остановить») приходит отдельным
+  // сигналом — подписываемся на него, чтобы абортить текущий вызов модели.
+  // `AbortSignal.any` есть не во всех поддерживаемых Node, поэтому
+  // пробрасываем вручную (listener снимается в dispose).
+  const onExternalAbort = (): void => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener('abort', onExternalAbort);
+  }
 
   const clear = (): void => {
     if (timer !== null) {
@@ -210,6 +222,7 @@ export function createCallGuard(timeoutMs: number): CallGuard {
     },
     dispose(): void {
       clear();
+      if (external) external.removeEventListener('abort', onExternalAbort);
     },
   };
 }
