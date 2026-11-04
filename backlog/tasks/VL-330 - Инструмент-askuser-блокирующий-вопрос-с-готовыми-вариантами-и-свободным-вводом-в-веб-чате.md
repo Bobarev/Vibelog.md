@@ -1,11 +1,11 @@
 ---
 id: VL-330
 title: 'Инструмент ask_user: блокирующий вопрос с готовыми вариантами и свободным вводом в веб-чате'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-04 01:15'
-updated_date: '2026-11-04 11:46'
+updated_date: '2026-11-04 12:09'
 due_date: ''
 labels:
   - web-chat
@@ -38,15 +38,17 @@ modified_files:
   - web/src/lib/chat-threads.ts
   - templates/prompts/chat-system.md
   - README.md
-lessons: []
+lessons:
+  - lesson-211
+  - lesson-212
 token_usage:
-  input: 20569282
-  output: 172554
-  cache: 19471872
-  total: 20741836
-  requests: 197
-  duration_ms: 2463767
-  reasoning: 112018
+  input: 22535327
+  output: 192387
+  cache: 21388288
+  total: 22727714
+  requests: 233
+  duration_ms: 3170201
+  reasoning: 123396
   by_phase:
     code:
       input: 20359906
@@ -54,10 +56,10 @@ token_usage:
       cache: 19298816
       requests: 191
     close:
-      input: 209376
-      output: 1947
-      cache: 173056
-      requests: 6
+      input: 2175421
+      output: 21780
+      cache: 2089472
+      requests: 42
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -241,5 +243,29 @@ Merge выполнен из главного репозитория (`git merge 
 3. Завершить merge: `git commit` (MERGE_HEAD уже подготовлен).
 4. Запустить Фазу Close повторно — она сделает проверку после merge (сборка + полный `pnpm test`), уборку worktree/ветки, DoD, refs/lessons и терминальный статус.
 Статус задачи не менялся, DoD не трогали — задача остаётся в Review. Замечание на будущее: `web/dist/` в merge-конфликтах возникает при параллельной веб-сборке в worktree; стоит рассмотреть исключение артефактов сборки из merge-конфликтов (пересборка после merge) отдельной задачей.
+---
+author: @agent
+created: 2026-11-04 11:46
+---
+Фаза close прервана агентом (aborted): Фаза Close прервана: конфликт слияния vb/vl-330 → master.
+Merge выполнен из главного репозитория (`git merge --no-ff vb/vl-330`), автоматическое слияние не удалось, конфликтные файлы оставлены в рабочем дереве как есть (без `--abort`), чтобы их можно было разобрать вручную.
+Конфликтные пути (`git status --porcelain`, unmerged): `UU web/dist/index.html`, `AU web/dist/assets/index-YIlf626T.js`, `UA web/dist/assets/index-BCbqqSU4.js`, `DD web/dist/assets/index-PYUvZz7L.js` (rename/rename одного и — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-04 12:09
+---
+Фаза Close выполнена.
+**Merge.** Предыдущий ран Close упал на конфликте слияния `vb/vl-330 → master` (`UU web/dist/index.html` + rename/rename хэшированных бандлов). В текущем состоянии главного репозитория merge-коммит `6ce972e` («merge: VL-330 — Инструмент ask_user…») уже присутствует, рабочее дерево чистое, unmerged-путей нет (`git status --porcelain` — только файл задачи VL-330), `git branch -d vb/vl-330` прошёл (ветка слита). Причина конфликта — производный артефакт: обе стороны независимо пересобирали `web/dist/`. Проверил целостность результата без ручного резолва: `web/dist/index.html` ссылается на `assets/index-xP1cvd5C.js` / `index-DmlHUsua.css`, оба файла есть в `web/dist/assets`, лишних бандлов нет; сборка и тесты зелёные (см. ниже). Содержательные конфликты в коде/шаблоне задачи не зафиксированы. Коммитов в ветке к моменту merge — 2 (`2220f6e` wip-прогресс фазы code, `8d8a667` feat).
+**Проверки после merge (полный прогон выполнен один раз).**
+- `pnpm build` — чисто (web/dist согласован, пересборка `pnpm web:build` не требуется).
+- Ранний точечный фильтр по `git diff --name-only HEAD^1..HEAD`: `vitest run src/web/chat-ask-user.test.mjs src/web/chat-question.test.mjs src/web/chat.test.mjs src/mcp/idempotency.test.mjs` — 4 файла, 100 тестов, 0 падений.
+- Полный прогон `pnpm test` (= build + `vitest run --exclude src/web/static.test.mjs` + `vitest run src/web/static.test.mjs`): первый проход — 168 файлов, 3222 passed, 4 skipped, 0 падений; второй (static) — 8 passed. Исключений и skip не добавлял (`--exclude` — штатный двухфазный прогон `pnpm test`, в нём static-тест идёт отдельным запуском). Повторный полный прогон не потребовался. Merge-интерференции, регрессий нет.
+**Уборка.** `git worktree remove .vibelog/worktrees/vl-330` отказал («contains modified or untracked files»): единственная запись — untracked-симлинк `backlog/references/data → <главный репо>/backlog/references/data` (его кладёт оркестратор, данные не теряются). Удалён с `--force`, затем `git worktree prune`; ветка `vb/vl-330` удалена (`-d`, was 8d8a667).
+**Единый источник TTL.** `IDEMPOTENCY_TTL_MS` (`src/mcp/idempotency.ts`) — константа 24 ч, используемая и ожидающим вопросом (`<threadId>.questions.jsonl`, журнал вопросов), как и планировалось п. 8.
+**Lessons.** Созданы и связаны: `lesson-212` (инструмент-вопрос выводи в категорию `interactive`, иначе он попадёт под Allow/Deny и дедуп tool-вызовов) и `lesson-211` (конфликты merge в `web/dist/assets` разрешай пересборкой `pnpm web:build`, а не выбором стороны). Обе в `task.lessons` VL-330. Коммит refs/lessons — `3b9c960`.
+**Документация.** `CHANGELOG.md` (Unreleased → Добавлено, запись VL-330), `backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md` (новый раздел §5 «Веб-чат: `ask_user`» — схема, категория `interactive`, пауза/resume, валидация args и answer, TTL 24 ч, ограничение по режимам, TG-бот в v1 не поддерживает), `backlog/docs/doc-6-Руководство-пользователя-Vibelogmd.md` (§ про веб-чат дополнен `ask_user`). README не расширялся — одна существующая строка правлена ещё в Code. Коммит документации — `ba22ae6`.
+**DoD:** «Тесты проходят» — полный `pnpm test` зелёный (3230 passed суммарно, 4 skipped — пре-существующие skip в `src/core/frontmatter.test.mjs`); «Документация обновлена» — CHANGELOG + doc-6 + doc-10; «Нет регрессий» — merge-комбинация проверена полным прогоном, новых падений нет (в отчёте Code упоминался флак `orchestrator.test.mjs` от параллельного worktree — в этом прогоне его нет). AC 1–12 отмечены фазой Code; AC11 закрыт зафиксированным решением «в Telegram-боте в v1 не поддерживаем» с записью в документации (в `src/bot/` нет LLM-цикла с инструментами — зависнуть на паузе бот не может).
+**Остаток:** ручной прогон UI в живом браузере (бинарный вопрос, 4 варианта, свободный ввод, повторный вопрос, F5 в ожидании, состаренный TTL, клавиатурная навигация) не выполнялся — покрыт автотестами `chat-ask-user`/`chat-question`; при желании — отдельной задачей на UI-проверку.
+Конфликт слияния в `web/dist` — класс проблемы, а не разовый случай: зафиксирован уроком `lesson-211`.
 ---
 <!-- COMMENTS:END -->
