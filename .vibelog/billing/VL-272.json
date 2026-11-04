@@ -1,0 +1,96 @@
+{
+  "taskId": "VL-272",
+  "sessions": [
+    {
+      "sessionId": "agent-1793534528107",
+      "phase": "plan",
+      "startedAt": "2026-11-01T12:02:07.520Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T12:13:41.188Z",
+      "durationMs": 690107,
+      "usage": {
+        "input": 2394679,
+        "output": 125619,
+        "cache": 2209536,
+        "total": 2520298,
+        "requests": 41,
+        "reasoning": 116414
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=baidu&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793534528107",
+      "phase": "plan",
+      "startedAt": "2026-11-01T12:02:07.520Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T12:13:41.470Z",
+      "durationMs": 690107,
+      "usage": {
+        "input": 2394679,
+        "output": 125619,
+        "cache": 2209536,
+        "total": 2520298,
+        "requests": 41,
+        "reasoning": 116414
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793534528107",
+      "phase": "code",
+      "sessionPhase": "plan",
+      "startedAt": "2026-11-01T12:13:41.460Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T12:17:35.481Z",
+      "durationMs": 231295,
+      "usage": {
+        "input": 2256580,
+        "output": 16803,
+        "cache": 2200320,
+        "total": 2273383,
+        "requests": 22,
+        "reasoning": 8447
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=baidu&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793535455698",
+      "phase": "close",
+      "startedAt": "2026-11-01T12:17:35.608Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T12:26:02.336Z",
+      "durationMs": 504075,
+      "usage": {
+        "input": 3440496,
+        "output": 55408,
+        "cache": 3292416,
+        "total": 3495904,
+        "requests": 59,
+        "reasoning": 47599
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=baidu&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793535455698",
+      "phase": "close",
+      "startedAt": "2026-11-01T12:17:35.608Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T12:26:02.868Z",
+      "durationMs": 504075,
+      "usage": {
+        "input": 3440496,
+        "output": 55408,
+        "cache": 3292416,
+        "total": 3495904,
+        "requests": 59,
+        "reasoning": 47599
+      },
+      "agent": "vb",
+      "fallback": true
+    }
+  ]
+}

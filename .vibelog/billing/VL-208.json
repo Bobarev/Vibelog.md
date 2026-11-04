@@ -1,0 +1,56 @@
+{
+  "taskId": "VL-208",
+  "sessions": [
+    {
+      "sessionId": "agent-1793247484771",
+      "phase": "spec",
+      "startedAt": "2026-10-29T04:18:04.774Z",
+      "finishedAt": "2026-10-29T04:20:05.013Z",
+      "durationMs": 114388,
+      "usage": {
+        "input": 109229,
+        "output": 4373,
+        "cache": 78720,
+        "total": 113602,
+        "requests": 4,
+        "reasoning": 3927
+      },
+      "model": "xiaomi/mimo-v2.6-flash@provider=Xiaomi&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793247968018",
+      "phase": "plan",
+      "startedAt": "2026-10-29T04:26:08.022Z",
+      "finishedAt": "2026-10-29T04:35:05.567Z",
+      "durationMs": 534674,
+      "usage": {
+        "input": 517396,
+        "output": 15004,
+        "cache": 484096,
+        "total": 532400,
+        "requests": 15,
+        "reasoning": 10258
+      },
+      "model": "xiaomi/mimo-v2.6-flash@provider=Xiaomi&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793247968018",
+      "phase": "plan",
+      "startedAt": "2026-10-29T04:35:05.595Z",
+      "finishedAt": "2026-10-29T04:57:53.358Z",
+      "durationMs": 1333207,
+      "usage": {
+        "input": 1906073,
+        "output": 35279,
+        "cache": 1852544,
+        "total": 1941352,
+        "requests": 24,
+        "reasoning": 30686
+      },
+      "model": "xiaomi/mimo-v2.6-flash@provider=Xiaomi&allow_fallbacks=false",
+      "agent": "vb"
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "taskId": "VL-278",
+  "sessions": [
+    {
+      "sessionId": "agent-1793549432333",
+      "phase": "code",
+      "startedAt": "2026-11-01T16:10:32.248Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T16:18:54.873Z",
+      "durationMs": 500489,
+      "usage": {
+        "input": 5557493,
+        "output": 33718,
+        "cache": 5443584,
+        "total": 5591211,
+        "requests": 63,
+        "reasoning": 20378
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793549432333",
+      "phase": "code",
+      "startedAt": "2026-11-01T16:10:32.248Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T16:18:54.905Z",
+      "durationMs": 500489,
+      "usage": {
+        "input": 5557493,
+        "output": 33718,
+        "cache": 5443584,
+        "total": 5591211,
+        "requests": 63,
+        "reasoning": 20378
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793550109884",
+      "phase": "close",
+      "startedAt": "2026-11-01T16:21:49.799Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T16:25:04.605Z",
+      "durationMs": 192501,
+      "usage": {
+        "input": 1130766,
+        "output": 8122,
+        "cache": 1093632,
+        "total": 1138888,
+        "requests": 25,
+        "reasoning": 1666
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793550109884",
+      "phase": "close",
+      "startedAt": "2026-11-01T16:21:49.799Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T16:25:04.625Z",
+      "durationMs": 192501,
+      "usage": {
+        "input": 1130766,
+        "output": 8122,
+        "cache": 1093632,
+        "total": 1138888,
+        "requests": 25,
+        "reasoning": 1666
+      },
+      "agent": "vb",
+      "fallback": true
+    }
+  ]
+}

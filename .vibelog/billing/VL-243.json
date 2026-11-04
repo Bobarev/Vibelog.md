@@ -1,0 +1,56 @@
+{
+  "taskId": "VL-243",
+  "sessions": [
+    {
+      "sessionId": "agent-1793339603783",
+      "phase": "plan",
+      "startedAt": "2026-10-30T05:53:23.787Z",
+      "finishedAt": "2026-10-30T06:20:02.879Z",
+      "durationMs": 1596764,
+      "usage": {
+        "input": 2393788,
+        "output": 62478,
+        "cache": 2305536,
+        "total": 2456266,
+        "requests": 37,
+        "reasoning": 55295
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793339603783",
+      "phase": "plan",
+      "startedAt": "2026-10-30T06:20:03.098Z",
+      "finishedAt": "2026-10-30T07:00:14.735Z",
+      "durationMs": 2407791,
+      "usage": {
+        "input": 4819749,
+        "output": 17167,
+        "cache": 4771328,
+        "total": 4836916,
+        "requests": 40,
+        "reasoning": 5914
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793339603783",
+      "phase": "plan",
+      "startedAt": "2026-10-30T06:20:03.098Z",
+      "finishedAt": "2026-10-30T07:28:21.638Z",
+      "durationMs": 1684072,
+      "usage": {
+        "input": 3887201,
+        "output": 9346,
+        "cache": 3860480,
+        "total": 3896547,
+        "requests": 26,
+        "reasoning": 3017
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    }
+  ]
+}

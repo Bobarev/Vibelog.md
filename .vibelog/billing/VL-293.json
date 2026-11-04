@@ -1,0 +1,96 @@
+{
+  "taskId": "VL-293",
+  "sessions": [
+    {
+      "sessionId": "agent-1793574170672",
+      "phase": "plan",
+      "startedAt": "2026-11-01T23:02:50.579Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T23:07:07.755Z",
+      "durationMs": 254867,
+      "usage": {
+        "input": 2491943,
+        "output": 25636,
+        "cache": 2423296,
+        "total": 2517579,
+        "requests": 45,
+        "reasoning": 10760
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793574170672",
+      "phase": "plan",
+      "startedAt": "2026-11-01T23:02:50.579Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T23:07:07.775Z",
+      "durationMs": 254867,
+      "usage": {
+        "input": 2491943,
+        "output": 25636,
+        "cache": 2423296,
+        "total": 2517579,
+        "requests": 45,
+        "reasoning": 10760
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793574170672",
+      "phase": "code",
+      "sessionPhase": "plan",
+      "startedAt": "2026-11-01T23:10:41.425Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T23:15:43.629Z",
+      "durationMs": 299981,
+      "usage": {
+        "input": 1605138,
+        "output": 14056,
+        "cache": 1574400,
+        "total": 1619194,
+        "requests": 16,
+        "reasoning": 3222
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793574957159",
+      "phase": "close",
+      "startedAt": "2026-11-01T23:15:57.057Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T23:17:35.944Z",
+      "durationMs": 96243,
+      "usage": {
+        "input": 1321451,
+        "output": 5635,
+        "cache": 1288704,
+        "total": 1327086,
+        "requests": 32,
+        "reasoning": 1743
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793574957159",
+      "phase": "close",
+      "startedAt": "2026-11-01T23:15:57.057Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T23:17:35.968Z",
+      "durationMs": 96243,
+      "usage": {
+        "input": 1321451,
+        "output": 5635,
+        "cache": 1288704,
+        "total": 1327086,
+        "requests": 32,
+        "reasoning": 1743
+      },
+      "agent": "vb",
+      "fallback": true
+    }
+  ]
+}

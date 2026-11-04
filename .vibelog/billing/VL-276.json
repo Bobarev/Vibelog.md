@@ -1,0 +1,150 @@
+{
+  "taskId": "VL-276",
+  "sessions": [
+    {
+      "sessionId": "agent-1793546765135",
+      "phase": "plan",
+      "startedAt": "2026-11-01T15:26:04.582Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T15:38:19.758Z",
+      "durationMs": 731780,
+      "usage": {
+        "input": 2425904,
+        "output": 119742,
+        "cache": 2232576,
+        "total": 2545646,
+        "requests": 37,
+        "reasoning": 109383
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=baidu&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793546765135",
+      "phase": "plan",
+      "startedAt": "2026-11-01T15:26:04.582Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T15:38:19.785Z",
+      "durationMs": 731780,
+      "usage": {
+        "input": 2425904,
+        "output": 119742,
+        "cache": 2232576,
+        "total": 2545646,
+        "requests": 37,
+        "reasoning": 109383
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793546765135",
+      "phase": "code",
+      "sessionPhase": "plan",
+      "startedAt": "2026-11-01T15:43:26.203Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T15:43:33.006Z",
+      "durationMs": 3732,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 2
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=baidu&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793546765135",
+      "phase": "code",
+      "sessionPhase": "plan",
+      "startedAt": "2026-11-01T15:47:14.221Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T15:57:04.397Z",
+      "durationMs": 587563,
+      "usage": {
+        "input": 7156619,
+        "output": 26733,
+        "cache": 6991360,
+        "total": 7183352,
+        "requests": 53,
+        "reasoning": 9973
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793548659194",
+      "phase": "close",
+      "startedAt": "2026-11-01T15:57:39.105Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T15:59:03.126Z",
+      "durationMs": 81385,
+      "usage": {
+        "input": 473292,
+        "output": 6162,
+        "cache": 450048,
+        "total": 479454,
+        "requests": 12,
+        "reasoning": 4283
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793548659194",
+      "phase": "close",
+      "startedAt": "2026-11-01T15:57:39.105Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T15:59:03.160Z",
+      "durationMs": 81385,
+      "usage": {
+        "input": 473292,
+        "output": 6162,
+        "cache": 450048,
+        "total": 479454,
+        "requests": 12,
+        "reasoning": 4283
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793549128003",
+      "phase": "close",
+      "startedAt": "2026-11-01T16:05:27.918Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T16:08:47.512Z",
+      "durationMs": 197243,
+      "usage": {
+        "input": 1006670,
+        "output": 4465,
+        "cache": 980992,
+        "total": 1011135,
+        "requests": 24,
+        "reasoning": 807
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793549128003",
+      "phase": "close",
+      "startedAt": "2026-11-01T16:05:27.918Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T16:08:47.535Z",
+      "durationMs": 197243,
+      "usage": {
+        "input": 1006670,
+        "output": 4465,
+        "cache": 980992,
+        "total": 1011135,
+        "requests": 24,
+        "reasoning": 807
+      },
+      "agent": "vb",
+      "fallback": true
+    }
+  ]
+}

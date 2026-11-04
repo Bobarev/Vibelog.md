@@ -1,0 +1,149 @@
+{
+  "taskId": "VL-210",
+  "sessions": [
+    {
+      "sessionId": "agent-1793258932635",
+      "phase": "spec",
+      "startedAt": "2026-10-29T07:28:52.639Z",
+      "finishedAt": "2026-10-29T07:29:57.916Z",
+      "durationMs": 62137,
+      "usage": {
+        "input": 82149,
+        "output": 2758,
+        "cache": 53632,
+        "total": 84907,
+        "requests": 3,
+        "reasoning": 2252
+      },
+      "model": "xiaomi/mimo-v2.6-flash@provider=Xiaomi&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793600361778",
+      "phase": "plan",
+      "startedAt": "2026-11-02T06:19:20.714Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T06:22:58.327Z",
+      "durationMs": 213719,
+      "usage": {
+        "input": 2316378,
+        "output": 17866,
+        "cache": 2233856,
+        "total": 2334244,
+        "requests": 37,
+        "reasoning": 8626
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793600361778",
+      "phase": "plan",
+      "startedAt": "2026-11-02T06:19:20.714Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T06:22:58.353Z",
+      "durationMs": 213719,
+      "usage": {
+        "input": 2316378,
+        "output": 17866,
+        "cache": 2233856,
+        "total": 2334244,
+        "requests": 37,
+        "reasoning": 8626
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793600361778",
+      "phase": "code",
+      "sessionPhase": "plan",
+      "startedAt": "2026-11-02T06:57:19.507Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T07:07:10.451Z",
+      "durationMs": 587906,
+      "usage": {
+        "input": 11571484,
+        "output": 52944,
+        "cache": 11359232,
+        "total": 11624428,
+        "requests": 80,
+        "reasoning": 4227
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793603712598",
+      "phase": "code",
+      "startedAt": "2026-11-02T07:15:12.478Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T07:24:23.531Z",
+      "durationMs": 548578,
+      "usage": {
+        "input": 1867753,
+        "output": 7503,
+        "cache": 1814528,
+        "total": 1875256,
+        "requests": 33,
+        "reasoning": 3187
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793603712598",
+      "phase": "code",
+      "startedAt": "2026-11-02T07:15:12.478Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T07:24:23.551Z",
+      "durationMs": 548578,
+      "usage": {
+        "input": 1867753,
+        "output": 7503,
+        "cache": 1814528,
+        "total": 1875256,
+        "requests": 33,
+        "reasoning": 3187
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793605183955",
+      "phase": "close",
+      "startedAt": "2026-11-02T07:39:43.866Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T07:43:26.722Z",
+      "durationMs": 220234,
+      "usage": {
+        "input": 2005189,
+        "output": 9290,
+        "cache": 1948672,
+        "total": 2014479,
+        "requests": 35,
+        "reasoning": 2060
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793605183955",
+      "phase": "close",
+      "startedAt": "2026-11-02T07:39:43.866Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T07:43:26.751Z",
+      "durationMs": 220234,
+      "usage": {
+        "input": 2005189,
+        "output": 9290,
+        "cache": 1948672,
+        "total": 2014479,
+        "requests": 35,
+        "reasoning": 2060
+      },
+      "agent": "vb",
+      "fallback": true
+    }
+  ]
+}

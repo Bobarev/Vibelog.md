@@ -1,0 +1,40 @@
+{
+  "taskId": "VL-242",
+  "sessions": [
+    {
+      "sessionId": "agent-1793345922720",
+      "phase": "plan",
+      "startedAt": "2026-10-30T07:38:42.726Z",
+      "finishedAt": "2026-10-30T07:42:28.522Z",
+      "durationMs": 221963,
+      "usage": {
+        "input": 886186,
+        "output": 13831,
+        "cache": 732160,
+        "total": 900017,
+        "requests": 20,
+        "reasoning": 8357
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793345922720",
+      "phase": "code",
+      "sessionPhase": "plan",
+      "startedAt": "2026-10-30T07:42:28.734Z",
+      "finishedAt": "2026-10-30T07:52:01.257Z",
+      "durationMs": 569857,
+      "usage": {
+        "input": 1487381,
+        "output": 9710,
+        "cache": 1415680,
+        "total": 1497091,
+        "requests": 21,
+        "reasoning": 2687
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    }
+  ]
+}

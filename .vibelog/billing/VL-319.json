@@ -1,0 +1,95 @@
+{
+  "taskId": "VL-319",
+  "sessions": [
+    {
+      "sessionId": "agent-1793714898765",
+      "phase": "code",
+      "startedAt": "2026-11-03T14:08:18.592Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-03T14:22:27.910Z",
+      "durationMs": 846149,
+      "usage": {
+        "input": 6046971,
+        "output": 38294,
+        "cache": 5954560,
+        "total": 6085265,
+        "requests": 80,
+        "reasoning": 21450
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793714898765",
+      "phase": "code",
+      "startedAt": "2026-11-03T14:08:18.592Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-03T14:22:28.135Z",
+      "durationMs": 846149,
+      "usage": {
+        "input": 6046971,
+        "output": 38294,
+        "cache": 5954560,
+        "total": 6085265,
+        "requests": 80,
+        "reasoning": 21450
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793714898765",
+      "phase": "code",
+      "startedAt": "2026-11-03T14:22:36.254Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-03T14:29:29.701Z",
+      "durationMs": 410599,
+      "usage": {
+        "input": 3008874,
+        "output": 9734,
+        "cache": 2983424,
+        "total": 3018608,
+        "requests": 28,
+        "reasoning": 1591
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793716387340",
+      "phase": "close",
+      "startedAt": "2026-11-03T14:33:07.192Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-03T14:39:34.755Z",
+      "durationMs": 384044,
+      "usage": {
+        "input": 1750977,
+        "output": 9231,
+        "cache": 1703424,
+        "total": 1760208,
+        "requests": 35,
+        "reasoning": 1059
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793716387340",
+      "phase": "close",
+      "startedAt": "2026-11-03T14:33:07.192Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-03T14:39:34.779Z",
+      "durationMs": 384044,
+      "usage": {
+        "input": 1750977,
+        "output": 9231,
+        "cache": 1703424,
+        "total": 1760208,
+        "requests": 35,
+        "reasoning": 1059
+      },
+      "agent": "vb",
+      "fallback": true
+    }
+  ]
+}

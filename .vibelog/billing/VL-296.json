@@ -1,0 +1,77 @@
+{
+  "taskId": "VL-296",
+  "sessions": [
+    {
+      "sessionId": "agent-1793577771279",
+      "phase": "code",
+      "startedAt": "2026-11-02T00:02:51.176Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T00:20:03.698Z",
+      "durationMs": 1029639,
+      "usage": {
+        "input": 5873944,
+        "output": 53405,
+        "cache": 5755904,
+        "total": 5927349,
+        "requests": 65,
+        "reasoning": 13942
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793577771279",
+      "phase": "code",
+      "startedAt": "2026-11-02T00:02:51.176Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T00:20:03.831Z",
+      "durationMs": 1029639,
+      "usage": {
+        "input": 5873944,
+        "output": 53405,
+        "cache": 5755904,
+        "total": 5927349,
+        "requests": 65,
+        "reasoning": 13942
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793578803922",
+      "phase": "close",
+      "startedAt": "2026-11-02T00:20:03.817Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T00:24:40.104Z",
+      "durationMs": 273414,
+      "usage": {
+        "input": 1928968,
+        "output": 14142,
+        "cache": 1881088,
+        "total": 1943110,
+        "requests": 38,
+        "reasoning": 7959
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793578803922",
+      "phase": "close",
+      "startedAt": "2026-11-02T00:20:03.817Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T00:24:40.907Z",
+      "durationMs": 273414,
+      "usage": {
+        "input": 1928968,
+        "output": 14142,
+        "cache": 1881088,
+        "total": 1943110,
+        "requests": 38,
+        "reasoning": 7959
+      },
+      "agent": "vb",
+      "fallback": true
+    }
+  ]
+}

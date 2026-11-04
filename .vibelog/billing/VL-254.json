@@ -1,0 +1,150 @@
+{
+  "taskId": "VL-254",
+  "sessions": [
+    {
+      "sessionId": "agent-1793385380928",
+      "phase": "spec",
+      "startedAt": "2026-10-30T18:36:20.812Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-10-30T18:37:00.435Z",
+      "durationMs": 34467,
+      "usage": {
+        "input": 114653,
+        "output": 1367,
+        "cache": 86016,
+        "total": 116020,
+        "requests": 4,
+        "reasoning": 851
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793385380928",
+      "phase": "spec",
+      "startedAt": "2026-10-30T18:36:20.812Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-10-30T18:37:00.455Z",
+      "durationMs": 34467,
+      "usage": {
+        "input": 114653,
+        "output": 1367,
+        "cache": 86016,
+        "total": 116020,
+        "requests": 4,
+        "reasoning": 851
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793385454620",
+      "phase": "plan",
+      "startedAt": "2026-10-30T18:37:34.091Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-10-30T18:46:57.550Z",
+      "durationMs": 558812,
+      "usage": {
+        "input": 2190753,
+        "output": 25070,
+        "cache": 1994240,
+        "total": 2215823,
+        "requests": 37,
+        "reasoning": 15152
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793385454620",
+      "phase": "plan",
+      "startedAt": "2026-10-30T18:37:34.091Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-10-30T18:46:57.574Z",
+      "durationMs": 558812,
+      "usage": {
+        "input": 2190753,
+        "output": 25070,
+        "cache": 1994240,
+        "total": 2215823,
+        "requests": 37,
+        "reasoning": 15152
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793385454620",
+      "phase": "code",
+      "sessionPhase": "plan",
+      "startedAt": "2026-10-30T18:50:11.875Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-10-30T19:11:29.500Z",
+      "durationMs": 1272463,
+      "usage": {
+        "input": 10618337,
+        "output": 34071,
+        "cache": 10030080,
+        "total": 10652408,
+        "requests": 80,
+        "reasoning": 6374
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793385454620",
+      "phase": "plan",
+      "startedAt": "2026-10-30T19:13:03.573Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-10-30T19:27:42.656Z",
+      "durationMs": 876486,
+      "usage": {
+        "input": 11408876,
+        "output": 34427,
+        "cache": 11226112,
+        "total": 11443303,
+        "requests": 78,
+        "reasoning": 18988
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793389295201",
+      "phase": "close",
+      "startedAt": "2026-10-30T19:41:35.117Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-10-30T19:46:56.054Z",
+      "durationMs": 318409,
+      "usage": {
+        "input": 2187330,
+        "output": 12195,
+        "cache": 2126336,
+        "total": 2199525,
+        "requests": 40,
+        "reasoning": 5070
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793389295201",
+      "phase": "close",
+      "startedAt": "2026-10-30T19:41:35.117Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-10-30T19:46:56.081Z",
+      "durationMs": 318409,
+      "usage": {
+        "input": 2187330,
+        "output": 12195,
+        "cache": 2126336,
+        "total": 2199525,
+        "requests": 40,
+        "reasoning": 5070
+      },
+      "agent": "vb",
+      "fallback": true
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "taskId": "VL-205",
+  "sessions": [
+    {
+      "sessionId": "agent-1793062706868",
+      "phase": "plan",
+      "startedAt": "2026-10-27T00:58:26.875Z",
+      "finishedAt": "2026-10-27T01:16:12.966Z",
+      "durationMs": 1061444,
+      "usage": {
+        "input": 1812635,
+        "output": 50805,
+        "cache": 1694464,
+        "total": 1863440,
+        "requests": 28,
+        "reasoning": 40875
+      },
+      "model": "xiaomi/mimo-v2.6-flash@provider=Xiaomi&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793062706868",
+      "phase": "plan",
+      "startedAt": "2026-10-27T01:16:13.118Z",
+      "finishedAt": "2026-10-27T01:28:59.243Z",
+      "durationMs": 763512,
+      "usage": {
+        "input": 4697447,
+        "output": 20880,
+        "cache": 4652288,
+        "total": 4718327,
+        "requests": 34,
+        "reasoning": 4593
+      },
+      "model": "xiaomi/mimo-v2.6-flash@provider=Xiaomi&allow_fallbacks=false",
+      "agent": "vb"
+    }
+  ]
+}

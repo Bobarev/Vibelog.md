@@ -1,0 +1,39 @@
+{
+  "taskId": "VL-233",
+  "sessions": [
+    {
+      "sessionId": "agent-1793312475881",
+      "phase": "plan",
+      "startedAt": "2026-10-29T22:21:15.885Z",
+      "finishedAt": "2026-10-29T22:24:22.141Z",
+      "durationMs": 182085,
+      "usage": {
+        "input": 1006544,
+        "output": 22379,
+        "cache": 911104,
+        "total": 1028923,
+        "requests": 26,
+        "reasoning": 16507
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=baidu&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793312475881",
+      "phase": "plan",
+      "startedAt": "2026-10-29T22:24:22.164Z",
+      "finishedAt": "2026-10-29T22:54:35.483Z",
+      "durationMs": 1720612,
+      "usage": {
+        "input": 3194208,
+        "output": 17323,
+        "cache": 3098880,
+        "total": 3211531,
+        "requests": 43,
+        "reasoning": 5651
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=baidu&allow_fallbacks=false",
+      "agent": "vb"
+    }
+  ]
+}

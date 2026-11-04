@@ -1,0 +1,95 @@
+{
+  "taskId": "VL-277",
+  "sessions": [
+    {
+      "sessionId": "agent-1793548206044",
+      "phase": "code",
+      "startedAt": "2026-11-01T15:50:05.926Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T16:00:45.810Z",
+      "durationMs": 637506,
+      "usage": {
+        "input": 6799991,
+        "output": 36102,
+        "cache": 6692352,
+        "total": 6836093,
+        "requests": 80,
+        "reasoning": 16731
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793548206044",
+      "phase": "code",
+      "startedAt": "2026-11-01T15:50:05.926Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T16:00:45.871Z",
+      "durationMs": 637506,
+      "usage": {
+        "input": 6799991,
+        "output": 36102,
+        "cache": 6692352,
+        "total": 6836093,
+        "requests": 80,
+        "reasoning": 16731
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793548206044",
+      "phase": "code",
+      "startedAt": "2026-11-01T16:01:10.821Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T16:01:29.976Z",
+      "durationMs": 17001,
+      "usage": {
+        "input": 345356,
+        "output": 1112,
+        "cache": 339456,
+        "total": 346468,
+        "requests": 3,
+        "reasoning": 541
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793548933333",
+      "phase": "close",
+      "startedAt": "2026-11-01T16:02:13.252Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T16:04:48.207Z",
+      "durationMs": 152665,
+      "usage": {
+        "input": 843136,
+        "output": 5255,
+        "cache": 811008,
+        "total": 848391,
+        "requests": 20,
+        "reasoning": 1243
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793548933333",
+      "phase": "close",
+      "startedAt": "2026-11-01T16:02:13.252Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-01T16:04:48.229Z",
+      "durationMs": 152665,
+      "usage": {
+        "input": 843136,
+        "output": 5255,
+        "cache": 811008,
+        "total": 848391,
+        "requests": 20,
+        "reasoning": 1243
+      },
+      "agent": "vb",
+      "fallback": true
+    }
+  ]
+}

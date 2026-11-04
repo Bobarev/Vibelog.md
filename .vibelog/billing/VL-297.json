@@ -1,0 +1,77 @@
+{
+  "taskId": "VL-297",
+  "sessions": [
+    {
+      "sessionId": "agent-1793579081002",
+      "phase": "code",
+      "startedAt": "2026-11-02T00:24:40.897Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T00:31:47.526Z",
+      "durationMs": 423800,
+      "usage": {
+        "input": 4032596,
+        "output": 33870,
+        "cache": 3944448,
+        "total": 4066466,
+        "requests": 54,
+        "reasoning": 8865
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793579081002",
+      "phase": "code",
+      "startedAt": "2026-11-02T00:24:40.897Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T00:31:47.633Z",
+      "durationMs": 423800,
+      "usage": {
+        "input": 4032596,
+        "output": 33870,
+        "cache": 3944448,
+        "total": 4066466,
+        "requests": 54,
+        "reasoning": 8865
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793579507731",
+      "phase": "close",
+      "startedAt": "2026-11-02T00:31:47.622Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T00:34:44.811Z",
+      "durationMs": 174412,
+      "usage": {
+        "input": 1071245,
+        "output": 6893,
+        "cache": 1034240,
+        "total": 1078138,
+        "requests": 23,
+        "reasoning": 2559
+      },
+      "model": "deepseek/deepseek-v4.1-flash@provider=morph&allow_fallbacks=false",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793579507731",
+      "phase": "close",
+      "startedAt": "2026-11-02T00:31:47.622Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-02T00:34:45.457Z",
+      "durationMs": 174412,
+      "usage": {
+        "input": 1071245,
+        "output": 6893,
+        "cache": 1034240,
+        "total": 1078138,
+        "requests": 23,
+        "reasoning": 2559
+      },
+      "agent": "vb",
+      "fallback": true
+    }
+  ]
+}
