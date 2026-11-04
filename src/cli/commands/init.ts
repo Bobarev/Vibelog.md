@@ -54,6 +54,14 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
   const existing = findBacklogDir(cwd);
   const force = flags.force === true;
 
+  // VL-336: --components и --no-components взаимоисключающие. Тихая победа
+  // одного из них означала бы, что пользователь получил не то, что просил.
+  if (flags.components === true && flags['no-components'] === true) {
+    printError('Флаги --components и --no-components взаимоисключающие');
+    process.exitCode = 1;
+    return;
+  }
+
   // VL-320: --web полностью выключает консольный wizard — сразу web-мастер
   // #/setup (как флаги в ref-25 выключают соответствующий промпт). Проверка
   // стоит до «уже инициализирован»: web-мастер сам разберётся с режимом.
@@ -184,6 +192,14 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
  * (resolveWebHost). Сервер открывает браузер сразу на #/setup.
  */
 async function runWebWizard(cwd: string, flags: FlagValues): Promise<void> {
+  // VL-336: шага «компоненты» в веб-мастере нет — секция `components`
+  // создаётся по дефолту (как при --yes). Об этом сообщаем, чтобы
+  // --no-components рядом с --web не выглядел сработавшим.
+  if (flags['no-components'] === true) {
+    printInfo(
+      'Шаг «компоненты» в веб-мастере не поддерживается: секция components будет создана по умолчанию',
+    );
+  }
   try {
     const { startWebServer } = await import('../../web/server.js');
     const { resolveWebHost } = await import('../../web/host-binding.js');
