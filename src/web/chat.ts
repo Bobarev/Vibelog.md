@@ -96,6 +96,31 @@ import { checkSupervisorGrant } from './supervisor-grant.js';
 import { resolveSupervisorRuntime } from '../core/supervisor-config.js';
 import type { SupervisorGrantPreview } from './supervisor.js';
 import { supervisorGrantPreview } from '../mcp/supervisor.js';
+import {
+  createChatRun,
+  finishChatRun,
+  getChatRun,
+  pushChatRunEvent,
+  readTurnState,
+  resetOrphanedRuns,
+  subscribeChatRun,
+  type ChatRun,
+  type TurnStatus,
+} from './chat-runs.js';
+
+/**
+ * VL-332: «осиротевшие» ходы (сервер перезапустили посреди хода) — sidecar
+ * остался `running`, живого прогона нет. Переводим в `interrupted`, чтобы UI
+ * не показывал вечный индикатор. Вызывается при старте web-сервера.
+ */
+export function resetOrphanedChatRuns(cwd: string): string[] {
+  return resetOrphanedRuns(cwd);
+}
+
+/** VL-332: состояние хода треда для `GET /api/chat/threads/:id`. */
+export function chatTurnState(cwd: string, threadId: string): ReturnType<typeof readTurnState> {
+  return readTurnState(cwd, threadId);
+}
 
 
 /**
@@ -730,16 +755,94 @@ class EventQueue {
 /**
  * Главный вход: генератор SSE-событий чата.
  *
- * @param body — тело POST /api/chat (message | approval)
+ * VL-332: ход больше не живёт внутри запроса — `runChat` лишь ПОДПИСЫВАЕТСЯ
+ * на прогон из реестра (`chat-runs.ts`) и отдаёт его события. Обрыв потока
+ * (пользователь переключил тред → fetch абортился) прогон не убивает:
+ * `finally` только отписывается, продюсер дописывает jsonl и завершает
+ * sidecar сам. Повторный запрос по тому же треду джойнится к идущему ходу.
+ *
+ * @param body — тело POST /api/chat (message | approval | answer | continue)
  * @param cwd — рабочая директория проекта (backlog/, .vibelog/)
  * @param deps — injectable LLM для тестов; без него — createLlmClient() из env
+ * @param since — с какого абсолютного индекса событий начинать (переподключение)
  */
 export async function* runChat(
   body: ChatRequestBody,
   cwd: string,
   deps: ChatDeps = {},
+  since = 0,
 ): AsyncGenerator<ChatEvent> {
-  // --- валидация входа и threadId -----------------------------------------
+  const started = startChatRun(body, cwd, deps);
+  if ('error' in started) {
+    yield { type: 'error', message: started.error };
+    return;
+  }
+  // VL-332: ход живёт в реестре прогонов — генератор лишь подписывается на
+  // его события. Обрыв потребителя (переключение треда, F5) прогон не убивает.
+  yield* runEvents(started.run, since);
+}
+
+/**
+ * Дренаж событий прогона в генератор (VL-332): общая часть `runChat` и
+ * `streamChatRun`. Флаг `notified` закрывает гонку «событие пришло между
+ * проверкой буфера и установкой wake».
+ */
+async function* runEvents(run: ChatRun, since: number): AsyncGenerator<ChatEvent> {
+  const pending: ChatEvent[] = [];
+  let wake: (() => void) | null = null;
+  let notified = false;
+  const unsubscribe = subscribeChatRun(run, since, ev => {
+    pending.push(ev);
+    notified = true;
+    wake?.();
+  });
+  try {
+    for (;;) {
+      while (pending.length) yield pending.shift()!;
+      if (run.done) return;
+      notified = false;
+      await new Promise<void>(resolve => {
+        wake = () => {
+          wake = null;
+          resolve();
+        };
+        if (notified) wake();
+      });
+    }
+  } finally {
+    // Потребитель ушёл — прогон продолжает работать (ключ к AC1/AC2)
+    unsubscribe();
+  }
+}
+
+/**
+ * Переподключение к идущему ходу без старта нового (VL-332).
+ *
+ * Отличие от `runChat`: тело запроса не нужно, прогон НЕ создаётся. Если
+ * живого прогона нет — пустой поток (роут отвечает 404/просто закрывает SSE).
+ */
+export async function* streamChatRun(
+  threadId: string,
+  since = 0,
+): AsyncGenerator<ChatEvent> {
+  const run = getChatRun(threadId);
+  if (run === null) return;
+  yield* runEvents(run, since);
+}
+
+/**
+ * Запустить ход треда (или присоединиться к идущему) и отдать объект прогона.
+ *
+ * Джойн защищает от двух LLM-циклов в одном треде (две вкладки, повторный
+ * POST после таймаута): второй запрос получает тот же прогон и дочитывает
+ * его события с индекса `since` (AC5 — без дублей).
+ */
+export function startChatRun(
+  body: ChatRequestBody,
+  cwd: string,
+  deps: ChatDeps = {},
+): { run: ChatRun } | { error: string } {
+  // --- валидация threadId ---------------------------------------------------
   const rawThreadId = body.threadId;
   let threadId: string;
   if (rawThreadId === undefined || rawThreadId === null || rawThreadId === '') {
@@ -747,8 +850,7 @@ export async function* runChat(
   } else if (typeof rawThreadId === 'string' && THREAD_ID_RE.test(rawThreadId)) {
     threadId = rawThreadId;
   } else {
-    yield { type: 'error', message: 'Некорректный threadId: допустимы [a-zA-Z0-9_-] до 64 символов' };
-    return;
+    return { error: 'Некорректный threadId: допустимы [a-zA-Z0-9_-] до 64 символов' };
   }
 
   const rawMessage = body.message;
@@ -763,14 +865,38 @@ export async function* runChat(
   const hasAnswer = !!body.answer && typeof body.answer.toolCallId === 'string';
 
   if (!hasMessage && !hasApproval && body.continue !== true && !hasAnswer) {
-    yield { type: 'error', message: 'Пустой запрос: ожидается поле message, approval, answer или continue' };
-    return;
+    return { error: 'Пустой запрос: ожидается поле message, approval, answer или continue' };
   }
 
-  yield { type: 'thread', threadId };
+  // Идущий ход этого треда — присоединяемся, второй LLM-цикл не запускаем
+  const existing = getChatRun(threadId);
+  if (existing && !existing.done) return { run: existing };
 
+  const run = createChatRun(threadId, cwd);
+  const controller = new AbortController();
+  run.cancel = () => controller.abort();
+  void driveChat(body, cwd, threadId, deps, run, controller.signal);
+  return { run };
+}
+
+/**
+ * Драйвер прогона: продюсер `produce` → буфер событий реестра.
+ *
+ * Не зависит от потребителя (главное отличие от прежней реализации): даже
+ * если SSE-клиент отвалился, цикл доходит до конца, а jsonl получает все
+ * сообщения (AC1/AC2).
+ */
+async function driveChat(
+  body: ChatRequestBody,
+  cwd: string,
+  threadId: string,
+  deps: ChatDeps,
+  run: ChatRun,
+  signal: AbortSignal,
+): Promise<void> {
+  pushChatRunEvent(run, { type: 'thread', threadId });
   const queue = new EventQueue();
-  const task = produce(body, cwd, threadId, deps, queue)
+  const task = produce(body, cwd, threadId, deps, queue, signal)
     .catch(err => {
       queue.push({
         type: 'error',
@@ -779,16 +905,23 @@ export async function* runChat(
     })
     .finally(() => queue.close());
 
+  let lastError: string | undefined;
   try {
     for (;;) {
       const ev = await queue.next();
       if (ev === null) break;
-      yield ev;
+      if (ev.type === 'error') lastError = ev.message;
+      pushChatRunEvent(run, ev);
     }
   } finally {
-    // Потребитель (сервер) перестал читать — дожидаемся продюсера,
-    // чтобы не оставить LLM-вызов висеть без обработки ошибок.
     await task;
+    // Отмена пользователем важнее error-события, которое она породила
+    const status: TurnStatus = signal.aborted && run.status === 'running'
+      ? 'cancelled'
+      : lastError !== undefined
+        ? 'error'
+        : 'done';
+    finishChatRun(run, status, status === 'cancelled' ? 'Ход остановлен пользователем' : lastError);
   }
 }
 
@@ -799,6 +932,8 @@ async function produce(
   threadId: string,
   deps: ChatDeps,
   queue: EventQueue,
+  /** VL-332: сигнал отмены прогона (кнопка «Остановить», `cancel`-роут). */
+  signal?: AbortSignal,
 ): Promise<void> {
   // VL-317: новый ход (не resume/continue) — точка сверки цены
   const hasMessage =
@@ -1356,7 +1491,7 @@ async function produce(
     let resp;
     // VL-269 (AC12): per-call таймаут — окно неактивности одного вызова модели,
     // а не бюджет хода. Живой стрим перевзводит таймер на каждом токене.
-    const callGuard = createCallGuard(limits.callTimeoutMs);
+    const callGuard = createCallGuard(limits.callTimeoutMs, signal);
     try {
       // VL-255: новый ответ модели — счётчик вызовов ответа начинается с нуля
       // (карта исполненных сигнатур сохраняется: дедуп действует на весь ход).

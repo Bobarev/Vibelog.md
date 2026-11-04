@@ -639,13 +639,16 @@ const chatAdapter: ChatModelAdapter = {
       }
 
       // --- стриминг: читаем поток сами, yield после каждого события -------
+      // VL-332: fetch НЕ получает options.abortSignal — иначе переключение
+      // треда (рантайм размонтируется → сигнал абортится) убивало ход вместе
+      // с ответом, который сервер так и не записывал в jsonl. Теперь ход
+      // живёт на сервере, а здесь мы лишь прекращаем читать поток.
       let res: Response
       try {
         res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
-          signal: options.abortSignal,
         })
       } catch (err) {
         if (options.abortSignal.aborted) return // отмена пользователем

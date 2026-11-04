@@ -67,6 +67,7 @@ import { CHAT_ERROR_PART, CHAT_PRICING_PART, CHAT_TRUNCATED_PART, ChatRuntimePro
 import { PricingDriftCard } from "./pricing-drift-card"
 import { ChatErrorState } from "./error-state"
 import { ModelPicker, PersonaBadge, PersonaPicker } from "./pickers"
+import { ShimmerLabel } from "./surfaces"
 import { StoppedRun } from "./stopped-run"
 import { ToolCall, ToolGroup, type ToolPart } from "./tool-call"
 import { isWriteTool } from "./tool-meta"
@@ -84,6 +85,20 @@ interface ThreadHistoryResponse {
   usage?: ThreadUsageView | null
   /** Точка сжатия контекста (VL-314, null — не сжат). */
   compaction?: CompactionState | null
+  /**
+   * VL-332: состояние хода треда из sidecar `<threadId>.turn.json` — по нему
+   * клиент после возврата в тред/перезагрузки показывает «выполняется» и
+   * перезагружает историю, когда ход закончился (ответ уже в jsonl).
+   */
+  run?: TurnRunState | null
+}
+
+/** Состояние хода треда (зеркало `TurnState` из `src/web/chat-runs.ts`). */
+interface TurnRunState {
+  status: "running" | "done" | "error" | "cancelled" | "interrupted"
+  startedAt: string
+  finishedAt?: string
+  error?: string
 }
 
 /**
@@ -597,12 +612,15 @@ function ChatThread({
   threadPersona,
   threadId,
   compaction,
+  run,
 }: {
   threadPersona: string | null
   /** id треда — resetKey панели расхода (VL-313). */
   threadId?: string
   /** Точка сжатия контекста (VL-314): плашка над лентой. */
   compaction?: CompactionState | null
+  /** VL-332: состояние хода треда (индикатор «выполняется»). */
+  run?: TurnRunState | null
 }) {
   return (
     <ThreadPrimitive.Root
@@ -617,6 +635,9 @@ function ChatThread({
         <UsageBar threadId={threadId} />
         {/* VL-314: плашка сжатия — полная история в ленте остаётся (AC10) */}
         <CompactionBanner compaction={compaction ?? null} />
+        {/* VL-332: ход, идущий в фоне (сообщение отправлено, пользователь ушёл
+            в другой тред), виден индикатором, а не «зависшим» сообщением */}
+        <RunInProgressIndicator run={run ?? null} />
         <ThreadPrimitive.Viewport
           className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-4 pt-6"
           // автоскролл вниз при новом контенте и при восстановлении истории
@@ -655,8 +676,40 @@ function ChatThread({
   )
 }
 
-/** Спиннер загрузки истории треда. */
-function LoadingState() {
+/**
+ * VL-332: индикатор фонового хода.
+ *
+ * Сообщение отправлено, пользователь переключился на другой тред — ход на
+ * сервере продолжается и дописывает jsonl. Возвращаясь, человек видит не
+ * «зависшее» сообщение без ответа, а явное «Ассистент отвечает…» (AC3).
+ * Статусы `error`/`interrupted` показывают причину с кнопкой обновления.
+ */
+function RunInProgressIndicator({ run }: { run: TurnRunState | null }) {
+  if (run === null || run.status === "done") return null
+  if (run.status === "running") {
+    return (
+      <div className="mx-4 mt-2 flex max-w-(--thread-max-width) items-center gap-2 self-center rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+        <ShimmerLabel className="inline-block leading-none">Ассистент отвечает…</ShimmerLabel>
+        <span className="text-xs opacity-70">
+          ход выполняется в фоне — ответ появится в этом треде
+        </span>
+      </div>
+    )
+  }
+  const message =
+    run.status === "interrupted"
+      ? "Ход был прерван перезапуском сервера. Ответ не сохранён — отправьте сообщение ещё раз."
+      : run.status === "cancelled"
+        ? "Ход остановлен."
+        : `Ход завершился ошибкой: ${run.error ?? "неизвестная причина"}`
+  return (
+    <div className="mx-4 mt-2 flex max-w-(--thread-max-width) items-center gap-2 self-center rounded-lg border border-dashed px-3 py-2 text-sm text-destructive">
+      {message}
+    </div>
+  )
+}
+
+/** Спиннер загрузки истории треда. */function LoadingState() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
       <div className="size-8 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground" />
@@ -705,6 +758,8 @@ interface ChatLoadState {
   usage?: ThreadUsageView | null
   /** Точка сжатия контекста (VL-314): плашка «контекст сжат» над лентой. */
   compaction?: CompactionState | null
+  /** VL-332: состояние хода треда (индикатор «выполняется»). */
+  run?: TurnRunState | null
 }
 
 /**
@@ -816,6 +871,8 @@ export function ChatPage() {
           usage: data.usage ?? null,
           // VL-314: точка сжатия — плашка «контекст сжат» (AC10)
           compaction: data.compaction ?? null,
+          // VL-332: ход в фоне — индикатор вместо «зависшего» сообщения (AC3)
+          run: data.run ?? null,
         })
         setRuntimeKey(k => k + 1)
       } catch (err) {
@@ -826,6 +883,37 @@ export function ChatPage() {
       cancelled = true
     }
   }, [hashThreadId, retry])
+
+  /**
+   * VL-332: ход, оставшийся в фоне. Если в треде идёт ход (`run.status ===
+   * "running"`), опрашиваем состояние каждые 2 с; когда ход завершился —
+   * перезагружаем историю, чтобы готовый ответ появился без F5 (AC1/AC4).
+   */
+  React.useEffect(() => {
+    if (load.status !== "ready" || load.run?.status !== "running") return
+    const id = load.runtimeThreadId
+    if (!id) return
+    let cancelled = false
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/chat/threads/${encodeURIComponent(id)}`)
+        if (!res.ok || cancelled) return
+        const data = (await res.json()) as ThreadHistoryResponse
+        if (cancelled) return
+        if (data.run?.status && data.run.status !== "running") {
+          // Ход закончился: jsonl уже содержит ответ — перечитываем историю
+          loadedRef.current = undefined
+          setRetry(r => r + 1)
+        }
+      } catch {
+        // сеть моргнула — следующая попытка через 2 с
+      }
+    }, 2000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [load.status, load.run?.status, load.runtimeThreadId])
 
   /**
    * Сервер создал новый тред → hash на #/chat/<id> без пересоздания
@@ -901,6 +989,7 @@ export function ChatPage() {
                 threadPersona={load.persona ?? null}
                 threadId={load.runtimeThreadId}
                 compaction={load.compaction ?? null}
+                run={load.run ?? null}
               />
             </ChatRuntimeProvider>
           )}
