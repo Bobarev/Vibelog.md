@@ -1,0 +1,189 @@
+{
+  "default_agent": "vb",
+  "max_wall_time": 2400,
+  "max_requests": 80,
+  "branch_mode": true,
+  "task_type_styles": {
+    "bug": "danger",
+    "feature": "success",
+    "enhancement": "primary",
+    "epic": "primary"
+  },
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@latest",
+        "--executablePath=/Applications/Yandex.app/Contents/MacOS/Yandex",
+        "--isolated",
+        "--headless=false",
+        "--no-usage-statistics",
+        "--no-performance-crux"
+      ],
+      "trust": true,
+      "timeoutMs": 120000
+    }
+  },
+  "code_same_session": true,
+  "workflows": {
+    "investigation": {
+      "initial_status": "To Do",
+      "transitions": [
+        {
+          "status": "To Do",
+          "phase": "investigate",
+          "produces_status": "Review"
+        },
+        {
+          "status": "Review",
+          "phase": "materialize",
+          "produces_status": "Done"
+        },
+        {
+          "status": "Review",
+          "phase": "reject",
+          "produces_status": "Done"
+        },
+        {
+          "status": "Done",
+          "phase": null,
+          "produces_status": null
+        }
+      ]
+    }
+  },
+  "task_workflows": {
+    "investigation": "investigation"
+  },
+  "phase_labels": {
+    "investigate": "Расследование",
+    "materialize": "Создать задачи"
+  },
+  "phase_emojis": {
+    "investigate": "🔍",
+    "materialize": "📦"
+  },
+  "gateways": {
+    "routerai": {
+      "base_url": "https://routerai.ru/api/v1",
+      "api_key_env": "ROUTERAI_API_KEY"
+    },
+    "selectel": {
+      "base_url": "https://api.selectel.ru/aig/v1",
+      "api_key_env": "SELECTEL_API_KEY"
+    }
+  },
+  "models": {
+    "default": "routerai/deepseek/deepseek-v4.1-flash@morph",
+    "available": {
+      "routerai/xiaomi/mimo-v2.6-flash@makora": {
+        "label": "makora.rai/mimo-v2.6-flash",
+        "provider": "routerai",
+        "model": "xiaomi/mimo-v2.6-flash@provider=makora&allow_fallbacks=false",
+        "api_mode": "responses",
+        "pricing": {
+          "input_per_1m": 13,
+          "output_per_1m": 29,
+          "cache_per_1m": 0.21
+        }
+      },
+      "routerai/xiaomi/mimo-v2.6-flash@Xiaomi": {
+        "label": "Xiaomi.rai/mimo-v2.6-flash",
+        "gateway": "routerai",
+        "vendor": "Xiaomi",
+        "model": "xiaomi/mimo-v2.6-flash",
+        "api_mode": "responses",
+        "pricing": {
+          "input_per_1m": 11.89113744,
+          "output_per_1m": 23.78227488,
+          "cache_per_1m": 0.254810088
+        }
+      },
+      "routerai/xiaomi/mimo-v2.5@gmicloud": {
+        "label": "gmicloud.rai/mimo-v2.5",
+        "gateway": "routerai",
+        "vendor": "gmicloud",
+        "model": "xiaomi/mimo-v2.5",
+        "api_mode": "responses",
+        "pricing": {
+          "input_per_1m": 12.63433353,
+          "output_per_1m": 25.26866706,
+          "cache_per_1m": 0.2707357185
+        }
+      },
+      "routerai/deepseek/deepseek-v4-flash@baidu": {
+        "label": "baidu.rai/deepseek-v4-flash",
+        "gateway": "routerai",
+        "vendor": "baidu",
+        "model": "deepseek/deepseek-v4-flash",
+        "api_mode": "responses",
+        "pricing": {
+          "input_per_1m": 17.09351007,
+          "output_per_1m": 34.18702014,
+          "cache_per_1m": 3.418702014
+        }
+      },
+      "routerai/deepseek/deepseek-v4.1-flash@baidu": {
+        "label": "baidu.rai/deepseek-v4.1-flash",
+        "gateway": "routerai",
+        "vendor": "baidu",
+        "model": "deepseek/deepseek-v4.1-flash",
+        "api_mode": "responses",
+        "pricing": {
+          "input_per_1m": 35.0363871,
+          "output_per_1m": 140.1455484,
+          "cache_per_1m": 0.700727742
+        }
+      },
+      "routerai/deepseek/deepseek-v4.1-flash@morph": {
+        "label": "morph.rai/deepseek-v4.1-flash",
+        "gateway": "routerai",
+        "vendor": "morph",
+        "model": "deepseek/deepseek-v4.1-flash",
+        "api_mode": "responses",
+        "pricing": {
+          "input_per_1m": 3.737214624,
+          "output_per_1m": 33.634931616,
+          "cache_per_1m": 0.583939785
+        }
+      },
+      "selectel/deepseek/deepseek-v4.1-flash": {
+        "gateway": "selectel",
+        "model": "deepseek/deepseek-v4.1-flash",
+        "api_mode": "chat",
+        "pricing": {
+          "input_per_1m": 11.82,
+          "output_per_1m": 32.83,
+          "cache_per_1m": 0.79
+        }
+      }
+    }
+  },
+  "compact": true,
+  "chat_personas": {
+    "researcher": {
+      "label": "Ресёрчер",
+      "description": "Ищет информацию и предлагает задачи",
+      "prompt": "researcher",
+      "default_status": "Spec"
+    },
+    "auditor": {
+      "label": "Аудитор",
+      "description": "Находит несоответствия, создаёт задачи на фикс",
+      "prompt": "auditor",
+      "allow_tools": [
+        "backlog_search",
+        "read_file",
+        "search_files"
+      ],
+      "default_status": "Spec"
+    }
+  },
+  "commit_coauthor": true,
+  "pricing_guard": {
+    "enabled": true,
+    "on_drift": "ask",
+    "offline": "allow"
+  }
+}
