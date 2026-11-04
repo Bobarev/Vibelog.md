@@ -51,7 +51,7 @@ const RECEIPT_TEXT: Record<Exclude<ApprovalState, "request">, string> = {
  * сообщит о результате. Запоминаем, был ли фокус внутри карточки, и переводим
  * его на receipt (`preventScroll`, чтобы лента не дёргалась).
  */
-function useReceiptFocus<T extends HTMLElement>() {
+export function useReceiptFocus<T extends HTMLElement>() {
   const focusedRef = React.useRef<HTMLElement | null>(null)
   const receiptRef = React.useRef<T | null>(null)
 

@@ -62,6 +62,7 @@ import type { ThreadUsageView } from "@/lib/chat-usage"
 import { useChatThreadId } from "@/lib/use-hash-route"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { ApprovalCard } from "./approval-card"
+import { QuestionCard } from "./question-card"
 import { CHAT_ERROR_PART, CHAT_PRICING_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider, getActivePersonaId } from "./chat-runtime"
 import { PricingDriftCard } from "./pricing-drift-card"
 import { ChatErrorState } from "./error-state"
@@ -127,6 +128,8 @@ const groupBy: Parameters<typeof MessagePrimitive.GroupedParts>[0]["groupBy"] = 
   if (part.type === "tool-call") {
     const meta = part.providerMetadata as { vibelog?: { auto?: unknown } } | undefined
     if (part.approval !== undefined || meta?.vibelog?.auto === true) return null
+    // VL-330: карточка вопроса не прячется в аккордеон — она ждёт ответа
+    if (part.toolName === "ask_user") return null
     if (isWriteTool(part.toolName)) return null
   }
   return baseGroupBy(part, context)
@@ -158,6 +161,8 @@ function PartView({ part }: { part: GroupedPartLike }) {
   }
   if (part.type === "tool-call") {
     const auto = isAutoAllowed(part)
+    // VL-330: интерактивный вопрос — своя карточка (не Allow/Deny и не строка)
+    if (part.toolName === "ask_user") return <QuestionCard part={part} />
     const isWrite = part.approval !== undefined || auto || isWriteTool(part.toolName)
     return isWrite ? <ApprovalCard part={part} auto={auto} /> : <ToolCall part={part} auto={auto} />
   }

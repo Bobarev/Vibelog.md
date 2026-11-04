@@ -34,8 +34,19 @@ import { globalSearch } from '../core/search.js';
 import { truncateToolOutput } from '../agent/tools.js';
 import { handleToolCall } from '../mcp/tools.js';
 import { ackDenied, isNoopAck } from '../mcp/tool-result.js';
-import { chatToolDefs, isWriteOperation, loadChatSystemTemplate } from './tool-policy.js';
+import { chatToolDefs, isWriteOperation, isInteractiveTool, loadChatSystemTemplate } from './tool-policy.js';
 import type { ChatLocalTool } from './tool-policy.js';
+import {
+  ASK_USER_TOOL,
+  answerToolResult,
+  cancelledQuestionResult,
+  isQuestionExpired,
+  parseAskUserArgs,
+  questionAskedAt,
+  recordQuestionLog,
+  validateAnswer,
+  type AskUserArgs,
+} from './chat-question.js';
 import { createCallGuard, formatChatLimitsErrors, resolveChatLimits } from './chat-limits.js';
 import {
   acceptDrift,
@@ -111,6 +122,18 @@ export type ChatEvent =
   | { type: 'tool_start'; id: string; name: string; args: Record<string, unknown>; auto?: boolean }
   | { type: 'tool_end'; id: string; result: string; isError?: boolean }
   | { type: 'approval'; toolCallId: string; name: string; args: Record<string, unknown>; grant?: SupervisorGrantPreview }
+  /**
+   * VL-330: интерактивный вопрос `ask_user` — ход на паузе до ответа
+   * пользователя. Клиент рендерит карточку вопроса и возобновляет ход
+   * запросом с полем `answer`.
+   */
+  | {
+      type: 'question';
+      toolCallId: string;
+      question: string;
+      options: { id: string; label: string; description?: string }[];
+      allowCustom: boolean;
+    }
   | { type: 'done' }
   | { type: 'error'; message: string }
   /**
@@ -175,6 +198,12 @@ export interface ChatRequestBody {
    * добавляется в allow-list треда, последующие вызовы идут без паузы.
    */
   approval?: { toolCallId?: unknown; approved?: unknown; reason?: unknown; always?: unknown };
+  /**
+   * VL-330: ответ на интерактивный вопрос `ask_user`. Ровно одно из
+   * `optionId`/`custom`; `optionId` обязан быть среди предложенных, `custom`
+   * допустим только при `allow_custom !== false`.
+   */
+  answer?: { toolCallId?: unknown; optionId?: unknown; custom?: unknown };
   /**
    * VL-269: продолжить ход без нового user-сообщения — так клиент реагирует
    * на событие `truncated`. История jsonl не меняется (пустой строки в
@@ -601,7 +630,11 @@ function closePendingToolCalls(history: ChatMessage[]): number {
       tool_call_id: tc.id,
       // VL-262: машиночитаемая причина отказа (denied) + перечень неприменённых полей.
       // Прежняя подстрока «Отменено пользователем» живёт в message (тесты/промпты).
-      content: ackDenied('denied', { tool: tc.name, fields: Object.keys(tc.arguments ?? {}) }),
+      // VL-330: неотвеченный вопрос — не «отказ в записи», а отсутствие ответа:
+      // модель должна задать вопрос заново, а не решить, что получила решение.
+      content: isInteractiveTool(tc.name)
+        ? cancelledQuestionResult('cancelled')
+        : ackDenied('denied', { tool: tc.name, fields: Object.keys(tc.arguments ?? {}) }),
     });
     inserted++;
   }
@@ -725,9 +758,12 @@ export async function* runChat(
     !!approval &&
     typeof approval.toolCallId === 'string' &&
     typeof approval.approved === 'boolean';
+  // VL-330: ответ на вопрос — ещё одна форма resume (проверка содержимого
+  // ответа живёт в produce: нужны история треда и предложенные варианты).
+  const hasAnswer = !!body.answer && typeof body.answer.toolCallId === 'string';
 
-  if (!hasMessage && !hasApproval && body.continue !== true) {
-    yield { type: 'error', message: 'Пустой запрос: ожидается поле message, approval или continue' };
+  if (!hasMessage && !hasApproval && body.continue !== true && !hasAnswer) {
+    yield { type: 'error', message: 'Пустой запрос: ожидается поле message, approval, answer или continue' };
     return;
   }
 
@@ -1151,7 +1187,61 @@ async function produce(
     typeof body.model === 'string' && body.model !== '' ? body.model : loadModels(cwd).default;
 
   // --- подготовка истории ---------------------------------------------------
-  if (hasApprovalOf(body)) {
+  if (hasAnswerOf(body)) {
+    // VL-330: resume по интерактивному вопросу. Валидация — до любых записей:
+    // неизвестный toolCallId, чужой optionId, custom при allow_custom=false,
+    // пустой ответ и истёкший TTL дают понятную ошибку в SSE, ход не падает.
+    const answer = body.answer!;
+    const answerId = answer.toolCallId as string;
+    const pending = pendingToolCalls(history);
+    const target = pending.find(tc => tc.id === answerId);
+    if (!target || target.name !== ASK_USER_TOOL) {
+      queue.push({
+        type: 'error',
+        message: 'Вопрос не найден: на него уже ответили, он снят или относится к другому треду',
+      });
+      return;
+    }
+    const parsed = parseAskUserArgs(target.arguments);
+    if (!parsed.ok) {
+      // Аргументы в jsonl битые (старая версия/ручная правка) — отвечать не на что
+      queue.push({ type: 'error', message: `Вопрос повреждён: ${parsed.error}` });
+      return;
+    }
+    const asked: AskUserArgs = parsed.value;
+    const askedAt = questionAskedAt(cwd, threadId, answerId);
+    if (isQuestionExpired(askedAt)) {
+      // TTL 24 ч: ход не возобновляем, вопрос считается снятым (AC: TTL)
+      recordQuestionLog(cwd, threadId, { event: 'expired', toolCallId: answerId });
+      queue.push({
+        type: 'error',
+        message: 'Вопрос снят по таймауту (24 ч): задайте вопрос заново, если он ещё нужен',
+      });
+      return;
+    }
+    const validated = validateAnswer(answer, asked);
+    if (!validated.ok) {
+      queue.push({ type: 'error', message: validated.error });
+      return;
+    }
+    const content = answerToolResult(asked, validated.value);
+    history.push({ role: 'tool', tool_call_id: answerId, content });
+    appendChatMessages(cwd, threadId, [{ role: 'tool', tool_call_id: answerId, content }]);
+    recordQuestionLog(cwd, threadId, {
+      event: 'answered',
+      toolCallId: answerId,
+      ...(validated.value.optionId !== undefined ? { optionId: validated.value.optionId } : {}),
+      ...(validated.value.custom !== undefined ? { custom: validated.value.custom } : {}),
+    });
+    queue.push({ type: 'tool_end', id: answerId, result: content });
+    // Остальные неотвеченные вызовы хода: read исполняем сразу, следующий
+    // вопрос/approval — новая пауза (последовательные гейты, как у approval).
+    const next = await advanceToNextApproval(history, cwd, threadId, queue, answerId, executeTool);
+    if (next !== null) {
+      pauseOnToolCall(next, cwd, threadId, queue, currentTurn());
+      return;
+    }
+  } else if (hasApprovalOf(body)) {
     // Resume: отвечаем на первый неотвеченный create, остальные закрываем ниже.
     const pending = pendingToolCalls(history);
     const target = pending.find(tc => tc.id === (body.approval!.toolCallId as string));
@@ -1201,13 +1291,7 @@ async function produce(
     // Allow/Deny (последовательные гейты вместо синтетического not_confirmed).
     const next = await advanceToNextApproval(history, cwd, threadId, queue, target.id, executeTool);
     if (next !== null) {
-      recordApprovalLog(cwd, threadId, {
-        event: 'requested',
-        toolCallId: next.id,
-        tool: next.name,
-      turn: currentTurn(),
-      });
-      queue.push({ type: 'approval', toolCallId: next.id, name: next.name, args: next.arguments, ...(grantPreviewOf(cwd, next.name, next.arguments) ? { grant: grantPreviewOf(cwd, next.name, next.arguments) } : {}) });
+      pauseOnToolCall(next, cwd, threadId, queue, currentTurn());
       return; // ход снова на паузе: ждём решение по следующему вызову
     }
   } else if (body.continue === true) {
@@ -1350,6 +1434,23 @@ async function produce(
     // инструмент из allow-list треда проходит без паузы (auto: true —
     // клиент помечает вызов как разрешённый заранее).
     for (const tc of resp.toolCalls) {
+      // VL-330: интерактивный инструмент (ask_user) — пауза хода, а не
+      // исполнение. Ветки grant/allow-list к нему не применяются никогда:
+      // вопрос нельзя «разрешить заранее» (Always allow на вопрос бессмыслен).
+      // Аргументы проверяются ДО паузы: битый вопрос вернётся модели ошибкой,
+      // а пользователь не получит карточку без вариантов.
+      if (isInteractiveTool(tc.name)) {
+        const parsed = parseAskUserArgs(tc.arguments);
+        if (!parsed.ok) {
+          const content = JSON.stringify({ error: parsed.error });
+          history.push({ role: 'tool', tool_call_id: tc.id, content });
+          appendChatMessages(cwd, threadId, [{ role: 'tool', tool_call_id: tc.id, content }]);
+          queue.push({ type: 'tool_end', id: tc.id, result: content, isError: true });
+          continue;
+        }
+        pauseOnToolCall(tc, cwd, threadId, queue, currentTurn());
+        return; // состояние уже в jsonl; ждём resume с ответом
+      }
       // VL-268: grant прогона развязывает инструменты супервизора в пределах
       // задачи/набора; остальные инструменты политика обрабатывает как раньше
       const grantGate = checkGrant(cwd, tc.name, tc.arguments);
@@ -1365,20 +1466,7 @@ async function produce(
       const autoAllowed =
         grantAllowed || (isWriteOperation(tc.name) && isToolAllowed(cwd, threadId, tc.name));
       if (isWriteOperation(tc.name) && !autoAllowed) {
-        recordApprovalLog(cwd, threadId, {
-          event: 'requested',
-          toolCallId: tc.id,
-          tool: tc.name,
-      turn: currentTurn(),
-        });
-        const preview = grantPreviewOf(cwd, tc.name, tc.arguments);
-        queue.push({
-          type: 'approval',
-          toolCallId: tc.id,
-          name: tc.name,
-          args: tc.arguments,
-          ...(preview ? { grant: preview } : {}),
-        });
+        pauseOnToolCall(tc, cwd, threadId, queue, currentTurn());
         return; // состояние уже в jsonl; ждём resume с решением
       }
       queue.push({
@@ -1682,6 +1770,67 @@ function hasApprovalOf(body: ChatRequestBody): boolean {
   return !!a && typeof a.toolCallId === 'string' && typeof a.approved === 'boolean';
 }
 
+/** VL-330: тело содержит ответ на интерактивный вопрос. */
+function hasAnswerOf(body: ChatRequestBody): boolean {
+  const a = body.answer;
+  return !!a && typeof a.toolCallId === 'string';
+}
+
+/**
+ * VL-330: поставить ход на паузу перед вызовом инструмента.
+ *
+ * Единая точка для двух видов паузы: интерактивный вопрос (`ask_user` —
+ * событие `question`, состояние уже в jsonl) и write-операция (событие
+ * `approval` + запись в лог подтверждений). Вызывается из цикла хода, из
+ * resume-ветки и из продвижения к следующему гейту — чтобы три места не
+ * расходились в поведении (lesson-37: общий хелпер вместо копий).
+ */
+function pauseOnToolCall(
+  tc: ToolCall,
+  cwd: string,
+  threadId: string,
+  queue: EventQueue,
+  turn: number,
+): void {
+  if (isInteractiveTool(tc.name)) {
+    const parsed = parseAskUserArgs(tc.arguments);
+    if (!parsed.ok) {
+      // Аргументы уже проверялись до паузы; сюда попадаем только при битом
+      // jsonl — закрываем вызов ошибкой, чтобы ход не завис навсегда.
+      const content = JSON.stringify({ error: parsed.error });
+      queue.push({ type: 'tool_end', id: tc.id, result: content, isError: true });
+      return;
+    }
+    recordQuestionLog(cwd, threadId, {
+      event: 'asked',
+      toolCallId: tc.id,
+      question: parsed.value.question,
+    });
+    queue.push({
+      type: 'question',
+      toolCallId: tc.id,
+      question: parsed.value.question,
+      options: parsed.value.options,
+      allowCustom: parsed.value.allowCustom,
+    });
+    return;
+  }
+  recordApprovalLog(cwd, threadId, {
+    event: 'requested',
+    toolCallId: tc.id,
+    tool: tc.name,
+    turn,
+  });
+  const preview = grantPreviewOf(cwd, tc.name, tc.arguments);
+  queue.push({
+    type: 'approval',
+    toolCallId: tc.id,
+    name: tc.name,
+    args: tc.arguments,
+    ...(preview ? { grant: preview } : {}),
+  });
+}
+
 /**
  * Инструменты, которыми управляет grant прогона (VL-268, AC8).
  *
@@ -1771,6 +1920,20 @@ async function advanceToNextApproval(
 ): Promise<ToolCall | null> {
   for (const tc of pendingToolCalls(history)) {
     if (tc.id === skipId) continue;
+    // VL-330: вопрос в хвосте хода — не исполняем и не закрываем: он тоже
+    // требует ответа человека. Битые аргументы закрываем ошибкой (иначе ход
+    // завис бы на карточке, которую нечем отрисовать).
+    if (isInteractiveTool(tc.name)) {
+      const parsed = parseAskUserArgs(tc.arguments);
+      if (!parsed.ok) {
+        const content = JSON.stringify({ error: parsed.error });
+        history.push({ role: 'tool', tool_call_id: tc.id, content });
+        appendChatMessages(cwd, threadId, [{ role: 'tool', tool_call_id: tc.id, content }]);
+        queue.push({ type: 'tool_end', id: tc.id, result: content, isError: true });
+        continue;
+      }
+      return tc;
+    }
     // VL-268: grant прогона действует и на хвосте хода (проверка на каждый вызов)
     const grantGate = checkGrant(cwd, tc.name, tc.arguments);
     if (grantGate.kind === 'error') {
@@ -1820,6 +1983,16 @@ function closeUnconfirmedTail(
   turn: number,
 ): void {
   for (const tc of pendingToolCalls(history)) {
+    // VL-330: неотвеченный вопрос — не «отказ в записи», а отсутствие ответа:
+    // модель должна задать вопрос заново, а не решить, что получила решение.
+    if (isInteractiveTool(tc.name)) {
+      const content = cancelledQuestionResult('limit');
+      history.push({ role: 'tool', tool_call_id: tc.id, content });
+      appendChatMessages(cwd, threadId, [{ role: 'tool', tool_call_id: tc.id, content }]);
+      recordQuestionLog(cwd, threadId, { event: 'cancelled', toolCallId: tc.id });
+      queue.push({ type: 'tool_end', id: tc.id, result: content, isError: true });
+      continue;
+    }
     const content = ackDenied('not_confirmed', {
       tool: tc.name,
       fields: Object.keys(tc.arguments ?? {}),
