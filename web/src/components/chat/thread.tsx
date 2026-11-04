@@ -168,6 +168,46 @@ type GroupedPartLike =
   | { readonly type: "indicator" }
   | { readonly type: `group-${string}`; readonly indices: readonly number[] }
 
+/**
+ * Карточка дрейфа цены (VL-317/VL-334).
+ *
+ * Отдельный компонент, потому что перезапуск хода берётся из контекста
+ * сообщения (`useAui()`): `aui.message.reload()` — ровно то, что делает
+ * `ActionBarPrimitive.Reload` у «Продолжить» после лимита (VL-269). Раньше
+ * карточка рендерилась прямо из `PartView` без `onContinue`, и нажатие
+ * «Продолжить» не начинало ход (решение уходило на сервер, POST — нет).
+ */
+function PricingPart({ part }: { part: Extract<EnrichedPartState, { type: "data" }> }) {
+  const aui = useAui()
+  const payload = part.data as
+    | {
+        kind?: unknown
+        message?: unknown
+        vendor?: unknown
+        alternative?: unknown
+        maxDeltaPercent?: unknown
+        model?: unknown
+      }
+    | undefined
+  // VL-334: тот же путь перезапуска, что у StoppedRun (AC2)
+  const onContinue = React.useCallback(() => {
+    aui.message.reload()
+  }, [aui])
+  return (
+    <PricingDriftCard
+      kind={payload?.kind === "ask" || payload?.kind === "auto" ? payload.kind : "warn"}
+      message={typeof payload?.message === "string" ? payload.message : "Цена вендора изменилась"}
+      vendor={typeof payload?.vendor === "string" ? payload.vendor : undefined}
+      alternative={typeof payload?.alternative === "string" ? payload.alternative : undefined}
+      maxDeltaPercent={
+        typeof payload?.maxDeltaPercent === "number" ? payload.maxDeltaPercent : undefined
+      }
+      model={typeof payload?.model === "string" ? payload.model : undefined}
+      onContinue={onContinue}
+    />
+  )
+}
+
 function PartView({ part }: { part: GroupedPartLike }) {
   if (part.type === "text") {
     // синтетический пустой text-part во время старта run не рендерим
@@ -188,27 +228,8 @@ function PartView({ part }: { part: GroupedPartLike }) {
     return <ChatErrorState message={typeof payload?.message === "string" ? payload.message : "Неизвестная ошибка"} />
   }
   if (part.type === "data" && part.name === CHAT_PRICING_PART) {
-    // VL-317: дрейф цены вендора — карточка (ask) или предупреждение (warn/auto)
-    const payload = part.data as
-      | {
-          kind?: unknown
-          message?: unknown
-          vendor?: unknown
-          alternative?: unknown
-          maxDeltaPercent?: unknown
-        }
-      | undefined
-    return (
-      <PricingDriftCard
-        kind={payload?.kind === "ask" || payload?.kind === "auto" ? payload.kind : "warn"}
-        message={typeof payload?.message === "string" ? payload.message : "Цена вендора изменилась"}
-        vendor={typeof payload?.vendor === "string" ? payload.vendor : undefined}
-        alternative={typeof payload?.alternative === "string" ? payload.alternative : undefined}
-        maxDeltaPercent={
-          typeof payload?.maxDeltaPercent === "number" ? payload.maxDeltaPercent : undefined
-        }
-      />
-    )
+    // VL-317/VL-334: дрейф цены вендора — карточка (ask) или предупреждение (warn/auto)
+    return <PricingPart part={part} />
   }
   if (part.type === "data" && part.name === CHAT_TRUNCATED_PART) {
     // VL-269 (AC9/AC10): авто-продолжения исчерпаны — вместо них явная
