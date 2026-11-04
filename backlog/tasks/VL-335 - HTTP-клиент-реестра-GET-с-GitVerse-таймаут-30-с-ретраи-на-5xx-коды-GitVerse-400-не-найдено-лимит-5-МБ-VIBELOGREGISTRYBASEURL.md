@@ -1,11 +1,11 @@
 ---
 id: VL-335
 title: 'HTTP-клиент реестра: GET с GitVerse, таймаут 30 с, ретраи на 5xx, коды GitVerse (400 = не найдено), лимит 5 МБ, VIBELOG_REGISTRY_BASE_URL'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-05 01:50'
-updated_date: '2026-11-05 02:10'
+updated_date: '2026-11-05 02:24'
 due_date: ''
 labels:
   - vb-cli
@@ -25,15 +25,16 @@ documentation: []
 modified_files:
   - src/core/registry-fetch.ts
   - src/core/registry-fetch.test.mjs
-lessons: []
+lessons:
+  - lesson-217
 token_usage:
-  input: 2792047
-  output: 34664
-  cache: 2483712
-  total: 2826711
-  requests: 58
-  duration_ms: 914973
-  reasoning: 9856
+  input: 5260230
+  output: 47453
+  cache: 4749312
+  total: 5307683
+  requests: 109
+  duration_ms: 1087240
+  reasoning: 14889
   by_phase:
     code:
       input: 1395028
@@ -41,10 +42,10 @@ token_usage:
       cache: 1191424
       requests: 26
     close:
-      input: 1397019
-      output: 7866
-      cache: 1292288
-      requests: 32
+      input: 3865202
+      output: 20655
+      cache: 3557888
+      requests: 83
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -88,7 +89,7 @@ token_usage:
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -161,5 +162,19 @@ created: 2026-11-05 02:05
 - `pnpm test` — полный прогон: 173 файла, 3314 тестов passed, 4 skipped (pre-existing), падений нет; исключений/`--exclude` сверх штатного скрипта проекта не было;
 - ручной смоук по реальному GitVerse (`bobarev/Vibelog.md`, ветка `master`): GET raw `package.json` → 200 `text/plain; charset=utf-8`, тело — валидный JSON; запрос несуществующего `public/r/nope.json` → 400 с `{"code":4305,"message":"File: public/r/nope.json not found"}`, модуль классифицирует как `not_found` и печатает `message` GitVerse одной строкой. HEAD не используется (тест-страховка `expect(source).not.toMatch(/method:\s*['"]HEAD/)`).
 **Что осталось:** DoD «Документация обновлена» не отмечен — по регламенту фазы Code документация (doc-25/CHANGELOG/README) пишется в фазе Close. Потребители модуля (`vb install`, `vb create`) — следующие задачи эпика.
+---
+author: @agent
+created: 2026-11-05 02:10
+---
+Фаза close не удалась (код выхода 1): блокировок=0, payload последнего запроса=212376 байт (макс 212376), usage={"input_tokens":1397019,"output_tokens":7866,"cache_read_input_tokens":1292288,"total_tokens":1404885,"reasoning_tokens":2629} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-05 02:23
+---
+Фаза Close выполнена. Ветка vb/vl-335 слита в master (1 коммит `0558b8f`, merge `adeac0b`), worktree удалена, ветка удалена.
+**Проверки после merge:** `pnpm build` — чисто; ранний точечный прогон `src/core/registry-fetch.test.mjs` — 36/36 passed; полный `pnpm test` — 173 файла, 3314 passed, 4 skipped (pre-existing), падений нет; повторных полных прогонов не было, параллельного vitest в других worktree не обнаружено.
+**Документация (DoD п.2):** doc-25 §5.1 — добавлена отметка о реализованном модуле (`src/core/registry-fetch.ts`: база/URL, `RegistryFetchError` с `kind`, таймаут с инъекцией `timeoutMs`, стриминговый лимит 5 МБ, ретраи только на 5xx/сеть, `400`/`404` → `not_found`, `validateRegistryItem`); CHANGELOG.md — запись в Unreleased. Коммиты `71356c0` (docs) и `62294d4` (удаление устаревшего doc-25 v1.1 — актуальна v1.2).
+**Lessons:** создан `lesson-217` (таймаут HTTP инъектируемым + `clearTimeout` в `finally`; лимит тела только стримингом; классификация по статусу и `JSON.parse`, не по `content-type`), связан с задачей; коммит `85a149a`.
+**DoD:** все три пункта выполнены — тесты проходят, документация обновлена, регрессий нет.
 ---
 <!-- COMMENTS:END -->
