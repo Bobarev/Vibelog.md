@@ -8,6 +8,10 @@
  *
  * - «Продолжить» — согласие с расхождением: решение запоминается для треда
  *   (`<threadId>.pricing.json`), следующие ходы не спрашивают то же самое;
+ * - «Продолжить и обновить тариф» (VL-334) — то же продолжение, но перед ним
+ *   тариф перезаписывается ценой вендора из каталога
+ *   (`POST /api/pricing/refresh`). При ошибке обновления ход НЕ продолжается:
+ *   пользователь просил обновить, а не продолжить по старой цене;
  * - «Перейти на <вендор>» — переезд на альтернативный апстрим (он приходит в
  *   событии, если каталог его знает). Вендор уходит в wire-запрос
  *   `provider.order` (VL-315), формат запроса не меняется.
@@ -24,9 +28,10 @@
  */
 
 import * as React from "react"
-import { ArrowRightIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react"
+import { ArrowRightIcon, RefreshCw, TrendingDownIcon, TrendingUpIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { refreshThenContinue } from "@/lib/price-refresh"
 import { setPricingDecision } from "./chat-runtime"
 import { field, ghostButton, inkButton, mono, paper } from "./surfaces"
 
@@ -36,6 +41,7 @@ export function PricingDriftCard({
   vendor,
   alternative,
   maxDeltaPercent,
+  model,
   onContinue,
 }: {
   /** ask — вопрос с кнопками; warn/auto — только плашка. */
@@ -48,11 +54,14 @@ export function PricingDriftCard({
   alternative?: string | undefined
   /** Максимальное отклонение, проценты (знак — направление). */
   maxDeltaPercent?: number | undefined
+  /** id модели из models.available (для «Продолжить и обновить тариф», VL-334). */
+  model?: string | undefined
   /** Перезапуск хода (по умолчанию — Reload рантайма, см. thread.tsx). */
   onContinue?: (() => void) | undefined
 }) {
-  const [busy, setBusy] = React.useState<"continue" | "switch" | null>(null)
+  const [busy, setBusy] = React.useState<"continue" | "switch" | "refresh" | null>(null)
   const [done, setDone] = React.useState<string | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
 
   const increased = (maxDeltaPercent ?? 0) >= 0
   const Icon = increased ? TrendingUpIcon : TrendingDownIcon
@@ -60,10 +69,39 @@ export function PricingDriftCard({
   /** Отправляет решение и перезапускает ход. */
   const decide = (ack: boolean, nextVendor?: string) => {
     setBusy(nextVendor !== undefined ? "switch" : "continue")
+    setError(null)
     setPricingDecision(ack, nextVendor)
     setDone(nextVendor !== undefined ? `Переход на ${nextVendor}` : "Продолжаем по новой цене")
     // Перезапуск хода: тот же путь, что «Продолжить» после лимита (VL-269)
     onContinue?.()
+  }
+
+  /**
+   * «Продолжить и обновить тариф» (VL-334): сначала refresh, и только при
+   * успехе — решение + перезапуск. Ошибка оставляет ход на паузе: решение
+   * НЕ фиксируется, чтобы сервер не начал ход по старой цене.
+   *
+   * `busy` после успеха намеренно не снимается: ход перезапущен, повторный
+   * клик дал бы второй POST и потерянный `pricingAck` (module-state забирается
+   * первым ходом).
+   */
+  const refreshAndContinue = async () => {
+    if (model === undefined) return
+    setBusy("refresh")
+    setError(null)
+    setDone(null)
+    const result = await refreshThenContinue({
+      modelId: model,
+      decide: () => setPricingDecision(true),
+      continueRun: () => onContinue?.(),
+    })
+    if (result.ok) {
+      setDone("Тариф обновлён, продолжаем")
+      return
+    }
+    // Ход не продолжаем — показываем причину и разрешаем повторить/выбрать другое
+    setBusy(null)
+    setError(result.error)
   }
 
   return (
@@ -108,6 +146,18 @@ export function PricingDriftCard({
           >
             Продолжить
           </button>
+          {/* VL-334: только в ask и только когда известна модель для refresh */}
+          {model !== undefined ? (
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={() => void refreshAndContinue()}
+              className={cn(ghostButton, "h-8 gap-1 px-3 text-xs")}
+            >
+              Продолжить и обновить тариф
+              <RefreshCw className={cn("size-3", busy === "refresh" && "animate-spin")} />
+            </button>
+          ) : null}
           {alternative !== undefined ? (
             <button
               type="button"
@@ -120,6 +170,12 @@ export function PricingDriftCard({
             </button>
           ) : null}
         </div>
+      ) : null}
+
+      {error !== null ? (
+        <span role="alert" className={cn(mono, "text-xs text-destructive")}>
+          {error}
+        </span>
       ) : null}
 
       {done !== null ? (
