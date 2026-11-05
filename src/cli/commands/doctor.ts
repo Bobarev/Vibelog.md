@@ -11,7 +11,7 @@
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 
 import { listTools } from '../../mcp/tools.js';
 import { findBacklogDir } from '../../core/paths.js';
@@ -66,29 +66,31 @@ export async function runDoctor(
   // 4. Совпадение копий
   checks.push(checkSourcesMatch());
 
-  // 5. MCP-инструменты (количество)
-  checks.push(checkMcpToolsCount());
+  // 5. Инварианты реестра MCP-инструментов (VL-340)
+  checks.push(checkMcpToolsInvariants());
 
-  // 6. Список MCP-инструментов
-  checks.push(checkMcpToolsList());
-
-  // 7. backlog/
+  // 6. backlog/
   checks.push(checkBacklogDir(cwd));
 
-  // 8. Конфиг
+  // 7. Конфиг
   checks.push(checkConfig(cwd));
 
-  // 9. Задачи
+  // 8. Задачи
   checks.push(checkTasks(cwd));
 
-  // 10. Round-trip с Backlog.md
+  // 9. Round-trip с Backlog.md
   checks.push(checkRoundtrip());
+
+  // 10. Git-политика `.vibelog/` (VL-340, ROADMAP «Переносимый .vibelog/»)
+  checks.push(...checkGitPolicy(cwd));
 
   // Предупреждение про кэш MCP
   warnings.push('Qwen Code: MCP-сервер мог быть закэширован. Если Qwen не видит новые инструменты — перезапусти Qwen.');
 
-  // Обязательные проверки (влияют на exit code)
-  const requiredNames = ['node', 'path', 'mcp_tools_count', 'mcp_tools_list', 'backlog_dir'];
+  // Обязательные проверки (влияют на exit code).
+  // vibelog_gitignore обязательна только при существующем `.vibelog/` — сама
+  // проверка возвращает ok:true, если каталога нет (VL-340).
+  const requiredNames = ['node', 'path', 'mcp_tools_invariants', 'backlog_dir', 'vibelog_gitignore'];
   const hasErrors = checks.some(c => requiredNames.includes(c.name) && !c.ok);
 
   if (flags.json) {
@@ -240,80 +242,77 @@ function checkSourcesMatch(): CheckResult {
 }
 
 /**
- * Проверка 5: количество MCP-инструментов.
+ * Известные префиксы имён MCP-инструментов Vibelog.
+ *
+ * Список — политика именования, а не перечень инструментов: новый инструмент
+ * с известным префиксом не требует правки doctor (VL-340). Инструмент с чужим
+ * префиксом — сигнал, что в реестр попал сторонний/опечатанный инструмент.
  */
-function checkMcpToolsCount(): CheckResult {
-  const tools = listTools();
-  const expected = 45;
-  const ok = tools.length === expected;
+const MCP_TOOL_PREFIXES = [
+  'backlog_',
+  'milestone_',
+  'reference_',
+  'document_',
+  'lesson_',
+  'project_map',
+  'git_commit',
+];
+
+/**
+ * Проверка 5: инварианты реестра MCP-инструментов (VL-340).
+ *
+ * Вместо хардкода числа инструментов (36→37→…→45 в CHANGELOG) проверяются
+ * свойства, которые действительно ломают MCP-клиент: пустой реестр, дубли
+ * имён (клиент не различит инструменты), имя вне политики префиксов и
+ * инструмент без inputSchema типа object (агент не сможет его вызвать).
+ *
+ * Экспортируется для юнит-тестов: тест подаёт синтетический реестр и
+ * проверяет, что инварианты ловят дефект.
+ *
+ * @param tools — реестр инструментов (по умолчанию listTools())
+ */
+export function checkMcpToolsInvariants(
+  tools: Array<{ name: string; inputSchema?: unknown }> = listTools()
+): CheckResult {
+  const names = tools.map(t => t.name);
+  const problems: string[] = [];
+
+  if (tools.length === 0) {
+    problems.push('реестр пуст');
+  }
+
+  const dupes = names.filter((n, i) => names.indexOf(n) !== i);
+  if (dupes.length > 0) {
+    problems.push(`дубли имён: ${[...new Set(dupes)].join(', ')}`);
+  }
+
+  const badPrefix = names.filter(n => !MCP_TOOL_PREFIXES.some(p => n === p || n.startsWith(p)));
+  if (badPrefix.length > 0) {
+    problems.push(`имена вне политики префиксов: ${badPrefix.join(', ')}`);
+  }
+
+  const badSchema = tools
+    .filter(t => {
+      const s = t.inputSchema as Record<string, unknown> | undefined;
+      return !s || typeof s !== 'object' || s.type !== 'object';
+    })
+    .map(t => t.name);
+  if (badSchema.length > 0) {
+    problems.push(`нет inputSchema типа object: ${badSchema.join(', ')}`);
+  }
+
+  const ok = problems.length === 0;
   return {
-    name: 'mcp_tools_count',
+    name: 'mcp_tools_invariants',
     ok,
-    value: tools.length,
-    expected,
-    hint: ok ? undefined : `Ожидалось ${expected} инструментов, получено ${tools.length}. Проверьте, что запущена актуальная копия.`,
+    value: { count: tools.length, problems },
+    expected: { prefixes: MCP_TOOL_PREFIXES },
+    hint: ok ? undefined : `Нарушены инварианты реестра MCP: ${problems.join('; ')}`,
   };
 }
 
 /**
- * Проверка 6: список MCP-инструментов совпадает с ожидаемым.
- */
-function checkMcpToolsList(): CheckResult {
-  const tools = listTools();
-  const actual = tools.map(t => t.name).sort();
-  const expected = [
-    'backlog_add_comment',
-    'backlog_create_task',
-    'backlog_list_tasks',
-    'backlog_manage_ac',
-    'backlog_manage_dod',
-    'backlog_ready',
-    'backlog_search',
-    'backlog_update_dependencies',
-    'backlog_update_status',
-    'backlog_update_task',
-    'milestone_list',
-    'milestone_add',
-    'milestone_rename',
-    'milestone_remove',
-    'milestone_archive',
-    'document_list',
-    'document_view',
-    'document_create',
-    'document_update',
-    'document_search',
-    'backlog_view_task',
-    'backlog_finish_phase',
-    'lesson_list',
-    'lesson_create',
-    'lesson_view',
-    'lesson_update',
-    'lesson_search_lessons',
-    'lesson_link',
-    'lesson_supersede',
-    'lesson_audit',
-    'lesson_classify',
-    'project_map',
-    'backlog_trigger_phase',
-    'backlog_phase_status',
-    'backlog_auto_queue',
-    'backlog_supervisor',
-    'git_commit',
-  ].sort();
-
-  const missing = expected.filter(e => !actual.includes(e));
-  const ok = missing.length === 0;
-  return {
-    name: 'mcp_tools_list',
-    ok,
-    value: actual,
-    expected,
-    hint: ok ? undefined : `Отсутствуют инструменты: ${missing.join(', ')}`,
-  };
-}
-
-/**
- * Проверка 7: backlog/ найден.
+ * Проверка 6: backlog/ найден.
  */
 function checkBacklogDir(cwd: string): CheckResult {
   const dir = findBacklogDir(cwd);
@@ -327,7 +326,7 @@ function checkBacklogDir(cwd: string): CheckResult {
 }
 
 /**
- * Проверка 8: конфиг читается.
+ * Проверка 7: конфиг читается.
  */
 function checkConfig(cwd: string): CheckResult {
   try {
@@ -348,7 +347,7 @@ function checkConfig(cwd: string): CheckResult {
 }
 
 /**
- * Проверка 9: задачи парсятся.
+ * Проверка 8: задачи парсятся.
  */
 function checkTasks(cwd: string): CheckResult {
   try {
@@ -369,7 +368,7 @@ function checkTasks(cwd: string): CheckResult {
 }
 
 /**
- * Проверка 10: round-trip с Backlog.md (опциональная).
+ * Проверка 9: round-trip с Backlog.md (опциональная).
  */
 function checkRoundtrip(): CheckResult {
   const backlogRoot = join(__dirname, '..', '..', '..', '..', 'Backlog.md');
@@ -391,6 +390,125 @@ function checkRoundtrip(): CheckResult {
   } catch {
     return { name: 'roundtrip', ok: true, value: null };
   }
+}
+
+/**
+ * Спрашивает у git, игнорируется ли путь (VL-340).
+ *
+ * Только `git check-ignore` — никакого парсинга `.gitignore` регулярками:
+ * правила git (вложенные файлы, `!`-исключения, `**`) регуляркой не
+ * воспроизвести, а ошибка здесь означает утечку сессий или ключей в git.
+ *
+ * @param cwd — каталог проекта
+ * @param path — путь относительно cwd
+ * @returns ignored: true/false, либо null — «git не дал ответа»
+ *          (не репозиторий, git недоступен, код 128)
+ */
+function gitCheckIgnore(cwd: string, path: string): boolean | null {
+  const res = spawnSync('git', ['check-ignore', '-q', '--', path], { cwd, encoding: 'utf-8' });
+  if (res.error || res.status === null) return null;
+  if (res.status === 0) return true;
+  if (res.status === 1) return false;
+  // 128 — не git-репозиторий (или иная ошибка git): проверку не валим
+  return null;
+}
+
+/**
+ * Проверяет, находится ли каталог внутри git-репозитория (VL-340).
+ *
+ * Нужна, чтобы git-политика `.vibelog/` не давала ложных провалов вне git:
+ * там понятия «игнорируется» нет, и требовать файл политики бессмысленно.
+ *
+ * @param cwd — каталог проекта
+ */
+function isGitRepo(cwd: string): boolean {
+  const res = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd, encoding: 'utf-8' });
+  return !res.error && res.status === 0 && String(res.stdout).trim() === 'true';
+}
+
+/**
+ * Проверки 10–14: git-политика `.vibelog/` (VL-340, ROADMAP «Переносимый .vibelog/»).
+ *
+ * Регресс политики VL-329 (вернуть `.vibelog/` в корневой `.gitignore`,
+ * уронить `!settings.json`) иначе обнаруживается только когда в git уже
+ * уехали транскрипты сессий или ключи. Все проверки, кроме отсутствия
+ * `.vibelog/.gitignore` при существующем `.vibelog/` в git-репозитории, —
+ * предупреждающие.
+ *
+ * @param cwd — каталог проекта
+ */
+function checkGitPolicy(cwd: string): CheckResult[] {
+  const results: CheckResult[] = [];
+  const vibelogDir = join(cwd, '.vibelog');
+  const hasVibelog = existsSync(vibelogDir);
+  const inGit = isGitRepo(cwd);
+
+  // 1. Файл политики существует (единственная обязательная из этой группы).
+  // Вне git политика не имеет смысла — проверка проходит.
+  const gitignorePath = join(vibelogDir, '.gitignore');
+  const hasGitignore = existsSync(gitignorePath);
+  const gitignoreOk = !hasVibelog || hasGitignore || !inGit;
+  results.push({
+    name: 'vibelog_gitignore',
+    ok: gitignoreOk,
+    value: !hasVibelog
+      ? 'нет .vibelog/'
+      : hasGitignore
+        ? gitignorePath
+        : inGit
+          ? null
+          : 'не git-репозиторий',
+    expected: '.vibelog/.gitignore',
+    hint: gitignoreOk
+      ? undefined
+      : 'Нет .vibelog/.gitignore: локальные сессии и кэши могут уехать в git. Создайте файл политики (VL-329).',
+  });
+
+  // 2–5. Проверки через git check-ignore; вне git-репозитория — ok:true
+  const policyChecks: Array<{ name: string; path: string; shouldIgnore: boolean; hint: string }> = [
+    {
+      name: 'vibelog_settings_tracked',
+      path: '.vibelog/settings.json',
+      shouldIgnore: false,
+      hint: 'settings.json игнорируется — конфигурация проекта должна жить в git (VL-329).',
+    },
+    {
+      name: 'vibelog_billing_tracked',
+      path: '.vibelog/billing/',
+      shouldIgnore: false,
+      hint: 'billing/ игнорируется — история трат должна жить в git (VL-329).',
+    },
+    {
+      name: 'env_ignored',
+      path: '.env',
+      shouldIgnore: true,
+      hint: '.env НЕ игнорируется — токены и API-ключи могут уехать в git (VL-329).',
+    },
+    {
+      name: 'vibelog_root_ignored',
+      path: '.vibelog/',
+      shouldIgnore: false,
+      hint: '.vibelog/ игнорируется корневым .gitignore — регресс VL-329: конфигурация и промпты не попадут в git.',
+    },
+  ];
+
+  for (const spec of policyChecks) {
+    const ignored = gitCheckIgnore(cwd, spec.path);
+    if (ignored === null) {
+      results.push({ name: spec.name, ok: true, value: 'не git-репозиторий' });
+      continue;
+    }
+    const ok = ignored === spec.shouldIgnore;
+    results.push({
+      name: spec.name,
+      ok,
+      value: ignored ? 'игнорируется' : 'в git',
+      expected: spec.shouldIgnore ? 'игнорируется' : 'в git',
+      hint: ok ? undefined : spec.hint,
+    });
+  }
+
+  return results;
 }
 
 /**

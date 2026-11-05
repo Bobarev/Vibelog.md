@@ -13,17 +13,75 @@
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync, existsSync, readFileSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync, readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 
 import { testSpawnEnv } from '../test-env.mjs';
+import { checkMcpToolsInvariants } from '../../dist/cli/commands/doctor.js';
+import { listTools } from '../../dist/mcp/tools.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(__dirname, '..', '..', 'bin', 'vibelog.mjs');
 const testDir = mkdtempSync(join(tmpdir(), 'vibelog-diagnostics-'));
+
+/**
+ * Ожидаемый перечень MCP-инструментов (VL-340).
+ *
+ * Раньше этот массив жил в `doctor.ts` и требовал правки кода при каждом
+ * новом инструменте. Теперь это фикстура теста: новый инструмент добавляется
+ * сюда осознанно (проверка «инструмент не пропал»), а инварианты реестра
+ * (непустота, дубли, префиксы, inputSchema) проверяются в самом doctor.
+ */
+const EXPECTED_MCP_TOOLS = [
+  'backlog_add_comment',
+  'backlog_auto_queue',
+  'backlog_create_task',
+  'backlog_finish_phase',
+  'backlog_list_tasks',
+  'backlog_manage_ac',
+  'backlog_manage_dod',
+  'backlog_phase_status',
+  'backlog_ready',
+  'backlog_search',
+  'backlog_supervisor',
+  'backlog_trigger_phase',
+  'backlog_update_dependencies',
+  'backlog_update_status',
+  'backlog_update_task',
+  'backlog_view_task',
+  'document_create',
+  'document_list',
+  'document_search',
+  'document_update',
+  'document_view',
+  'git_commit',
+  'lesson_audit',
+  'lesson_classify',
+  'lesson_create',
+  'lesson_link',
+  'lesson_list',
+  'lesson_search_lessons',
+  'lesson_supersede',
+  'lesson_update',
+  'lesson_view',
+  'milestone_add',
+  'milestone_archive',
+  'milestone_list',
+  'milestone_remove',
+  'milestone_rename',
+  'project_map',
+  'reference_add',
+  'reference_link',
+  'reference_list',
+  'reference_remove',
+  'reference_search',
+  'reference_sync',
+  'reference_update',
+  'reference_view',
+];
 
 // Читаем версию динамически из package.json, чтобы тесты не ломались при бампе
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'));
@@ -120,8 +178,7 @@ describe('Диагностика — doctor', () => {
   it('doctor выполняет все проверки', () => {
     const out = runCli(['doctor']);
     assert.ok(out.includes('node'), 'проверка node');
-    assert.ok(out.includes('mcp_tools_count'), 'проверка MCP');
-    assert.ok(out.includes('mcp_tools_list'), 'проверка списка MCP');
+    assert.ok(out.includes('mcp_tools_invariants'), 'проверка инвариантов MCP');
   });
 
   it('doctor --json выводит структурированный результат', () => {
@@ -133,16 +190,58 @@ describe('Диагностика — doctor', () => {
 
     const names = json.checks.map(c => c.name);
     assert.ok(names.includes('node'), 'проверка node');
-    assert.ok(names.includes('mcp_tools_count'), 'проверка количества MCP');
-    assert.ok(names.includes('mcp_tools_list'), 'проверка списка MCP');
+    assert.ok(names.includes('mcp_tools_invariants'), 'проверка инвариантов MCP');
   });
 
-  it('doctor --json: MCP-инструменты — 45 штук', () => {
+  it('doctor --json: инварианты реестра MCP проходят', () => {
     const out = runCli(['doctor', '--json']);
     const json = extractJson(out);
-    const mcpCheck = json.checks.find(c => c.name === 'mcp_tools_count');
+    const mcpCheck = json.checks.find(c => c.name === 'mcp_tools_invariants');
+    assert.ok(mcpCheck, 'проверка mcp_tools_invariants присутствует');
+    assert.equal(mcpCheck.ok, true, 'инварианты реестра должны проходить');
+    assert.ok(mcpCheck.value.count > 0, 'реестр непуст');
+    assert.deepEqual(mcpCheck.value.problems, []);
+  });
+
+  it('doctor --json: ожидаемый список MCP-инструментов присутствует в реестре', () => {
+    // VL-340: перечень имён живёт в тесте (фикстура), а не в doctor.ts —
+    // новый инструмент требует правки теста, но не кода проверки.
+    const out = runCli(['doctor', '--json']);
+    const json = extractJson(out);
+    const mcpCheck = json.checks.find(c => c.name === 'mcp_tools_invariants');
     assert.ok(mcpCheck);
-    assert.equal(mcpCheck.value, 45);
+    const actual = listTools().map(t => t.name);
+    const missing = EXPECTED_MCP_TOOLS.filter(n => !actual.includes(n));
+    assert.deepEqual(missing, [], `отсутствуют инструменты: ${missing.join(', ')}`);
+  });
+
+  it('инварианты ловят дубль имени в реестре', () => {
+    const tools = [
+      { name: 'backlog_list_tasks', inputSchema: { type: 'object' } },
+      { name: 'backlog_list_tasks', inputSchema: { type: 'object' } },
+    ];
+    const res = checkMcpToolsInvariants(tools);
+    assert.equal(res.ok, false, 'дубль имени — нарушение инварианта');
+    assert.ok(res.value.problems.some(p => p.includes('дубли имён')), 'проблема про дубли');
+  });
+
+  it('инварианты ловят пустой реестр, чужой префикс и отсутствие inputSchema', () => {
+    assert.equal(checkMcpToolsInvariants([]).ok, false, 'пустой реестр');
+    assert.equal(
+      checkMcpToolsInvariants([{ name: 'foreign_tool', inputSchema: { type: 'object' } }]).ok,
+      false,
+      'имя вне политики префиксов'
+    );
+    assert.equal(
+      checkMcpToolsInvariants([{ name: 'backlog_list_tasks' }]).ok,
+      false,
+      'нет inputSchema'
+    );
+    assert.equal(
+      checkMcpToolsInvariants([{ name: 'backlog_list_tasks', inputSchema: { type: 'array' } }]).ok,
+      false,
+      'inputSchema не object'
+    );
   });
 
   it('doctor: exit code 0 при успехе (с backlog)', () => {
@@ -160,5 +259,67 @@ describe('Диагностика — doctor', () => {
     rmSync(emptyDir, { recursive: true, force: true });
     const json = extractJson(out);
     assert.equal(json.ok, false, 'ok должен быть false без backlog');
+  });
+});
+
+describe('Диагностика — git-политика .vibelog/ (VL-340)', () => {
+  // lesson-104: фикстура — собственный mkdtemp-каталог с git init, а не живой
+  // репозиторий: в worktree задачи .gitignore другой, и тест был бы ложным.
+  const dirs = [];
+
+  function makeFixture({ git = true, gitignore = true } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-doctor-gitpolicy-'));
+    dirs.push(dir);
+    mkdirSync(join(dir, '.vibelog'), { recursive: true });
+    if (gitignore) {
+      writeFileSync(join(dir, '.vibelog', '.gitignore'), '*\n!*/\n!.gitignore\n!settings.json\n!billing/\n!billing/**\n');
+    }
+    if (git) {
+      execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
+    }
+    return dir;
+  }
+
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('нет .vibelog/.gitignore → проверка не ok', () => {
+    const dir = makeFixture({ git: true, gitignore: false });
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    const check = json.checks.find(c => c.name === 'vibelog_gitignore');
+    assert.ok(check, 'проверка vibelog_gitignore присутствует');
+    assert.equal(check.ok, false, 'отсутствие файла политики — не ok');
+    assert.ok(check.hint, 'есть подсказка');
+  });
+
+  it('есть .vibelog/.gitignore → проверка ok', () => {
+    const dir = makeFixture({ git: true, gitignore: true });
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    const check = json.checks.find(c => c.name === 'vibelog_gitignore');
+    assert.equal(check.ok, true);
+  });
+
+  it('вне git-репозитория проверки git-политики не падают', () => {
+    const dir = makeFixture({ git: false, gitignore: true });
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    for (const name of ['vibelog_settings_tracked', 'vibelog_billing_tracked', 'env_ignored', 'vibelog_root_ignored']) {
+      const check = json.checks.find(c => c.name === name);
+      assert.ok(check, `проверка ${name} присутствует`);
+      assert.equal(check.ok, true, `${name} не должна падать вне git`);
+      assert.equal(check.value, 'не git-репозиторий');
+    }
+  });
+
+  it('регресс: .vibelog/ в корневом .gitignore → vibelog_root_ignored не ok', () => {
+    const dir = makeFixture({ git: true, gitignore: true });
+    writeFileSync(join(dir, '.gitignore'), '.vibelog/\n');
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    const check = json.checks.find(c => c.name === 'vibelog_root_ignored');
+    assert.equal(check.ok, false, 'корневой .gitignore не должен игнорировать .vibelog/');
   });
 });
