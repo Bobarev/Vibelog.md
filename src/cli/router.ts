@@ -29,6 +29,8 @@ import { runMcp } from './commands/mcp.js';
 import { runBrowser } from './commands/browser.js';
 import { runVersion } from './commands/version.js';
 import { runDoctor } from './commands/doctor.js';
+// VL-341: сводка «где я» — версия, задачи, фазы, очередь, grant, git
+import { runStatus } from './commands/status.js';
 import { runMilestone } from './commands/milestone.js';
 import { runDoc } from './commands/doc.js';
 import { runConfig } from './commands/config.js';
@@ -117,6 +119,9 @@ export async function route(args: string[]): Promise<void> {
       return runSession(subcommand, positional, flags, cwd);
     case 'doctor':
       return runDoctor(positional, flags, cwd);
+    // VL-341: read-only сводка «где я» (--json / --short / --no-git)
+    case 'status':
+      return runStatus(positional, flags, cwd);
     case 'milestone':
       return runMilestone(subcommand, positional, flags, cwd);
     case 'doc':
@@ -181,6 +186,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('draft', colors.cyan)} create|promote|...       Черновики задач
   ${colorize('decision', colors.cyan)} create|list|...         Решения (ADR)
   ${colorize('doctor', colors.cyan)} [--json]                    Диагностика окружения
+  ${colorize('status', colors.cyan)} [--json] [--short] [--no-git]  Сводка «где я»: версия, задачи, фазы, очередь, grant, git
   ${colorize('--version', colors.cyan)}, ${colorize('-v', colors.cyan)}                 Версия и пути
   ${colorize('help', colors.cyan)}                                Эта справка
 
@@ -340,6 +346,20 @@ vibelog doctor [--json]
 Диагностика окружения:
   Проверяет Node.js, PATH, симлинки, MCP-инструменты, backlog/, конфиг.
   --json — структурированный результат`,
+
+    status: `
+vibelog status [--json] [--short] [--no-git]
+
+Сводка «где я» (VL-341): версия, проект и префикс задач, счётчики задач по
+статусам, идущие фазы (задача/фаза/pid/время старта), состояние автоочереди,
+активный grant супервизора, git-состояние (ветка, изменённые/нетрекнутые
+файлы, ahead/behind). Только чтение: ничего не запускает и не пишет.
+
+  --json    — те же данные структурированно (стабильные ключи)
+  --short   — одна строка на пункт, без заголовков
+  --no-git  — не трогать git (большой репозиторий)
+
+Код выхода: 0 — сводка собрана; 1 — backlog/ не найден (подсказка vibelog init).`,
 
     milestone: `
 vibelog milestone <subcommand> [опции]
