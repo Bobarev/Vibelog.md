@@ -18,6 +18,7 @@ import { findBacklogDir } from '../../core/paths.js';
 import { loadConfig } from '../../core/config.js';
 import { listTasks } from '../../core/store.js';
 import { markdownToTask } from '../../core/task.js';
+import { checkTaskIntegrity } from '../../core/integrity.js';
 import type { FlagValues } from '../args.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -83,6 +84,10 @@ export async function runDoctor(
 
   // 10. Round-trip с Backlog.md
   checks.push(checkRoundtrip());
+
+  // 11. Целостность ссылок задач (VL-342): не блокирующая проверка —
+  // битые ссылки в легаси-задачах не должны делать doctor красным.
+  checks.push(checkTaskIntegrityReport(cwd));
 
   // Предупреждение про кэш MCP
   warnings.push('Qwen Code: MCP-сервер мог быть закэширован. Если Qwen не видит новые инструменты — перезапусти Qwen.');
@@ -390,6 +395,38 @@ function checkRoundtrip(): CheckResult {
     return { name: 'roundtrip', ok: true, value: parsed };
   } catch {
     return { name: 'roundtrip', ok: true, value: null };
+  }
+}
+
+/**
+ * Проверка 11: целостность ссылок задач (VL-342).
+ *
+ * `ok = findings.length === 0`, но в `requiredNames` проверка НЕ входит:
+ * битые ссылки — не поломка окружения, иначе doctor красный на легаси-ссылках.
+ * В `--json` отдаём только первые 20 находок — на 300 задачах вывод не должен
+ * раздуваться; подробности — `vibelog task check`.
+ */
+function checkTaskIntegrityReport(cwd: string): CheckResult {
+  try {
+    const report = checkTaskIntegrity(cwd);
+    const ok = report.findings.length === 0;
+    return {
+      name: 'task_integrity',
+      ok,
+      value: {
+        total: report.total,
+        count: report.findings.length,
+        findings: report.findings.slice(0, 20),
+      },
+      hint: ok ? undefined : 'Запустите `vibelog task check` для подробностей',
+    };
+  } catch (err) {
+    return {
+      name: 'task_integrity',
+      ok: false,
+      value: null,
+      hint: (err as Error).message,
+    };
   }
 }
 
