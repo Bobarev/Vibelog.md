@@ -394,6 +394,16 @@ ui/
 
 **Атомарность:** при любой ошибке на шагах 7–10 временный каталог удаляется, целевые файлы не изменяются, lock не трогается.
 
+**Реализовано в VL-337** (шаги 1–11 без 5–6 — `registryDependencies` и проверка npm-зависимостей вынесены в отдельную задачу). Уточнения по факту реализации:
+
+- Ядро без CLI — `src/core/install.ts`: `parseInstallPath` (ровно три непустых сегмента, иначе код `1` с подсказкой формата), `resolveInstallContext` (корень проекта, секция `components`, lock, alias → код `2` со списком доступных; `--branch` приоритетнее `registries[alias].branch`), `fetchInstallItem`/`fetchInstallContents` (через `src/core/registry-fetch.ts`, ошибки дополняются контекстом элемента, код `3`), `buildInstallPlan` (чистая функция: `resolveAliasPath` по `aliasForType`, повторная проверка выхода за корень, `existing`/`existingHash`/`lockedHash`, действия `create`/`skip-identical`/`conflict`), `resolveConflicts`/`forceOverwrite`/`skipAllConflicts`, `applyInstallPlan`, `diffLines` (построчный diff без внешних зависимостей, лимит 40 строк).
+- `aliasForType`: `registry:ui` → `ui`, `registry:lib` → `utils`, `registry:hook` и `registry:component` → `components`.
+- `src/core/registry-fetch.ts` дополнен `fetchRegistryFile` (скачивание `files[].path`); цикл ретраев вынесен в общий `fetchTextWithRetries`, чтобы манифест и файлы шли по одной сетевой политике.
+- **Атомарность:** temp-каталог создаётся внутри проекта (`.vibelog/tmp/install-<pid>-<rand>/`, не `os.tmpdir()` — `rename` между файловыми системами не работает); сначала пишутся все файлы, затем существующие цели копируются в `temp/backup/`, затем `rename` на целевые места, затем `writeLock`. Сбой на любом шаге — откат из бэкапа, temp удаляется в `finally`, lock не трогается, код `3`.
+- **Идемпотентность:** при совпадении всех хешей и записи lock файлы не перезаписываются, `installedAt` не обновляется, lock остаётся побайтово тем же.
+- `--dry-run` печатает план и выходит с `0`, не создавая даже temp-каталог.
+- CLI — `src/cli/commands/install.ts` (флаги `--yes`/`--force`/`--dry-run`/`--branch`, неизвестный флаг → код `1`, интерактивные конфликты через `createPromptSession`, `PromptCancelledError` → код `5`), регистрация — `src/cli/router.ts`.
+
 ---
 
 ## 5. Сеть, ошибки и коды выхода
