@@ -1,11 +1,11 @@
 ---
 id: VL-341
 title: 'vibelog status: одна команда-сводка «где я» (фазы, автоочередь, supervisor, git, версия)'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-05 13:21'
-updated_date: '2026-11-05 16:10'
+updated_date: '2026-11-05 16:34'
 due_date: ''
 labels:
   - cli
@@ -26,15 +26,16 @@ modified_files:
   - src/cli/router.ts
   - src/core/status.test.mjs
   - src/cli/status-cli.test.mjs
-lessons: []
+lessons:
+  - lesson-226
 token_usage:
-  input: 7209998
-  output: 43471
-  cache: 6846464
-  total: 7253469
-  requests: 100
-  duration_ms: 1471045
-  reasoning: 25846
+  input: 8174580
+  output: 48361
+  cache: 7719936
+  total: 8222941
+  requests: 120
+  duration_ms: 1702956
+  reasoning: 27356
   by_phase:
     code:
       input: 6395941
@@ -42,10 +43,10 @@ token_usage:
       cache: 6086144
       requests: 78
     close:
-      input: 814057
-      output: 3512
-      cache: 760320
-      requests: 22
+      input: 1778639
+      output: 8402
+      cache: 1633792
+      requests: 42
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -71,14 +72,14 @@ token_usage:
 - [x] #9 Новый модуль `src/core/status.ts` собирает данные (тестируемо на mkdtemp-фикстуре), `src/cli/commands/status.ts` — только форматирование
 - [x] #10 Тесты: `src/core/status.test.mjs` (пустой проект, проект с задачами и активным раном, автоочередь в трёх состояниях, вне git) и `src/cli/status-cli.test.mjs` (человекочитаемый вывод и `--json`)
 - [x] #11 Нет пересечений с кодом doc-25: `install`/`create`/реестр/`installed.lock.json` не трогаются; в `router.ts` — одна строка `case 'status'` и строка общей справки
-- [ ] #12 CHANGELOG.md обновлён, doc-7 (CLI-справочник) дополнен разделом `status`
+- [x] #12 CHANGELOG.md обновлён, doc-7 (CLI-справочник) дополнен разделом `status`
 - [x] #13 `pnpm build && pnpm test` зелёные
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -171,5 +172,22 @@ author: @agent
 created: 2026-11-05 15:21
 ---
 Фаза 3 (Code) выполнена. Изменено: `src/core/status.ts` (новый — сбор данных `collectStatus`: версия из package.json, проект/префикс и счётчики задач по статусам через `loadConfig`+`listTasks`, идущие фазы через `getRun` + транзиент-кэш с проверкой живости pid, автоочередь через `loadAutoQueue`, активный grant через `findActiveGrant`, git через `spawnSync('git', …)` без shell; каждая секция в своём try/catch, `.vibelog/` берётся от родителя `findBacklogDir` — риск worktree из плана учтён), `src/cli/commands/status.ts` (новый — только печать: блоки с заголовками, `--json`, `--short`, `--no-git`; код 1 без `backlog/` с подсказкой `vibelog init`), `src/cli/router.ts` (импорт, `case 'status'`, строка в `showHelp()`, раздел в `showCommandHelp`), тесты `src/core/status.test.mjs` (8 кейсов: пустой каталог, задачи по статусам, автоочередь pending/running/done/failed, отсутствие файла очереди, битый auto-queue.json, git-репозиторий с untracked, вне git, `--no-git`) и `src/cli/status-cli.test.mjs` (5 кейсов: человекочитаемый вывод с секциями Фазы/Git, `--json` со стабильными ключами, `--short`, `--no-git`, код 1 без backlog). Коммит 5e3c766 (ветка vb/vl-341). Проверки: `pnpm build` — успешно; полный `pnpm test` — 180 файлов, 3406 passed, 4 skipped, без исключений и skip-флагов; ручной прогон `node bin/vibelog.mjs status` и `status --json` в этом репозитории — секции отражают реальное состояние (версия 1.12.0, 329 задач, ветка vb/vl-341, upstream не настроен), запуск в каталоге без `backlog/` даёт код 1 и подсказку. Что осталось: AC12 (CHANGELOG.md и раздел `status` в doc-7) — по правилам фазы Code документация пишется в Close; DoD2 (документация) по той же причине не отмечен.
+---
+author: @agent
+created: 2026-11-05 16:10
+---
+Фаза close не удалась (код выхода 1): 2, блокировок=0, payload последнего запроса=163351 байт (макс 163351), usage={"input_tokens":814057,"output_tokens":3512,"cache_read_input_tokens":760320,"total_tokens":817569,"reasoning_tokens":1346} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-05 16:34
+---
+Фаза Close выполнена. Статус: Done.
+**Коммиты:**
+- feat `5e3c766` — команда vibelog status (код и тесты; уже был в main после merge b4acd68, остатков кода не требовалось)
+- docs `cdf1536` — CHANGELOG.md (запись VL-341 в Unreleased/Добавлено) + doc-7 (новый раздел `status` с флагами и источниками данных)
+- docs(task) `f7f9d99` — lesson-226 (сводка по секциям в отдельном try/catch)
+**Проверки после merge:** `pnpm build` — успешно; полный прогон `pnpm test:fast` (dist собран шагом выше) — 181 файл, 3421 тест прошёл, 4 skipped, 0 падений. Merge-интерференции нет.
+**Документация:** AC 12 закрыт — CHANGELOG.md обновлён, doc-7 дополнен разделом `status` (флаги `--json`/`--short`/`--no-git`, источники данных, поведение при отсутствии backlog/, автоочереди, upstream, вне git; код возврата).
+**Не закоммичено:** нет. Файл задачи VL-341 коммитит framework; чужие незакоммиченные изменения (.vibelog/settings.json, doc-25, doc-26, задачи VL-342…VL-345, web/public/vibelog.svg) не относятся к VL-341 и не тронуты.
 ---
 <!-- COMMENTS:END -->
