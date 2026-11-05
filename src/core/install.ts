@@ -143,6 +143,12 @@ export interface InstallPlanFile {
   contentHash: string;
   /** Содержимое файла из реестра. */
   content: string;
+  /**
+   * Файл уже принадлежит другому элементу с тем же хешем (VL-338, doc-25
+   * §3.2): содержимое переиспользуется, но в lock нового элемента путь НЕ
+   * записывается — владелец остаётся прежним.
+   */
+  reusedFrom?: string;
 }
 
 /** План установки — единственный источник истины для dry-run и записи. */
@@ -457,9 +463,25 @@ export function buildInstallPlan(
  * Пересчитывает производные поля плана (willWrite/willSkip, запись lock).
  *
  * Вызывается после каждого изменения `action` — так `--dry-run` и реальная
- * установка видят ровно одно состояние.
+ * установка видят ровно одно состояние. Экспортируется для VL-338: правило
+ * владения файлами (`checkFileOwnership`) меняет `action` и `lockEntry.files`
+ * уже после сборки плана, и производные поля обязаны быть пересчитаны.
  */
-function recomputePlan(plan: InstallPlan, lock: LockFile, now: string): void {
+export function recomputeInstallPlan(
+  plan: InstallPlan,
+  lock: LockFile,
+  now: string = new Date().toISOString(),
+  dependencies?: string[],
+): void {
+  recomputePlan(plan, lock, now, dependencies);
+}
+
+function recomputePlan(
+  plan: InstallPlan,
+  lock: LockFile,
+  now: string,
+  dependencies?: string[],
+): void {
   plan.willWrite = plan.files.filter(
     (file) => file.action === 'create' || file.action === 'overwrite',
   );
@@ -481,15 +503,19 @@ function recomputePlan(plan: InstallPlan, lock: LockFile, now: string): void {
       if (previous) files[file.relPath] = previous;
       continue;
     }
+    // Переиспользованный файл принадлежит другому элементу (VL-338, §3.2):
+    // в lock нового элемента путь не дублируется.
+    if (file.reusedFrom) continue;
     files[file.relPath] = { hash: file.contentHash, sourceVersion: plan.item.version };
   }
 
   plan.lockEntry = {
     version: plan.item.version,
     installedAt,
-    // Зависимости npm/реестра разрешает задача 6 (VL-338) — здесь только
-    // переносим то, что уже было записано, чтобы не потерять данные.
-    dependencies: existingEntry?.dependencies ?? [],
+    // Зависимости npm/реестра разрешает VL-338: сюда приходит список
+    // подтверждённо установленных пакетов; без него переносим прежнюю запись,
+    // чтобы не потерять данные.
+    dependencies: dependencies ?? existingEntry?.dependencies ?? [],
     files,
   };
 
@@ -656,6 +682,102 @@ export function applyInstallPlan(
     lockWritten: !plan.lockUnchanged,
     lockEntry: plan.lockEntry,
   };
+}
+
+/**
+ * Применяет цепочку планов (зависимости + сам элемент) одной транзакцией.
+ *
+ * VL-338: `registryDependencies` устанавливаются до элемента, но проект не
+ * должен остаться с «половиной» набора. Поэтому temp-каталог один на всю
+ * цепочку: сначала пишутся файлы ВСЕХ планов, затем бэкапятся существующие
+ * цели, затем перемещения, и только в конце — один `writeLock` со всеми
+ * записями. Сбой на любом шаге откатывает все перемещённые файлы.
+ *
+ * Порядок планов = порядок применения: зависимости идут первыми, поэтому
+ * `base` окажется на месте до компонента, который на него ссылается.
+ */
+export function applyInstallChain(
+  cwd: string,
+  config: ComponentsConfig,
+  lock: LockFile,
+  plans: InstallPlan[],
+): InstallApplyResult[] {
+  const root = resolve(cwd);
+  const results: InstallApplyResult[] = plans.map((plan) => ({
+    written: [],
+    skipped: plan.willSkip.map((file) => file.relPath),
+    lockWritten: false,
+    lockEntry: plan.lockEntry,
+  }));
+
+  const allFiles: InstallPlanFile[] = [];
+  for (const plan of plans) allFiles.push(...plan.willWrite);
+
+  const nextLock = (): LockFile => {
+    const components = { ...lock.components };
+    for (const plan of plans) components[plan.item.name] = plan.lockEntry;
+    return { schemaVersion: config.schemaVersion, components };
+  };
+  const lockChanged = plans.some((plan) => !plan.lockUnchanged);
+
+  if (allFiles.length === 0) {
+    if (lockChanged) {
+      writeLock(root, config, nextLock());
+      for (const result of results) result.lockWritten = true;
+    }
+    return results;
+  }
+
+  const tempRoot = join(
+    ensureTmpDir(root),
+    `install-${process.pid}-${Math.random().toString(36).slice(2, 10)}`,
+  );
+  const stageDir = join(tempRoot, 'stage');
+  const backupDir = join(tempRoot, 'backup');
+  const moved: InstallPlanFile[] = [];
+
+  try {
+    for (const file of allFiles) {
+      const staged = join(stageDir, file.relPath);
+      mkdirSync(dirname(staged), { recursive: true });
+      writeFileSync(staged, file.content, 'utf-8');
+    }
+
+    for (const file of allFiles) {
+      if (!file.existing) continue;
+      const backup = join(backupDir, file.relPath);
+      mkdirSync(dirname(backup), { recursive: true });
+      copyFileSync(file.absPath, backup);
+    }
+
+    for (const file of allFiles) {
+      mkdirSync(dirname(file.absPath), { recursive: true });
+      renameSync(join(stageDir, file.relPath), file.absPath);
+      moved.push(file);
+    }
+
+    if (lockChanged) writeLock(root, config, nextLock());
+  } catch (err) {
+    const problems = rollback(moved, backupDir);
+    const suffix =
+      problems.length > 0
+        ? `; не удалось откатить: ${problems.join('; ')}`
+        : '; изменения отменены';
+    const refs = plans.map((plan) => plan.ref).join(', ');
+    throw new InstallError(
+      `не удалось установить «${refs}»: ${(err as Error).message}${suffix}`,
+      3,
+    );
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+
+  // Итог по каждому плану: что записано именно им (порядок сохранён).
+  for (let i = 0; i < plans.length; i += 1) {
+    results[i].written = plans[i].willWrite.map((file) => file.relPath);
+    results[i].lockWritten = lockChanged;
+  }
+  return results;
 }
 
 /**
