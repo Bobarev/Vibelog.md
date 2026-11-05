@@ -25,9 +25,10 @@ vibelog init [name] [--prefix LB] [--mode fresh|upgrade] [--yes] [--web]
   [--bot] [--bot-token T] [--bot-chats IDS] [--bot-proxy URL]
   [--provider ID] [--base-url URL] [--api-key-env VAR] [--api-key K] [--model ID] [--vendor V] [--api-mode chat|responses]
   [--no-mcp] [--skip-llm-check] [--skip-bot-check] [--force] [--no-wizard]
+  [--components | --no-components]
 ```
 
-Инициализирует backlog-директорию и конфиг. В TTY запускает интерактивный wizard настройки проекта (VL-210): имя/prefix → агенты → где хранить секреты → Telegram-бот → LLM (если выбран `vb`) → MCP → проверки. Без TTY (или с `--yes`/`--no-wizard`) работает как прежний init: создаёт `backlog/` и настраивает MCP.
+Инициализирует backlog-директорию и конфиг. В TTY запускает интерактивный wizard настройки проекта (VL-210): имя/prefix → агенты → где хранить секреты → Telegram-бот → LLM (если выбран `vb`) → MCP → доставка UI-компонентов → проверки. Без TTY (или с `--yes`/`--no-wizard`) работает как прежний init: создаёт `backlog/` и настраивает MCP.
 
 С VL-324 этап LLM — выбор шлюза из трёх хардкод-вариантов (RouterAI `https://routerai.ru/api/v1` / Selectel ИИ-роутер `https://api.selectel.ru/aig/v1` / OpenAI-совместимый с вводом `base_url` и выводом gateway из домена), для RouterAI — развилка «каталог моделей и вендоров с ценами / вручную / без вендора»; `api_mode` по умолчанию `responses`, имя переменной с ключом выводится из шлюза (`ROUTERAI_API_KEY`, `SELECTEL_ROUTER_API_KEY`, иначе `<GATEWAY_UPPER>_API_KEY`), при файловой локации секретов ключ вводится с маскировкой и пишется в `.env` (с подтверждением перезаписи). Подробнее об этапах — в [руководстве пользователя](user-guide.md#мастер-настройки-vl-210).
 
@@ -57,6 +58,9 @@ vibelog init [name] [--prefix LB] [--mode fresh|upgrade] [--yes] [--web]
 | `--skip-llm-check`, `--skip-bot-check` | Не проверять LLM (ping) / бота (getMe) |
 | `--force` | Перезаписать существующие настройки |
 | `--no-wizard` | Не запускать интерактив даже в TTY |
+| `--components` \| `--no-components` | Секция доставки UI-компонентов (doc-25): `--components` создаёт (дополняет) секцию `components` в `.vibelog/settings.json` (`schemaVersion: 1`, реестр `vibelog.md`, алиасы `components`/`ui`/`utils`/`css`, `lockFile`) и `.vibelog/installed.lock.json`; `--no-components` не создаёт ни того, ни другого. Флаги взаимоисключающие — одновременная передача → код 1 без записи файлов. Без флага: в TTY спрашивает (дефолт «да»), в неинтерактиве (`--yes`/`--no-wizard`/`--web`) — дефолт «да». `--force` перезаписывает секцию дефолтами, иначе — слияние «дополнить недостающее» (существующие `registries`/`aliases` побеждают); существующий lock-файл не перезаписывается, чужие секции `settings.json` не трогаются. Веб-мастер шаг не поддерживает — секция создаётся по дефолту |
+
+Секция `components` (VL-336, спецификация — doc-25 §3.1) означает готовность проекта принимать UI-компоненты через будущий `vb install`; сам `init` в сеть не ходит и файлов, кроме `installed.lock.json`, не создаёт. Стек проекта не проверяется: отсутствие `package.json`, Tailwind или Svelte не ошибка (decision-9), алиасы пишутся относительно корня проекта.
 
 Проверки после записи: ping LLM (модель, задержка, usage), `which qwen` + версия (требуется 0.24+), `which opencode`, Telegram `getMe`. Ошибки печатаются понятным текстом без стектрейса.
 
