@@ -9,12 +9,13 @@
  * - complete — завершить задачу
  * - reject — отклонить задачу (Rejected + архив; LLM-откат — если была в Code)
  * - archive — архивировать задачу
+ * - check — проверка целостности ссылок задач (VL-342, read-only)
  */
 
 import { getFlag, getFlagArray } from '../args.js';
 import type { FlagValues } from '../args.js';
 import {
-  printSuccess, printError, printInfo,
+  printSuccess, printError, printInfo, printWarning,
   printTaskTable, printTaskDetail,
 } from '../ui.js';
 import {
@@ -28,6 +29,7 @@ import { isReady } from '../../core/deps.js';
 import { findBacklogDir } from '../../core/paths.js';
 import { writeDraft } from '../../core/draft.js';
 import { rejectTask } from '../../web/orchestrator.js';
+import { checkTaskIntegrity } from '../../core/integrity.js';
 import type { Task, ChecklistItem, TaskComment } from '../../core/task.js';
 
 /**
@@ -59,10 +61,55 @@ export async function runTask(
       return taskReject(positional, cwd);
     case 'archive':
       return taskArchive(positional, cwd);
+    case 'check':
+      return taskCheck(flags, cwd);
     default:
       printError(`Неизвестная подкоманда: ${subcommand}`);
-      printInfo('Доступные подкоманды: create, list, view, edit, complete, reject, archive');
+      printInfo('Доступные подкоманды: create, list, view, edit, complete, reject, archive, check');
   }
+}
+
+/**
+ * Проверяет целостность ссылок задач (VL-342).
+ *
+ * vibelog task check [--json]
+ *
+ * Read-only: проверяет `references` → ref-N, `lessons` → lesson-N,
+ * `dependencies`/`parent_task_id` → существующую задачу (tasks/ ∪ completed/).
+ * Код возврата 1 при находках — годится для CI.
+ */
+function taskCheck(flags: FlagValues, cwd: string): void {
+  const report = checkTaskIntegrity(cwd);
+
+  if (flags.json) {
+    console.log(JSON.stringify({ schemaVersion: 1, kind: 'task-integrity', data: report }, null, 2));
+    if (report.findings.length > 0) process.exitCode = 1;
+    return;
+  }
+
+  if (report.findings.length === 0) {
+    printSuccess(`Битых ссылок нет (проверено задач: ${report.total}).`);
+    return;
+  }
+
+  // Таблица ТИП | ЗАДАЧА | ССЫЛКА | СООБЩЕНИЕ — ширины по фактическим данным
+  const rows = report.findings.map(f => [f.type, f.taskId, f.ref, f.message]);
+  const headers = ['ТИП', 'ЗАДАЧА', 'ССЫЛКА', 'СООБЩЕНИЕ'];
+  const widths = headers.map((h, i) =>
+    Math.max(h.length, ...rows.map(r => r[i].length)) + 2
+  );
+  console.log('');
+  console.log(headers.map((h, i) => h.padEnd(widths[i])).join(''));
+  console.log(widths.map(w => '─'.repeat(w)).join(''));
+  for (const row of rows) {
+    console.log(row.map((cell, i) => cell.padEnd(widths[i])).join(''));
+  }
+  console.log('');
+  console.log(`Находок: ${report.findings.length} (проверено задач: ${report.total})`);
+  // Непрочитанные секции — честно сообщаем, что часть ссылок не проверялась
+  if (report.sections.lessons === 'error') printWarning('Секция lessons не прочитана — ссылки на уроки не проверялись.');
+  if (report.sections.references === 'error') printWarning('Секция references не прочитана — ссылки на референсы не проверялись.');
+  process.exitCode = 1;
 }
 
 /**
