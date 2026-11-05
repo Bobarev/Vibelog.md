@@ -30,6 +30,16 @@ import { parseChatIds } from './env-file.js';
 import type { SecretsLocation } from './setup-secrets.js';
 import { hasVibelogMcp, setupMcp } from './setup-mcp.js';
 import type { McpTarget } from './setup-mcp.js';
+import {
+  defaultComponentsConfig,
+  mergeComponentsConfig,
+  lockPath,
+  readComponentsConfig,
+  readLock,
+  writeComponentsConfig,
+  writeLock,
+} from './components-config.js';
+import type { ComponentsConfig } from './components-config.js';
 
 /** Режим работы wizard-а. */
 export type SetupMode = 'fresh' | 'upgrade';
@@ -67,6 +77,12 @@ export interface SetupAnswers {
   };
   /** Настраивать ли vibelog MCP (только если выбран qwen/opencode). */
   mcp: boolean;
+  /**
+   * VL-336: шаг «доставка UI-компонентов» (`vb init --components`).
+   * Необязательное — старые конструкторы ответов (тесты, веб-мастер) его не
+   * заполняют, и тогда секция `components` не создаётся вовсе.
+   */
+  components?: { enabled: boolean };
   /** Перезаписать существующие настройки. */
   force: boolean;
 }
@@ -524,7 +540,59 @@ export function applySetup(cwd: string, answers: SetupAnswers): SetupResult {
     result.skipped.push('MCP (отключён)');
   }
 
+  // --- 6. секция components + lock-файл (VL-336, doc-25 §3.1) ---
+  // Шаг необязательный: `components` в ответах появляется только когда его
+  // заполнил wizard/флаги. Иначе (веб-мастер, старые ответы) поведение
+  // прежнее — settings.json про компоненты не трогаем.
+  if (answers.components?.enabled) {
+    applyComponentsStep(cwd, answers.force === true, result);
+  }
+
   return result;
+}
+
+/**
+ * Шаг «доставка UI-компонентов»: секция `components` в settings.json и
+ * `.vibelog/installed.lock.json` (VL-336).
+ *
+ * Схему знает только `components-config.ts` — wizard отсюда лишь вызывает
+ * чтение/слияние/запись, чтобы не держать вторую копию валидации.
+ * Слияние («дополнить недостающее») сохраняет ручные правки алиасов при
+ * повторном прогоне (AC5); `--force` заменяет секцию дефолтами целиком (AC6),
+ * но чужие секции settings.json не трогает — это гарантирует
+ * `writeComponentsConfig` (read-modify-write).
+ */
+function applyComponentsStep(cwd: string, force: boolean, result: SetupResult): void {
+  const defaults = defaultComponentsConfig(cwd);
+
+  let existing: ComponentsConfig | null = null;
+  try {
+    existing = readComponentsConfig(cwd);
+  } catch (err) {
+    // Секция есть, но нарушает схему (schemaVersion/пути). Молча переписать
+    // её без --force нельзя: там могут быть ручные правки, которые мы не
+    // понимаем. Сообщаем и оставляем как есть.
+    if (!force) {
+      result.warnings.push(`секция components не изменена: ${(err as Error).message}`);
+      return;
+    }
+  }
+
+  const config =
+    force || existing === null ? defaults : mergeComponentsConfig(existing, defaults);
+
+  writeComponentsConfig(cwd, config);
+  result.written.push('.vibelog/settings.json (секция components)');
+
+  // Lock-файл создаём только при отсутствии: существующий — источник истины
+  // о том, что уже установлено, перезаписывать его init не имеет права
+  const lockAbs = lockPath(cwd, config);
+  if (existsSync(lockAbs)) {
+    result.skipped.push(`${config.lockFile} (уже существует)`);
+  } else {
+    writeLock(cwd, config, readLock(cwd, config));
+    result.written.push(config.lockFile);
+  }
 }
 
 /** Человекочитаемое имя локации секретов (VL-329: только два варианта). */
@@ -552,12 +620,33 @@ export function formatSetupLog(answers: SetupAnswers, state: SetupState, cwd: st
     : '—';
   const bot = answers.bot?.token ? 'да' : 'нет';
   const mcp = answers.mcp && answers.agents.some((a) => MCP_AGENTS.includes(a)) ? 'да' : 'нет';
+  // VL-336: состояние шага компонентов в итоговом логе (AC11)
+  const components = answers.components?.enabled ? 'да' : 'нет';
 
   const lines = [
     `Режим: ${answers.mode}${answers.mode === 'upgrade' ? ' (backlog/ найден)' : ''}. ` +
       `Агенты: ${agents}. Шлюз: ${gateway}, модель: ${modelLabel}. ` +
       `Секреты: ${secretsLabel(answers.secretsLocation)}. Бот: ${bot}. MCP: ${mcp}`,
   ];
+
+  if (answers.components?.enabled) {
+    // Алиасы печатаем из применённой секции: после слияния значения могут
+    // отличаться от дефолтов (ручные правки пользователя сохранены — AC5)
+    try {
+      const applied = readComponentsConfig(cwd);
+      if (applied !== null) {
+        lines.push(
+          `Компоненты: ${Object.entries(applied.aliases)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(', ')}; lock: ${applied.lockFile}`,
+        );
+      }
+    } catch {
+      // Битый settings.json уже показан предупреждением шага — лог не роняем
+    }
+  } else {
+    lines.push('Компоненты: нет');
+  }
 
   if (answers.mode === 'upgrade') {
     const gatewaysCount = Object.keys(state.gateways).length;

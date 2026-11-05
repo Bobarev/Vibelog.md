@@ -239,6 +239,14 @@ export function parseSetupBody(
       gateway,
       model,
       mcp: body.mcp !== false,
+      // VL-336: шага «компоненты» в веб-мастере нет — секция создаётся по
+      // дефолту (как `--yes`), если форма не прислала явный отказ.
+      components: {
+        enabled:
+          typeof body.components === 'object' && body.components !== null
+            ? (body.components as Record<string, unknown>).enabled !== false
+            : true,
+      },
       force: body.force === true,
     },
   };

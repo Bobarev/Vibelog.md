@@ -607,3 +607,68 @@ export function aliasDir(cwd: string, config: ComponentsConfig, alias: AliasName
   validateAliasPath(cwd, alias, base);
   return join(resolve(cwd), base);
 }
+
+/**
+ * Дефолтная секция `components` (doc-25 §3.1) для `vibelog init --components`.
+ *
+ * Значения алиасов одинаковы независимо от наличия каталогов: `src/lib/...`
+ * — это просто пути, которые создаст первый `vb install`, а детект «а есть ли
+ * `src/lib`» ничего бы не изменил (doc-25 фиксирует именно этот набор).
+ * `css` намеренно не детектится (`src/app.css` vs `src/styles/app.css`) — вне
+ * объёма задачи VL-336. Параметр `cwd` оставлен в сигнатуре: вызывающему
+ * (wizard/`applySetup`) нужен контекст проекта, а будущий детект стека
+ * добавится здесь, не меняя вызовы.
+ */
+export function defaultComponentsConfig(cwd: string): ComponentsConfig {
+  void cwd;
+  return {
+    schemaVersion: COMPONENTS_SCHEMA_VERSION,
+    registries: { 'vibelog.md': { owner: 'Vibelog-md', branch: 'master' } },
+    aliases: {
+      components: 'src/lib/components',
+      ui: 'src/lib/components/ui',
+      utils: 'src/lib/utils.ts',
+      css: 'src/app.css',
+    },
+    lockFile: '.vibelog/installed.lock.json',
+  };
+}
+
+/**
+ * Дополняет существующую секцию `components` дефолтами («дополнить
+ * недостающее»): заданные пользователем `registries`/`aliases` побеждают,
+ * пустые места заполняются значениями из `defaults`.
+ *
+ * Зачем слияние, а не перезапись: повторный `vb init --components` не должен
+ * откатывать правки путей, которые пользователь сделал руками (AC5). Полная
+ * замена — только при явном `--force` (там `applySetup` передаёт дефолты
+ * напрямую, минуя эту функцию).
+ */
+export function mergeComponentsConfig(
+  existing: ComponentsConfig | null,
+  defaults: ComponentsConfig,
+): ComponentsConfig {
+  if (existing === null) return defaults;
+  const merged: Record<string, string> = { ...existing.aliases };
+  for (const alias of ALIAS_KEYS) {
+    if (typeof merged[alias] !== 'string' || merged[alias].trim() === '') {
+      merged[alias] = defaults.aliases[alias];
+    }
+  }
+  return {
+    schemaVersion: COMPONENTS_SCHEMA_VERSION,
+    // Порядок ключей фиксирован в normalizeComponents — здесь важен только
+    // состав: существующие реестры остаются, недостающие добавляются
+    registries: { ...defaults.registries, ...existing.registries },
+    aliases: {
+      components: merged.components,
+      ui: merged.ui,
+      utils: merged.utils,
+      css: merged.css,
+    },
+    lockFile:
+      typeof existing.lockFile === 'string' && existing.lockFile.trim() !== ''
+        ? existing.lockFile
+        : defaults.lockFile,
+  };
+}

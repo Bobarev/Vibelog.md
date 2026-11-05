@@ -246,6 +246,11 @@ export function answersFromFlags(flags: FlagValues, state: SetupState, cwd: stri
     gateway,
     model,
     mcp: flags['no-mcp'] !== true,
+    // VL-336: --components / --no-components взаимоисключающие (проверяются
+    // в init.ts до вызова). Без флагов дефолт — «да»: неинтерактивный прогон
+    // не может спросить, а секция нужна `vb install`; отвергается только
+    // явным --no-components (AC3).
+    components: { enabled: flags['no-components'] === true ? false : true },
     force: flags.force === true,
   };
 }
@@ -657,6 +662,22 @@ export async function runWizard(
       );
     }
 
+    // --- 7. Доставка UI-компонентов (VL-336, doc-25 §2.2) ---
+    // Вопрос стоит в конце цепочки: существующие шаги не сдвигаются, поэтому
+    // прежние тесты и привычный порядок не ломаются. Явный флаг (--components
+    // / --no-components) вопрос отменяет — спрашивать то, что уже отвечено,
+    // незачем. В upgrade-режиме дефолт тоже «да»: иначе повторный
+    // `vibelog init` не добавлял бы секцию в проект, где её ещё нет.
+    let componentsEnabled: boolean;
+    if (flags.components === true) componentsEnabled = true;
+    else if (flags['no-components'] === true) componentsEnabled = false;
+    else {
+      componentsEnabled = await session.askConfirm(
+        'Настроить доставку UI-компонентов (vb install)?',
+        true,
+      );
+    }
+
     return {
       mode: state.mode,
       projectName,
@@ -669,6 +690,7 @@ export async function runWizard(
       gateway,
       model,
       mcp,
+      components: { enabled: componentsEnabled },
       force: flags.force === true,
     };
   } finally {
