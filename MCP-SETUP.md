@@ -33,8 +33,32 @@ Vibelog.md реализует MCP-сервер поверх stdio (JSON-RPC 2.0)
 | `reference_update` | Обновить теги/описание/набор ссылок reference (полная замена) |
 | `reference_link` | Двусторонняя связь reference ↔ задача (linked_tasks ↔ task.references) |
 | `reference_sync` | Доклонировать отсутствующие репозитории (type=repo) |
+| `document_list` | Список документов (docs/) с текстовым фильтром |
+| `document_view` | Показать документ по id (фронтматтер + содержимое) |
+| `document_create` | Создать документ (readme / guide / specification / other) |
+| `document_update` | Обновить документ (только переданные поля) |
+| `document_search` | Поиск документов по запросу |
+| `lesson_list` | Список lessons с фильтрами status/tags |
+| `lesson_view` | Показать lesson: метаданные, linked_tasks, тело |
+| `lesson_create` | Создать lesson (урок из опыта задач) |
+| `lesson_update` | Обновить lesson: поля и/или тело |
+| `lesson_search_lessons` | Поиск lessons по запросу |
+| `lesson_link` | Двусторонняя связь lesson ↔ задача |
+| `lesson_supersede` | Пометить lesson заменённым (old → superseded) |
+| `lesson_audit` | Механический аудит актуальности lessons (read-only по умолчанию) |
+| `lesson_classify` | Классификация lessons и черновики задач техдолга (opt-in) |
+| `backlog_finish_phase` | Завершение фазы: статус + отчёт + modifiedFiles + отметки AC/DoD |
+| `backlog_trigger_phase` | Запустить фазу задачи через оркестратор фаз |
+| `backlog_phase_status` | Состояние запуска фазы (running, exitCode, logTail, result) |
+| `backlog_auto_queue` | Управление автоочередью фаз (add / start / stop / status) |
+| `backlog_supervisor` | Прогон супервизора: plan / start / stop / status |
+| `project_map` | Карта проекта: путь + назначение + экспорты модулей src/ |
+| `git_commit` | Коммит явными путями с трейлером Co-authored-by |
 
-Всего 29 инструментов. Полный список с параметрами — в [MCP-справочнике](backlog/docs/doc-8-MCP-справочник-Vibelogmd.md).
+Число инструментов в тексте не фиксируется: актуальный список отдаёт
+`vibelog doctor` (проверка `mcp_tools_invariants` — непустота реестра, отсутствие
+дублей имён, политика префиксов, наличие `inputSchema` типа object).
+Полный список с параметрами — в [MCP-справочнике](backlog/docs/doc-8-MCP-справочник-Vibelogmd.md).
 Поле `type` (bug, feature, ...) поддерживают create / list / update.
 
 ## Настройка в Qwen Code
