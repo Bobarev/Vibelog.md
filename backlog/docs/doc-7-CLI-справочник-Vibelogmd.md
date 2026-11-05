@@ -225,6 +225,26 @@ task archive <id>
 | `--ordinal` | Кастомный порядок |
 | `--parent ID` | Смена родителя (пустая строка — сброс; валидация существования) |
 
+### check
+
+```
+task check [--json]
+```
+
+Проверка целостности ссылок задач (VL-342): read-only, без сети и LLM, один проход по `backlog/tasks/` + `backlog/completed/`. Проверяются четыре вида ссылок в frontmatter — `references` → существующий `ref-N`, `lessons` → существующий `lesson-N`, `dependencies` → существующая задача, `parent_task_id` → существующая задача — плюс автоссылка задачи на саму себя.
+
+| Тип находки | Что значит |
+|---|---|
+| `dangling_reference` | `task.references` содержит id, которого нет среди references |
+| `dangling_lesson` | `task.lessons` содержит id, которого нет среди lessons |
+| `dangling_dependency` | `dependencies` ссылается на несуществующую задачу |
+| `dangling_parent` | `parent_task_id` ссылается на несуществующую задачу |
+| `self_link` | `dependencies`/`parent_task_id` указывает на саму задачу |
+
+Правила: `parent_task_id: ''` и пустые массивы — не находка (VL-69: пустая строка = сброс родителя); задача из `completed/` считается существующей (закрытая зависимость — норма, а не битая ссылка); id нормализуется `trim()`, сравнение регистронезависимое по префиксу+числу (работает при любом `task_prefix` из `backlog/config.yml`); сбой чтения `lessons/`/`references/` не рушит проверку — секция помечается, ссылки этого типа пропускаются.
+
+Вывод — таблица `ТИП | ЗАДАЧА | ССЫЛКА | СООБЩЕНИЕ` и итог `Находок: N (проверено задач: M)`; без находок — «Битых ссылок нет». `--json` — `{schemaVersion, kind: 'task-integrity', data: {total, findings, summary, sections}}`. Код возврата: `0` — чисто, `1` — есть находки. Автоматического исправления ссылок нет: команда только читает и отчитывается.
+
 ---
 
 ## board
@@ -647,6 +667,8 @@ vibelog doctor [--json]
 
 **Git-политика `.vibelog/` (VL-340).** Пять проверок через `git check-ignore` (без парсинга `.gitignore` регулярками): `vibelog_gitignore` — существует `.vibelog/.gitignore`; `vibelog_settings_tracked` — `settings.json` не игнорируется; `vibelog_billing_tracked` — `billing/` не игнорируется; `env_ignored` — `.env` в корне игнорируется; `vibelog_root_ignored` — `.vibelog/` не игнорируется корневым `.gitignore` (регресс VL-329). Вне git-репозитория (код `128`) проверки не падают, а сообщают «не git-репозиторий».
 
+**Целостность ссылок задач (`task_integrity`, VL-342).** Проверка `ok = findings.length === 0`, `value = {total, count, findings}` — в `--json` попадают первые 20 находок (на 300+ задачах вывод не раздувается). В `requiredNames` не входит: битые ссылки — не блокирующая поломка окружения, иначе `doctor` был бы красным на легаси-ссылках. Подробности и полный список — `vibelog task check` (см. раздел `task`).
+
 Пример вывода:
 
 ```
@@ -667,6 +689,7 @@ Vibelog.md doctor
 ✓ vibelog_billing_tracked: в git
 ✓ env_ignored: игнорируется
 ✓ vibelog_root_ignored: в git
+✓ task_integrity: {"total":335,"count":0,"findings":[]}
 
 ⚠ Qwen Code: MCP-сервер мог быть закэширован. Перезапусти Qwen.
 ```
