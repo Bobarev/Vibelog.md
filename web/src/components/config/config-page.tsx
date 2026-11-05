@@ -29,6 +29,7 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { fetchConfig, putConfig, type ConfigData } from "./api";
+import { resetProjectConfigCache } from "@/lib/project-config";
 
 /** Стиль нативного textarea в стиле shadcn Input (ui/textarea.tsx в ref-2 нет). */
 const TEXTAREA_CLASS =
@@ -255,6 +256,9 @@ export function ConfigPage() {
       const updated = await putConfig(buildPatch(initial, form));
       setInitial(updated);
       setForm(toFormState(updated));
+      // Название проекта могло измениться (VL-345): сбрасываем кэш конфига,
+      // чтобы сайдбар и титл вкладки подхватили новое значение
+      resetProjectConfigCache();
       setSaved(true);
     } catch (err) {
       setError((err as Error).message);

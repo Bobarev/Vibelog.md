@@ -2,7 +2,8 @@
  * Постоянный сайдбар веб-интерфейса (VL-156, переработан в VL-165).
  *
  * Паттерн ref-2 (next-shadcn-admin-dashboard): SidebarHeader с логотипом
- * Command + название, SidebarContent с NavMain (группы, collapsible-подменю).
+ * (до VL-345 — иконка Command, теперь vibelog.svg) + название проекта
+ * из backlog/config.yml, SidebarContent с NavMain (группы, collapsible-подменю).
  * Отличия: без Next.js Link — хеш-ссылки <a href="#/...">; без
  * zustand/preference-store — статические пункты; footer вне скоупа.
  *
@@ -20,10 +21,11 @@
 
 import * as React from "react";
 
-import { Command, Cpu, FileText, FolderCog, Kanban, Library, Lightbulb, MessageSquare, PlusCircle, Settings, SlidersHorizontal, Wand2 } from "lucide-react";
+import { Cpu, FileText, FolderCog, Kanban, Library, Lightbulb, MessageSquare, PlusCircle, Settings, SlidersHorizontal, Wand2 } from "lucide-react";
 
 import { Sidebar, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarRail } from "@/components/ui/sidebar";
 import { NavMain, type NavGroup } from "@/components/layout/nav-main";
+import { useProjectName } from "@/lib/use-project-name";
 
 /** Группы навигации: «Задачи» + вложенное меню Настройки (VL-165/VL-177). */
 const NAV_GROUPS: NavGroup[] = [
@@ -103,6 +105,10 @@ export function AppSidebar({
   /** Клик Quick Create — открыть модалку создания задачи (VL-163). */
   onQuickCreate?: () => void;
 }) {
+  // Название проекта из backlog/config.yml (VL-345): при недоступном
+  // конфиге — «Vibelog», как статичный титл index.html
+  const projectName = useProjectName();
+
   return (
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
@@ -110,8 +116,25 @@ export function AppSidebar({
           <SidebarMenuItem>
             <SidebarMenuButton asChild>
               <a href="#/">
-                <Command />
-                <span className="font-semibold text-base">Vibelog</span>
+                {/* Логотип Vibelog вместо иконки Command из референса (VL-345).
+                    Не <img src>: во внешнем SVG currentColor НЕ наследует цвет
+                    текста (Chrome резолвит его в чёрный) — в тёмной теме глиф
+                    был бы чёрным на тёмном. Поэтому SVG используется как CSS-
+                    маска, а цвет задаёт bg-current: иконка наследует цвет
+                    текста в обеих темах без второй версии файла и dark:invert.
+                    size-6 = 24 px — как у lucide-иконок в SidebarMenuButton,
+                    иначе строка прыгает по высоте. aria-hidden — иконка
+                    декоративна: имя проекта рядом текстом, скринридер не
+                    должен читать его дважды. При collapsible=icon span
+                    скрывает сам SidebarMenuButton, иконка остаётся */}
+                <span
+                  aria-hidden="true"
+                  className="size-6 shrink-0 bg-current [mask:url(/vibelog.svg)_center/contain_no-repeat]"
+                />
+                {/* truncate + title: длинное имя не ломает вёрстку (AC 8) */}
+                <span className="truncate font-semibold text-base" title={projectName}>
+                  {projectName}
+                </span>
               </a>
             </SidebarMenuButton>
           </SidebarMenuItem>
