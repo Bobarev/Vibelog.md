@@ -42,6 +42,7 @@ import { runSession } from './commands/session.js';
 import { runReference } from './commands/reference.js';
 import { runLesson } from './commands/lesson.js';
 import { runExperiment } from './commands/experiment.js';
+import { runInstall } from './commands/install.js';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -72,6 +73,10 @@ export async function route(args: string[]): Promise<void> {
   switch (command) {
     case 'init':
       return runInit(args.slice(1), flags, cwd);
+    // VL-337: доставка файлов компонента из реестра (doc-25 §2.3).
+    // Первый позиционный аргумент парсер кладёт в subcommand — склеиваем.
+    case 'install':
+      return runInstall([subcommand, ...positional].filter(Boolean), flags, cwd);
     case 'task':
       return runTask(subcommand, positional, flags, cwd);
     case 'board':
@@ -147,6 +152,7 @@ ${colorize('Vibelog.md', colors.bold)} — markdown-нативный таск-м
 
 ${colorize('Команды:', colors.bold)}
   ${colorize('init', colors.cyan)} [name] [--yes] [--mode fresh|upgrade]  Wizard настройки проекта
+  ${colorize('install', colors.cyan)} <alias>/<repo>/<name> [--yes] [--force] [--dry-run] [--branch b]  Установка компонента из реестра
   ${colorize('task', colors.cyan)} create|list|view|edit|...     Управление задачами
   ${colorize('board', colors.cyan)} [--export]                   Канбан-доска
   ${colorize('browser', colors.cyan)} [--port N] [--host ADDR]   Веб-интерфейс
@@ -229,6 +235,24 @@ LLM (только если выбран vb):
                         (по умолчанию создаётся; --no-components — не создавать)
   --force                             — перезаписать существующие настройки
   --no-wizard                         — не запускать интерактив даже в TTY`,
+
+    install: `
+vibelog install <alias>/<repo>/<name> [--yes] [--force] [--dry-run] [--branch <b>]
+
+Устанавливает компонент из реестра (doc-25): скачивает манифест
+public/r/<name>.json, вычисляет целевые пути по aliases из секции
+components (.vibelog/settings.json), пишет файлы атомарно и обновляет
+.vibelog/installed.lock.json.
+
+  <alias>/<repo>/<name>  — ровно три сегмента, например vibelog.md/ui/button
+  --yes                  — без вопросов (конфликты пропускаются)
+  --force                — перезаписать конфликтующие файлы
+  --dry-run              — показать план и выйти, ничего не записывая
+  --branch <b>           — переопределить ветку реестра
+
+Коды выхода: 0 — успех (в т.ч. частичный), 1 — использование,
+2 — предусловие (нет секции components, неизвестный alias),
+3 — сеть/данные, 4 — все файлы пропущены по конфликту, 5 — отмена.`,
 
     'qwen-debug': `
 vibelog qwen-debug
