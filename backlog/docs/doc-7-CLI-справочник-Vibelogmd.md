@@ -349,6 +349,8 @@ vibelog reference <subcommand> [опции]
 | `remove` | Удалить метаданные (клон в `data/` сохраняется) |
 | `sync` | Доклонировать отсутствующие репозитории для всех `type=repo` (для разработчиков, склонировавших проект без `data/`); с ID — перекачать кэш ссылок (мульти-url сравниваются общим `source_hash`) |
 
+**Классификация content-type при кэшировании (VL-344).** `--cache` и `sync` различают три класса ответа: `markdown` (`*markdown*` в content-type) — сохраняется как есть; `text` (прочие `text/*`, в т.ч. `text/plain` — так GitVerse raw отдаёт `.md`-файлы) — сохраняется как есть, **без** конвертации; `html` (`text/html`, `application/xhtml+xml`, пустой content-type) — конвертируется в markdown. Параметры (`; charset=utf-8`) отрезаются до сравнения, бинарные типы отклоняются ошибкой. Поверх класса работает эвристика `looksLikeHtml` (два разных HTML-признака в первых 2 КБ): `text` с явными тегами конвертируется, `html` без тегов сохраняется как есть. `source_hash` включает версию конвертера, поэтому после изменения конвертации `sync` перезаписывает кэши сам — `--force` не нужен.
+
 **Тип `experiment`** (VL-294/VL-301) — референс на карточку эксперимента (`--path backlog/experiments/exp-<id>.md`). Связь «урок ↔ эксперимент» делается **через референс**, а не полем в схеме lesson: `reference add "…" --type experiment --path backlog/experiments/exp-1.md` + `reference link <refId> <taskId>` даёт двустороннюю связь (`linked_tasks` ↔ `task.references`). Схема lesson (`lesson.references`) намеренно не расширяется (doc-21 §16).
 
 ---
