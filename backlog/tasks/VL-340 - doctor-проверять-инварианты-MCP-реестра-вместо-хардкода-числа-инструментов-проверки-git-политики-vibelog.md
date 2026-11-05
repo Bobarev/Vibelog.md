@@ -1,11 +1,11 @@
 ---
 id: VL-340
 title: 'doctor: проверять инварианты MCP-реестра вместо хардкода числа инструментов + проверки git-политики .vibelog/'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-05 13:20'
-updated_date: '2026-11-05 15:37'
+updated_date: '2026-11-05 15:53'
 due_date: ''
 labels:
   - doctor
@@ -25,21 +25,28 @@ modified_files:
   - src/cli/commands/doctor.ts
   - src/cli/diagnostics.test.mjs
   - MCP-SETUP.md
-lessons: []
+lessons:
+  - lesson-224
+  - lesson-225
 token_usage:
-  input: 3017776
-  output: 29806
-  cache: 2942976
-  total: 3047582
-  requests: 64
-  duration_ms: 938662
-  reasoning: 16236
+  input: 4407213
+  output: 36198
+  cache: 4299264
+  total: 4443411
+  requests: 97
+  duration_ms: 1183158
+  reasoning: 17042
   by_phase:
     code:
       input: 3017776
       output: 29806
       cache: 2942976
       requests: 64
+    close:
+      input: 1389437
+      output: 6392
+      cache: 1356288
+      requests: 33
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -60,15 +67,15 @@ token_usage:
 - [x] #4 Добавлены проверки git-политики `.vibelog/`: наличие `.vibelog/.gitignore`, `settings.json` не игнорируется, `billing/` не игнорируется, `.env` игнорируется, `.vibelog/` не игнорируется корневым `.gitignore`
 - [x] #5 Проверки git-политики используют `git check-ignore` (не парсинг `.gitignore` регулярками) и не падают вне git-репозитория
 - [x] #6 Тесты: инварианты ловят дубль имени; отсутствие `.vibelog/.gitignore` даёт не-ok; вне git-репозитория проверки не падают; фикстуры на mkdtemp
-- [ ] #7 MCP-SETUP.md актуализирован (число инструментов и таблица), doc-7 дополнен разделом `doctor`
-- [ ] #8 CHANGELOG.md обновлён (включая пометку об изменении JSON-схемы `doctor --json`)
+- [x] #7 MCP-SETUP.md актуализирован (число инструментов и таблица), doc-7 дополнен разделом `doctor`
+- [x] #8 CHANGELOG.md обновлён (включая пометку об изменении JSON-схемы `doctor --json`)
 - [x] #9 `pnpm build && pnpm test` зелёные
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -140,5 +147,19 @@ created: 2026-11-05 15:15
 - `MCP-SETUP.md` — таблица дополнена до фактического состава, хардкод числа («Всего 29 инструментов») убран, добавлено пояснение про `mcp_tools_invariants`.
 Проверки: `pnpm build` — ok; полный `pnpm test` — 178 файлов / 3400 тестов passed, 4 skipped (пропуски — штатные `it.skip` в существующих файлах, не связаны с задачей); `node bin/vibelog.mjs doctor --json` — `ok: true`, `mcp_tools_invariants.ok: true` (count 45, problems []), все пять git-проверок ok.
 Что осталось (по правилам фазы — пишет Close): AC7 в части doc-7 (раздел `doctor` с новыми проверками) и AC8 (CHANGELOG.md, включая пометку об изменении JSON-схемы `doctor --json`: поле `mcp_tools_list` исчезло, `mcp_tools_count` заменено на `mcp_tools_invariants`). Поэтому AC7, AC8 и DoD «Документация обновлена» не отмечены.
+---
+author: @agent
+created: 2026-11-05 15:37
+---
+Фаза close не удалась (код выхода 1): в=0/0 (0%), топ-повторов=нет, блокировок=0, payload последнего запроса=н/д байт (макс н/д), usage={"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"total_tokens":0,"reasoning_tokens":0} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-05 15:53
+---
+Фаза Close выполнена. Ветка vb/vl-340 слита в master (1 коммит, merge c559c16), worktree удалена (force — в ней были только untracked-симлинки node_modules/refs), ветка vb/vl-340 удалена.
+Проверки после merge: `pnpm build` — успешно; ранний точечный прогон `src/cli/diagnostics.test.mjs` — 16/16; полный `pnpm test` — 178 файлов, 3400 passed, 4 skipped, падений нет. Ручная проверка `node bin/vibelog.mjs doctor --json`: `ok: true`, `mcp_tools_invariants.ok: true` (count 45, problems []), все пять проверок git-политики ok (`vibelog_gitignore`, `vibelog_settings_tracked`, `vibelog_billing_tracked`, `env_ignored`, `vibelog_root_ignored`).
+Документация: doc-7 (раздел `doctor` — инварианты реестра и git-политика, обновлён пример вывода), CHANGELOG.md (запись в Unreleased с пометкой об изменении JSON-схемы `doctor --json`: `mcp_tools_list` исчезло, `mcp_tools_count` → `mcp_tools_invariants`), MCP-SETUP.md — в ветке задачи. Коммит документации: bcd0f41.
+Lessons: созданы lesson-224 (инварианты вместо хардкода числа) и lesson-225 (git check-ignore вместо парсинга .gitignore), связаны с задачей; коммит 846db35.
+DoD: 1 «Тесты проходят» — выполнен (полный прогон), 2 «Документация обновлена» — выполнен, 3 «Нет регрессий» — выполнен.
 ---
 <!-- COMMENTS:END -->
