@@ -1,11 +1,11 @@
 ---
 id: VL-345
 title: 'Веб: название проекта из backlog/config.yml в сайдбаре и титле вкладки, логотип vibelog.svg вместо vite.svg'
-status: Review
+status: In Progress
 assignee: []
 reporter: ''
 created_date: '2026-11-05 16:30'
-updated_date: '2026-11-05 17:56'
+updated_date: '2026-11-05 19:05'
 due_date: ''
 labels:
   - web
@@ -38,13 +38,13 @@ modified_files:
   - web/dist/assets/index-CweTpgD9.js
 lessons: []
 token_usage:
-  input: 6236424
-  output: 67595
-  cache: 6014976
-  total: 6304019
-  requests: 126
-  duration_ms: 1672265
-  reasoning: 44571
+  input: 6789915
+  output: 69883
+  cache: 6551040
+  total: 6859798
+  requests: 140
+  duration_ms: 2156028
+  reasoning: 45715
   by_phase:
     code:
       input: 4233445
@@ -52,10 +52,10 @@ token_usage:
       cache: 4070912
       requests: 79
     close:
-      input: 2002979
-      output: 9888
-      cache: 1944064
-      requests: 47
+      input: 2556470
+      output: 12176
+      cache: 2480128
+      requests: 61
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
