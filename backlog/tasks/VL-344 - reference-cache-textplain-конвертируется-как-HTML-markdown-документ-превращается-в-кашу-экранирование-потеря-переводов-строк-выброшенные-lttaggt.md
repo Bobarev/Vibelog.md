@@ -1,11 +1,11 @@
 ---
 id: VL-344
 title: 'reference cache: text/plain конвертируется как HTML — markdown-документ превращается в кашу (экранирование, потеря переводов строк, выброшенные &lt;tag&gt;)'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-05 16:03'
-updated_date: '2026-11-05 17:15'
+updated_date: '2026-11-05 17:23'
 due_date: ''
 labels:
   - reference
@@ -24,15 +24,16 @@ documentation: []
 modified_files:
   - src/core/reference-cache.ts
   - src/core/reference-cache.test.mjs
-lessons: []
+lessons:
+  - lesson-227
 token_usage:
-  input: 2319011
-  output: 16364
-  cache: 2176512
-  total: 2335375
-  requests: 48
-  duration_ms: 884053
-  reasoning: 4431
+  input: 3420237
+  output: 23102
+  cache: 3236864
+  total: 3443339
+  requests: 69
+  duration_ms: 1152129
+  reasoning: 6372
   by_phase:
     code:
       input: 1624954
@@ -40,10 +41,10 @@ token_usage:
       cache: 1503744
       requests: 30
     close:
-      input: 694057
-      output: 2700
-      cache: 672768
-      requests: 18
+      input: 1795283
+      output: 9438
+      cache: 1733120
+      requests: 39
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -81,14 +82,14 @@ GitVerse raw отдаёт `text/plain` (подтверждено в VL-335: «у
 - [x] #8 Существующий тест `assert.equal(classifyContentType('text/plain'), 'html')` обновлён — он закреплял именно этот баг
 - [x] #9 Проверено, что `source_hash` не мешает перезаписи испорченных кэшей: либо `reference sync` перезаписывает при смене конвертации, либо добавлен явный способ перезаписи (`--force`/ручная чистка) — решение зафиксировано в Implementation Notes
 - [x] #10 Ручная проверка на живом URL `https://gitverse.ru/api/repos/bobarev/Vibelog.md/raw/branch/master/backlog/docs/doc-25-...md` — кэш читаемый, markdown не экранирован
-- [ ] #11 CHANGELOG.md обновлён, doc-6/doc-7 (раздел `reference --cache`/`sync`) уточнены про обработку `text/plain`
+- [x] #11 CHANGELOG.md обновлён, doc-6/doc-7 (раздел `reference --cache`/`sync`) уточнены про обработку `text/plain`
 - [x] #12 `pnpm build && pnpm test` зелёные
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -183,5 +184,26 @@ created: 2026-11-05 16:47
 - Испорченных кэшей в `backlog/references/cache/` этого worktree нет (каталог отсутствует; у ref-18/19/20 кэш не записан, только `source_hash` в метаданных) — перезапись после смены версии конвертера запустится при следующем `sync`, что покрыто тестом.
 **Что осталось:** AC11 (CHANGELOG.md, doc-6, doc-7) — по правилам фазы Code документация пишется в фазе Close после merge.
 **Implementation Notes:** реализован вариант B плана (версия конвертера в `source_hash`), `--force` для `sync` не добавлялся.
+---
+author: @agent
+created: 2026-11-05 17:15
+---
+Фаза close не удалась (код выхода 1): ет, блокировок=0, payload последнего запроса=168854 байт (макс 168854), usage={"input_tokens":694057,"output_tokens":2700,"cache_read_input_tokens":672768,"total_tokens":696757,"reasoning_tokens":612} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-05 17:23
+---
+Фаза Close выполнена. Статус: Done.
+**Коммиты:**
+- feat — не требовался: код задачи уже закоммичен в фазе Code (`5586e85 fix: VL-344 — text/plain не конвертируется как HTML`) и слит в master (`fa749ce merge: VL-344`); `git status` по `src/core/reference-cache.ts` и `src/core/reference-cache.test.mjs` чист.
+- docs `d0d279b` — CHANGELOG.md (запись в Unreleased → «Исправлено»), doc-6 §13 (новый абзац «Как содержимое превращается в markdown»), doc-7 раздел `reference` (новый абзац «Классификация content-type при кэшировании»).
+- docs(task) `c7c48e1` — lesson-227 (refs и lessons).
+**Проверки после merge:**
+- `pnpm build` — успешно (tsc без ошибок).
+- Ранний точечный фильтр: `npx vitest run src/core/reference-cache.test.mjs` — 39/39 зелёные.
+- Полный прогон `pnpm test:fast` (dist собран шагом выше) — **181 файл, 3426 passed, 4 skipped, 0 failed**. Повторных прогонов не было.
+**Документация:** AC11 закрыт — CHANGELOG и оба документа обновлены (три класса content-type, эвристика `looksLikeHtml`, версия конвертера в `source_hash` → `sync` перезаписывает кэши без `--force`). DoD «Документация обновлена» отмечен.
+**Lessons:** lesson-227 (создан в фазе Code с пустым телом) наполнен содержанием — проблема, решение (три класса + эвристика + версия конвертера в хэше) и пример кода с тестом-регрессией; связан с VL-344 (`linked_tasks` ↔ `task.lessons`).
+**Не закоммичено:** нет. Файл задачи VL-344 коммитит framework после записи token_usage. Посторонние изменения в рабочем каталоге (`.vibelog/settings.json`, удаление doc-25 v12, файлы VL-342/343/345, `web/public/vibelog.svg`, billing) к этой задаче не относятся и не трогались.
 ---
 <!-- COMMENTS:END -->
