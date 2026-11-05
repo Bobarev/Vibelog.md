@@ -10,6 +10,8 @@
  * каталог шлюза и CRUD моделей, VL-316).
  */
 
+import { useEffect } from "react"
+
 import { Kanban } from "@/components/kanban/kanban"
 import { ChatPage } from "@/components/chat/thread"
 import { ConfigPage } from "@/components/config/config-page"
@@ -29,6 +31,7 @@ import { TasksPage } from "@/components/tasks/tasks-page"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { useHashRoute, useReferenceId, useDocumentId, useLessonId } from "@/lib/use-hash-route"
 import { QUICK_CREATE_EVENT, setQuickCreatePending } from "@/lib/quick-create"
+import { useProjectName } from "@/lib/use-project-name"
 
 export function App() {
   const route = useHashRoute()
@@ -36,6 +39,15 @@ export function App() {
   const docId = useDocumentId()
   const lessonId = useLessonId()
   const { values } = usePreferences()
+
+  // Название проекта в титле вкладки (VL-345, AC 2): бэкенд не подставляет
+  // <title> в index.html (решение пользователя) — статичный "Vibelog" из
+  // index.html служит fallback'ом, клиент перезаписывает его после загрузки
+  // конфига. Пустое значение не пишем, чтобы не потерять fallback (AC 10).
+  const projectName = useProjectName()
+  useEffect(() => {
+    if (projectName) document.title = projectName
+  }, [projectName])
 
   /** Quick Create: открыть модалку создания задачи (VL-163/VL-177). */
   function handleQuickCreate() {

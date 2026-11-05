@@ -9,6 +9,7 @@
  */
 
 import { fetchTasks } from '../kanban/api';
+import { loadProjectConfig } from '@/lib/project-config';
 
 export { fetchTasks };
 
@@ -26,12 +27,12 @@ const FALLBACK_CONFIG: TasksConfig = {
   types: ['task', 'bug', 'feature', 'epic'],
 };
 
-/** GET /api/config → { statuses, priorities, types }; при ошибке — fallback. */
+/** GET /api/config → { statuses, priorities, types }; при ошибке — fallback.
+ *  Запрос идёт через общий кэш lib/project-config (VL-345): один /api/config
+ *  на всю страницу, а не по одному на каждый модуль. */
 export async function fetchConfig(): Promise<TasksConfig> {
   try {
-    const res = await fetch('/api/config');
-    if (!res.ok) throw new Error(`GET /api/config: ${res.status}`);
-    const config = (await res.json()) as Partial<TasksConfig>;
+    const config = (await loadProjectConfig()) as Partial<TasksConfig>;
     return {
       statuses:
         Array.isArray(config.statuses) && config.statuses.length > 0

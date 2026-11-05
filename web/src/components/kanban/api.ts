@@ -14,6 +14,7 @@
  */
 
 import type { KanbanTask, TaskDetail } from '../../types/kanban';
+import { loadProjectConfig } from '@/lib/project-config';
 
 /** Сырой Task, как его отдаёт API (массив комментариев, остальное — по мере надобности). */
 interface ApiTask {
@@ -96,12 +97,10 @@ export async function fetchTask(id: string): Promise<TaskDetail> {
   return (await res.json()) as TaskDetail;
 }
 
-/** Статусы колонок из конфига проекта. */
+/** Статусы колонок из конфига проекта (общий кэш /api/config, VL-345). */
 export async function fetchStatuses(): Promise<string[]> {
   try {
-    const res = await fetch('/api/config');
-    if (!res.ok) throw new Error(`GET /api/config: ${res.status}`);
-    const config = (await res.json()) as { statuses?: string[] };
+    const config = (await loadProjectConfig()) as { statuses?: string[] };
     if (Array.isArray(config.statuses) && config.statuses.length > 0) {
       return config.statuses;
     }
