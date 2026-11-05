@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 
 import {
-  downloadText, htmlToMarkdown, classifyContentType,
+  downloadText, htmlToMarkdown, classifyContentType, looksLikeHtml, rawSourceHash,
   cacheReference, refreshReferenceCache, readReferenceCache, syncReferenceCaches,
   MAX_CACHE_BYTES,
 } from '../../dist/core/reference-cache.js';
@@ -92,14 +92,36 @@ describe('VL-194 — htmlToMarkdown: чистка и конвертация', ()
     assert.ok(md.includes('| a | 1 |'), 'строка таблицы');
   });
 
-  it('classifyContentType: markdown → сохранение как есть; text/* → html; бинарь → отказ', () => {
+  it('classifyContentType: три класса — markdown / html / text; бинарь → отказ', () => {
     assert.equal(classifyContentType('text/markdown; charset=utf-8'), 'markdown');
     assert.equal(classifyContentType('application/markdown'), 'markdown');
+    assert.equal(classifyContentType('text/x-markdown'), 'markdown');
     assert.equal(classifyContentType('text/html; charset=utf-8'), 'html');
-    assert.equal(classifyContentType('text/plain'), 'html');
+    assert.equal(classifyContentType('application/xhtml+xml'), 'html');
+    // VL-344: text/plain — «неизвестный текст», а не HTML (GitVerse raw отдаёт markdown как text/plain)
+    assert.equal(classifyContentType('text/plain'), 'text');
+    assert.equal(classifyContentType('text/plain; charset=utf-8'), 'text');
     assert.equal(classifyContentType(''), 'html');
     assert.throws(() => classifyContentType('image/png'), /неподдерживаемый content-type/);
     assert.throws(() => classifyContentType('application/pdf'), /неподдерживаемый content-type/);
+  });
+
+  it('looksLikeHtml: markdown → false, HTML-страница → true, один признак → false', () => {
+    const md = [
+      '# Заголовок',
+      '',
+      'Пример: `<p>текст</p>` внутри markdown-документа.',
+      '',
+      '---',
+      '',
+      '**жирный** и [0] ссылка.',
+    ].join('\n');
+    assert.equal(looksLikeHtml(md), false, 'markdown не считается HTML');
+    assert.equal(looksLikeHtml('<!doctype html><html><body><h1>T</h1></body></html>'), true);
+    assert.equal(looksLikeHtml('<html><head><title>x</title></head><body>y</body></html>'), true);
+    // Порог — два разных признака: одного `<p ` мало
+    assert.equal(looksLikeHtml('Текст с одним <p тегом внутри.'), false);
+    assert.equal(looksLikeHtml(''), false);
   });
 });
 
@@ -158,8 +180,8 @@ describe('VL-194 — cacheReference / readReferenceCache', () => {
     const after = getReference(testRoot, 'ref-30');
     assert.equal(after.reference.cached_path, 'references/cache/ref-30.md', 'cached_path относительно backlog/');
     assert.ok(/^\d{4}-\d{2}-\d{2}T/.test(after.reference.cached_at), `cached_at ISO: ${after.reference.cached_at}`);
-    const expectedHash = createHash('sha256').update(SAMPLE_HTML, 'utf8').digest('hex');
-    assert.equal(after.reference.source_hash, expectedHash, 'source_hash = sha256 сырого HTML');
+    const expectedHash = rawSourceHash(SAMPLE_HTML);
+    assert.equal(after.reference.source_hash, expectedHash, 'source_hash = sha256(raw + версия конвертера)');
 
     const cached = readReferenceCache(testRoot, after.reference);
     assert.equal(cached, md, 'readReferenceCache возвращает тот же markdown');
@@ -215,6 +237,97 @@ describe('VL-194 — cacheReference / readReferenceCache', () => {
   });
 });
 
+// ── VL-344: text/plain — не HTML ──
+
+/** Markdown-документ, который GitVerse raw отдаёт как text/plain (кейс doc-25). */
+const RAW_MARKDOWN = [
+  '---',
+  'title: doc-25',
+  '---',
+  '',
+  '# Реестр компонентов',
+  '',
+  '**Жирный** текст и ссылка [0] в квадратных скобках.',
+  '',
+  '```bash',
+  'vb create <name> --template <alias>/<repo>/<template>',
+  '```',
+  '',
+  '| Поле | Значение |',
+  '| --- | --- |',
+  '| a | 1 |',
+  '',
+].join('\n');
+
+describe('VL-344 — text/plain сохраняется как есть (не конвертируется как HTML)', () => {
+  it('регрессия: markdown, отданный как text/plain, кэшируется байт-в-байт', async () => {
+    const ref = writeReference(testRoot, {
+      id: 'ref-900', title: 'Raw md as plain', type: 'url', url: 'https://gitverse.example/raw/doc-25.md',
+    });
+    const res = await cacheReference(testRoot, ref, {
+      fetchFn: stubFetch(RAW_MARKDOWN, { contentType: 'text/plain; charset=utf-8' }),
+    });
+    assert.equal(res.cached, true, res.message);
+    const md = readFileSync(join(cacheDir, 'ref-900.md'), 'utf-8');
+    assert.equal(md, RAW_MARKDOWN, 'содержимое сохранено без изменений');
+    // Ни одного следа HTML-конвертации
+    assert.ok(!md.includes('\\*'), `экранирование **: ${md}`);
+    assert.ok(!md.includes('\\---'), `экранирование ---: ${md}`);
+    assert.ok(!md.includes('\\['), `экранирование [0]: ${md}`);
+    assert.ok(md.includes('**Жирный**'), 'жирный не экранирован');
+    assert.ok(md.includes('[0]'), 'квадратные скобки целы');
+    assert.ok(md.includes('vb create <name> --template <alias>/<repo>/<template>'), 'плейсхолдеры <...> не выброшены');
+    assert.ok(md.split('\n').length > 5, 'переводы строк сохранены');
+    assert.ok(md.includes('\n# Реестр компонентов'), 'заголовок остался заголовком');
+  });
+
+  it('text/plain с настоящим HTML → конвертируется (эвристика срабатывает)', async () => {
+    const ref = writeReference(testRoot, {
+      id: 'ref-901', title: 'Html as plain', type: 'url', url: 'https://example.com/page',
+    });
+    const res = await cacheReference(testRoot, ref, {
+      fetchFn: stubFetch('<!doctype html><html><body><h1>T</h1></body></html>', { contentType: 'text/plain' }),
+    });
+    assert.equal(res.cached, true, res.message);
+    const md = readFileSync(join(cacheDir, 'ref-901.md'), 'utf-8');
+    assert.ok(md.includes('# T'), `конвертировано в markdown: ${md}`);
+    assert.ok(!md.includes('<h1>'), 'HTML-теги убраны');
+  });
+
+  it('text/html без HTML-тегов (сервер соврал) → сохраняется как есть', async () => {
+    const ref = writeReference(testRoot, {
+      id: 'ref-902', title: 'Md as html', type: 'url', url: 'https://example.com/md',
+    });
+    const res = await cacheReference(testRoot, ref, {
+      fetchFn: stubFetch(RAW_MARKDOWN, { contentType: 'text/html; charset=utf-8' }),
+    });
+    assert.equal(res.cached, true, res.message);
+    const md = readFileSync(join(cacheDir, 'ref-902.md'), 'utf-8');
+    assert.equal(md, RAW_MARKDOWN, 'markdown не прогнан через htmlToMarkdown');
+  });
+
+  it('испорченный кэш перезаписывается: source_hash учитывает версию конвертера', async () => {
+    const ref = writeReference(testRoot, {
+      id: 'ref-903', title: 'Stale cache', type: 'url', url: 'https://example.com/stale',
+    });
+    // Имитируем кэш, записанный старой версией: хэш = sha256(raw) без версии
+    const legacyHash = createHash('sha256').update(RAW_MARKDOWN, 'utf8').digest('hex');
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(join(cacheDir, 'ref-903.md'), 'испорченный \\*\\*кэш\\*\\*', 'utf-8');
+    updateReference(testRoot, 'ref-903', {
+      cached_path: 'references/cache/ref-903.md',
+      cached_at: '2026-01-01T00:00:00.000Z',
+      source_hash: legacyHash,
+    });
+    const stored = getReference(testRoot, 'ref-903').reference;
+    const res = await refreshReferenceCache(testRoot, stored, {
+      fetchFn: stubFetch(RAW_MARKDOWN, { contentType: 'text/plain' }),
+    });
+    assert.equal(res.status, 'updated', res.message);
+    assert.equal(readFileSync(join(cacheDir, 'ref-903.md'), 'utf-8'), RAW_MARKDOWN, 'кэш перезаписан корректно');
+  });
+});
+
 // ── refreshReferenceCache ──
 
 describe('VL-194 — refreshReferenceCache: сверка source_hash', () => {
@@ -246,7 +359,7 @@ describe('VL-194 — refreshReferenceCache: сверка source_hash', () => {
     const md = readFileSync(join(cacheDir, 'ref-41.md'), 'utf-8');
     assert.ok(md.includes('v2') && !md.includes('v1'), md);
     const after = getReference(testRoot, 'ref-41').reference;
-    const newHash = createHash('sha256').update('<p>v2</p>', 'utf8').digest('hex');
+    const newHash = rawSourceHash('<p>v2</p>');
     assert.equal(after.source_hash, newHash, 'source_hash обновлён');
   });
 

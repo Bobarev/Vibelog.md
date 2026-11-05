@@ -109,17 +109,76 @@ export async function downloadText(url: string, deps: CacheDeps = {}): Promise<D
 export { htmlToMarkdown };
 
 /**
- * Проверяет content-type: markdown-ответ сохраняем как есть, остальное
- * конвертируем как HTML; не-текстовые типы (картинки, pdf) отклоняем.
+ * Версия конвейера «сырой ответ → markdown» (VL-344).
  *
- * @returns 'markdown' | 'html'
+ * Входит в source_hash: если конвертация/классификация меняется, хэш всех
+ * кэшей расходится и `reference sync` перезаписывает их сам — без ручной
+ * чистки. Именно так испорченные кэши (markdown, ошибочно прогнанный через
+ * htmlToMarkdown) обновляются после фикса классификации content-type.
+ *
+ * Правило: любое изменение поведения fetchMarkdown/classifyContentType/
+ * looksLikeHtml/htmlToMarkdown → увеличить версию.
  */
-export function classifyContentType(contentType: string): 'markdown' | 'html' {
-  const ct = (contentType || '').toLowerCase();
+export const CONVERTER_VERSION = '2';
+
+/**
+ * Хэш сырого ответа с учётом версии конвертера (VL-344).
+ *
+ * Раньше хэш считался от одного raw — после исправления конвертера кэш
+ * считался «не изменившимся» и оставался испорченным.
+ */
+export function rawSourceHash(raw: string): string {
+  return createHash('sha256').update(`${raw}\u0000${CONVERTER_VERSION}`, 'utf8').digest('hex');
+}
+
+/** Класс содержимого ответа: как его трактовать при кэшировании (VL-344). */
+export type ContentKind = 'markdown' | 'html' | 'text';
+
+/**
+ * Классифицирует content-type: markdown — как есть, html — конвертировать,
+ * text/* — «неизвестный текст» (сохранить как есть, если не похож на HTML);
+ * не-текстовые типы (картинки, pdf) отклоняем.
+ *
+ * VL-344: раньше `text/plain` попадал в 'html' и markdown-файл с raw-URL
+ * (GitVerse отдаёт text/plain) прогонялся через htmlToMarkdown — экранирование
+ * `**`/`---`/`[0]`, выброс `<name>`-плейсхолдеров, схлопывание переводов строк.
+ *
+ * @returns 'markdown' | 'html' | 'text'
+ */
+export function classifyContentType(contentType: string): ContentKind {
+  // Параметры (`; charset=utf-8`) отрезаем до сравнения: иначе text/x-markdown
+  // распознавался только случайно — по includes('markdown')
+  const ct = (contentType || '').toLowerCase().split(';')[0].trim();
+  // Пусто → html: прежнее поведение, а эвристика looksLikeHtml ниже решит,
+  // конвертировать ли (сервер без content-type чаще отдаёт HTML-страницу)
+  if (ct === '') return 'html';
   if (ct.includes('markdown')) return 'markdown';
-  if (ct.startsWith('text/') || ct.includes('html') || ct === '') return 'html';
+  if (ct === 'text/html' || ct === 'application/xhtml+xml' || ct.includes('html')) return 'html';
+  if (ct.startsWith('text/')) return 'text';
   // application/octet-stream и прочие бинари — не источник текстовых знаний
   throw new Error(`неподдерживаемый content-type: ${contentType || '(пусто)'}`);
+}
+
+/** Признаки HTML-документа в первых 2 КБ (VL-344). */
+const HTML_MARKERS = [
+  '<!doctype html', '<html', '<head', '<body', '<div', '<p ', '<table', '<a href', '<ul', '<h1',
+];
+
+/**
+ * Эвристика «это HTML-документ, а не markdown/plain-текст» (VL-344).
+ *
+ * Нужна в двух случаях: сервер соврал в content-type (text/html с markdown)
+ * и text/plain с настоящей HTML-страницей. Порог — ДВА разных признака:
+ * одного `<p ` мало, в markdown-документе может встретиться пример HTML.
+ */
+export function looksLikeHtml(text: string): boolean {
+  const head = (text || '').slice(0, 2048).toLowerCase();
+  let hits = 0;
+  for (const marker of HTML_MARKERS) {
+    if (head.includes(marker)) hits += 1;
+    if (hits >= 2) return true;
+  }
+  return false;
 }
 
 /**
@@ -133,9 +192,12 @@ async function fetchMarkdown(
   deps: CacheDeps,
 ): Promise<{ markdown: string; raw: string }> {
   const { text, contentType } = await downloadText(url, deps);
-  const markdown = classifyContentType(contentType) === 'markdown'
-    ? (text.trim() + '\n')
-    : htmlToMarkdown(text);
+  const kind = classifyContentType(contentType);
+  // VL-344: конвертируем только когда содержимое действительно HTML.
+  // markdown — всегда как есть; text — как есть, кроме явных HTML-признаков;
+  // html — конвертация, кроме случая, когда сервер соврал в content-type.
+  const useHtml = kind === 'markdown' ? false : looksLikeHtml(text);
+  const markdown = useHtml ? htmlToMarkdown(text) : (text.trim() + '\n');
   return { markdown, raw: text };
 }
 
@@ -157,15 +219,16 @@ export function mergeCachedSections(sections: CacheSection[]): string {
 }
 
 /**
- * Хэш набора ссылок: sha256 по «url\0sha256(raw)» на каждую УСПЕШНУЮ ссылку.
+ * Хэш набора ссылок: sha256 по «url\0rawSourceHash(raw)» на каждую УСПЕШНУЮ ссылку.
  *
  * Устойчив к перестановке и к ошибкам части ссылок (упавшие в хэш не входят),
- * поэтому refresh верно определяет «содержимое не изменилось».
+ * поэтому refresh верно определяет «содержимое не изменилось». Версия
+ * конвертера входит в хэш (VL-344) — смена конвертации инвалидирует кэши.
  */
 function sectionsHash(sections: CacheSection[], raws: Map<string, string>): string {
   const lines = sections
     .filter(s => !s.error)
-    .map(s => `${s.url}\u0000${createHash('sha256').update(raws.get(s.url) ?? '', 'utf8').digest('hex')}`)
+    .map(s => `${s.url}\u0000${rawSourceHash(raws.get(s.url) ?? '')}`)
     .sort();
   return createHash('sha256').update(lines.join('\n'), 'utf8').digest('hex');
 }
@@ -174,10 +237,10 @@ function sectionsHash(sections: CacheSection[], raws: Map<string, string>): stri
  * Готовит содержимое кэша и его source_hash (VL-291).
  *
  * Одна ссылка и без ошибок → ПРЕЖНИЙ формат (VL-194): markdown как есть,
- * хэш = sha256 сырого ответа. Обратная совместимость важна и для чтения
- * существующих кэшей, и для тестов/потребителей, сравнивающих файл с
- * исходным ответом. Несколько ссылок (или частичный сбой) → склеенные
- * секции + хэш по набору успешных ссылок.
+ * хэш = rawSourceHash сырого ответа (sha256 raw + версия конвертера, VL-344).
+ * Обратная совместимость важна и для чтения существующих кэшей, и для
+ * тестов/потребителей, сравнивающих файл с исходным ответом. Несколько
+ * ссылок (или частичный сбой) → склеенные секции + хэш по набору успешных.
  */
 function buildCacheOutput(
   sections: CacheSection[],
@@ -185,7 +248,7 @@ function buildCacheOutput(
 ): { markdown: string; sourceHash: string } {
   if (sections.length === 1 && !sections[0].error) {
     const raw = raws.get(sections[0].url) ?? '';
-    return { markdown: sections[0].markdown || '', sourceHash: createHash('sha256').update(raw, 'utf8').digest('hex') };
+    return { markdown: sections[0].markdown || '', sourceHash: rawSourceHash(raw) };
   }
   return { markdown: mergeCachedSections(sections), sourceHash: sectionsHash(sections, raws) };
 }
