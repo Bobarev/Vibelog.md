@@ -639,7 +639,11 @@ vibelog experiment gc <exp-id> [--apply]
 vibelog doctor [--json]
 ```
 
-Диагностика: Node.js >= 20, `vibelog` в PATH, симлинк/pnpm shim, MCP-инструменты (36), `backlog/`, конфиг, round-trip с Backlog.md. `--json` — структурированный результат.
+Диагностика: Node.js >= 20, `vibelog` в PATH, симлинк/pnpm shim, инварианты MCP-реестра, `backlog/`, конфиг, round-trip с Backlog.md, git-политика `.vibelog/`. `--json` — структурированный результат.
+
+**Инварианты MCP-реестра (`mcp_tools_invariants`, VL-340).** Вместо хардкода числа инструментов и полного списка имён `doctor` проверяет свойства реестра: реестр непуст, имена не дублируются, каждое имя начинается с известного префикса (`backlog_`, `milestone_`, `reference_`, `document_`, `lesson_`, `project_map`, `git_commit`), у каждого инструмента есть `inputSchema` типа `object`. Новый MCP-инструмент больше не требует правки `doctor.ts`; фактическое число попадает в `value.count` как справка, а не как ожидание.
+
+**Git-политика `.vibelog/` (VL-340).** Пять проверок через `git check-ignore` (без парсинга `.gitignore` регулярками): `vibelog_gitignore` — существует `.vibelog/.gitignore`; `vibelog_settings_tracked` — `settings.json` не игнорируется; `vibelog_billing_tracked` — `billing/` не игнорируется; `env_ignored` — `.env` в корне игнорируется; `vibelog_root_ignored` — `.vibelog/` не игнорируется корневым `.gitignore` (регресс VL-329). Вне git-репозитория (код `128`) проверки не падают, а сообщают «не git-репозиторий».
 
 Пример вывода:
 
@@ -651,12 +655,16 @@ Vibelog.md doctor
 ✓ path: /usr/local/bin/vibelog
 ✓ symlink: /usr/local/bin/vibelog (pnpm shim → .../bin/vibelog.mjs)
 ✓ sources_match: ok
-✓ mcp_tools_count: 36
-✓ mcp_tools_list: ["backlog_add_comment", ...]
+✓ mcp_tools_invariants: {"count":45,"problems":[]}
 ✓ backlog_dir: ./backlog
 ✓ config: {"project_name":"My Project","task_prefix":"LB"}
 ✓ tasks_count: 6
 ✓ roundtrip: 5
+✓ vibelog_gitignore: ./.vibelog/.gitignore
+✓ vibelog_settings_tracked: в git
+✓ vibelog_billing_tracked: в git
+✓ env_ignored: игнорируется
+✓ vibelog_root_ignored: в git
 
 ⚠ Qwen Code: MCP-сервер мог быть закэширован. Перезапусти Qwen.
 ```
