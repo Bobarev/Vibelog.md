@@ -43,6 +43,7 @@ import { runReference } from './commands/reference.js';
 import { runLesson } from './commands/lesson.js';
 import { runExperiment } from './commands/experiment.js';
 import { runInstall } from './commands/install.js';
+import { runCreate } from './commands/create.js';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -77,6 +78,10 @@ export async function route(args: string[]): Promise<void> {
     // Первый позиционный аргумент парсер кладёт в subcommand — склеиваем.
     case 'install':
       return runInstall([subcommand, ...positional].filter(Boolean), flags, cwd);
+    // VL-339: создание проекта из шаблона (doc-25 §2.1). Первый позиционный
+    // аргумент (имя проекта) парсер кладёт в subcommand — склеиваем.
+    case 'create':
+      return runCreate([subcommand, ...positional].filter(Boolean), flags, cwd);
     case 'task':
       return runTask(subcommand, positional, flags, cwd);
     case 'board':
@@ -153,6 +158,7 @@ ${colorize('Vibelog.md', colors.bold)} — markdown-нативный таск-м
 ${colorize('Команды:', colors.bold)}
   ${colorize('init', colors.cyan)} [name] [--yes] [--mode fresh|upgrade]  Wizard настройки проекта
   ${colorize('install', colors.cyan)} <alias>/<repo>/<name> [--yes] [--force] [--dry-run] [--branch b]  Установка компонента из реестра
+  ${colorize('create', colors.cyan)} <name> --template <alias>/<repo>/<t> [--branch b] [--package-manager pm] [--no-install] [--no-git] [--yes]  Новый проект из шаблона
   ${colorize('task', colors.cyan)} create|list|view|edit|...     Управление задачами
   ${colorize('board', colors.cyan)} [--export]                   Канбан-доска
   ${colorize('browser', colors.cyan)} [--port N] [--host ADDR]   Веб-интерфейс
@@ -253,6 +259,26 @@ components (.vibelog/settings.json), пишет файлы атомарно и �
 Коды выхода: 0 — успех (в т.ч. частичный), 1 — использование,
 2 — предусловие (нет секции components, неизвестный alias),
 3 — сеть/данные, 4 — все файлы пропущены по конфликту, 5 — отмена.`,
+
+    create: `
+vibelog create <name> --template <alias>/<repo>/<template> [флаги]
+
+Создаёт новый проект из шаблона (doc-25 §2.1): клонирует подпапку шаблона
+через sparse-checkout во временный каталог, копирует её содержимое в
+./<name>, ставит зависимости, выполняет scripts.postCreate, устанавливает
+компоненты из vibelog.components и делает git init + первый коммит.
+
+  <name>                 — имя проекта по npm-правилам (lowercase, «-», «_», «.»)
+  --template <p>         — обязателен, например vibelog.md/templates/svelte-minimal
+  --branch <b>           — ветка шаблона (по умолчанию из registries[alias], иначе master)
+  --package-manager <pm> — npm|pnpm|bun|yarn; без флага — вопрос с детектом по lock-файлу
+  --no-install           — не устанавливать зависимости (и не запускать postCreate)
+  --no-git               — без git init и первого коммита
+  --yes                  — без вопросов, дефолты на всё
+
+Коды выхода: 0 — успех, 1 — использование (имя, флаги, путь шаблона),
+2 — каталог уже существует (--force не предусмотрен), 3 — клон/шаблон/
+зависимости/postCreate, 5 — отмена.`,
 
     'qwen-debug': `
 vibelog qwen-debug
