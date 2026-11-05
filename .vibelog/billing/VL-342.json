@@ -1,0 +1,77 @@
+{
+  "taskId": "VL-342",
+  "sessions": [
+    {
+      "sessionId": "agent-1793885778745",
+      "phase": "code",
+      "startedAt": "2026-11-05T13:36:18.562Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-05T13:44:04.007Z",
+      "durationMs": 462521,
+      "usage": {
+        "input": 3727582,
+        "output": 20350,
+        "cache": 3640320,
+        "total": 3747932,
+        "requests": 47,
+        "reasoning": 6825
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793885778745",
+      "phase": "code",
+      "startedAt": "2026-11-05T13:36:18.562Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-05T13:44:04.032Z",
+      "durationMs": 462521,
+      "usage": {
+        "input": 3727582,
+        "output": 20350,
+        "cache": 3640320,
+        "total": 3747932,
+        "requests": 47,
+        "reasoning": 6825
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793892170877",
+      "phase": "close",
+      "startedAt": "2026-11-05T15:22:50.741Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-05T15:23:11.788Z",
+      "durationMs": 18269,
+      "usage": {
+        "input": 138925,
+        "output": 1155,
+        "cache": 128000,
+        "total": 140080,
+        "requests": 4,
+        "reasoning": 167
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793892170877",
+      "phase": "close",
+      "startedAt": "2026-11-05T15:22:50.741Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-05T15:23:11.821Z",
+      "durationMs": 18269,
+      "usage": {
+        "input": 138925,
+        "output": 1155,
+        "cache": 128000,
+        "total": 140080,
+        "requests": 4,
+        "reasoning": 167
+      },
+      "agent": "vb",
+      "fallback": true
+    }
+  ]
+}

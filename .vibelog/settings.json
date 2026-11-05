@@ -144,7 +144,7 @@
         "api_mode": "responses",
         "pricing": {
           "input_per_1m": 3.737214624,
-          "output_per_1m": 33.634931616,
+          "output_per_1m": 58.3939785,
           "cache_per_1m": 0.583939785
         }
       },
