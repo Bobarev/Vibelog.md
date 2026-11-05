@@ -5,7 +5,7 @@ status: In Progress
 assignee: []
 reporter: ''
 created_date: '2026-11-05 16:30'
-updated_date: '2026-11-05 17:51'
+updated_date: '2026-11-05 17:56'
 due_date: ''
 labels:
   - web
@@ -38,13 +38,13 @@ modified_files:
   - web/dist/assets/index-CweTpgD9.js
 lessons: []
 token_usage:
-  input: 5481047
-  output: 62971
-  cache: 5287936
-  total: 5544018
-  requests: 109
-  duration_ms: 1440776
-  reasoning: 42494
+  input: 6236424
+  output: 67595
+  cache: 6014976
+  total: 6304019
+  requests: 126
+  duration_ms: 1672265
+  reasoning: 44571
   by_phase:
     code:
       input: 4233445
@@ -52,10 +52,10 @@ token_usage:
       cache: 4070912
       requests: 79
     close:
-      input: 1247602
-      output: 5264
-      cache: 1217024
-      requests: 30
+      input: 2002979
+      output: 9888
+      cache: 1944064
+      requests: 47
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -200,5 +200,10 @@ created: 2026-11-05 16:55
 - chrome-devtools на `vibelog browser` (порт 5399): `document.title` = `Vibelog.md` (значение из `backlog/config.yml`), favicon `/vibelog.svg`, иконка 24×24, `title`-атрибут = полное имя; светлая тема — `oklch(0.145 0 0)`, тёмная — `oklch(0.985 0 0)` (иконка читаема в обеих); свёрнутый сайдбар — иконка видна, `span` шириной 0; длинное имя обрезается (`text-overflow: ellipsis`), вёрстка не ломается; консоль без сообщений; сеть — один `GET /api/config` на загрузку.
 - Fallback проверен подменой `fetch`: при отказе API титл и сайдбар = `Vibelog`; при `project_name: "   "` — тоже `Vibelog`.
 **Что осталось:** AC 14 (CHANGELOG.md + doc-6) — по правилам фазы 3 документацию пишет Фаза Close. DoD «Документация обновлена» поэтому не отмечен.
+---
+author: @agent
+created: 2026-11-05 17:51
+---
+Фаза close не удалась (код выхода 1): блокировок=0, payload последнего запроса=192154 байт (макс 192154), usage={"input_tokens":1247602,"output_tokens":5264,"cache_read_input_tokens":1217024,"total_tokens":1252866,"reasoning_tokens":2539} — статус возвращён к Review.
 ---
 <!-- COMMENTS:END -->
