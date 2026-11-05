@@ -1,11 +1,11 @@
 ---
 id: VL-342
 title: 'Проверка целостности ссылок задач: references/lessons/dependencies/parent_task_id → существующие id'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-05 13:23'
-updated_date: '2026-11-05 18:23'
+updated_date: '2026-11-05 18:56'
 due_date: ''
 labels:
   - core
@@ -27,15 +27,16 @@ modified_files:
   - src/cli/commands/task.ts
   - src/cli/commands/doctor.ts
   - src/cli/task-check-cli.test.mjs
-lessons: []
+lessons:
+  - lesson-229
 token_usage:
-  input: 3866507
-  output: 21505
-  cache: 3768320
-  total: 3888012
-  requests: 51
-  duration_ms: 480790
-  reasoning: 6992
+  input: 5599632
+  output: 29722
+  cache: 5467136
+  total: 5629354
+  requests: 90
+  duration_ms: 779976
+  reasoning: 9371
   by_phase:
     code:
       input: 3727582
@@ -43,10 +44,10 @@ token_usage:
       cache: 3640320
       requests: 47
     close:
-      input: 138925
-      output: 1155
-      cache: 128000
-      requests: 4
+      input: 1872050
+      output: 9372
+      cache: 1826816
+      requests: 43
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -72,14 +73,14 @@ token_usage:
 - [x] #9 Модуль тестируется без живого репозитория: фикстура на mkdtemp с задачами, lessons и references (lesson-104)
 - [x] #10 Идемпотентность и производительность: один проход по списку задач, без обращений к сети; на текущем корпусе (300+ задач) работает за разумное время
 - [x] #11 Нет пересечений с кодом doc-25: `install`/`create`/реестр/`installed.lock.json` и `router.ts`-ветки этих команд не трогаются (`router.ts` — только новая ветка проверки)
-- [ ] #12 CHANGELOG.md обновлён, doc-7 дополнен разделом проверки, `doctor` описан в doc-7
+- [x] #12 CHANGELOG.md обновлён, doc-7 дополнен разделом проверки, `doctor` описан в doc-7
 - [x] #13 `pnpm build && pnpm test` зелёные
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -201,7 +202,14 @@ author: @agent
 created: 2026-11-05 18:23
 ---
 Фаза close прервана агентом (aborted): Фаза Close прервана: конфликт слияния vb/vl-342 → master в файле `src/cli/commands/doctor.ts` (git status: `UU src/cli/commands/doctor.ts`). Merge выполнен с `--no-ff`, конфликт оставлен как есть (не резолвился, `git merge --abort` не делался) — состояние рабочего каталога главного репозитория сейчас в состоянии незавершённого merge.
-
 Причина конфликта: обе стороны правили `src/cli/commands/doctor.ts` — VL-342 добавляет проверку `task_integrity`, а в master этот же файл менялся другой задачей (в — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-05 18:56
+---
+Фаза Close выполнена. Ветка vb/vl-342 слита в master (merge-коммит 763edf1, 6 файлов, +966/−2) — слияние было выполнено ранее после ручного разрешения конфликта в `src/cli/commands/doctor.ts`; при этом ране merge не повторялся (проверено: `git log` содержит merge-коммит, `.git/MERGE_HEAD` отсутствует, `git branch --merged master` содержит vb/vl-342). Worktree `.vibelog/worktrees/vl-342` удалена (`--force`: единственный untracked-объект — симлинк `backlog/references/data` на главный репозиторий, данные не терялись), ветка vb/vl-342 удалена.
+Проверки после merge: `pnpm build` — успешно; ранний точечный фильтр `src/core/integrity.test.mjs` + `src/cli/task-check-cli.test.mjs` — 14 тестов зелёные; полный `pnpm test` — 182 файла, 3432 теста passed, 4 skipped, падений нет (повторных полных прогонов не было). Прогон на реальном корпусе: `vibelog task check` → «Битых ссылок нет (проверено задач: 335)», код 0; `doctor` → `task_integrity: {"total":335,"count":0,"findings":[]}`.
+Документация: CHANGELOG.md (запись в Unreleased → Добавлено), doc-7 (новый раздел `task check` с таблицей типов находок и правилами, абзац `task_integrity` в разделе `doctor`, строка в примере вывода) — коммит ffe94bd. Lessons: создан lesson-229 (проверка фактического состояния merge перед повторным слиянием в Close) — коммит 4a6afa4.
+DoD: 1 «Тесты проходят» ✓, 2 «Документация обновлена» ✓ (CHANGELOG + doc-7), 3 «Нет регрессий» ✓ (полный прогон зелёный). AC 12 отмечен.
 ---
 <!-- COMMENTS:END -->
