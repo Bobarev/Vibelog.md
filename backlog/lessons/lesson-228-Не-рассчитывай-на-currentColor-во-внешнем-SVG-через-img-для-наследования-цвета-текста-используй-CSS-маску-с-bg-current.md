@@ -11,14 +11,15 @@ tags:
   - тёмная-тема
 source_tasks:
   - VL-345
-linked_tasks: []
+linked_tasks:
+  - VL-345
 created_date: 2026-11-05
 updated_date: 2026-11-05
 supersedes: ''
-last_verified: ''
+last_verified: 2026-11-05
 verified_by: agent
 applies_to: []
-kind:
+kind: rule
 ---
 ## Проблема
 
