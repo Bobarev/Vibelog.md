@@ -673,6 +673,26 @@ Vibelog.md doctor
 
 ---
 
+## status
+
+```
+vibelog status [--json] [--short] [--no-git]
+```
+
+Сводка «где я» одним вызовом (VL-341): версия, проект и префикс задач из `backlog/config.yml`, счётчики задач по статусам, идущие фазы, состояние автоочереди, активный grant супервизора и git-состояние. Заменяет 3–5 команд (`backlog_phase_status`, `backlog_auto_queue status`, `backlog_supervisor status`, `git status`, `vibelog version`).
+
+| Флаг | Назначение |
+|---|---|
+| `--json` | Тот же объект структурированно (стабильные ключи: `version`, `project`, `tasks`, `runs`, `queue`, `grant`, `git`) — для скриптов и агента |
+| `--short` | Одна строка на пункт, без заголовков и рамок |
+| `--no-git` | Пропустить git-секцию (медленный `git status` в большом репозитории) |
+
+**Источники данных.** Версия — `package.json`; проект/префикс и задачи — `loadConfig` + `listTasks`; идущие фазы — `getRun`/`listRuns` оркестратора (поля `phase`, `pid`, `startedAt`, транскрипты JSONL не читаются); автоочередь — `src/core/auto-queue.ts`; grant — `findActiveGrant` (`src/web/supervisor-grant.ts`); git — `rev-parse --abbrev-ref HEAD`, `status --porcelain`, `rev-list --left-right --count @{u}...HEAD`.
+
+**Поведение.** Команда только читает: не стартует фазы, не трогает очередь и grant, не пишет файлов. Каждая секция собирается в своём `try/catch` — сбой одного источника пишет `error` этой секции и не рушит сводку. Нет `backlog/` — `project: null`, остальные секции всё равно собираются, код возврата `1` с подсказкой `vibelog init`. Нет автоочереди — `queue.running === false` и пустые массивы (не ошибка). Нет upstream у ветки — `ahead`/`behind` = 0 и `upstream: false` (отдельным булевым полем, не текстом в числах). Вне git-репозитория — `git: null` и пометка «не git-репозиторий».
+
+---
+
 ## agent
 
 ```
