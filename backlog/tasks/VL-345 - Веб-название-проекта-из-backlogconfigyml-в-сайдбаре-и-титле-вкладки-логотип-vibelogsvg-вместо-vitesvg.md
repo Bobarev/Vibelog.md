@@ -1,7 +1,7 @@
 ---
 id: VL-345
 title: 'Веб: название проекта из backlog/config.yml в сайдбаре и титле вкладки, логотип vibelog.svg вместо vite.svg'
-status: In Progress
+status: Review
 assignee: []
 reporter: ''
 created_date: '2026-11-05 16:30'
@@ -205,5 +205,10 @@ author: @agent
 created: 2026-11-05 17:51
 ---
 Фаза close не удалась (код выхода 1): блокировок=0, payload последнего запроса=192154 байт (макс 192154), usage={"input_tokens":1247602,"output_tokens":5264,"cache_read_input_tokens":1217024,"total_tokens":1252866,"reasoning_tokens":2539} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-05 17:56
+---
+Фаза close не удалась (код выхода 1): 2, блокировок=0, payload последнего запроса=204947 байт (макс 204947), usage={"input_tokens":755377,"output_tokens":4624,"cache_read_input_tokens":727040,"total_tokens":760001,"reasoning_tokens":2077} — статус возвращён к Review.
 ---
 <!-- COMMENTS:END -->
