@@ -143,6 +143,22 @@ export interface FetchRegistryItemOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+/** Опции загрузки произвольного файла репозитория реестра (VL-337). */
+export interface FetchRegistryFileOptions {
+  /** База реестра; по умолчанию — `resolveRegistryBase()`. */
+  baseUrl?: string;
+  owner: string;
+  repo: string;
+  /** Путь файла в репозитории реестра (`files[].path` манифеста). */
+  path: string;
+  /** Ветка; по умолчанию `master`. */
+  branch?: string;
+  timeoutMs?: number;
+  maxBodyBytes?: number;
+  retryDelaysMs?: readonly number[];
+  env?: NodeJS.ProcessEnv;
+}
+
 /** Коды сетевых ошибок, на которых имеет смысл повторять запрос. */
 const RETRYABLE_NETWORK_CODES = new Set([
   'ECONNRESET',
@@ -518,6 +534,32 @@ export function validateRegistryItem(raw: unknown, expectedName?: string): Regis
 }
 
 /**
+ * Скачивает сырой файл репозитория реестра (VL-337).
+ *
+ * Нужен `vb install`: манифест элемента (doc-25 §3.3) содержит только
+ * `path`/`target`/`type`, а сам код файла лежит отдельно и забирается тем же
+ * GET-ом. Ретраи и коды ошибок — общие с `fetchRegistryItem` (одна политика
+ * на весь сетевой слой).
+ */
+export async function fetchRegistryFile(
+  options: FetchRegistryFileOptions,
+): Promise<string> {
+  const {
+    owner,
+    repo,
+    path,
+    branch = DEFAULT_REGISTRY_BRANCH,
+    timeoutMs = REQUEST_TIMEOUT_MS,
+    maxBodyBytes = MAX_BODY_BYTES,
+    retryDelaysMs = RETRY_DELAYS_MS,
+    env,
+  } = options;
+  const baseUrl = options.baseUrl ?? resolveRegistryBase(env);
+  const url = buildRawUrl(baseUrl, owner, repo, branch, path);
+  return fetchTextWithRetries(url, path, branch, timeoutMs, maxBodyBytes, retryDelaysMs);
+}
+
+/**
  * Скачивает и валидирует JSON элемента реестра.
  *
  * Ретраи — только на 5xx и сетевые ошибки (до двух повторов, паузы
@@ -538,6 +580,53 @@ export async function fetchRegistryItem(options: FetchRegistryItemOptions): Prom
   } = options;
   const baseUrl = options.baseUrl ?? resolveRegistryBase(env);
   const url = buildRegistryItemUrl(baseUrl, owner, repo, branch, name);
+  const text = await fetchTextWithRetries(
+    url,
+    `элемент реестра «${name}»`,
+    branch,
+    timeoutMs,
+    maxBodyBytes,
+    retryDelaysMs,
+  );
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new RegistryFetchError(
+      `ответ реестра не является корректным JSON (${url}); проверьте реестр`,
+      'invalid_json',
+      url,
+    );
+  }
+  try {
+    return validateRegistryItem(parsed, name);
+  } catch (err) {
+    if (err instanceof RegistryFetchError) {
+      // Дополняем пустой url из валидатора адресом запроса.
+      throw new RegistryFetchError(err.message, err.kind, url);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Общий цикл GET с ретраями и классификацией ответов.
+ *
+ * Вынесен из `fetchRegistryItem`, чтобы скачивание файла компонента
+ * (`fetchRegistryFile`) не дублировало политику ретраев: расхождение в
+ * поведении двух сетевых путей — источник трудноуловимых багов.
+ *
+ * @param what — человекочитаемое описание объекта («элемент реестра «button»»)
+ */
+async function fetchTextWithRetries(
+  url: string,
+  what: string,
+  branch: string,
+  timeoutMs: number,
+  maxBodyBytes: number,
+  retryDelaysMs: readonly number[],
+): Promise<string> {
   const attemptsMax = retryDelaysMs.length + 1;
 
   for (let attempt = 1; attempt <= attemptsMax; attempt += 1) {
@@ -574,35 +663,14 @@ export async function fetchRegistryItem(options: FetchRegistryItemOptions): Prom
     if (status === 400 || status === 404) {
       const detail = extractErrorMessage(text);
       throw new RegistryFetchError(
-        `элемент реестра «${name}» не найден${detail ? `: ${detail}` : ''} (${url}); проверьте имя элемента и ветку «${branch}»`,
+        `${what} не найден${detail ? `: ${detail}` : ''} (${url}); проверьте имя и ветку «${branch}»`,
         'not_found',
         url,
         { status },
       );
     }
 
-    if (status >= 200 && status < 300) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        throw new RegistryFetchError(
-          `ответ реестра не является корректным JSON (${url}); проверьте реестр`,
-          'invalid_json',
-          url,
-          { status },
-        );
-      }
-      try {
-        return validateRegistryItem(parsed, name);
-      } catch (err) {
-        if (err instanceof RegistryFetchError) {
-          // Дополняем пустой url из валидатора адресом запроса.
-          throw new RegistryFetchError(err.message, err.kind, url, { status });
-        }
-        throw err;
-      }
-    }
+    if (status >= 200 && status < 300) return text;
 
     if (status >= 500) {
       const delay = retryDelaysMs[attempt - 1];
@@ -630,7 +698,7 @@ export async function fetchRegistryItem(options: FetchRegistryItemOptions): Prom
 
   // Недостижимо: цикл либо возвращает значение, либо бросает ошибку.
   throw new RegistryFetchError(
-    `не удалось загрузить элемент «${name}» — попыток: ${attemptsMax}`,
+    `не удалось загрузить ${what} — попыток: ${attemptsMax}`,
     'server',
     url,
     { attempts: attemptsMax },
