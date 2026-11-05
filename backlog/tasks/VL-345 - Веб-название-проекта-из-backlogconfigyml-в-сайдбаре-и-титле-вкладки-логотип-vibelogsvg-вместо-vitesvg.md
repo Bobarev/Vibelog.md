@@ -1,11 +1,11 @@
 ---
 id: VL-345
 title: 'Веб: название проекта из backlog/config.yml в сайдбаре и титле вкладки, логотип vibelog.svg вместо vite.svg'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-05 16:30'
-updated_date: '2026-11-05 19:05'
+updated_date: '2026-11-05 19:13'
 due_date: ''
 labels:
   - web
@@ -36,15 +36,16 @@ modified_files:
   - web/dist/vite.svg
   - web/dist/assets/index-BjLiPeNz.css
   - web/dist/assets/index-CweTpgD9.js
-lessons: []
+lessons:
+  - lesson-228
 token_usage:
-  input: 6789915
-  output: 69883
-  cache: 6551040
-  total: 6859798
-  requests: 140
-  duration_ms: 2156028
-  reasoning: 45715
+  input: 7264256
+  output: 75613
+  cache: 6946816
+  total: 7339869
+  requests: 152
+  duration_ms: 2360730
+  reasoning: 49719
   by_phase:
     code:
       input: 4233445
@@ -52,10 +53,10 @@ token_usage:
       cache: 4070912
       requests: 79
     close:
-      input: 2556470
-      output: 12176
-      cache: 2480128
-      requests: 61
+      input: 3030811
+      output: 17906
+      cache: 2875904
+      requests: 73
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -87,13 +88,13 @@ token_usage:
 - [x] #11 Тест: `web`-сборка проходит (`pnpm --dir web build`), титл и иконка присутствуют в собранном `index.html`
 - [x] #12 Ручная проверка через chrome-devtools: титл вкладки = имя проекта, иконка в сайдбаре и favicon — лого Vibelog, консоль без ошибок
 - [x] #13 `web/dist` пересобран и закоммичен (как в VL-163/VL-210)
-- [ ] #14 CHANGELOG.md обновлён, doc-6 (руководство пользователя, раздел веб-интерфейса) дополнен
+- [x] #14 CHANGELOG.md обновлён, doc-6 (руководство пользователя, раздел веб-интерфейса) дополнен
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -210,5 +211,23 @@ author: @agent
 created: 2026-11-05 17:56
 ---
 Фаза close не удалась (код выхода 1): 2, блокировок=0, payload последнего запроса=204947 байт (макс 204947), usage={"input_tokens":755377,"output_tokens":4624,"cache_read_input_tokens":727040,"total_tokens":760001,"reasoning_tokens":2077} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-05 19:05
+---
+Фаза close не удалась (код выхода 1): 2, блокировок=0, payload последнего запроса=174044 байт (макс 174044), usage={"input_tokens":553491,"output_tokens":2288,"cache_read_input_tokens":536064,"total_tokens":555779,"reasoning_tokens":1144} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-05 19:13
+---
+Фаза Close выполнена. Статус: Done.
+**Коммиты:**
+- feat `37cb01f` — «название проекта из config.yml в сайдбаре и титле, логотип vibelog.svg» (все файлы задачи: web/index.html, web/src/lib/project-config.ts, use-project-name.ts, app-sidebar.tsx, App.tsx, web/public/{vibelog,vite}.svg, пересобранный web/dist). Сделан в фазе Code.
+- docs `d95c80b` — CHANGELOG.md (запись в Unreleased) + doc-6 §10 «Доска и веб-интерфейс» (описание названия проекта, титла и favicon). Закрывает AC 14 и DoD «Документация обновлена».
+- docs(task) `2a039db` — lesson-228 (linked_tasks → VL-345, last_verified, kind=rule).
+**Не закоммичено:** `.vibelog/billing/VL-345.json`, `.vibelog/billing/VL-342.json` (служебные файлы биллинга, пишутся фреймворком), `backlog/tasks/VL-346 …` (untracked файл чужой задачи, не принадлежит VL-345). Причина: вне рамок задачи/коммитится не нами.
+**Проверки:** сборка выполнена в фазе Code; в Close после merge в master (merge `045abb5` = VL-345 + master) выполнен один полный `pnpm test` (build + vitest): **182 файла / 3432 теста passed, 4 skipped**, исключений и `--skip` не было. Пропусков полного прогона нет.
+**Уроки:** применён существующий lesson-228 (currentColor во внешнем SVG через `<img>` не наследует цвет — иконка сделана CSS-маской `bg-current [mask:...]`), двусторонняя связь с задачей установлена.
+Затронутые файлы: web/*, CHANGELOG.md, backlog/docs/doc-6…, backlog/lessons/lesson-228…
 ---
 <!-- COMMENTS:END -->
