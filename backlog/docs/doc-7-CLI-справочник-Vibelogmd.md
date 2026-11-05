@@ -113,6 +113,38 @@ vibelog install vibelog.md/ui/button --yes      # без вопросов, за�
 
 ---
 
+## create
+
+```
+vibelog create <name> --template <alias>/<repo>/<template> [--branch <b>] [--package-manager <pm>] [--no-install] [--no-git] [--yes]
+```
+
+Создаёт новый проект из шаблона (спецификация — doc-25 §2.1, §4.1): клонирует подпапку шаблона через `sparse-checkout` во временный каталог `os.tmpdir()`, проверяет `vibelog.type === "template"` в `package.json` шаблона, копирует содержимое подпапки в `./<name>`, ставит зависимости, выполняет `scripts.postCreate`, устанавливает компоненты из `vibelog.components` (логика `vb install`) и делает `git init` + первый коммит.
+
+| Флаг | Описание |
+|---|---|
+| `<name>` | Имя проекта по npm-правилам: lowercase, длина 1–214, допустимы `a-z0-9-_.`, не начинается с `.` или `_`; иначе код `1` с указанием правила |
+| `--template <p>` | Обязателен, ровно три сегмента: `<alias>/<repo>/<template>`, например `vibelog.md/templates/svelte-minimal`; иначе код `1` с примером |
+| `--branch <b>` | Ветка шаблона; по умолчанию `registries[alias].branch`, иначе `master` |
+| `--package-manager <pm>` | `npm`/`pnpm`/`bun`/`yarn`; без флага — интерактивный выбор с детектом по lock-файлу шаблона (`initialValue`), дефолт `npm` |
+| `--no-install` | Пропустить установку зависимостей, `postCreate` и установку компонентов (сеть не трогается) |
+| `--no-git` | Не выполнять `git init` и первый коммит |
+| `--yes` | Без вопросов: дефолты на всё, пакетный менеджер — по детекту, иначе `npm` |
+
+**Клонирование** идёт строго в этом порядке (иначе рабочее дерево развернётся полностью): `git clone --filter=blob:none --no-checkout --depth 1 --branch <b>`, затем `sparse-checkout init --cone`, `sparse-checkout set <template>`, только потом `checkout <branch>`. Cone-режим разворачивает и корневые файлы репозитория — это документированное поведение git: копируется только содержимое `<tmp>/<template>`, корневые `README`/`package.json` игнорируются. На git < 2.25 (macOS 10.15 Catalina) подкоманды `sparse-checkout` нет — включается эквивалентный механизм `core.sparseCheckout=true` + `.git/info/sparse-checkout` с тем же результатом. Сообщение git `filtering not recognized by server` выводится предупреждением и не прерывает создание.
+
+Существующий каталог `./<name>` — код `2`; перезапись запрещена, флага `--force` нет. Каталог создаётся только после успешной проверки шаблона. Падение `scripts.postCreate` каталог **сохраняет** (проект остаётся на диске для ручного разбора), выводится ошибка с путём и код `3`. Ошибка установки отдельного компонента из `vibelog.components` — предупреждение: создание проекта не отменяется, неудачные перечисляются в итоговом блоке. Недоступность `git` в PATH — предупреждение и код `0`. Временный каталог удаляется в `finally` при любом исходе.
+
+Коды выхода: `0` — успех, `1` — использование (имя, флаг, путь шаблона), `2` — каталог уже существует, `3` — клон/шаблон/зависимости/`postCreate`, `5` — отмена промпта.
+
+```bash
+vibelog create myapp --template vibelog.md/templates/svelte-minimal
+vibelog create myapp --template vibelog.md/templates/svelte-minimal --no-install --no-git
+vibelog create myapp --template vibelog.md/templates/svelte-minimal --package-manager pnpm --yes
+```
+
+---
+
 ## task
 
 ```
