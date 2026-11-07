@@ -1,6 +1,6 @@
 ---
 id: lesson-198
-title: Повторяй текст последнего ackError и готовое исправление аргументов в директиве loop detection
+title: 'Отдавай в директиве loop detection ГОТОВЫЙ вызов с подставленным retryWith, а не текст ошибки с просьбой «исправь аргументы»'
 status: active
 tags:
   - agent
@@ -8,12 +8,15 @@ tags:
   - tool-result
   - mcp
   - phases
+  - retryWith
 source_tasks:
   - VL-323
+  - VL-353
 linked_tasks:
   - VL-323
+  - VL-353
 created_date: 2026-11-03
-updated_date: 2026-11-03
+updated_date: 2026-11-07
 supersedes: ''
 last_verified: ''
 verified_by: agent
