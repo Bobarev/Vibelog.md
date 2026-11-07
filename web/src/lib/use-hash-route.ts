@@ -34,7 +34,8 @@ export type Route =
   | 'documents'
   | 'document'
   | 'lessons'
-  | 'lesson';
+  | 'lesson'
+  | 'activity';
 
 /** Текущий маршрут по location.hash. */
 function parseHash(hash: string): Route {
@@ -46,6 +47,8 @@ function parseHash(hash: string): Route {
   // Мастер настройки проекта (VL-210): #/setup — точное совпадение
   if (path === 'setup') return 'setup';
   if (path === 'tasks') return 'tasks';
+  // Лента активности (VL-347): #/activity — единый лог работ
+  if (path === 'activity') return 'activity';
   // Чат с LLM (VL-204): точное совпадение до детальных префиксов
   if (path === 'chat') return 'chat';
   // Тред чата (VL-207): #/chat/<threadId> — тот же экран «чат», id далее

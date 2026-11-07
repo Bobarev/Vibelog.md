@@ -406,6 +406,8 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       comment: text,
       agent,
       onExit,
+      // VL-347: источник запуска — лента активности различает бот и веб
+      source: 'bot',
     });
     await sendText(bot, chatId, `💬 Комментарий добавлен к *${task.id}*`);
     if ('error' in result) {
@@ -971,7 +973,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         notifyPhaseDone(bot, notifyChat, task, run);
       };
       // VL-180: общий с вебом хелпер (агент уже рассчитан для текста сообщений)
-      const result = startTaskPhase(deps.cwd, task.id, 'spec', { onExit, agent });
+      const result = startTaskPhase(deps.cwd, task.id, 'spec', { onExit, agent, source: 'bot' });
       if ('error' in result) {
         await sendMd(
           ctx,
@@ -1028,6 +1030,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         comment: parsed.comment,
         agent,
         onExit,
+        source: 'bot',
       });
     } catch (err) {
       await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
@@ -1088,6 +1091,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         // VL-147: явный флаг --same-session/--no-same-session переопределяет
         // настройку code_same_session; undefined — брать настройку
         sameSession: parsed.sameSession,
+        source: 'bot',
       });
     } catch (err) {
       await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
@@ -1130,7 +1134,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       notifyPhaseDone(bot, notifyChat, task, run);
     };
     // VL-180: общий с вебом хелпер (без комментария — как раньше)
-    const result = startTaskPhase(deps.cwd, task.id, 'close', { onExit, agent });
+    const result = startTaskPhase(deps.cwd, task.id, 'close', { onExit, agent, source: 'bot' });
     if ('error' in result) {
       // Guard «уже выполняется» и прочие ошибки валидации startPhase
       await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
@@ -1707,7 +1711,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       // VL-180: общий хелпер — comment '' не передаётся (литеральный {{comment}}
       // в промпте, как в вебе — шаблон поддерживает фолбэк)
       const agent = resolveDefaultAgent(deps.cwd);
-      const result = startTaskPhase(deps.cwd, task.id, phase, { onExit, agent });
+      const result = startTaskPhase(deps.cwd, task.id, phase, { onExit, agent, source: 'bot' });
       if ('error' in result) {
         await sendMd(ctx, '⚠️ ' + escapeMarkdownV2(result.error));
         return;

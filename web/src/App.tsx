@@ -13,6 +13,7 @@
 import { useEffect } from "react"
 
 import { Kanban } from "@/components/kanban/kanban"
+import { ActivityPage } from "@/components/activity/activity-page"
 import { ChatPage } from "@/components/chat/thread"
 import { ConfigPage } from "@/components/config/config-page"
 import { DocumentDetail } from "@/components/documents/document-detail"
@@ -94,6 +95,8 @@ export function App() {
         >
           {route === "tasks" ? (
             <TasksPage />
+          ) : route === "activity" ? (
+            <ActivityPage />
           ) : route === "chat" ? (
             <ChatPage />
           ) : route === "settings" ? (

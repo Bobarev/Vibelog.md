@@ -21,7 +21,7 @@
 
 import * as React from "react";
 
-import { Cpu, FileText, FolderCog, Kanban, Library, Lightbulb, MessageSquare, PlusCircle, Settings, SlidersHorizontal, Wand2 } from "lucide-react";
+import { Activity, Cpu, FileText, FolderCog, Kanban, Library, Lightbulb, MessageSquare, PlusCircle, Settings, SlidersHorizontal, Wand2 } from "lucide-react";
 
 import { Sidebar, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarRail } from "@/components/ui/sidebar";
 import { NavMain, type NavGroup } from "@/components/layout/nav-main";
@@ -78,6 +78,15 @@ const NAV_GROUPS: NavGroup[] = [
         url: "chat",
         icon: MessageSquare,
         activeWhen: ["chat"],
+      },
+      // Активность (VL-347): #/activity — единый лог работ (фазы, задачи,
+      // очередь, супервизор) с переходами на задачи
+      {
+        id: "activity",
+        title: "Активность",
+        url: "activity",
+        icon: Activity,
+        activeWhen: ["activity"],
       },
       {
         id: "settings",

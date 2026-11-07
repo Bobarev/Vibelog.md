@@ -44,6 +44,8 @@ import { agentSessionsDir, analyzeToolRepeatsFromJsonlSync, appendSessionRun, fi
 import { hasUsageDelta, usageDelta } from '../core/analytics.js';
 import type { TokenUsage } from '../core/analytics.js';
 import { appendBilling } from '../core/billing.js';
+import type { BillingSource } from '../core/billing.js';
+import { RUN_SOURCE_ENV } from '../core/billing.js';
 // VL-276: живость процесса фазы — reap залипших локов (см. reapStaleRuns);
 // функция уже написана для супервизора, дублировать логику process.kill нельзя
 import { isPidAlive } from '../core/supervisor-state.js';
@@ -248,7 +250,7 @@ export function startPhase(
   onExit?: PhaseExitCallback,
   extraVars?: Record<string, string>,
   agent: 'qwen' | 'vb' = resolveDefaultAgent(cwd),
-  opts?: { sameSession?: boolean; extraArgs?: string[] }
+  opts?: { sameSession?: boolean; extraArgs?: string[]; source?: BillingSource }
 ): StartResult {
   // Защита HTTP-границы (VL-66): api.ts пропускает произвольный phase из
   // POST-body — без guard'а qwen получил бы шаблон prompt.md с неподставленным
@@ -471,7 +473,18 @@ export function startPhase(
         drainCloseQueue();
       }
     };
-    const res = spawnQwenRun(cwd, taskId, phase as Phase, prompt, wrappedExit, agent, extraArgs);
+    const res = spawnQwenRun(
+      cwd,
+      taskId,
+      phase as Phase,
+      prompt,
+      wrappedExit,
+      agent,
+      extraArgs,
+      undefined,
+      false,
+      opts?.source
+    );
     if ('error' in res) {
       // Спавн не состоялся (guard и т.п.) — флаг снимается, очередь разгребается
       closeActive = false;
@@ -480,7 +493,18 @@ export function startPhase(
     }
     return res;
   }
-  const res = spawnQwenRun(cwd, taskId, phase as Phase, prompt, onExit, agent, extraArgs);
+  const res = spawnQwenRun(
+    cwd,
+    taskId,
+    phase as Phase,
+    prompt,
+    onExit,
+    agent,
+    extraArgs,
+    undefined,
+    false,
+    opts?.source
+  );
   // VL-187: статус sameSession добавляем только к успеху и только для code
   // (вне code sameSessionStatus === undefined — возвращаем как раньше)
   if ('error' in res || sameSessionStatus === undefined) return res;
@@ -525,6 +549,13 @@ export function startTaskPhase(
     agent?: 'qwen' | 'vb';
     sameSession?: boolean;
     extraArgs?: string[];
+    /**
+     * VL-347: откуда запущена фаза — попадает в billing.source через
+     * env-маркер VIBELOG_RUN_SOURCE. По умолчанию 'web' (HTTP-роуты и
+     * веб-чат); бот передаёт 'bot', автоочередь — 'queue', супервизор —
+     * 'supervisor'.
+     */
+    source?: BillingSource;
   }
 ): StartResult {
   // VL-180: агент — явный параметр либо default_agent проекта (fallback qwen)
@@ -538,6 +569,7 @@ export function startTaskPhase(
   return startPhase(cwd, taskId, phase, opts?.onExit, comment ? { comment } : undefined, agent, {
     sameSession: opts?.sameSession,
     extraArgs: opts?.extraArgs,
+    source: opts?.source,
   });
 }
 
@@ -890,7 +922,10 @@ function spawnQwenRun(
   agent: 'qwen' | 'vb' = 'qwen',
   extraArgs: string[] = [],
   worktreeTaskId?: string,
-  noWorktree = false
+  noWorktree = false,
+  // VL-347: источник запуска рана (bot/web/cli/queue/supervisor) — уходит в
+  // env спавна и в billing.source. Дефолт 'web': HTTP-роуты и веб-чат.
+  source: BillingSource = 'web'
 ): StartResult {
   // VL-145: канонический ключ — задачные ключи в верхнем регистре,
   // чтобы resume (ключ из верхнего регистра меты) и фаза (raw task.id,
@@ -942,6 +977,11 @@ function spawnQwenRun(
   // env (CLI/post-run пишут его в billing/мету) и используется finish()'ом
   // для проверки маркера billing_recorded (маркер >= старта = запись этого рана).
   const runStartedAt = new Date().toISOString();
+  // VL-347: источник запуска рана — попадает в billing.source. Явный параметр
+  // (бот/очередь/супервизор) приоритетнее; по умолчанию 'web' — HTTP-роуты и
+  // веб-чат. Значение уходит в env спавна (VIBELOG_RUN_SOURCE), поэтому
+  // CLI-пост-ран и MCP-сервер агента пишут то же самое без изменения сигнатур.
+  const runSource: BillingSource = source;
   // VL-259: фаза РАНА для учёта (billing.phase, by_phase). У resume-рана
   // (startResume) phase='prompt' — служебная фаза, которая не должна попадать
   // в by_phase: фактическая фаза рана берётся из меты сессии (продолжение
@@ -968,6 +1008,9 @@ function spawnQwenRun(
       // → billing.startedAt в CLI пост-ране)
       ...(runPhase ? { VIBELOG_RUN_PHASE: runPhase } : {}),
       VIBELOG_RUN_STARTED_AT: runStartedAt,
+      // VL-347: источник запуска — наследуется агентом и его MCP-сервером,
+      // поэтому billing.source пишется одинаково на всех путях учёта
+      [RUN_SOURCE_ENV]: runSource,
     };
   }
   if (resolveBranchMode(cwd) && branchTask !== '') {
@@ -1285,6 +1328,8 @@ function spawnQwenRun(
               durationMs: result.duration_ms,
               usage: runUsage,
               agent: 'qwen',
+              // VL-347: откуда запущен ран (бот/веб/очередь/супервизор)
+              source: runSource,
             });
             updateSessionMeta(sessionsDir, result.session_id, {
               cwd: metaCwd,
@@ -1366,6 +1411,8 @@ function spawnQwenRun(
               usage: runUsage,
               agent: 'vb',
               fallback: true,
+              // VL-347: источник запуска (fallback-запись того же рана)
+              source: runSource,
             });
             updateSessionMeta(sessionsDir, result.session_id, {
               cwd: metaCwd,
@@ -1467,7 +1514,9 @@ function spawnQwenRun(
           onExit,
           agent,
           resumeArgs,
-          worktreeTaskId
+          worktreeTaskId,
+          false,
+          runSource
         );
         return; // текущий record в lastRuns остался; onExit уйдёт по финальному
       }

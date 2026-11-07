@@ -61,6 +61,45 @@ export interface BillingSession {
   model?: string;
   /** Агент: 'vb' | 'qwen'. */
   agent?: string;
+  /**
+   * VL-347: откуда запущена фаза — бот, веб, CLI, автоочередь, супервизор.
+   * Без этого поля лента активности (#/activity) не отвечает на главный
+   * вопрос «что откуда запускалось»: пользователь работает и в боте, и в
+   * вебе. Проставляется точкой запуска через env-маркер
+   * {@link RUN_SOURCE_ENV} (оркестратор кладёт его в spawnEnv рядом с
+   * VIBELOG_RUN_PHASE/VIBELOG_RUN_STARTED_AT, VL-259) — сигнатуры всех
+   * вызовов startTaskPhase менять не нужно. Старые записи без поля читаются
+   * как 'unknown' (миграции нет).
+   */
+  source?: BillingSource;
+}
+
+/** Источник запуска фазы (VL-347). */
+export type BillingSource = 'bot' | 'web' | 'cli' | 'queue' | 'supervisor';
+
+/**
+ * Env-маркер источника запуска (VL-347): `VIBELOG_RUN_SOURCE=bot|web|cli|queue|supervisor`.
+ *
+ * Прокидывается через spawn (как VIBELOG_RUN_PHASE/VIBELOG_RUN_STARTED_AT,
+ * VL-259) и наследуется и агентом, и его MCP-сервером — поэтому запись
+ * billing в CLI-пост-ране и в finish() оркестратора видит одно и то же
+ * значение без изменения сигнатур.
+ */
+export const RUN_SOURCE_ENV = 'VIBELOG_RUN_SOURCE';
+
+/** Допустимые источники запуска — валидация env-маркера и API-фильтра. */
+export const BILLING_SOURCES: readonly BillingSource[] = ['bot', 'web', 'cli', 'queue', 'supervisor'];
+
+/**
+ * Разбирает значение env-маркера источника запуска (VL-347).
+ *
+ * Кривое/пустое значение → undefined (лучше записать ран без источника, чем
+ * потерять учёт из-за опечатки в env — тот же принцип, что у
+ * {@link parseExperimentMarker}).
+ */
+export function parseRunSource(value?: string | null): BillingSource | undefined {
+  const raw = String(value ?? '').trim().toLowerCase();
+  return (BILLING_SOURCES as readonly string[]).includes(raw) ? (raw as BillingSource) : undefined;
 }
 
 /** Файл billing задачи: массив сессий. */

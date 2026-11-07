@@ -107,6 +107,13 @@ import { PRICING_GUARD_KEYS } from '../core/pricing-guard.js';
 import type { BotSettings } from '../bot/settings.js';
 import { CHAT_LIMITS_CEILING } from './chat-limits.js';
 import { startTaskPhase, getRun, rejectTask } from './orchestrator.js';
+import {
+  collectActivity,
+  ACTIVITY_TYPES,
+  ACTIVITY_DEFAULT_LIMIT,
+  ACTIVITY_MAX_LIMIT,
+} from '../core/activity.js';
+import type { ActivityType } from '../core/activity.js';
 import { handleSetupApi } from './setup-api.js';
 
 /** HTTP-ответ API. */
@@ -302,6 +309,73 @@ export function handleApi(
       if (consistency) return { status: 400, body: { error: consistency } };
       saveConfig(cwd, config);
       return { status: 200, body: loadConfig(cwd) };
+    }
+
+    // GET /api/activity — лента активности проекта (VL-347).
+    // Параметры: since, until (ISO), type (повторяемый или через запятую),
+    // taskId, source, limit (дефолт 50, максимум 200), offset. Валидация
+    // строгая: неизвестный type/невалидная дата → 400 со списком допустимых
+    // (лента не должна молча отдавать пустоту из-за опечатки в фильтре).
+    if (method === 'GET' && url === '/api/activity') {
+      const params = new URLSearchParams(queryString);
+      const typesRaw = params.getAll('type').flatMap((v) => v.split(','));
+      const types: ActivityType[] = [];
+      for (const raw of typesRaw) {
+        const value = raw.trim();
+        if (!value) continue;
+        if (!(ACTIVITY_TYPES as readonly string[]).includes(value)) {
+          return {
+            status: 400,
+            body: {
+              error: `Неизвестный тип события: ${value}`,
+              allowed: [...ACTIVITY_TYPES],
+            },
+          };
+        }
+        types.push(value as ActivityType);
+      }
+      const since = params.get('since') ?? undefined;
+      const until = params.get('until') ?? undefined;
+      for (const [name, value] of [
+        ['since', since],
+        ['until', until],
+      ] as const) {
+        if (value !== undefined && value !== '' && !Number.isFinite(Date.parse(value))) {
+          return { status: 400, body: { error: `Невалидная дата ${name}: ${value}` } };
+        }
+      }
+      const limitRaw = params.get('limit');
+      const offsetRaw = params.get('offset');
+      const limit = limitRaw === null || limitRaw === '' ? undefined : Number(limitRaw);
+      const offset = offsetRaw === null || offsetRaw === '' ? undefined : Number(offsetRaw);
+      if (limit !== undefined && (!Number.isFinite(limit) || limit < 1)) {
+        return { status: 400, body: { error: `Невалидный limit: ${limitRaw}` } };
+      }
+      if (offset !== undefined && (!Number.isFinite(offset) || offset < 0)) {
+        return { status: 400, body: { error: `Невалидный offset: ${offsetRaw}` } };
+      }
+      const result = collectActivity(cwd, {
+        ...(since ? { since } : {}),
+        ...(until ? { until } : {}),
+        ...(types.length > 0 ? { types } : {}),
+        ...(params.get('taskId') ? { taskId: params.get('taskId') as string } : {}),
+        ...(params.get('source') ? { source: params.get('source') as string } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+        ...(offset !== undefined ? { offset } : {}),
+      });
+      const effectiveLimit = Math.min(
+        Math.max(1, limit ?? ACTIVITY_DEFAULT_LIMIT),
+        ACTIVITY_MAX_LIMIT
+      );
+      const effectiveOffset = Math.max(0, offset ?? 0);
+      return {
+        status: 200,
+        body: {
+          events: result.events,
+          total: result.total,
+          hasMore: effectiveOffset + result.events.length < result.total,
+        },
+      };
     }
 
     // GET /api/settings — настройки для веб-страницы (VL-156).

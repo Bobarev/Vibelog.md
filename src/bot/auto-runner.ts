@@ -360,6 +360,8 @@ export function autoTick(bot: Bot, cwd: string): void {
     onExit,
     agent: resolveDefaultAgent(cwd),
     extraArgs,
+    // VL-347: запуск из автоочереди — источник в ленте активности
+    source: 'queue',
   });
   if ('error' in result) {
     // Ошибка запуска (409 «уже выполняется», валидация) — та же retry-машинa
