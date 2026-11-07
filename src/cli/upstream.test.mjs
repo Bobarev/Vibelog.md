@@ -55,9 +55,11 @@ function makeProject(settings, env) {
  */
 function runCli(cwd, ...args) {
   return new Promise((resolve) => {
-    // Токен из shell-окружения снимается: тесты проверяют приоритет `.env`
-    // и кейс «нет токена», а локальный GITVERSE_TOKEN разработчика (или
-    // агентской сессии) иначе подменял бы ожидаемый код выхода 4 на 3.
+    // GITVERSE_TOKEN из shell-окружения снимается: тесты проверяют приоритет
+    // `.env` и кейс «нет токена», а локальный токен разработчика (или
+    // агентской сессии) иначе подменял бы ожидаемый код выхода 4 на 3 —
+    // CLI читает shell env раньше `.env`, и тест должен видеть только тот
+    // токен, который сам положил в `.env` (VL-367).
     const env = testSpawnEnv({ VIBELOG_GITVERSE_API_BASE: `http://127.0.0.1:${port}` });
     delete env.GITVERSE_TOKEN;
     const child = spawn('node', [cliPath, ...args], { cwd, env });
