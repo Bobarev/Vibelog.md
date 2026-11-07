@@ -630,6 +630,48 @@ git_commit {"paths": ["src/mcp/git-commit.ts","src/mcp/tools.ts"], "message": "f
 
 ---
 
+## GitVerse Issues (VL-363)
+
+### upstream_report_bug — репорт бага в upstream-проект
+
+Write-инструмент: создаёт issue в репозитории из секции `upstream` и возвращает его номер как ack. Нужен дочерним проектам (`ui`/`templates`) — их агент не может завести задачу в родительском `backlog/`, потому что инструменты ограничены корнем проекта.
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `title` | string | ✓ | Заголовок issue, непустой |
+| `body` | string | | Что произошло: описание, шаги, ожидаемое поведение |
+| `severity` | string | | `low` \| `medium` \| `high` \| `critical` — в секцию «Окружение» |
+| `area` | string | | `cli` \| `mcp` \| `web` \| `agent` \| `install` \| … — в «Окружение» |
+| `source_task` | string | | ID задачи проекта-источника — в секцию «Источник» |
+| `labels` | string[] | | Дополнительные метки поверх `upstream.labels` |
+
+**Настройка.** `GITVERSE_TOKEN` в `.env` (права: Запись на репозиторий) + секция `upstream` в `.vibelog/settings.json`: `{repo: "owner/name", labels: [...], type: "bug"}`. `repo` обязателен; `labels` по умолчанию `upstream` + `from-<prefix>`; `type` по умолчанию `bug`.
+
+**Тело issue детерминировано.** `buildIssueBody` формирует фиксированные секции «Что произошло», «Воспроизведение», «Окружение», «Источник» — текст не отдаётся на волю модели, иначе формат поедет и импорт на принимающей стороне не разберёт секции.
+
+**Метки создаются автоматически.** `ensureLabels` проверяет `GET /labels` и создаёт отсутствующие (лимит имени — 20 символов), идемпотентно.
+
+Ответ — контракт write-инструментов (VL-306):
+
+```json
+{ "ok": true, "applied": { "number": 42, "url": "https://gitverse.ru/…/issues/42", "labels": ["upstream","from-ui"] },
+  "message": "Issue #42 создан: …" }
+```
+
+- нет секции `upstream` → `{ "ok": false, "error": "секция upstream не настроена — …", "hint": "…" }`;
+- нет токена → `ok: false` с подсказкой, где создать токен и какие права нужны;
+- ошибка API → `ok: false` с текстом GitVerse; токен в тексте замаскирован.
+
+`isWriteOperation('upstream_report_bug') === true` (`TOOL_KINDS`, `src/core/tool-kinds.ts`); в `GRANTABLE_TOOLS` супервизора не входит.
+
+```
+upstream_report_bug {"title": "git_commit падает на кириллице", "body": "…", "severity": "high", "area": "mcp", "source_task": "UI-12"}
+```
+
+Подробно: doc-28.
+
+---
+
 ## Карта проекта
 
 ### project_map — карта src/: путь + назначение + экспорты (VL-235)
