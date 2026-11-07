@@ -15,6 +15,9 @@
 import { getFlag } from '../args.js';
 import type { FlagValues } from '../args.js';
 import { printSuccess, printInfo, printError } from '../ui.js';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { findBacklogDir } from '../../core/paths.js';
 import { loadProjectEnv } from '../../bot/env.js';
 import { resolveActiveModel } from '../../core/models.js';
@@ -58,6 +61,15 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
   // одного из них означала бы, что пользователь получил не то, что просил.
   if (flags.components === true && flags['no-components'] === true) {
     printError('Флаги --components и --no-components взаимоисключающие');
+    process.exitCode = 1;
+    return;
+  }
+
+  // VL-348: --git-init и --no-git-init взаимоисключающие (та же логика, что
+  // у --components/--no-components): тихая победа одного из них означала бы,
+  // что пользователь получил не то, что просил.
+  if (flags['git-init'] === true && flags['no-git-init'] === true) {
+    printError('Флаги --git-init и --no-git-init взаимоисключающие');
     process.exitCode = 1;
     return;
   }
@@ -179,6 +191,14 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
   }
   console.log(formatSetupLog(answers, state, cwd));
 
+  // VL-348: проект вне git и репозиторий не создавали — предупреждаем, что
+  // `.env` с секретами ничем не защищён (AC10: код выхода при этом 0).
+  if (!state.git.inRepo && answers.git?.init !== true) {
+    printError(
+      'Проект не в git: .env с секретами не защищён. Запустите vibelog init --git-init или git init вручную',
+    );
+  }
+
   // --- Проверки (шаг 7) ---
   await runChecks(cwd, answers, flags);
 
@@ -276,5 +296,17 @@ async function runChecks(cwd: string, answers: SetupAnswers, flags: FlagValues):
     const check = await checkTelegramToken(answers.bot.token, proxy !== '' ? { proxy } : {});
     if (check.ok) printSuccess(`Telegram OK: @${check.username ?? 'бот'}`);
     else printError(check.error ?? 'Токен невалиден');
+  }
+
+  // VL-348: `.env` должен быть невидим для git. Спрашиваем сам git
+  // (`check-ignore`), а не парсим `.gitignore`: правила git регуляркой не
+  // воспроизвести, а ошибка здесь означает утечку токенов.
+  if (existsSync(join(cwd, '.env'))) {
+    const res = spawnSync('git', ['check-ignore', '-q', '--', '.env'], { cwd, encoding: 'utf-8' });
+    if (!res.error && res.status === 1) {
+      printError('.env НЕ игнорируется git: токены и API-ключи могут уехать в репозиторий');
+    } else if (!res.error && res.status === 0) {
+      printSuccess('.env игнорируется git');
+    }
   }
 }

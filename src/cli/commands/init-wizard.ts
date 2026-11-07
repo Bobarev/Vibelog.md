@@ -251,8 +251,30 @@ export function answersFromFlags(flags: FlagValues, state: SetupState, cwd: stri
     // не может спросить, а секция нужна `vb install`; отвергается только
     // явным --no-components (AC3).
     components: { enabled: flags['no-components'] === true ? false : true },
+    // VL-348: git-шаг в non-interactive пути включается только явным флагом.
+    // Без флагов поведение прежнее (ничего не инициализируем) — иначе `--yes`
+    // молча создавал бы репозиторий и коммит в чужом каталоге.
+    git: gitAnswersFromFlags(flags),
     force: flags.force === true,
   };
+}
+
+/**
+ * Разбирает git-флаги non-interactive пути (VL-348).
+ *
+ * `--git-init` включает init+коммит, `--no-git-init` выключает (флаги
+ * взаимоисключающие, конфликт проверяет init.ts), `--git-remote <url>`
+ * подразумевает init: адрес remote без репозитория бессмыслен.
+ *
+ * @returns секция `git` ответов либо undefined — git не трогаем вовсе
+ */
+export function gitAnswersFromFlags(flags: FlagValues): SetupAnswers['git'] {
+  const remote = getFlag(flags, 'git-remote', '');
+  if (flags['no-git-init'] === true) return { init: false };
+  if (flags['git-init'] === true || remote !== '') {
+    return { init: true, commit: true, ...(remote !== '' ? { remote } : {}) };
+  }
+  return undefined;
 }
 
 /**
@@ -678,6 +700,34 @@ export async function runWizard(
       );
     }
 
+    // --- 8. Git: init, первый коммит, remote (VL-348) ---
+    // Шаг стоит последним: gitignore-политику пишет applySetup, и первый
+    // коммит не должен притащить `.env`. Внутри существующего репозитория
+    // вопросы не задаются вовсе (AC8) — вложенный репозиторий не создаём.
+    let git: SetupAnswers['git'];
+    if (state.git.inRepo) {
+      git = undefined;
+    } else if (flags['no-git-init'] === true) {
+      git = { init: false };
+    } else if (flags['git-init'] === true) {
+      const remote = getFlag(flags, 'git-remote', '');
+      git = { init: true, commit: true, ...(remote !== '' ? { remote } : {}) };
+    } else {
+      const wantGit = await session.askConfirm('Инициализировать git-репозиторий?', true);
+      if (wantGit) {
+        const wantCommit = await session.askConfirm('Сделать первый коммит?', true);
+        const wantRemote = await session.askConfirm('Добавить remote (origin)?', false);
+        let remote: string | undefined;
+        if (wantRemote) {
+          const url = await session.askText('URL remote (origin)', '');
+          if (url !== '') remote = url;
+        }
+        git = { init: true, commit: wantCommit, ...(remote !== undefined ? { remote } : {}) };
+      } else {
+        git = { init: false };
+      }
+    }
+
     return {
       mode: state.mode,
       projectName,
@@ -691,6 +741,7 @@ export async function runWizard(
       model,
       mcp,
       components: { enabled: componentsEnabled },
+      git,
       force: flags.force === true,
     };
   } finally {

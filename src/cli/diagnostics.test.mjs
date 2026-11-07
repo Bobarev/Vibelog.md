@@ -322,6 +322,36 @@ describe('Диагностика — git-политика .vibelog/ (VL-340)', (
     const check = json.checks.find(c => c.name === 'vibelog_root_ignored');
     assert.equal(check.ok, false, 'корневой .gitignore не должен игнорировать .vibelog/');
   });
+
+  // VL-348: корневой .gitignore при существующем .env
+  it('VL-348: нет корневого .gitignore при существующем .env → root_gitignore_exists не ok', () => {
+    const dir = makeFixture({ git: true, gitignore: true });
+    writeFileSync(join(dir, '.env'), 'A=1\n');
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    const check = json.checks.find(c => c.name === 'root_gitignore_exists');
+    assert.ok(check, 'проверка root_gitignore_exists присутствует');
+    assert.equal(check.ok, false, 'без .gitignore секреты не защищены');
+    assert.ok(check.hint, 'есть подсказка');
+  });
+
+  it('VL-348: корневой .gitignore есть → root_gitignore_exists ok', () => {
+    const dir = makeFixture({ git: true, gitignore: true });
+    writeFileSync(join(dir, '.env'), 'A=1\n');
+    writeFileSync(join(dir, '.gitignore'), '.env\n');
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    const check = json.checks.find(c => c.name === 'root_gitignore_exists');
+    assert.equal(check.ok, true);
+  });
+
+  it('VL-348: без .env отсутствие .gitignore проверку не валит', () => {
+    const dir = makeFixture({ git: true, gitignore: true });
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    const check = json.checks.find(c => c.name === 'root_gitignore_exists');
+    assert.equal(check.ok, true, 'секретов нет — правило не требуется');
+  });
 });
 
 describe('Диагностика — незакоммиченные billing/settings (VL-352)', () => {

@@ -245,6 +245,9 @@ LLM (только если выбран vb):
   --skip-llm-check, --skip-bot-check  — не проверять LLM/бота
   --components | --no-components      — Секция доставки UI-компонентов (doc-25)
                         (по умолчанию создаётся; --no-components — не создавать)
+  --git-init | --no-git-init          — git init + первый коммит (VL-348)
+                        (по умолчанию не инициализируется; --git-init — создать)
+  --git-remote <url>                  — добавить remote origin (подразумевает --git-init)
   --force                             — перезаписать существующие настройки
   --no-wizard                         — не запускать интерактив даже в TTY`,
 

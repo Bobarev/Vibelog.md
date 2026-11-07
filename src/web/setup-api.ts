@@ -247,8 +247,31 @@ export function parseSetupBody(
             ? (body.components as Record<string, unknown>).enabled !== false
             : true,
       },
+      // VL-348: шага git в веб-мастере нет. Поле необязательное: если форма
+      // его не прислала, git не трогаем вовсе (applySetup пишет предупреждение
+      // о том, что проект не в git). Присланное — разбираем терпимо.
+      git: parseGitBody(body.git),
       force: body.force === true,
     },
+  };
+}
+
+/**
+ * Разбирает необязательное поле `git` тела POST /api/setup (VL-348).
+ *
+ * @returns секция ответов либо undefined — git не инициализируем
+ */
+function parseGitBody(raw: unknown): SetupAnswers['git'] {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+  if (obj.init !== true) return undefined;
+  const remote = typeof obj.remote === 'string' && obj.remote.trim() !== ''
+    ? obj.remote.trim()
+    : undefined;
+  return {
+    init: true,
+    commit: obj.commit !== false,
+    ...(remote !== undefined ? { remote } : {}),
   };
 }
 

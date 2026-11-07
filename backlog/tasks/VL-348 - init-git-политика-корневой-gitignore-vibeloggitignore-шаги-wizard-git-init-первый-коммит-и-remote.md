@@ -1,11 +1,11 @@
 ---
 id: VL-348
 title: 'init: git-политика (корневой .gitignore + .vibelog/.gitignore), шаги wizard «git init», первый коммит и remote'
-status: Planned
+status: Review
 assignee: []
 reporter: ''
 created_date: '2026-11-07 12:55'
-updated_date: '2026-11-07 12:55'
+updated_date: '2026-11-07 21:20'
 due_date: ''
 labels: []
 dependencies: []
@@ -17,8 +17,40 @@ project: ''
 parent_task_id: ''
 ordinal: 0
 documentation: []
-modified_files: []
+modified_files:
+  - src/core/gitignore.ts
+  - src/core/git-init.ts
+  - src/core/setup.ts
+  - src/cli/commands/init-wizard.ts
+  - src/cli/commands/init.ts
+  - src/cli/commands/doctor.ts
+  - src/cli/router.ts
+  - src/web/setup-api.ts
+  - src/core/gitignore.test.mjs
+  - src/core/git-init.test.mjs
+  - src/cli/init-git.test.mjs
+  - src/core/setup.test.mjs
+  - src/cli/diagnostics.test.mjs
 lessons: []
+token_usage:
+  input: 16175011
+  output: 112284
+  cache: 15904256
+  total: 16287295
+  requests: 171
+  duration_ms: 1007058
+  reasoning: 57246
+  by_phase:
+    code:
+      input: 16003927
+      output: 111520
+      cache: 15752192
+      requests: 167
+    close:
+      input: 171084
+      output: 764
+      cache: 152064
+      requests: 4
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -105,29 +137,29 @@ worktrees/
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `vb init` в каталоге без `.gitignore` создаёт корневой `.gitignore` с минимальным набором: `node_modules/`, `dist/`, `backlog/references/data/`, `backlog/references/cache/`, `.env`, `.DS_Store`, `*.log`
-- [ ] #2 `vb init` при существующем чужом `.gitignore` дописывает только отсутствующие правила в блоке с маркерами и не меняет посторонние строки; повторный запуск идемпотентен байт-в-байт
-- [ ] #3 `vb init` создаёт `.vibelog/.gitignore` с политикой VL-329 (`*`, `!*/`, `!.gitignore`, `!config.json`, `!installed.lock.json`, `!settings.json`, `!prompts/`, `!prompts/**`, `!billing/`, `!billing/**`, `worktrees/`), если файла нет; существующий файл не перезаписывается, расхождение печатается предупреждением
-- [ ] #4 `git check-ignore -v .env .vibelog/settings.json .vibelog/billing/x.json backlog/references/data/x` после `vb init` даёт: `.env` и `backlog/references/…` игнорируются, `.vibelog/settings.json` и `billing/` — нет
-- [ ] #5 Wizard спрашивает «Инициализировать git-репозиторий?», если проект не внутри git; при «да» выполняется `git init`, ветка `main` (с фолбэком на дефолт git для git < 2.28) и первый коммит
-- [ ] #6 Первый коммит НЕ содержит `.env`: `git ls-files | grep '^\.env$'` пуст
-- [ ] #7 После init (если пользователь согласился) wizard спрашивает «Добавить remote (origin)?», при «да» — URL и `git remote add origin <url>`; существующий `origin` не перезаписывается без явного согласия
-- [ ] #8 Если проект уже внутри git-репозитория, шаги git init/remote не предлагаются и ничего не меняется
-- [ ] #9 Non-interactive путь: `--git-init` инициализирует и коммитит, `--no-git-init` — нет; флаги взаимоисключающие и при конфликте дают ошибку с кодом 1, как `--components`/`--no-components`
-- [ ] #10 `--yes` без `--git-init` вне git-репозитория печатает предупреждение «проект не в git, `.env` с секретами не защищён», но завершается с кодом 0
-- [ ] #11 Отсутствие `git` в PATH — предупреждение, а не ошибка: проект создан, код 0
-- [ ] #12 `vibelog doctor` получает проверку `root_gitignore_exists`: нет корневого `.gitignore` при существующем `.env` → проверка не ok; существующие пять проверок git-политики VL-329 не меняют поведение
-- [ ] #13 `vb create` по-прежнему делает один `git init` и один коммит (общий код идемпотентен, двойного init нет), тесты `src/core/create.test.mjs` зелёные
-- [ ] #14 Веб-мастер `#/setup` не падает: поле `git` в payload необязательное, при отсутствии git-шаг пропускается с предупреждением
-- [ ] #15 Тесты: `src/core/gitignore.test.mjs`, `src/core/git-init.test.mjs`, интеграционный `vb init --yes --git-init` в temp-каталоге (репозиторий, один коммит, `.env` не в индексе, `doctor` зелёный); `pnpm build && pnpm test` зелёные
+- [x] #1 `vb init` в каталоге без `.gitignore` создаёт корневой `.gitignore` с минимальным набором: `node_modules/`, `dist/`, `backlog/references/data/`, `backlog/references/cache/`, `.env`, `.DS_Store`, `*.log`
+- [x] #2 `vb init` при существующем чужом `.gitignore` дописывает только отсутствующие правила в блоке с маркерами и не меняет посторонние строки; повторный запуск идемпотентен байт-в-байт
+- [x] #3 `vb init` создаёт `.vibelog/.gitignore` с политикой VL-329 (`*`, `!*/`, `!.gitignore`, `!config.json`, `!installed.lock.json`, `!settings.json`, `!prompts/`, `!prompts/**`, `!billing/`, `!billing/**`, `worktrees/`), если файла нет; существующий файл не перезаписывается, расхождение печатается предупреждением
+- [x] #4 `git check-ignore -v .env .vibelog/settings.json .vibelog/billing/x.json backlog/references/data/x` после `vb init` даёт: `.env` и `backlog/references/…` игнорируются, `.vibelog/settings.json` и `billing/` — нет
+- [x] #5 Wizard спрашивает «Инициализировать git-репозиторий?», если проект не внутри git; при «да» выполняется `git init`, ветка `main` (с фолбэком на дефолт git для git < 2.28) и первый коммит
+- [x] #6 Первый коммит НЕ содержит `.env`: `git ls-files | grep '^\.env$'` пуст
+- [x] #7 После init (если пользователь согласился) wizard спрашивает «Добавить remote (origin)?», при «да» — URL и `git remote add origin <url>`; существующий `origin` не перезаписывается без явного согласия
+- [x] #8 Если проект уже внутри git-репозитория, шаги git init/remote не предлагаются и ничего не меняется
+- [x] #9 Non-interactive путь: `--git-init` инициализирует и коммитит, `--no-git-init` — нет; флаги взаимоисключающие и при конфликте дают ошибку с кодом 1, как `--components`/`--no-components`
+- [x] #10 `--yes` без `--git-init` вне git-репозитория печатает предупреждение «проект не в git, `.env` с секретами не защищён», но завершается с кодом 0
+- [x] #11 Отсутствие `git` в PATH — предупреждение, а не ошибка: проект создан, код 0
+- [x] #12 `vibelog doctor` получает проверку `root_gitignore_exists`: нет корневого `.gitignore` при существующем `.env` → проверка не ok; существующие пять проверок git-политики VL-329 не меняют поведение
+- [x] #13 `vb create` по-прежнему делает один `git init` и один коммит (общий код идемпотентен, двойного init нет), тесты `src/core/create.test.mjs` зелёные
+- [x] #14 Веб-мастер `#/setup` не падает: поле `git` в payload необязательное, при отсутствии git-шаг пропускается с предупреждением
+- [x] #15 Тесты: `src/core/gitignore.test.mjs`, `src/core/git-init.test.mjs`, интеграционный `vb init --yes --git-init` в temp-каталоге (репозиторий, один коммит, `.env` не в индексе, `doctor` зелёный); `pnpm build && pnpm test` зелёные
 - [ ] #16 Документация обновлена: doc-7 (раздел `init` — шаги git-политики и git), CHANGELOG, AGENTS.md (политика `.vibelog/` теперь создаётся init)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
+- [x] #1 Тесты проходят
 - [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -184,3 +216,68 @@ worktrees/
 - `git init` в каталоге внутри чужого репозитория: `rev-parse` вернёт ok → шаг пропускается; вложенный репозиторий не создаётся.
 - Первый коммит в репозитории, где уже есть индекс/файлы: `add -A` затащит всё — ограничить в описании задачи: шаг предлагается только при `init` (то есть в дереве без истории), в upgrade-репозитории коммит не делается.
 <!-- SECTION:PLAN:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author: @agent
+created: 2026-11-07 21:18
+---
+### Прогресс до обрыва (по лимиту LLM-запросов)
+**Сделано:**
+- src/core/gitignore.ts
+- src/core/git-init.ts
+- src/core/setup.ts
+- src/cli/commands/init-wizard.ts
+- src/cli/commands/init.ts
+- src/web/setup-api.ts
+- src/cli/commands/doctor.ts
+- src/core/gitignore.test.mjs
+- src/core/git-init.test.mjs
+- src/cli/init-git.test.mjs
+- I'll start by orienting in the project structure and reading the key files.
+Now I'll create the new `gitignore` module.
+Now add imports and the git step in `applySetup`.
+Now the interactive wizard step (after components step, before return).
+Now `init.ts`: flag conflict validation, warning, and `.en…
+**Осталось:**
+- проверки (сборка / полный прогон тестов) в этом ране не завершены
+- отчёт фазы (backlog_finish_phase) не записан
+- AC/DoD не отмечены
+_время рана 922 с, payload 504997 байт_
+Незакоммиченные изменения сохранены в ветку: коммит `a8e7a05`.
+---
+author: @agent
+created: 2026-11-07 21:18
+---
+Фаза code не удалась (код выхода 1): окировок=0, payload последнего запроса=504997 байт (макс 504997), usage={"input_tokens":7554552,"output_tokens":53305,"cache_read_input_tokens":7432704,"total_tokens":7607857,"reasoning_tokens":27165} — статус возвращён к Planned.
+---
+author: @agent
+created: 2026-11-07 21:19
+---
+Фаза 3 (Code) выполнена. Коммит d9ce41f (ветка vb/vl-348).
+**Новые модули**
+- `src/core/gitignore.ts` — `ROOT_GITIGNORE_TEMPLATE`, `VIBELOG_GITIGNORE_TEMPLATE`, `mergeGitignore` (блок с маркерами `# >>> vibelog` / `# <<< vibelog`, идемпотентность байт-в-байт, посторонние строки сохраняются, `.DS_Store`/`*.log` в чужой файл не навязываются), `writeRootGitignore` → `created|updated|unchanged`, `writeVibelogGitignore` → `created|exists`, `vibelogGitignoreDiffers` (расхождение по значимым строкам). Атомарная запись temp+rename (lesson-169), пути в `cwd`, не в `rev-parse --show-toplevel`.
+- `src/core/git-init.ts` — `isInsideGitRepo`, `gitInit` (идемпотентен: `reason: 'exists'`; ветка `main` через `symbolic-ref` с фолбэком — git 2.24 на Catalina), `initialCommit` (add -A + коммит с трейлером через `commitMessageArgs`, VL-302), `addRemote` (существующий origin не перезаписывается без `force`, валидация http(s)/ssh/scp), `isValidRemoteUrl`. Отсутствие git → `{ok:false, reason:'no-git'}` без исключения.
+**Правки**
+- `src/core/setup.ts` — `SetupAnswers.git?`, `SetupState.git.inRepo`; шаг 4b `applyGitignoreStep` (gitignore ДО коммита) и шаг 7 `applyGitStep` (init → коммит только в свежем дереве → remote); `formatSetupLog` печатает состояние git.
+- `src/cli/commands/init-wizard.ts` — шаг 8 в `runWizard` (вопросы «Инициализировать git-репозиторий?» → «Сделать первый коммит?» → «Добавить remote (origin)?» → URL; внутри репозитория вопросы пропускаются), `gitAnswersFromFlags` (`--git-init`/`--no-git-init`/`--git-remote`).
+- `src/cli/commands/init.ts` — конфликт `--git-init`/`--no-git-init` → код 1; предупреждение «проект не в git, .env с секретами не защищён» (код 0); в `runChecks` — `git check-ignore .env`.
+- `src/cli/commands/doctor.ts` — новое правило `root_gitignore_exists` (нет `.gitignore` при существующем `.env` → не ok); пять проверок VL-329 не тронуты.
+- `src/web/setup-api.ts` — необязательное поле `git` в payload, терпимый `parseGitBody` (нет поля → git не трогаем).
+- `src/cli/router.ts` — справка `init`: `--git-init`, `--no-git-init`, `--git-remote`.
+**Тесты (новые)**: `src/core/gitignore.test.mjs` (9), `src/core/git-init.test.mjs` (8), `src/cli/init-git.test.mjs` (9, реальный CLI в mkdtemp); дополнены `src/core/setup.test.mjs` (+4) и `src/cli/diagnostics.test.mjs` (+3).
+**Проверки**: `pnpm build` — ok; полный `pnpm test` — 187 файлов, 3488 passed, 4 skipped, 0 failed (первый прогон дал 1 падение в `src/web/orchestrator.test.mjs` — тест VL-277 про автокоммит close; изолированный повтор этого файла зелёный (88/88), повторный полный прогон тоже зелёный → флак от параллельного прогона, не регрессия diff'а).
+**Замечание по AC4**: на git 2.24 `git check-ignore -q` возвращает 0 и для путей, совпавших с `!`-правилом (отрицание), поэтому политика проверена по факту индексации (`git add -A` + `git ls-files`): `.env` и `backlog/references/data/` в индексе отсутствуют, `.vibelog/settings.json`, `.vibelog/billing/x.json`, `.vibelog/.gitignore` — присутствуют. Это ровно то, что делает первый коммит init.
+**Что осталось (не в фазе Code)**: AC16 — документация (doc-7 раздел `init`, CHANGELOG, AGENTS.md) пишется в фазе Close; DoD «Документация обновлена» поэтому не отмечен. Живой прогон `vb init --yes --git-init --git-remote` в отдельном каталоге выполнить не удалось: инструмент shell запрещает выход за пределы worktree, а внутри worktree `init` видит существующий `backlog/` — сценарий покрыт интеграционным тестом `src/cli/init-git.test.mjs` (реальный CLI в mkdtemp, включая `git log`, `git remote -v`, `git ls-files`, `doctor --json`).
+---
+author: @agent
+created: 2026-11-07 21:20
+---
+Фаза Close прервана: конфликт слияния vb/vl-348 → master (файлы: UU src/cli/commands/doctor.ts). Ветка vb/vl-348 содержит 1 коммит (d9ce41f), worktree чистый. Конфликт не резолвился и merge не откатывался — состояние оставлено как есть для ручного разбора. Требуется: разработчику вручную разрешить конфликт в src/cli/commands/doctor.ts в главном репозитории (свести новое правило root_gitignore_exists из VL-348 с изменениями master), выполнить `git add src/cli/commands/doctor.ts && git commit` (завершить merge), затем повторить Фазу Close для VL-348.
+---
+author: @agent
+created: 2026-11-07 21:20
+---
+Фаза close прервана агентом (aborted): Фаза Close прервана: конфликт слияния vb/vl-348 → master (файлы: UU src/cli/commands/doctor.ts). Ветка vb/vl-348 содержит 1 коммит (d9ce41f), worktree чистый. Конфликт не резолвился и merge не откатывался — состояние оставлено как есть для ручного разбора. Требуется: разработчику вручную разрешить конфликт в src/cli/commands/doctor.ts в главном репозитории (свести новое правило root_gitignore_exists из VL-348 с изменениями master), выполнить `git add src/cli/commands/doctor.ts && git commit` (за — статус возвращён к Review.
+---
+<!-- COMMENTS:END -->
