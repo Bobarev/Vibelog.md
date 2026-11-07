@@ -53,6 +53,8 @@ const TASK_VARS = {
   taskModifiedFiles: '(нет)',
   taskLastComment: '(нет комментариев)',
   taskReferences: '(нет)',
+  // VL-364: уроки по tags задачи — подстановка в шапку close-шаблона
+  taskLessons: '(нет)',
   taskTitle: 'Тестовая задача',
   taskType: 'task',
   taskStatus: 'Planned',
@@ -1327,6 +1329,56 @@ describe('VL-318 — git_commit документации в close-шаблона
         assert.match(call, /"allowForeign":\s*true/, `${file}: коммит документации без allowForeign — ${call.slice(0, 120)}`);
       }
     }
+  });
+});
+
+describe('VL-364 — шаг уроков close-worktree: образец lesson_update с content', () => {
+  const text = readFileSync(join(templatesDir, 'phase-close-worktree.md'), 'utf-8');
+
+  it('образец lesson_update содержит content', () => {
+    const calls = [...text.matchAll(/lesson_update\s*\{([^\n]*)\}/g)];
+    assert.ok(calls.length > 0, 'вызов lesson_update присутствует');
+    assert.ok(calls.some((c) => c[1].includes('"content"')), 'образец обязан нести content');
+  });
+
+  it('рядом с образцом — правило про missing: content', () => {
+    const idx = text.indexOf('lesson_update {');
+    assert.ok(idx !== -1, 'образец lesson_update найден');
+    assert.match(text.slice(idx, idx + 1200), /missing/, 'нет правила про missing: content');
+  });
+
+  it('нумерация без дробных шагов', () => {
+    assert.deepEqual(text.match(/^[0-9]+\.5\./gm) ?? [], [], 'дробных шагов нет');
+  });
+
+  it('узкая ветка резолва: только CHANGELOG.md и backlog/docs', () => {
+    assert.ok(text.includes('CHANGELOG.md') && /backlog\/docs/.test(text), 'пути резолва названы');
+    assert.ok(text.includes('git merge --abort'), 'запрет merge --abort сохранён');
+  });
+
+  it('шаг уроков: критерий отбора с воркэраундом и kind: workaround', () => {
+    assert.match(text, /воркэраунд/, 'критерий отбора упоминает воркэраунд');
+    assert.match(text, /kind: workaround/, 'воркэраунд помечается kind: workaround');
+    assert.match(text, /Урок не зафиксирован/, 'шаг уроков нефатален');
+    assert.ok(!text.includes('Сформулируй 1–3 урока'), 'квота «1–3 урока» убрана');
+  });
+
+  it('шаг DoD не вызывает backlog_manage_dod action list', () => {
+    assert.ok(!/backlog_manage_dod action list/.test(text.replace(/`backlog_manage_dod action list` НЕ вызывай/, '')),
+      'список DoD берётся из шапки, а не отдельным вызовом');
+  });
+
+  it('шапка содержит подстановки references и lessons', () => {
+    assert.ok(text.includes('{{taskReferences}}'), 'подстановка references в шапке');
+    assert.ok(text.includes('{{taskLessons}}'), 'подстановка lessons в шапке');
+  });
+});
+
+describe('VL-364 — .gitattributes: CHANGELOG.md merge=union', () => {
+  it('файл существует и содержит строку merge=union', () => {
+    const path = fileURLToPath(new URL('../../.gitattributes', import.meta.url));
+    const text = readFileSync(path, 'utf-8');
+    assert.match(text, /^CHANGELOG\.md\s+merge=union$/m, '.gitattributes: CHANGELOG.md merge=union');
   });
 });
 
