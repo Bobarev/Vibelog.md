@@ -884,7 +884,7 @@ function makeWriteFile(cwd: string): ToolSpec {
  * найтись ровно один раз — иначе отказ (защита от двусмысленных правок,
  * как в инструментах qwen-code).
  */
-function makeEdit(cwd: string): ToolSpec {
+export function makeEdit(cwd: string): ToolSpec {
   return {
     name: 'edit',
     kind: 'write',
