@@ -55,10 +55,12 @@ function makeProject(settings, env) {
  */
 function runCli(cwd, ...args) {
   return new Promise((resolve) => {
-    const child = spawn('node', [cliPath, ...args], {
-      cwd,
-      env: testSpawnEnv({ VIBELOG_GITVERSE_API_BASE: `http://127.0.0.1:${port}` }),
-    });
+    // Токен из shell-окружения снимается: тесты проверяют приоритет `.env`
+    // и кейс «нет токена», а локальный GITVERSE_TOKEN разработчика (или
+    // агентской сессии) иначе подменял бы ожидаемый код выхода 4 на 3.
+    const env = testSpawnEnv({ VIBELOG_GITVERSE_API_BASE: `http://127.0.0.1:${port}` });
+    delete env.GITVERSE_TOKEN;
+    const child = spawn('node', [cliPath, ...args], { cwd, env });
     let out = '';
     child.stdout.on('data', (chunk) => { out += chunk; });
     child.stderr.on('data', (chunk) => { out += chunk; });
