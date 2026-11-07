@@ -337,3 +337,40 @@ describe('удалённая роль orchestrator (VL-273)', () => {
     assert.ok(!RETIRED_PERSONA_IDS.includes('architect'));
   });
 });
+
+describe('промпт роли architect: план в аргумент plan (VL-350)', () => {
+  /** Текст встроенного шаблона роли architect (проектного override в тесте нет). */
+  const prompt = () => loadPersonaPrompt(cwd, resolvePersona(cwd, 'architect'));
+
+  it('план — обязательный аргумент plan, а не description', () => {
+    const text = prompt();
+    assert.match(text, /`plan`/);
+    assert.match(text, /Implementation Plan/);
+    // причина, почему план не в description
+    assert.match(text, /не подхватывается фазой code/);
+  });
+
+  it('состав плана вписан в промпт, а не пересказан ссылкой', () => {
+    const text = prompt();
+    assert.match(text, /номера строк/);
+    assert.match(text, /риски/);
+    assert.match(text, /как проверить/);
+  });
+
+  it('правки файлов — только по прямой просьбе пользователя', () => {
+    assert.match(prompt(), /только когда пользователь прямо/i);
+  });
+
+  it('порядок вызова: create → update с планом тем же ходом', () => {
+    const text = prompt();
+    assert.match(text, /backlog_create_task/);
+    assert.match(text, /backlog_update_task/);
+    assert.match(text, /тем же ходом/);
+  });
+
+  it('нет формулировки «если пользователь просил план» и ссылок на шаблоны фаз', () => {
+    const text = prompt();
+    assert.doesNotMatch(text, /если пользователь просил план/i);
+    assert.doesNotMatch(text, /phase-plan\.md/);
+  });
+});
