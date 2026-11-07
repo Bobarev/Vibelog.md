@@ -285,6 +285,25 @@
       "agent": "vb",
       "fallback": true,
       "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794056051389",
+      "phase": "close",
+      "startedAt": "2026-11-07T13:04:28.622Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T13:05:34.523Z",
+      "durationMs": 63710,
+      "usage": {
+        "input": 994380,
+        "output": 5094,
+        "cache": 939520,
+        "total": 999474,
+        "requests": 19,
+        "reasoning": 1727
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "web"
     }
   ]
 }

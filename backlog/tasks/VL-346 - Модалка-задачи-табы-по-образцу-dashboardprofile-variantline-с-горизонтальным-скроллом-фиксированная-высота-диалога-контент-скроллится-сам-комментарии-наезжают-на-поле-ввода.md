@@ -1,11 +1,11 @@
 ---
 id: VL-346
 title: 'Модалка задачи: табы по образцу dashboard/profile — variant=line с горизонтальным скроллом, фиксированная высота диалога, контент скроллится сам (комментарии наезжают на поле ввода)'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-05 18:55'
-updated_date: '2026-11-07 15:58'
+updated_date: '2026-11-07 16:05'
 due_date: ''
 labels:
   - web
@@ -28,15 +28,16 @@ modified_files:
   - web/dist/index.html
   - web/dist/assets/index-B-Zv2tWQ.css
   - web/dist/assets/index-DOpdBDuK.js
-lessons: []
+lessons:
+  - lesson-232
 token_usage:
-  input: 11142049
-  output: 64289
-  cache: 10682880
-  total: 11206338
-  requests: 226
-  duration_ms: 1981196
-  reasoning: 32646
+  input: 13317084
+  output: 76730
+  cache: 12703744
+  total: 13393814
+  requests: 274
+  duration_ms: 2044906
+  reasoning: 38918
   by_phase:
     code:
       input: 4356001
@@ -44,10 +45,10 @@ token_usage:
       cache: 4134912
       requests: 73
     close:
-      input: 6786048
-      output: 35779
-      cache: 6547968
-      requests: 153
+      input: 8961083
+      output: 48220
+      cache: 8568832
+      requests: 201
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -83,13 +84,13 @@ token_usage:
 - [x] #9 Светлая и тёмная тема: активная вкладка (подчёркивание) и границы видны в обеих
 - [x] #10 `pnpm --dir web build` проходит, `web/dist` пересобран и закоммичен
 - [x] #11 Ручная проверка через chrome-devtools: открыть задачу с большим числом секций (например VL-299 или VL-210), переключить все вкладки, консоль без ошибок (lesson-16)
-- [ ] #12 CHANGELOG.md обновлён
+- [x] #12 CHANGELOG.md обновлён
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -263,5 +264,18 @@ author: @agent
 created: 2026-11-07 15:58
 ---
 Фаза close не удалась (код выхода 1): блокировок=0, payload последнего запроса=186376 байт (макс 186376), usage={"input_tokens":1180655,"output_tokens":7347,"cache_read_input_tokens":1081344,"total_tokens":1188002,"reasoning_tokens":4545} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-07 16:05
+---
+Фаза Close выполнена. Статус: Done.
+Коммиты:
+- fix 5781d99 — табы модалки задачи по образцу dashboard/profile (variant=line, горизонтальный скролл, фиксированная высота диалога); merge 8e3eec8
+- fix d755fd0 + fix 78aa38f — пересборка `web/dist`: в артефактах после merge остались маркеры конфликта (`web/dist/assets/index-DOpdBDuK.js` содержал `<<<<<<< HEAD` / `=======` / `>>>>>>>`), пересборка дала новый бандл `index-DCADnp00.js` / `index-CjKc5iw0.css` и почистила `index.html`
+- docs cc2476e — CHANGELOG.md (VL-346: дополнен абзац о веб-модалке) и doc-6 (раздел «Модальное окно задачи»: композиция табов, фиксированная высота, единственный скролл-контейнер, заголовок по образцу ProfileHeader)
+- docs(task) 4e09224 — lesson-232 (тело урока заполнено: скролл на TabsContent, фиксированная высота DialogContent), привязан к задаче
+Проверки: `pnpm --dir web build` — успешно (vite 1.30s, только предупреждение о размере чанка); полный `pnpm test` — 184 файла, 3496 тестов passed, 4 skipped, падений нет (повторных полных прогонов не запускал).
+Не закоммичено: нет (файл задачи VL-346 коммитит framework; `.vibelog/billing/*.json`, `.vibelog/settings.json` и файлы задач других ID — вне задачи).
+DoD: «Тесты проходят» — полный прогон зелёный; «Документация обновлена» — doc-6 + CHANGELOG; «Нет регрессий» — сборка и полный прогон зелёные, AC 12 (CHANGELOG) отмечен.
 ---
 <!-- COMMENTS:END -->
