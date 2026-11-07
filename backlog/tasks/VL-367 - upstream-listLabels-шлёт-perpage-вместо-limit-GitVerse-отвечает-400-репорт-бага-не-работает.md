@@ -1,11 +1,11 @@
 ---
 id: VL-367
 title: 'upstream: listLabels шлёт per_page вместо limit — GitVerse отвечает 400, репорт бага не работает'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-07 22:30'
-updated_date: '2026-11-08 00:24'
+updated_date: '2026-11-08 01:03'
 due_date: ''
 labels:
   - upstream
@@ -26,15 +26,16 @@ modified_files:
   - src/core/gitverse-issues.ts
   - src/core/gitverse-issues.test.mjs
   - src/cli/upstream.test.mjs
-lessons: []
+lessons:
+  - lesson-249
 token_usage:
-  input: 3211240
-  output: 20735
-  cache: 3064320
-  total: 3231975
-  requests: 77
-  duration_ms: 1021850
-  reasoning: 9410
+  input: 4014542
+  output: 27600
+  cache: 3767808
+  total: 4042142
+  requests: 95
+  duration_ms: 1241829
+  reasoning: 12493
   by_phase:
     code:
       input: 1354524
@@ -42,10 +43,10 @@ token_usage:
       cache: 1252864
       requests: 31
     close:
-      input: 1856716
-      output: 11291
-      cache: 1811456
-      requests: 46
+      input: 2660018
+      output: 18156
+      cache: 2514944
+      requests: 64
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -109,13 +110,13 @@ GitVerse видит неизвестный query-параметр и отвеч�
 - [x] #3 Фикстура в `src/core/gitverse-issues.test.mjs` валидирует query-параметры: запрос к `/labels` с `per_page` → ответ `400 VALIDATION_ERROR` (как реальный GitVerse), запрос с `limit` → `200`. Это закрывает класс ошибок «фикстура принимает что угодно»
 - [x] #4 Регрессионный тест: `listLabels` на фикстуре, отвергающей `per_page`, возвращает имена меток (падал бы на старом коде)
 - [ ] #5 Ручная проверка на реальном GitVerse: `vibelog upstream report --title "Проверка канала" --body "..." --severity low --area mcp` → код `0`, issue создан, метки `upstream`/`from-vl` навешены (или созданы автоматически)
-- [ ] #6 `pnpm build && pnpm test` — полный прогон зелёный; CHANGELOG.md обновлён
+- [x] #6 `pnpm build && pnpm test` — полный прогон зелёный; CHANGELOG.md обновлён
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -294,5 +295,15 @@ DoD не отмечены (1): 2. Документация обновлена
 Фрагмент плана: ## План ### 1. Фикс `listLabels` — `src/core/gitverse-issues.ts:794-796` ```ts // было const url = buildUrl(cfg.apiBase, labelsPath(cfg), { per_page: 100 }); const result = await request(cfg, 'GET', labelsPath(cfg), { query: { per_page: 100 }, ...opts }); // станет const url = buildUrl(cfg.apiBase, …
 Отчёт собран сервером автоматически (VL-253): модель не передала comment.
 Статус не изменён: терминальный «Done» при неотмеченных пунктах (DoD: #2; AC: #5, #6) возможен только через backlog_finish_phase с dodOverride или aborted (VL-248/VL-309). Задача оставлена в «Review».
+---
+author: @agent
+created: 2026-11-08 01:03
+---
+Фаза Close выполнена. Статус: Done.
+Коммиты: feat — не требовался (код VL-367 уже закоммичен ранее: `fix: VL-367 — listLabels шлёт limit вместо per_page (GitVerse 400)` b0da92c + merge 0bffcc4); docs c1818e5 (doc-28 §5.3 — пагинация `/labels` — `page|limit|sort`, `per_page` у `/labels` нет, плюс запись в CHANGELOG Unreleased/«Исправлено»); lesson/ref 280e359 (lesson-249 тело + ref-27).
+Проверки после merge: `pnpm build` — успешно (один раз); точечно `src/core/gitverse-issues.test.mjs` (37) + `src/cli/upstream.test.mjs` (6) — зелёные; полный прогон `pnpm test` — 195 файлов, 3667 тестов passed, 4 skipped, падений нет (повторных прогонов не требовалось).
+Lessons: lesson-249 (валидация query-параметров в HTTP-фикстуре по белому списку эндпоинта) — записано тело «Проблема/Решение/Пример», связан с VL-367, список lessons задачи обновлён.
+Не закоммичено: ref-26/ref-27/ref-28 (untracked, созданы в рамках VL-363) — вне этой задачи; lesson-244/246/247 (untracked, VL-363) — вне этой задачи; файл задачи VL-367 и VL-358 — коммитит framework/чужая фаза.
+Остался невыполненным AC #5 (ручная проверка на реальном GitVerse с созданием issue): требует боевого `GITVERSE_TOKEN` и создаёт реальный issue в родительском репозитории — не выполнялось автоматической фазой Close. Сам дефект закрыт в юнит-уровне: фикстура теперь отвечает 400 на `per_page`, `listLabels` шлёт `limit=100`; полный цикл проверяется при первом реальном репорте.
 ---
 <!-- COMMENTS:END -->
