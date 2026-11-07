@@ -1,11 +1,11 @@
 ---
 id: VL-356
 title: 'lesson_create без content жёстко отказывает — Close VL-355 в тупике (третья грань: валидация поля блокирует операцию)'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-07 15:38'
-updated_date: '2026-11-07 15:50'
+updated_date: '2026-11-07 15:52'
 due_date: ''
 labels:
   - mcp
@@ -26,15 +26,16 @@ modified_files:
   - src/core/lesson.ts
   - src/mcp/lesson-tools.test.mjs
   - src/agent/loop.test.mjs
-lessons: []
+lessons:
+  - lesson-234
 token_usage:
-  input: 3102731
-  output: 12290
-  cache: 3015680
-  total: 3115021
-  requests: 57
-  duration_ms: 444346
-  reasoning: 2501
+  input: 5363681
+  output: 21559
+  cache: 5224448
+  total: 5385240
+  requests: 103
+  duration_ms: 527831
+  reasoning: 4358
   by_phase:
     code:
       input: 2365214
@@ -42,10 +43,10 @@ token_usage:
       cache: 2301440
       requests: 38
     close:
-      input: 737517
-      output: 2380
-      cache: 714240
-      requests: 19
+      input: 2998467
+      output: 11649
+      cache: 2923008
+      requests: 65
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -104,13 +105,13 @@ VL-349 (ввёл жёсткий отказ — источник), VL-355 (тот
 - [x] #5 Регресс-тест на сессию `agent-1794054631174`: `lesson_create {title:'…'}` без `content` → `ok:true`, файл создан, `missing` содержит `content`; повтор того же вызова НЕ даёт серию отказов (второй вызов создаёт второй урок либо отвечает осмысленно — зафиксировать поведение тестом)
 - [x] #6 Существующий кейс VL-349 «MCP без content → ошибка» переписан на новый контракт (создание со скелетом + `missing`), CLI-путь не меняется
 - [x] #7 `pnpm build && pnpm test` проходят без регрессий
-- [ ] #8 Документация: doc-8 (поведение `lesson_create` без тела: создание со скелетом + `missing`/`hint`), doc-10 §6 (разбор инцидента `agent-1794054631174`, общий принцип «валидация поля не блокирует операцию»), CHANGELOG.md
+- [x] #8 Документация: doc-8 (поведение `lesson_create` без тела: создание со скелетом + `missing`/`hint`), doc-10 §6 (разбор инцидента `agent-1794054631174`, общий принцип «валидация поля не блокирует операцию»), CHANGELOG.md
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -214,5 +215,18 @@ author: @agent
 created: 2026-11-07 15:50
 ---
 Фаза close не удалась (код выхода 1): ет, блокировок=0, payload последнего запроса=179478 байт (макс 179478), usage={"input_tokens":737517,"output_tokens":2380,"cache_read_input_tokens":714240,"total_tokens":739897,"reasoning_tokens":725} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-07 15:52
+---
+Фаза Close выполнена. Ветка vb/vl-356 слита в master (1 коммит, merge 323ebdf), worktree удалена (force — внутри был только untracked-симлинк backlog/references/data), ветка vb/vl-356 удалена.
+**Проверки после merge:** `pnpm build` — успешно; ранний точечный прогон затронутых diff'ом файлов (`src/mcp/lesson-tools.test.mjs`, `src/agent/loop.test.mjs`, `src/mcp/write-ack.test.mjs`) — 182 passed; полный `npx vitest run` — 185 файлов, 3504 passed, 4 skipped (все 4 — `src/core/compat.test.mjs`/`compat-full.test.mjs`, скипаются автоматически при отсутствии оригинала Backlog.md, к задаче не относятся). Регрессий нет.
+**Документация (AC8, DoD2):**
+- `backlog/docs/doc-8` — таблица `lesson_create`: `content` больше не Required, описано создание со скелетом + `ackOkDetailed` с `missing`/`hint`; добавлен абзац «Создание без тела — скелет + `missing` (VL-356, частичный откат VL-349)» с разбором инцидента `agent-1794054631174`; в разделе `lesson_update` убрана формулировка «валидация `lesson_create`» (предикат больше не блокирует создание).
+- `backlog/docs/doc-10` §6 — новый пункт «Жёсткий отказ на create — тоже тупик: создавай со скелетом и предупреждай `missing`/`hint` (VL-356, частичный откат VL-349)» с разбором сессии и общим принципом «валидация одного поля не блокирует операцию: применяй что можно, предупреждай через `missing`/`hint`»; в пункте VL-349 убрано упоминание блокирующей валидации `toolLessonCreate`.
+- `CHANGELOG.md` → `## [Unreleased]` / «Исправлено» — запись VL-356 с фиксацией осознанного частичного отката VL-349 и контроля через finding `empty_body`.
+- Коммит документации: `4e5ff59`; коммит refs/lessons: `da0bbdf`.
+**Lessons:** обновлён существующий `lesson-234` (был создан в VL-355 по тому же классу) — заголовок расширен до «Валидация одного поля не должна блокировать операцию — применяй остальное и предупреждай через missing/hint, а не отказом», `source_tasks`/`linked_tasks` += VL-356, тег `create`, `verified_by: agent`. Задача связана с уроком (`lessons: [lesson-234]`).
+**DoD:** 1 «Тесты проходят» — выполнен (полный прогон после merge); 2 «Документация обновлена» — выполнен (doc-8, doc-10 §6, CHANGELOG); 3 «Нет регрессий» — выполнен. Все три пункта отмечены.
 ---
 <!-- COMMENTS:END -->
