@@ -60,7 +60,7 @@ import { markPhaseAborted, getPhaseTransientStatus } from '../core/phase-transie
 import { getWorkflowForTask, phaseStatusTransitionError, isTerminalStatus } from '../core/workflow.js';
 import { buildProjectMap } from '../core/project-map.js';
 import { truncateToolOutput } from '../agent/tools.js';
-import { ackOk, ackNoop, ackNoopDetailed, ackError, ackErrorDetailed, unknownFields, sameValue, sameFieldsUpToDate, SET_FIELDS, BODY_FIELD } from './tool-result.js';
+import { ackOk, ackRead, ackNoop, ackNoopDetailed, ackError, ackErrorDetailed, unknownFields, sameValue, sameFieldsUpToDate, SET_FIELDS, BODY_FIELD } from './tool-result.js';
 import { buildAutoReport, uncheckedItems } from './auto-report.js';
 import type { SkippedField } from './tool-result.js';
 import { withIdempotency } from './idempotency.js';
@@ -1553,12 +1553,20 @@ function manageChecklist(args: ToolArgs, cwd: string, field: 'acceptanceCriteria
 
   switch (action) {
     case 'list': {
-      if (list.length === 0) return 'Чеклист пуст.';
+      // VL-351: чтение отвечает тем же JSON-ack, что и запись. Раньше ветка
+      // отдавала плоский текст, и цикл агента (страховка VL-306 «не-JSON ответ
+      // write-инструмента = применено») помечал `action:list` ПРИМЕНЁННОЙ
+      // записью — повтор чтения получал ложную директиву «уже применён ранее»
+      // (сессия agent-1794047067509, Close VL-349). `applied.items` — снимок
+      // прочитанного, `message` сохраняет прежний текст (на него опираются
+      // тесты mcp-client/server).
+      const items = list.map((item, i) => ({ index: i + 1, checked: item.checked, text: item.text }));
+      if (list.length === 0) return ackRead('Чеклист пуст.', { items });
       const lines = list.map((item, i) => {
         const mark = item.checked ? '✓' : '○';
         return `${i + 1}. ${mark} ${item.text}`;
       });
-      return lines.join('\n');
+      return ackRead(lines.join('\n'), { items });
     }
 
     case 'add': {
@@ -1590,11 +1598,17 @@ function manageChecklist(args: ToolArgs, cwd: string, field: 'acceptanceCriteria
         }
         for (const t of text) list.push({ text: t, checked: false });
         updateTaskFile(cwd, args.id as string, { [field]: list });
-        return `Добавлено критериев: ${text.length} (${text.join(', ')})`;
+        return ackOk(`Добавлено критериев: ${text.length} (${text.join(', ')})`, {
+          added: [...text],
+          total: list.length,
+        });
       }
       list.push({ text: text as string, checked: false });
       updateTaskFile(cwd, args.id as string, { [field]: list });
-      return `Добавлен критерий #${list.length}: ${text}`;
+      return ackOk(`Добавлен критерий #${list.length}: ${text}`, {
+        added: [text],
+        total: list.length,
+      });
     }
 
     case 'check':
@@ -1611,13 +1625,19 @@ function manageChecklist(args: ToolArgs, cwd: string, field: 'acceptanceCriteria
       }
       updateTaskFile(cwd, args.id as string, { [field]: list });
       if (batch) {
-        return checked
-          ? `Отмечено пунктов: ${indexes.length} (${indexes.join(', ')})`
-          : `Снято пунктов: ${indexes.length} (${indexes.join(', ')})`;
+        return ackOk(
+          checked
+            ? `Отмечено пунктов: ${indexes.length} (${indexes.join(', ')})`
+            : `Снято пунктов: ${indexes.length} (${indexes.join(', ')})`,
+          { checked: indexes, action },
+        );
       }
-      return checked
-        ? `Отмечены критерии #${indexes.join(', #')}`
-        : `Сняты отметки с критериев #${indexes.join(', #')}`;
+      return ackOk(
+        checked
+          ? `Отмечены критерии #${indexes.join(', #')}`
+          : `Сняты отметки с критериев #${indexes.join(', #')}`,
+        { checked: indexes, action },
+      );
     }
 
     case 'remove': {
@@ -1629,8 +1649,16 @@ function manageChecklist(args: ToolArgs, cwd: string, field: 'acceptanceCriteria
         list.splice(i - 1, 1);
       }
       updateTaskFile(cwd, args.id as string, { [field]: list });
-      if (batch) return `Удалено пунктов: ${indexes.length} (${indexes.join(', ')})`;
-      return `Удалены критерии #${indexes.join(', #')}`;
+      if (batch) {
+        return ackOk(`Удалено пунктов: ${indexes.length} (${indexes.join(', ')})`, {
+          removed: indexes,
+          total: list.length,
+        });
+      }
+      return ackOk(`Удалены критерии #${indexes.join(', #')}`, {
+        removed: indexes,
+        total: list.length,
+      });
     }
 
     default:
@@ -2266,7 +2294,14 @@ function toolMilestoneRemove(args: ToolArgs, cwd: string): string {
       }
     }
   }
-  return `Веха "${args.name}" удалена. Задач обработано: ${updatedCount} (${handling})`;
+  // VL-351: JSON-ack — плоский текст write-инструмента цикл агента не может
+  // классифицировать (не applied/noop/failed), а до VL-351 страховка «не-JSON
+  // = применено» давала ложный факт. Прежняя формулировка сохранена в message.
+  return ackOk(`Веха "${args.name}" удалена. Задач обработано: ${updatedCount} (${handling})`, {
+    name,
+    task_handling: handling,
+    updated_tasks: updatedCount,
+  });
 }
 
 function toolMilestoneArchive(args: ToolArgs, cwd: string): string {
@@ -2315,7 +2350,13 @@ function toolDocumentCreate(args: ToolArgs, cwd: string): string {
     tags: (args.tags as string[]) || [],
     content: (args.content as string) || '',
   });
-  return `Документ ${doc.id} создан: ${doc.title} (тип: ${doc.type})`;
+  // VL-351: JSON-ack — плоский текст write-инструмента цикл агента не может
+  // классифицировать (не applied/noop/failed). Прежняя формулировка в message.
+  return ackOk(`Документ ${doc.id} создан: ${doc.title} (тип: ${doc.type})`, {
+    id: doc.id,
+    title: doc.title,
+    type: doc.type,
+  });
 }
 
 /**
@@ -2446,7 +2487,12 @@ async function toolReferenceAdd(args: ToolArgs, cwd: string): Promise<string> {
     }
   }
   const linksInfo = (ref.urls?.length || 0) > 0 ? `, ссылок: ${1 + (ref.urls?.length || 0)}` : '';
-  return `Reference ${ref.id} создан: ${ref.title} (${ref.type}${linksInfo})${cloneMessage}${cacheMessage}`;
+  // VL-351: JSON-ack (см. toolDocumentCreate).
+  return ackOk(`Reference ${ref.id} создан: ${ref.title} (${ref.type}${linksInfo})${cloneMessage}${cacheMessage}`, {
+    id: ref.id,
+    title: ref.title,
+    type: ref.type,
+  });
 }
 
 function toolReferenceView(args: ToolArgs, cwd: string): string {
@@ -2474,7 +2520,8 @@ function toolReferenceSearch(args: ToolArgs, cwd: string): string {
 function toolReferenceRemove(args: ToolArgs, cwd: string): string {
   const ok = removeReference(cwd, args.id as string);
   if (!ok) throw new Error(`Reference ${args.id} не найден (или файл не удалось удалить).`);
-  return `Reference ${args.id} удалён (клон в data/ сохранён).`;
+  // VL-351: JSON-ack (см. toolDocumentCreate).
+  return ackOk(`Reference ${args.id} удалён (клон в data/ сохранён).`, { id: args.id });
 }
 
 // VL-164: обновление меты reference; MCP-параметр description → UpdateReferenceInput.content
@@ -2577,9 +2624,14 @@ function toolReferenceLink(args: ToolArgs, cwd: string): string {
     }
   }
   linkReferenceTask(cwd, referenceId, taskId, action);
-  return action === 'add'
-    ? `Reference ${args.referenceId} связан с задачей ${args.taskId} (linked_tasks ↔ task.references).`
-    : `Связь Reference ${args.referenceId} ↔ задача ${args.taskId} удалена.`;
+  // VL-351: JSON-ack (см. toolDocumentCreate) — плоский текст write-инструмента
+  // цикл агента не классифицирует (не applied/noop/failed).
+  return ackOk(
+    action === 'add'
+      ? `Reference ${args.referenceId} связан с задачей ${args.taskId} (linked_tasks ↔ task.references).`
+      : `Связь Reference ${args.referenceId} ↔ задача ${args.taskId} удалена.`,
+    { referenceId, taskId, action },
+  );
 }
 
 async function toolReferenceSync(args: ToolArgs, cwd: string): Promise<string> {
