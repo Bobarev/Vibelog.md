@@ -375,11 +375,24 @@ export function ackError(message: string): string {
  * переданные поля, чтобы модель не приняла их за записанные.
  *
  * @param message — текст ошибки
- * @param extra — missing/hint/applied (все опциональны)
+ * @param extra — missing/hint/applied/retryWith (все опциональны)
  */
 export function ackErrorDetailed(
   message: string,
-  extra: { missing?: SkippedField[]; hint?: string; applied?: Record<string, unknown> } = {},
+  extra: {
+    missing?: SkippedField[];
+    hint?: string;
+    applied?: Record<string, unknown>;
+    /**
+     * VL-353: машиночитаемый набор аргументов, которые надо добавить/изменить
+     * в вызове, чтобы он прошёл. Директива loop detection подставляет его в
+     * ГОТОВЫЙ вызов (`git_commit {…, "allowForeign": true}`) — описательное
+     * «исправь аргументы» слабая модель не выполняет (инцидент
+     * agent-1794050949211: 6 дословных повторов `git_commit` без
+     * `allowForeign` → кап повторов → fail).
+     */
+    retryWith?: Record<string, unknown>;
+  } = {},
 ): string {
   const missing = extra.missing ?? [];
   return JSON.stringify(
@@ -389,6 +402,10 @@ export function ackErrorDetailed(
       ...(extra.applied && Object.keys(extra.applied).length > 0 ? { applied: extra.applied } : {}),
       ...(missing.length > 0 ? { missing } : {}),
       ...(extra.hint ? { hint: extra.hint } : {}),
+      // VL-353: аддитивное поле — только когда инструмент знает точное
+      // исправление. Пустой объект не отдаём: «retryWith: {}» модель прочтёт
+      // как «повтори как есть».
+      ...(extra.retryWith && Object.keys(extra.retryWith).length > 0 ? { retryWith: extra.retryWith } : {}),
     },
     null,
     2,

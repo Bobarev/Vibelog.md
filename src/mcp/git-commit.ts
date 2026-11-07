@@ -38,7 +38,7 @@ import { appendCommitTrailer, resolveCommitCoauthor } from '../core/commit-trail
 import { getTask } from '../core/store.js';
 import { taskWorktreeDir } from '../core/worktree.js';
 import { resolveInProject } from '../agent/tools.js';
-import { ackError, ackNoop, ackOk } from './tool-result.js';
+import { ackError, ackErrorDetailed, ackNoop, ackOk } from './tool-result.js';
 
 /** Аргументы `git_commit` (совпадают с inputSchema инструмента, кроме internal). */
 export interface GitCommitOptions {
@@ -298,9 +298,17 @@ export function commitFiles(cwd: string, opts: GitCommitOptions): string {
   if (opts.allowForeign !== true) {
     const foreign = foreignPaths(projectCwd, taskId, relPaths);
     if (foreign.length > 0) {
-      return ackError(
+      // VL-353: отказ несёт ГОТОВОЕ исправление (`retryWith`), а не только
+      // текст. Директива loop detection подставит его в вызов целиком —
+      // слабая модель не делает шаг «прочитать текст → вывести аргумент»
+      // (инцидент agent-1794050949211: 6 дословных повторов → fail).
+      return ackErrorDetailed(
         `git_commit: эти файлы не принадлежат задаче ${taskId}: ${foreign.join(', ')}. `
         + 'Коммить только файлы задачи; если это осознанно — передай allowForeign: true.',
+        {
+          retryWith: { allowForeign: true },
+          hint: 'Добавь в вызов `allowForeign: true` — без него git_commit отклоняет чужие пути ВСЕГДА.',
+        },
       );
     }
   }

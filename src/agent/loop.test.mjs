@@ -2804,3 +2804,117 @@ describe('VL-323 — серия ackError не убивает фазу на 3-м 
     assert.equal(res.result, 'работаю дальше');
   });
 });
+
+describe('VL-353 — директива loop detection несёт ГОТОВЫЙ вызов с retryWith', () => {
+  /** Заглушка git_commit: без allowForeign отдаёт ackErrorDetailed с retryWith. */
+  function retrySpec() {
+    const state = { calls: 0, okCalls: 0, lastArgs: null };
+    const spec = {
+      name: 'git_commit',
+      description: 'write-заглушка с retryWith',
+      inputSchema: {
+        type: 'object',
+        properties: { paths: { type: 'array' }, message: { type: 'string' }, allowForeign: { type: 'boolean' } },
+      },
+      handler: async (args) => {
+        state.calls++;
+        state.lastArgs = args;
+        if (args.allowForeign !== true) {
+          return JSON.stringify({
+            ok: false,
+            error: 'git_commit: эти файлы не принадлежат задаче VL-351: CHANGELOG.md, backlog/docs/doc-8.md. '
+              + 'Коммить только файлы задачи; если это осознанно — передай allowForeign: true.',
+            hint: 'Добавь в вызов `allowForeign: true` — без него git_commit отклоняет чужие пути ВСЕГДА.',
+            retryWith: { allowForeign: true },
+          });
+        }
+        state.okCalls++;
+        return JSON.stringify({ ok: true, message: 'закоммичено' });
+      },
+    };
+    return { spec, state };
+  }
+
+  it('AC3/AC4/AC7: регресс agent-1794050949211 — директива содержит готовый вызов с allowForeign', async () => {
+    // Реальная сессия Close VL-351: модель 6 раз дословно повторила git_commit
+    // без allowForeign, подсказка была в тексте ошибки — не помогло, ран умер
+    // по MAX_ERROR_REPEATS_PER_RUN. Теперь директива отдаёт готовый вызов.
+    const { spec, state } = retrySpec();
+    const bad = { paths: ['CHANGELOG.md', 'backlog/docs/doc-8.md'], message: 'docs: VL-351 — документация' };
+    const good = { ...bad, allowForeign: true };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'git_commit', arguments: bad }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'git_commit', arguments: bad }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'git_commit', arguments: bad }] },
+      { text: '', toolCalls: [{ id: 'c4', name: 'git_commit', arguments: good }] },
+      { text: 'Готово' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false, `ран не должен падать: ${res.result}`);
+    assert.equal(res.result, 'Готово');
+    assert.equal(state.okCalls, 1, 'исправленный вызов дошёл до handler');
+    const directive = res.messages
+      .filter((m) => m.role === 'tool' && String(m.content).includes('Loop detection'))
+      .map((m) => String(m.content))
+      .pop();
+    assert.ok(directive, 'директива блокировки отправлена');
+    assert.match(directive, /Loop detection/, 'маркер lesson-76 сохранён');
+    assert.match(directive, /git_commit/, 'директива называет инструмент');
+    assert.match(directive, /"allowForeign":true/, 'готовый вызов содержит исправление');
+    assert.match(directive, /CHANGELOG\.md/, 'аргументы повторённого вызова подставлены');
+    assert.doesNotMatch(directive, /исправь аргументы/, 'описательной формулировки больше нет');
+  });
+
+  it('AC5: директива с длинными кириллическими путями остаётся < 400 байт', async () => {
+    const { spec } = retrySpec();
+    const longPaths = [
+      'backlog/docs/doc-10-Агент-Vibelog-vibelog-agent-очень-длинное-имя.md',
+      'backlog/lessons/lesson-198-Повторяй-текст-последнего-ackError-и-готовое-исправление.md',
+      'backlog/references/ref-25-Очень-длинное-имя-внешнего-источника-знаний.md',
+    ];
+    const bad = { paths: longPaths, message: 'docs: VL-353 — длинные кириллические пути в директиве' };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'git_commit', arguments: bad }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'git_commit', arguments: bad }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'git_commit', arguments: bad }] },
+      { text: 'Готово' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    const directives = res.messages.filter((m) => m.role === 'tool' && String(m.content).includes('Loop detection'));
+    assert.ok(directives.length > 0, 'директива отправлена');
+    for (const d of directives) {
+      const content = String(d.content);
+      assert.ok(
+        Buffer.byteLength(content, 'utf8') < 400,
+        `директива < 400 байт (${Buffer.byteLength(content, 'utf8')}): ${content}`,
+      );
+      assert.match(content, /Loop detection/, 'маркер сохранён при усечении');
+      assert.match(content, /"allowForeign":true/, 'retryWith сохраняется всегда — он и есть смысл директивы');
+    }
+  });
+
+  it('AC6: без retryWith директива прежняя (текст ошибки + «исправь аргументы»)', async () => {
+    const spec = {
+      name: 'git_commit',
+      description: 'write-заглушка без retryWith',
+      inputSchema: { type: 'object', properties: { paths: { type: 'array' } } },
+      handler: async () =>
+        JSON.stringify({ ok: false, error: 'git_commit: чужой путь; передай allowForeign: true' }),
+    };
+    const same = { paths: ['CHANGELOG.md'], message: 'docs: VL-353' };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'git_commit', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'git_commit', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'git_commit', arguments: same }] },
+      { text: 'Готово' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    const directive = res.messages
+      .filter((m) => m.role === 'tool' && String(m.content).includes('Loop detection'))
+      .map((m) => String(m.content))
+      .pop();
+    assert.ok(directive, 'директива отправлена');
+    assert.match(directive, /исправь аргументы/, 'прежняя формулировка сохранена');
+    assert.doesNotMatch(directive, /Повтори так/, 'готового вызова нет — retryWith не передан');
+  });
+});

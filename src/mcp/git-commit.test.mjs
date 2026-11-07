@@ -174,6 +174,10 @@ describe('VL-311 — git_commit: коммит явными путями с тр�
     assert.match(denied.error, /не принадлежат задаче VL-700/);
     assert.match(denied.error, /b\.txt/, 'чужой путь перечислен');
     assert.match(denied.error, /allowForeign/, 'подсказка allowForeign');
+    // VL-353: отказ несёт машиночитаемое исправление и hint — из них директива
+    // loop detection собирает ГОТОВЫЙ вызов (инцидент agent-1794050949211).
+    assert.deepEqual(denied.retryWith, { allowForeign: true }, 'retryWith — готовое исправление');
+    assert.ok(typeof denied.hint === 'string' && denied.hint.length > 0, 'hint непустой');
     assert.equal(commitCount(root), before, 'отказ — коммита нет');
 
     const allowed = parseAck(commitFiles(root, {
