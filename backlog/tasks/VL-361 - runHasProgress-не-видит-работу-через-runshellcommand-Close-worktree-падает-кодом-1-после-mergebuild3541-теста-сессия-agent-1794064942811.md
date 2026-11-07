@@ -1,11 +1,11 @@
 ---
 id: VL-361
 title: runHasProgress не видит работу через run_shell_command — Close-worktree падает кодом 1 после merge+build+3541 теста (сессия agent-1794064942811)
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-07 18:32'
-updated_date: '2026-11-07 18:48'
+updated_date: '2026-11-07 18:58'
 due_date: ''
 labels:
   - agent
@@ -28,15 +28,17 @@ modified_files:
   - src/agent/loop-repeat-cap.test.mjs
   - src/agent/loop.test.mjs
   - src/agent/repeat-tracker-vl357.test.mjs
-lessons: []
+lessons:
+  - lesson-238
+  - lesson-237
 token_usage:
-  input: 7022080
-  output: 29574
-  cache: 6876672
-  total: 7051654
-  requests: 72
-  duration_ms: 472687
-  reasoning: 14241
+  input: 9754102
+  output: 46255
+  cache: 9333248
+  total: 9800357
+  requests: 123
+  duration_ms: 826894
+  reasoning: 21956
   by_phase:
     code:
       input: 6807958
@@ -44,10 +46,10 @@ token_usage:
       cache: 6675968
       requests: 66
     close:
-      input: 214122
-      output: 1653
-      cache: 200704
-      requests: 6
+      input: 2946144
+      output: 18334
+      cache: 2657280
+      requests: 57
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -109,13 +111,13 @@ VL-357 (шаг 5 — источник `runHasProgress`), VL-349 (исходны�
 - [x] #6 Директива noop-повтора называет КОНКРЕТНОЕ недостающее поле (из `missing` последнего ответа) и, если инструмент его отдал, готовый `retryWith` — по образцу `loopDetectionDirective` (VL-353)
 - [x] #7 `appliedNoopDirective` (`src/agent/repeat-tracker.ts:820`) переведён на тот же JSON-контракт — плоского текста в директивах цикла не остаётся
 - [x] #8 `pnpm build && pnpm test` без регрессий
-- [ ] #9 Документация: doc-10 §6 (признаки прогресса рана, формат директив цикла), doc-27 §9, CHANGELOG.md
+- [x] #9 Документация: doc-10 §6 (признаки прогресса рана, формат директив цикла), doc-27 §9, CHANGELOG.md
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -290,11 +292,19 @@ author: @agent
 created: 2026-11-07 18:48
 ---
 Фаза close прервана агентом (aborted): Фаза Close прервана: конфликт слияния vb/vl-361 → master.
-
 `git merge --no-ff vb/vl-361` дал CONFLICT (add/add) в двух файлах, оба относятся к соседней задаче VL-359 (её ветка была влита в master уже после того, как vb/vl-361 ответвилась, поэтому файлы добавлены дважды):
 - `AA .vibelog/billing/VL-359.json`
 - `AA backlog/tasks/VL-359 - Доделать-Tool-outcome-protocol-v2-ToolSpeckind-не-читается-пороги-повторов-дублируются-guard-ответы-веб-чата-в-обход-outcome.md`
-
 Код VL-361 (`src/agent/loop.ts`,  — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-07 18:58
+---
+Фаза Close выполнена. Ветка `vb/vl-361` слита в master (merge-коммит `664182b`, 1 содержательный коммит `8b1b63c`), worktree `.vibelog/worktrees/vl-361` удалена (force — внутри был только untracked-симлинк `backlog/references/data`), ветка `vb/vl-361` удалена.
+**Конфликт слияния (первый ран Close был прерван):** `git merge --no-ff` дал CONFLICT (add/add) в двух файлах соседней задачи VL-359 (`.vibelog/billing/VL-359.json` и её файл задачи) — её ветка была влита в master уже после ответвления `vb/vl-361`. Конфликты разрешены вручную пользователем, merge завершён коммитом `664182b`.
+**Проверки после merge:** `pnpm build` — ок; ранний точечный фильтр по diff'у (`src/agent/loop-repeat-cap.test.mjs`, `loop.test.mjs`, `repeat-tracker-vl357.test.mjs`) — 3 файла, 143 passed; полный `pnpm test` — прошёл без падений (цепочка `vitest run --exclude src/web/static.test.mjs` → `vitest run src/web/static.test.mjs`, финальный блок 8 passed, exit 0). Параллельного `vitest` в других worktree не было. Повторных полных прогонов не делал.
+**Lessons:** создан lesson-238 («Считай прогрессом рана только вызов, чей ответ разобран: shell-команда — работа лишь при успехе и принадлежности к классу изменяющих/проверяющих»), связан с задачей; lesson-237 (единый сериализатор ответов) дополнен связью с VL-361 — директива цикла переиспользовала `extra` из VL-359. Коммит lessons — `020abb3`.
+**Документация (AC9/DoD2):** CHANGELOG.md — запись в Unreleased/«Исправлено»; doc-10 §6 — новый пункт «Прогресс рана считается по разбору ответа: shell-команда — работа только при успехе (VL-361)»; doc-27 — новый §11 «Закрытие остатка (VL-361)» + обновлён статус в шапке. Коммит `ab36eef`.
+**DoD:** все три пункта выполнены — тесты проходят (полный прогон после merge), документация обновлена (коммит `ab36eef`), регрессий нет. AC9 отмечен.
 ---
 <!-- COMMENTS:END -->
