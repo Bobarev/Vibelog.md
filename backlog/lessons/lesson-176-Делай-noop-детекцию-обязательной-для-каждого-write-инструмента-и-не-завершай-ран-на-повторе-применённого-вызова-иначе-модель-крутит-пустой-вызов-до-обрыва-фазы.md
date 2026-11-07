@@ -11,8 +11,9 @@ source_tasks:
   - VL-310
 linked_tasks:
   - VL-310
+  - VL-351
 created_date: 2026-11-03
-updated_date: 2026-11-03
+updated_date: 2026-11-07
 supersedes: ''
 last_verified: ''
 verified_by: ''
