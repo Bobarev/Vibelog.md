@@ -49,7 +49,8 @@ import { addComment, addTaskTokenUsage, getTask } from '../core/store.js';
 import { getWorkflowForTask, getStatusAfterPhase } from '../core/workflow.js';
 import { hasUsageDelta, usageDelta } from '../core/analytics.js';
 import type { TokenUsage } from '../core/analytics.js';
-import { appendBilling, appendExperimentUsage, parseExperimentMarker, EXPERIMENT_ENV } from '../core/billing.js';
+import { appendBilling, appendExperimentUsage, parseExperimentMarker, parseRunSource, EXPERIMENT_ENV, RUN_SOURCE_ENV } from '../core/billing.js';
+import type { BillingSource } from '../core/billing.js';
 import type { TuiHandle } from './tui.js';
 
 /** Результат агента: QwenResult + type=result (контракт parseQwenResult). */
@@ -452,6 +453,9 @@ export async function main(argv: string[]): Promise<void> {
   // оказывался один и тот же startedAt — начало сессии, журнал VL-235);
   // при прямом запуске CLI — старт процесса.
   const runStartedAt = process.env.VIBELOG_RUN_STARTED_AT ?? new Date().toISOString();
+  // VL-347: источник запуска рана. Оркестратор кладёт VIBELOG_RUN_SOURCE в env
+  // спавна (бот/веб/очередь/супервизор); нет маркера — прямой запуск CLI.
+  const runSource: BillingSource = parseRunSource(process.env[RUN_SOURCE_ENV]) ?? 'cli';
   // VL-209: settings.json (секции models/providers) в ГЛАВНОМ репо — в
   // branch-mode агент работает в worktree (паттерн строки loadApiMode)
   const settingsCwd = process.env.VIBELOG_CWD ?? cwd;
@@ -1100,6 +1104,8 @@ export async function main(argv: string[]): Promise<void> {
           usage: runUsage,
           model: llm.model || undefined,
           agent: 'vb',
+          // VL-347: откуда запущен ран (бот/веб/очередь/супервизор/CLI)
+          source: runSource,
         });
         // VL-243: маркер «этот ран в billing записан» — finish() оркестратора
         // по нему не дописывает fallback-запись (защита от двойного учёта)

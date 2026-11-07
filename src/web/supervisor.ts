@@ -529,7 +529,7 @@ export function startSupervisorRun(
       failed.push({ id, reason: 'фаза уже идёт' });
       continue;
     }
-    const res = startTaskPhase(cwd, id, item.phase, {});
+    const res = startTaskPhase(cwd, id, item.phase, { source: 'supervisor' });
     if ('error' in res) {
       failed.push({ id, reason: res.error });
       continue;
