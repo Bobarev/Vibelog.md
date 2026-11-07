@@ -1,11 +1,11 @@
 ---
 id: VL-348
 title: 'init: git-политика (корневой .gitignore + .vibelog/.gitignore), шаги wizard «git init», первый коммит и remote'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-07 12:55'
-updated_date: '2026-11-07 21:20'
+updated_date: '2026-11-07 21:28'
 due_date: ''
 labels: []
 dependencies: []
@@ -31,15 +31,16 @@ modified_files:
   - src/cli/init-git.test.mjs
   - src/core/setup.test.mjs
   - src/cli/diagnostics.test.mjs
-lessons: []
+lessons:
+  - lesson-243
 token_usage:
-  input: 16175011
-  output: 112284
-  cache: 15904256
-  total: 16287295
-  requests: 171
-  duration_ms: 1007058
-  reasoning: 57246
+  input: 18610885
+  output: 121913
+  cache: 18285056
+  total: 18732798
+  requests: 215
+  duration_ms: 1343918
+  reasoning: 59021
   by_phase:
     code:
       input: 16003927
@@ -47,10 +48,10 @@ token_usage:
       cache: 15752192
       requests: 167
     close:
-      input: 171084
-      output: 764
-      cache: 152064
-      requests: 4
+      input: 2606958
+      output: 10393
+      cache: 2532864
+      requests: 48
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -158,7 +159,7 @@ worktrees/
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -279,5 +280,14 @@ author: @agent
 created: 2026-11-07 21:20
 ---
 Фаза close прервана агентом (aborted): Фаза Close прервана: конфликт слияния vb/vl-348 → master (файлы: UU src/cli/commands/doctor.ts). Ветка vb/vl-348 содержит 1 коммит (d9ce41f), worktree чистый. Конфликт не резолвился и merge не откатывался — состояние оставлено как есть для ручного разбора. Требуется: разработчику вручную разрешить конфликт в src/cli/commands/doctor.ts в главном репозитории (свести новое правило root_gitignore_exists из VL-348 с изменениями master), выполнить `git add src/cli/commands/doctor.ts && git commit` (за — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-07 21:28
+---
+Фаза Close выполнена. Ветка vb/vl-348 слита в master (1 коммит d9ce41f, merge-коммит cb36d92 после ручного разрешения конфликта в src/cli/commands/doctor.ts), worktree удалена (--force: только untracked-симлинк backlog/references/data и ignored-артефакты), ветка vb/vl-348 удалена.
+**Проверки после merge**: `pnpm build` — ok; ранний точечный прогон (gitignore/git-init/setup/init-git/diagnostics) — 74 passed; полный `npx vitest run` — 193 файла, 3597 passed, 4 skipped, 0 failed. Повторных полных прогонов не было.
+**Документация (AC16)**: doc-7 — раздел `init` дополнен блоком «Git-политика (VL-348)», флагами `--git-init`/`--no-git-init`/`--git-remote` и примером; CHANGELOG — запись в Unreleased → Добавлено; AGENTS.md — пункт «Git-политика `.vibelog/`» дополнен тем, что оба файла политики создаёт `vb init` до первого коммита. Коммит 968e89f. Инвариант-тесты `phase-prompt.test.mjs` (95) и `readme-standard.test.mjs` (3) после правки AGENTS.md зелёные.
+**Lessons**: создан lesson-243 (проверять git-политику по факту индексации, а не через `git check-ignore -q` — на git 2.24 отрицания дают ложный «игнорируется»), связан с задачей; коммит 80f3b0e.
+**DoD**: 1 «Тесты проходят» — да (полный прогон зелёный); 2 «Документация обновлена» — да (doc-7, CHANGELOG, AGENTS.md); 3 «Нет регрессий» — да (полный прогон 0 failed, create.test.mjs зелёный).
 ---
 <!-- COMMENTS:END -->
