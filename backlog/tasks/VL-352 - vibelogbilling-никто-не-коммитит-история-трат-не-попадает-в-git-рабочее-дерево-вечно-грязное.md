@@ -1,11 +1,11 @@
 ---
 id: VL-352
 title: '.vibelog/billing никто не коммитит: история трат не попадает в git, рабочее дерево вечно грязное'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-07 14:03'
-updated_date: '2026-11-07 15:03'
+updated_date: '2026-11-07 15:04'
 due_date: ''
 labels:
   - infra
@@ -32,13 +32,13 @@ modified_files:
   - src/cli/diagnostics.test.mjs
 lessons: []
 token_usage:
-  input: 9787189
-  output: 38695
-  cache: 9529856
-  total: 9825884
-  requests: 160
-  duration_ms: 665418
-  reasoning: 8032
+  input: 10083459
+  output: 40028
+  cache: 9820160
+  total: 10123487
+  requests: 165
+  duration_ms: 682973
+  reasoning: 8471
   by_phase:
     code:
       input: 7393232
@@ -46,10 +46,10 @@ token_usage:
       cache: 7193600
       requests: 104
     close:
-      input: 2393957
-      output: 9776
-      cache: 2336256
-      requests: 56
+      input: 2690227
+      output: 11109
+      cache: 2626560
+      requests: 61
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -88,13 +88,13 @@ VL-329 (git-политика `.vibelog/`), VL-277 (автокоммит файл
 - [x] #7 Выключатель `billing.commit` НЕ добавляется — при таком подходе он не нужен (шума нет)
 - [x] #8 Тесты: `src/agent/task-commit.test.mjs` (billing в том же коммите, что файл задачи; несуществующий billing-путь не ломает коммит; amend своего docs(task)-коммита включает billing; чужой HEAD → новый коммит с обоими путями), `src/agent/cli.test.mjs` (порядок: billing записан до коммита), doctor-тест (грязный billing → предупреждение)
 - [x] #9 `pnpm build && pnpm test` проходят без регрессий
-- [ ] #10 Документация: doc-6 (git-политика `.vibelog/`: billing уходит с коммитом задачи в close, settings.json — вручную), doc-10 (состав пост-рана), CHANGELOG.md
+- [x] #10 Документация: doc-6 (git-политика `.vibelog/`: billing уходит с коммитом задачи в close, settings.json — вручную), doc-10 (состав пост-рана), CHANGELOG.md
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -209,5 +209,14 @@ author: @agent
 created: 2026-11-07 15:01
 ---
 Фаза close не удалась (код выхода 1): ет, блокировок=0, payload последнего запроса=166116 байт (макс 166116), usage={"input_tokens":644468,"output_tokens":1675,"cache_read_input_tokens":626688,"total_tokens":646143,"reasoning_tokens":505} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-07 15:04
+---
+Фаза Close выполнена. Ветка vb/vl-352 слита в master (1 коммит, 03bb07d → merge ec112e6), worktree удалена (force — внутри был только untracked симлинк backlog/references/data, артефакт оркестратора), ветка vb/vl-352 удалена.
+Проверки после merge: `pnpm build` — успешно; ранний точечный прогон затронутых тестов (task-commit, cli, diagnostics, orchestrator) — 4 файла, 193 passed; полный `npx vitest run` — 185 файлов, 3489 passed, 4 skipped (предсуществующие пропуски в src/core/frontmatter.test.mjs, к задаче не относятся), регрессий нет.
+Документация (коммит e1d5cba): doc-6 — новый пункт «Кто и когда коммитит .vibelog/billing/ и settings.json (VL-352)»; doc-10 §3.3 — новый абзац «Состав пост-рана и коммит billing (VL-352)»; CHANGELOG.md — запись в Unreleased / Исправлено.
+DoD: 1 (Тесты проходят) — выполнен; 2 (Документация обновлена) — выполнен в этой фазе; 3 (Нет регрессий) — выполнен. AC10 отмечен.
+Lessons: шаг 7.5 пропущен — MCP-инструмент lesson_create отклонял вызовы без поля content, урок не создан; на закрытие задачи это не влияет (урок можно завести отдельно).
 ---
 <!-- COMMENTS:END -->
