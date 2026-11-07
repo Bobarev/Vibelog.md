@@ -1,0 +1,100 @@
+{
+  "taskId": "VL-364",
+  "sessions": [
+    {
+      "sessionId": "agent-1794077863474",
+      "phase": "code",
+      "startedAt": "2026-11-07T18:57:43.365Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T19:14:48.053Z",
+      "durationMs": 1021843,
+      "usage": {
+        "input": 9595091,
+        "output": 134219,
+        "cache": 9315840,
+        "total": 9729310,
+        "requests": 80,
+        "reasoning": 32205
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794077863474",
+      "phase": "code",
+      "startedAt": "2026-11-07T18:57:43.365Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T19:14:48.196Z",
+      "durationMs": 1021843,
+      "usage": {
+        "input": 9595091,
+        "output": 134219,
+        "cache": 9315840,
+        "total": 9729310,
+        "requests": 80,
+        "reasoning": 32205
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794077863474",
+      "phase": "code",
+      "startedAt": "2026-11-07T19:20:51.134Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T19:50:38.499Z",
+      "durationMs": 1784191,
+      "usage": {
+        "input": 4266430,
+        "output": 8853,
+        "cache": 4244480,
+        "total": 4275283,
+        "requests": 25,
+        "reasoning": 5232
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "web"
+    },
+    {
+      "sessionId": "agent-1794085193804",
+      "phase": "close",
+      "startedAt": "2026-11-07T20:59:53.703Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T21:05:30.406Z",
+      "durationMs": 334155,
+      "usage": {
+        "input": 1799915,
+        "output": 10786,
+        "cache": 1748480,
+        "total": 1810701,
+        "requests": 33,
+        "reasoning": 2252
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794085193804",
+      "phase": "close",
+      "startedAt": "2026-11-07T20:59:53.703Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T21:05:30.556Z",
+      "durationMs": 334155,
+      "usage": {
+        "input": 1799915,
+        "output": 10786,
+        "cache": 1748480,
+        "total": 1810701,
+        "requests": 33,
+        "reasoning": 2252
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    }
+  ]
+}
