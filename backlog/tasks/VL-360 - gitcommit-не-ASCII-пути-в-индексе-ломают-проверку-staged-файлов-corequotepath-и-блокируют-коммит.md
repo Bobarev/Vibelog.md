@@ -1,11 +1,11 @@
 ---
 id: VL-360
 title: 'git_commit: не-ASCII пути в индексе ломают проверку staged-файлов (core.quotepath) и блокируют коммит'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-07 18:26'
-updated_date: '2026-11-07 21:08'
+updated_date: '2026-11-07 21:14'
 due_date: ''
 labels:
   - mcp
@@ -24,15 +24,16 @@ documentation: []
 modified_files:
   - src/mcp/git-commit.ts
   - src/mcp/git-commit.test.mjs
-lessons: []
+lessons:
+  - lesson-242
 token_usage:
-  input: 1289168
-  output: 14828
-  cache: 1246208
-  total: 1303996
-  requests: 30
-  duration_ms: 319815
-  reasoning: 6886
+  input: 2866243
+  output: 21539
+  cache: 2785280
+  total: 2887782
+  requests: 65
+  duration_ms: 623686
+  reasoning: 8210
   by_phase:
     code:
       input: 1118624
@@ -40,10 +41,10 @@ token_usage:
       cache: 1086464
       requests: 25
     close:
-      input: 170544
-      output: 1191
-      cache: 159744
-      requests: 5
+      input: 1747619
+      output: 7902
+      cache: 1698816
+      requests: 40
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -83,13 +84,13 @@ MCP-инструмент `git_commit` (`src/mcp/git-commit.ts`, VL-311) отка
 - [x] #3 Поведение при staged-файлах вне paths определено и задокументировано: либо коммит переданных путей не блокируется (git commit --only -- <paths>, чужие staged-файлы остаются в индексе и попадают в applied.warnings), либо отказ с actionable-подсказкой и готовым исправлением (retryWith/hint по паттерну VL-353); есть тест на этот сценарий
 - [x] #4 Сообщение об ошибке (если отказ остаётся) содержит реальные читаемые пути, а не escaped-последовательности вида \320\232
 - [x] #5 Поведение при core.quotepath=false не регрессирует (тест с явным false проходит), проверено на Linux/macOS
-- [ ] #6 pnpm build && pnpm test — полный прогон зелёный; CHANGELOG.md и doc-8 (§git_commit) обновлены
+- [x] #6 pnpm build && pnpm test — полный прогон зелёный; CHANGELOG.md и doc-8 (§git_commit) обновлены
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -155,5 +156,13 @@ author: @agent
 created: 2026-11-07 21:08
 ---
 Фаза close прервана агентом (aborted): Фаза Close прервана: конфликт слияния vb/vl-360 → master. Конфликтные файлы (git status --porcelain): AA .vibelog/billing/VL-359.json; AA "backlog/tasks/VL-359 - Доделать-Tool-outcome-protocol-v2-ToolSpeckind-не-читается-пороги-повторов-дублируются-guard-ответы-веб-чата-в-обход-outcome.md". Оба конфликта — add/add по артефактам ЧУЖОЙ задачи VL-359 (ветка vb/vl-360 содержит коммит 654d1b4 «docs(task): VL-359 — token_usage (close)», который в master уже есть в другой редакции); код задачи VL-360 ( — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-07 21:14
+---
+Фаза Close выполнена. Ветка vb/vl-360 слита в master (merge 3eaa588, коммит кода 423dd1f), worktree удалена (force — внутри был только untracked-симлинк backlog/references/data на главный репозиторий), ветка vb/vl-360 удалена.
+Проверка после merge: `pnpm build` — успешно; ранний точечный прогон `src/mcp/git-commit.test.mjs` — 17/17; полный прогон `npx vitest run` — 190 файлов, 3564 passed, 4 skipped, 0 failed.
+Документация: CHANGELOG.md (раздел Unreleased → Исправлено, запись VL-360) и doc-8 §`git_commit` (нормализация не-ASCII путей, `git commit --only -- <paths>`, staged-файлы вне paths → `applied.warnings`) — коммит 2c43906. Урок lesson-242 создан и связан с задачей — коммит 63f5e33.
+DoD: 1 «Тесты проходят» — выполнен (полный прогон зелёный); 2 «Документация обновлена» — выполнен (CHANGELOG + doc-8); 3 «Нет регрессий» — выполнен. AC6 отмечен: сборка и полный прогон зелёные, CHANGELOG и doc-8 обновлены.
 ---
 <!-- COMMENTS:END -->

@@ -76,6 +76,44 @@
       "agent": "vb",
       "fallback": true,
       "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794074987923",
+      "phase": "close",
+      "startedAt": "2026-11-07T18:09:47.823Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T18:14:54.413Z",
+      "durationMs": 303871,
+      "usage": {
+        "input": 1577075,
+        "output": 6711,
+        "cache": 1539072,
+        "total": 1583786,
+        "requests": 35,
+        "reasoning": 1324
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794074987923",
+      "phase": "close",
+      "startedAt": "2026-11-07T18:09:47.823Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T18:14:54.557Z",
+      "durationMs": 303871,
+      "usage": {
+        "input": 1577075,
+        "output": 6711,
+        "cache": 1539072,
+        "total": 1583786,
+        "requests": 35,
+        "reasoning": 1324
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
     }
   ]
 }
