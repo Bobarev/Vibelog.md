@@ -1,0 +1,81 @@
+{
+  "taskId": "VL-366",
+  "sessions": [
+    {
+      "sessionId": "agent-1794079420890",
+      "phase": "code",
+      "startedAt": "2026-11-07T19:23:40.752Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T19:51:53.645Z",
+      "durationMs": 1689013,
+      "usage": {
+        "input": 1687731,
+        "output": 11892,
+        "cache": 1641984,
+        "total": 1699623,
+        "requests": 31,
+        "reasoning": 4848
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794079420890",
+      "phase": "code",
+      "startedAt": "2026-11-07T19:23:40.752Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T19:51:53.674Z",
+      "durationMs": 1689013,
+      "usage": {
+        "input": 1687731,
+        "output": 11892,
+        "cache": 1641984,
+        "total": 1699623,
+        "requests": 31,
+        "reasoning": 4848
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794083462754",
+      "phase": "close",
+      "startedAt": "2026-11-07T20:31:02.656Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T20:34:21.963Z",
+      "durationMs": 197013,
+      "usage": {
+        "input": 906879,
+        "output": 2931,
+        "cache": 876544,
+        "total": 909810,
+        "requests": 19,
+        "reasoning": 956
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "web"
+    },
+    {
+      "sessionId": "agent-1794083462754",
+      "phase": "close",
+      "startedAt": "2026-11-07T20:31:02.656Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T20:34:22.075Z",
+      "durationMs": 197013,
+      "usage": {
+        "input": 906879,
+        "output": 2931,
+        "cache": 876544,
+        "total": 909810,
+        "requests": 19,
+        "reasoning": 956
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "web"
+    }
+  ]
+}
