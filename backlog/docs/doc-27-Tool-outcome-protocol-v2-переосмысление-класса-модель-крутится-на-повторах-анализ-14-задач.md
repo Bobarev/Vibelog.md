@@ -13,7 +13,7 @@ tags:
 ---
 # Tool outcome protocol v2 — переосмысление класса «модель крутится на повторах»
 
-**Статус:** предложение (не реализовано)
+**Статус:** реализовано (VL-357, 2026-11-07) — см. §9 «Фактическая реализация»
 **Дата:** 2026-11-07
 **Повод:** VL-356 — третья задача подряд об одном и том же; суммарно ~14 задач за две недели.
 
@@ -135,3 +135,25 @@ interface ToolAck {
 ## 8. Связанные задачи
 
 VL-303, VL-304, VL-306, VL-310, VL-318, VL-319, VL-323, VL-326, VL-349, VL-351, VL-353, VL-355, VL-356.
+
+## 9. Фактическая реализация (VL-357, 2026-11-07)
+
+Все пять пунктов реализованы одним коммитом `8dff411` (ветка `vb/vl-357`, слита в master).
+
+**Пункт 1 — `src/mcp/tool-result.ts`.** Введены `ToolOutcome` и `ToolNext {retryWith?, missing?, hint?}`; общий билдер `serializeAck` вычисляет `ok`/`noop`/`denied`/`read` из `outcome` при сериализации. `ackOk`/`ackOkDetailed`/`ackNoopDetailed`/`ackError`/`ackErrorDetailed`/`ackDenied`/`ackRead` остались публичным API и переведены на билдер; `isNoopAck` читает `outcome === 'noop'` с фолбэком на флаг. Тексты `message` не менялись (инвариант VL-262). Единственное видимое изменение формы: `ackError` отдаёт три ключа `error/ok/outcome` вместо двух — зафиксировано в `src/mcp/write-ack.test.mjs`.
+
+**Пункт 2 — `src/core/tool-kinds.ts` (новый).** Вместо поля `kind` в каждом `ToolSpec` реестра заведена таблица `TOOL_KINDS` на 47 инструментов + `LOCAL_TOOL_KINDS` для файловых инструментов агента; `ToolSpec` (`src/agent/tools.ts`) получил необязательное `kind?: ToolKind`, которое в `inputSchema`/MCP-схему не попадает. `isWriteOperation(name, args?)` читает объявление; `WRITE_MARKERS`/`READ_MARKERS` удалены; `mixed` разрешается по аргументам (`backlog_manage_ac/dod {action:'list'}` → read, вызов без аргументов → write fail-safe). Веб-чат (`src/web/chat.ts`, две точки) и `tool-dedup.ts` передают аргументы в классификатор.
+
+**Пункт 3 — `src/agent/repeat-tracker.ts`.** Единственный источник: `REPEAT_LIMITS` (search/read/shell/write/writeBlock/applied/noop/error/blockedCalls/warnMax), именованные `MAX_*_REPEATS_PER_RUN`/`MAX_BLOCKED_CALLS_PER_RUN`/`REPEAT_WARN_MAX_PER_RUN` как производные; единая `callSignature` (копия в `web/tool-dedup.ts` удалена, модуль реэкспортирует) и `repeatKey` — обе вырезают `NON_SEMANTIC_ARGS` (`idempotencyKey`); директивы `loopDetectionDirective`/`retryDirective`/`appliedNoopDirective`/`noopRepeatDirective`/`clipErrorText`/`parsedErrorText` перенесены сюда, `loop.ts` их реэкспортирует (публичный API сохранён). `parsedErrorText` читает и v2-форму (`next.retryWith`/`next.hint`), и старую (поля в корне). `MAX_NOOP_REPEATS_PER_TURN` в веб-чате = `REPEAT_LIMITS.noop`.
+
+**Отклонение от плана:** `TurnToolGuard` (`src/web/tool-dedup.ts`) переведён на общий `callSignature` и общий порог, но собственный счётчик окна «ход» оставлен осознанно — это окно другого уровня (ответ модели, а не ран), сведение к `createRepeatGuard` давало риск регресса VL-324 выше выгоды.
+
+**Пункт 4 — `src/mcp/write-ack-contract.test.mjs`.** Добавлены блок `PARTIAL_SCENARIOS` + `PARTIAL_EXEMPT` и тест обхода `listTools()`: каждый write-инструмент обязан либо вернуть `outcome:'partial'` + непустой `next.missing` на вызове без необязательного по смыслу поля, либо иметь документированное исключение. По ходу вскрылись два скрытых рецидива: `document_create` и `reference_add` молча возвращали `applied` при пустом теле — исправлены на `partial` + `missing`/`hint`.
+
+**Пункт 5 — `src/agent/loop.ts`.** `failOnRepeatCap`: при исчерпании `MAX_APPLIED/NOOP/ERROR_REPEATS_PER_RUN` ран завершается штатно с блоком `buildRunProgress`, если в ране есть фактический след работы (успешный `edit`/`write_file`/`git_commit`/отчёт — проверяется имя И содержимое ответа; ответ `ok:false`/директива блокировки работой не считаются). Иначе — прежний `fail()`.
+
+**Попутный дефект:** `callSignature` падал с `Cannot use 'in' operator to search for 'idempotencyKey'` на строковых `args` (веб-слой/супервизор передают JSON-строку) — ловилось `supervisor-limits.test.mjs`.
+
+**Тесты:** `src/mcp/tool-outcome.test.mjs` (10), `src/core/tool-classify.test.mjs` (6), `src/agent/loop-repeat-cap.test.mjs` (3), `src/agent/repeat-tracker-vl357.test.mjs` (10), блок partial в `write-ack-contract.test.mjs` (3 кейса). Полный прогон после merge: 189 файлов, 3536 passed, 4 skipped.
+
+**Что осталось открытым:** явной трассировки «14 задач класса → именованный тест» не сделано (покрытие есть в `loop.test.mjs`/`write-ack.test.mjs`, но без поимённой привязки) — AC6 задачи остался неотмеченным.
