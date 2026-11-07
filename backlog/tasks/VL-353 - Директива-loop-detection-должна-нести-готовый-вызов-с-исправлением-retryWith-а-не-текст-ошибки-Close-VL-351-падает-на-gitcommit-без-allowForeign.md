@@ -1,11 +1,11 @@
 ---
 id: VL-353
 title: 'Директива loop detection должна нести готовый вызов с исправлением (retryWith), а не текст ошибки — Close VL-351 падает на git_commit без allowForeign'
-status: In Progress
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-07 14:41'
-updated_date: '2026-11-07 15:17'
+updated_date: '2026-11-07 15:19'
 due_date: ''
 labels:
   - agent
@@ -30,13 +30,13 @@ modified_files:
   - src/mcp/write-ack.test.mjs
 lessons: []
 token_usage:
-  input: 6041300
-  output: 27002
-  cache: 5880320
-  total: 6068302
-  requests: 87
-  duration_ms: 565775
-  reasoning: 12375
+  input: 7715833
+  output: 34796
+  cache: 7511040
+  total: 7750629
+  requests: 124
+  duration_ms: 628302
+  reasoning: 13819
   by_phase:
     code:
       input: 5365086
@@ -44,10 +44,10 @@ token_usage:
       cache: 5223936
       requests: 69
     close:
-      input: 676214
-      output: 2096
-      cache: 656384
-      requests: 18
+      input: 2350747
+      output: 9890
+      cache: 2287104
+      requests: 55
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -106,13 +106,13 @@ VL-318 (ackError не считается применённым), VL-323 (дир
 - [x] #7 Регресс-тест `src/agent/loop.test.mjs` на сессию `agent-1794050949211`: `git_commit` без `allowForeign` → отказ с `retryWith` → директива содержит `"allowForeign": true` и имя `git_commit`; повтор с исправленными аргументами доходит до handler
 - [x] #8 Тест `src/mcp/write-ack.test.mjs`: `git_commit` с чужими путями → `ok:false`, `retryWith.allowForeign === true`, `hint` непустой
 - [x] #9 `pnpm build && pnpm test` проходят без регрессий
-- [ ] #10 Документация: doc-8 (поле `retryWith` в контракте ack), doc-10 §6 (директива с готовым вызовом), CHANGELOG.md
+- [x] #10 Документация: doc-8 (поле `retryWith` в контракте ack), doc-10 §6 (директива с готовым вызовом), CHANGELOG.md
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -230,5 +230,19 @@ created: 2026-11-07 15:14
 - Тесты: `src/agent/loop.test.mjs` (регресс `agent-1794050949211`: директива содержит `"allowForeign":true` и имя `git_commit`, не содержит «исправь аргументы», исправленный вызов доходит до handler; директива < 400 байт на длинных кириллических путях с сохранением `retryWith`; без `retryWith` — прежняя формулировка), `src/mcp/write-ack.test.mjs` (retryWith в JSON, отсутствие поля без исправления, `ackError` — обёртка), `src/mcp/git-commit.test.mjs` (отказ с чужими путями → `retryWith.allowForeign === true` + непустой `hint`; успех с `allowForeign: true` — регресс не сломан).
 Проверки: `pnpm build` — успешно; полный `pnpm test` — 184 файла, 3474 теста passed, 4 skipped, 0 failed (без --exclude/--skip).
 Что осталось (Фаза Close): документация — doc-8 (поле `retryWith` в контракте ack), doc-10 §6 (директива с готовым вызовом, разбор инцидента `agent-1794050949211`), CHANGELOG.md. В фазе Code эти файлы по регламенту не правятся.
+---
+author: @agent
+created: 2026-11-07 15:17
+---
+Фаза close не удалась (код выхода 1): ет, блокировок=0, payload последнего запроса=168451 байт (макс 168451), usage={"input_tokens":676214,"output_tokens":2096,"cache_read_input_tokens":656384,"total_tokens":678310,"reasoning_tokens":717} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-07 15:19
+---
+Фаза Close выполнена. Ветка vb/vl-353 слита в master (1 коммит ae79e0d, merge 26d880d), worktree удалена (force — внутри были только untracked-симлинки refs/data), ветка vb/vl-353 удалена.
+Проверки после merge: `pnpm build` — успешно; ранний точечный прогон (src/agent/loop.test.mjs, src/mcp/git-commit.test.mjs, src/mcp/write-ack.test.mjs) — 173 теста passed; полный `pnpm test` — 3487 passed, 4 skipped, 0 failed (без --exclude/--skip).
+Документация (коммит 7862a5e): doc-8 — поле `retryWith` в контракте ack (кто отдаёт, зачем, инцидент agent-1794050949211); doc-10 §6 — новый абзац «Директива loop detection отдаёт ГОТОВЫЙ вызов с retryWith» с разбором инцидента и правилом усечения < 400 байт; CHANGELOG.md → Unreleased / Исправлено.
+Lessons (коммит e04116b): lesson-198 обновлён — заголовок переформулирован на императив «Отдавай в директиве loop detection ГОТОВЫЙ вызов с подставленным retryWith…», добавлены tags retryWith, source_tasks/linked_tasks += VL-353.
+DoD: 1 «Тесты проходят» — выполнен (полный прогон зелёный); 2 «Документация обновлена» — выполнен (doc-8, doc-10 §6, CHANGELOG); 3 «Нет регрессий» — выполнен (полный прогон без падений). Все 10 AC отмечены в фазе Code.
 ---
 <!-- COMMENTS:END -->
