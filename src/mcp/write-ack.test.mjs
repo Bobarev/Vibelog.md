@@ -267,7 +267,9 @@ describe('VL-319 — пустое тело урока: ошибка вместо
 
   it('AC1: lesson_update без content на уроке с пустым телом → ok:false + error (не noop)', async () => {
     const l = createEmptyBodyLesson('Урок без тела');
-    const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+    // VL-355: отказ остаётся для вызова, который НИЧЕГО не меняет — только `id`
+    // (переданные поля, уже совпадающие с файлом, дают noop с `missing`).
+    const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id }, cwd));
     assert.equal(ack.ok, false, `ожидалась ошибка: ${JSON.stringify(ack)}`);
     assert.ok(!ack.noop, 'это НЕ noop — сигнатура не должна попадать в noopSignatures');
     assert.match(String(ack.error), /пустое/);
@@ -288,17 +290,16 @@ describe('VL-319 — пустое тело урока: ошибка вместо
 
   it('AC3: noop-ответ содержит missing[0].field === "content" и hint', async () => {
     const l = createEmptyBodyLesson('Урок без тела 2');
-    // Первый вызов на пустом теле — ошибка (AC1), файл не тронут
+    // VL-355: первый вызов на пустом теле ПРИМЕНЯЕТ переданное поле и
+    // предупреждает о незаполненном теле (раньше — отказ целиком).
     const first = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
-    assert.equal(first.ok, false, 'первый вызов на пустом теле — ошибка (AC1)');
-    // Дополняем тело, чтобы получить именно noop-ветку на повторном вызове
-    const entry = getLesson(cwd, l.id);
-    writeFileSync(entry.path, lessonToMarkdown(entry.lesson, '## Проблема\n\nx\n'), 'utf-8');
-    const applied = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
-    assert.equal(applied.ok, true, `первый вызов применяет: ${JSON.stringify(applied)}`);
+    assert.equal(first.ok, true, `первый вызов применяет поле: ${JSON.stringify(first)}`);
+    assert.equal(first.missing[0].field, 'content', 'успех называет незаполненное тело');
+    // Повтор тех же аргументов → noop, и он тоже обязан назвать content
     const noop = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
     assert.equal(noop.noop, true, `ожидался noop: ${JSON.stringify(noop)}`);
     assert.deepEqual(Object.keys(noop.applied), ['verified_by'], 'applied — только переданные поля');
+    assert.equal(noop.missing[0].field, 'content', 'noop называет незаполненное тело');
     assert.equal(typeof noop.hint, 'string', 'hint со следующим шагом обязателен');
   });
 });
@@ -312,11 +313,12 @@ describe('VL-349 — тело-скелет урока: ошибка вместо
     return l;
   }
 
-  it('AC2: lesson_update без content на теле-скелете → ok:false БЕЗ noop, повтор исполняется', async () => {
+  it('AC2: lesson_update без content и без других изменений на теле-скелете → ok:false БЕЗ noop, повтор исполняется', async () => {
     const l = createSkeletonLesson('Урок-скелет');
     const path = getLesson(cwd, l.id).path;
     const before = readFileSync(path, 'utf-8');
-    const args = { id: l.id, title: 'Урок-скелет', tags: ['skeleton'], verifiedBy: 'agent' };
+    // VL-355: отказ остаётся для вызова, который НИЧЕГО не меняет — только `id`.
+    const args = { id: l.id };
     const first = JSON.parse(await handleToolCall('lesson_update', args, cwd));
     assert.equal(first.ok, false, `ожидалась ошибка: ${JSON.stringify(first)}`);
     assert.ok(!first.noop, 'это НЕ noop — сигнатура не должна попадать в noopSignatures');
@@ -352,6 +354,80 @@ describe('VL-349 — тело-скелет урока: ошибка вместо
     assert.equal(ack.reason, 'noop', `ожидался noop: ${JSON.stringify(ack)}`);
     assert.equal(ack.missing[0].field, 'content', 'noop называет незаполненное тело');
     assert.match(String(ack.hint), /content/);
+  });
+});
+
+describe('VL-355 — незаполненное тело урока: частичное применение вместо отказа', () => {
+  /** Создаёт урок, тело которого — дефолтный скелет createLessonFile. */
+  function createSkeletonLesson(title) {
+    const l = createLessonFile(cwd, { title, tags: ['vl355'] });
+    assert.equal(getLesson(cwd, l.id).body.trim(), LESSON_BODY_SKELETON.trim(), 'фикстура: тело — скелет');
+    return l;
+  }
+
+  it('AC1/AC4: регресс agent-1794053090709 — linkedTasks применяется и записывается в файл', async () => {
+    const t = createTaskFile(cwd, { title: 'Задача для привязки' });
+    const l = createSkeletonLesson('Урок-привязка');
+    const ack = JSON.parse(await handleToolCall('lesson_update', {
+      id: l.id, linkedTasks: [t.id], verifiedBy: 'agent',
+    }, cwd));
+    assert.equal(ack.ok, true, `ожидался успех: ${JSON.stringify(ack)}`);
+    assert.ok(!ack.noop, 'это не noop');
+    assert.deepEqual(ack.applied.linked_tasks, [t.id], 'applied — фактическое значение из файла');
+    // Ключевое: поле реально записано в файл, а не только в applied
+    const entry = getLesson(cwd, l.id);
+    assert.deepEqual(entry.lesson.linked_tasks, [t.id], 'linked_tasks записан в файл');
+    assert.match(readFileSync(entry.path, 'utf-8'), new RegExp(t.id), 'frontmatter содержит задачу');
+  });
+
+  it('AC2: успешный ответ несёт missing[content] и непустой hint', async () => {
+    const t2 = createTaskFile(cwd, { title: 'Задача два' });
+    const l = createSkeletonLesson('Урок-предупреждение');
+    const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, linkedTasks: [t2.id] }, cwd));
+    assert.equal(ack.ok, true, `ожидался успех: ${JSON.stringify(ack)}`);
+    assert.equal(ack.missing[0].field, 'content', 'missing называет незаполненное тело');
+    assert.match(String(ack.hint), /content/, 'hint говорит, что дописать');
+  });
+
+  it('AC5: повтор того же вызова → noop (не отказ), missing содержит content', async () => {
+    const t = createTaskFile(cwd, { title: 'Задача три' });
+    const l = createSkeletonLesson('Урок-повтор');
+    const args = { id: l.id, linkedTasks: [t.id], verifiedBy: 'agent' };
+    const first = JSON.parse(await handleToolCall('lesson_update', args, cwd));
+    assert.equal(first.ok, true, `первый вызов применяет: ${JSON.stringify(first)}`);
+    const second = JSON.parse(await handleToolCall('lesson_update', args, cwd));
+    assert.equal(second.ok, false, `повтор — noop: ${JSON.stringify(second)}`);
+    assert.equal(second.noop, true);
+    assert.equal(second.missing[0].field, 'content', 'noop тоже называет незаполненное тело');
+  });
+
+  it('AC6: вызов без content и без других полей → ok:false с missing: content (не noop)', async () => {
+    const l = createSkeletonLesson('Урок-отказ');
+    // VL-355: отказ — только когда применять нечего (кроме `id` ничего не
+    // передано). Переданные, но уже совпадающие поля дают noop с `missing`
+    // (AC5: повтор не должен превращаться в серию отказов).
+    const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id }, cwd));
+    assert.equal(ack.ok, false, `ожидался отказ: ${JSON.stringify(ack)}`);
+    assert.ok(!ack.noop, 'это отказ, не noop');
+    assert.equal(ack.missing[0].field, 'content');
+    assert.equal(typeof ack.hint, 'string');
+  });
+
+  it('AC1: после передачи content урок-скелет заполняется', async () => {
+    const l = createSkeletonLesson('Урок-заполнение');
+    const ack = JSON.parse(await handleToolCall('lesson_update', {
+      id: l.id, content: '## Проблема\n\nбыло\n\n## Решение\n\nстало\n\n## Пример\n\nпример\n',
+    }, cwd));
+    assert.equal(ack.ok, true, `заполнение тела проходит: ${JSON.stringify(ack)}`);
+    assert.ok(ack.applied.content > LESSON_BODY_SKELETON.length, 'длина тела выросла');
+  });
+
+  it('AC1: урок с заполненным телом + linkedTasks → успех без missing', async () => {
+    const t = createTaskFile(cwd, { title: 'Задача четыре' });
+    const l = createLessonFile(cwd, { title: 'Урок с телом', tags: ['vl355'], content: '## Проблема\n\nшум\n' });
+    const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, linkedTasks: [t.id] }, cwd));
+    assert.equal(ack.ok, true, `успех: ${JSON.stringify(ack)}`);
+    assert.equal(ack.missing, undefined, 'заполненное тело не даёт missing');
   });
 });
 
