@@ -728,7 +728,15 @@ describe('runLoop loop detection (VL-83)', () => {
     assert.match(text, /lesson_update/, 'директива называет имя инструмента');
     assert.match(text, /НЕ исполнен/, 'директива говорит, что вызов НЕ исполнен');
     assert.ok(!text.includes('уже был выполнен'), 'формулировки «уже был выполнен» быть не должно');
-    assert.ok(Buffer.byteLength(text, 'utf8') < 400, `директива < 400 байт (${Buffer.byteLength(text, 'utf8')})`);
+    // VL-361: директива — JSON-контракт ack, поэтому она длиннее плоской
+    // строки; инвариант «не раздувает payload» остаётся, но с поправкой на
+    // машиночитаемые поля (missing/hint).
+    assert.ok(Buffer.byteLength(text, 'utf8') < 1200, `директива компактна (${Buffer.byteLength(text, 'utf8')})`);
+    // VL-361: модель видит КОНКРЕТНОЕ недостающее поле, а не «добавь отсутствующее».
+    const parsed = JSON.parse(text);
+    assert.equal(parsed.outcome, 'noop');
+    assert.deepEqual(parsed.missing, [{ field: 'content', reason: 'тело урока пустое — не заполнено' }]);
+    assert.match(parsed.hint, /content/);
   });
 
   it('VL-319 (AC7): кап noop-повторов по-прежнему срабатывает на 4-й серии', async () => {

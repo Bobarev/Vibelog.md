@@ -109,3 +109,105 @@ describe('VL-357 — кап повторов при ВЫПОЛНЕННОЙ ра�
     assert.match(res.result, /Работа в ране выполнена/);
   });
 });
+
+/**
+ * VL-361 — shell-работа как след прогресса.
+ *
+ * Фаза Close-worktree делает всю работу через `run_shell_command`: merge,
+ * build, полный прогон тестов, уборку worktree. `git_commit` модель при этом
+ * не вызывает, поэтому `runHasProgress()` возвращал false при полностью
+ * выполненной работе и ран падал кодом 1 (сессия `agent-1794064942811`).
+ *
+ * Наивное «добавить имя в набор» дало бы регресс VL-124: ответ shell — плоский
+ * текст, и упавшая команда выдала бы себя за работу. Поэтому класс команды и
+ * успех разбираются отдельно (`shellCallIsWork`).
+ */
+
+function shellSpec(outputs) {
+  const state = { calls: 0 };
+  return {
+    state,
+    spec: {
+      name: 'run_shell_command',
+      description: 'shell-заглушка',
+      inputSchema: { type: 'object', properties: { command: { type: 'string' } } },
+      handler: async (args) => {
+        const out = outputs[state.calls] ?? outputs[outputs.length - 1];
+        state.calls++;
+        return typeof out === 'function' ? out(args) : out;
+      },
+    },
+  };
+}
+
+const SHELL_OK = (cmd) => `exit code: 0\nstdout:\n${cmd} ok\nstderr:\n`;
+
+describe('VL-361 — shell-работа учитывается как прогресс рана', () => {
+  it('регресс agent-1794064942811: merge + build + тесты через shell, затем noop-повторы → штатное завершение', async () => {
+    const { spec, state } = shellSpec([
+      (a) => SHELL_OK(a.command),
+      (a) => SHELL_OK(a.command),
+      (a) => SHELL_OK(a.command),
+    ]);
+    const scripts = [
+      { text: '', toolCalls: [{ id: 's1', name: 'run_shell_command', arguments: { command: 'git merge --no-ff vb/vl-359' } }] },
+      { text: '', toolCalls: [{ id: 's2', name: 'run_shell_command', arguments: { command: 'pnpm build' } }] },
+      { text: '', toolCalls: [{ id: 's3', name: 'run_shell_command', arguments: { command: 'npx vitest run' } }] },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        text: '',
+        toolCalls: [{ id: `c${i}`, name: 'backlog_update_task', arguments: { id: 'VL-1', type: 'feature' } }],
+      })),
+    ];
+    const { llm } = fakeLlm(scripts);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec, noopSpec()] });
+    assert.equal(state.calls, 3, 'все три shell-команды исполнены');
+    assert.equal(res.is_error, false, `shell-работа сделана — ран завершается штатно: ${res.result.slice(0, 300)}`);
+    assert.match(res.result, /Работа в ране выполнена/);
+    assert.ok(res.progress, 'блок прогресса приложен к результату');
+  });
+
+  it('регресс VL-124: shell с fatal: работой не считается → fail()', async () => {
+    const { spec } = shellSpec([
+      () => 'exit code: 1\nstdout:\nstderr:\nfatal: merge conflict in src/a.ts\n',
+    ]);
+    const scripts = [
+      { text: '', toolCalls: [{ id: 's1', name: 'run_shell_command', arguments: { command: 'git merge --no-ff vb/vl-1' } }] },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        text: '',
+        toolCalls: [{ id: `c${i}`, name: 'backlog_update_task', arguments: { id: 'VL-1', type: 'feature' } }],
+      })),
+    ];
+    const { llm } = fakeLlm(scripts);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec, noopSpec()] });
+    assert.equal(res.is_error, true, 'упавшая команда не выдаёт себя за работу');
+    assert.match(res.result, /повторила вызов/);
+  });
+
+  it('shell с exit code 1 в выводе работой не считается', async () => {
+    const { spec } = shellSpec([() => 'exit code: 1\nstdout:\nstderr:\n']);
+    const scripts = [
+      { text: '', toolCalls: [{ id: 's1', name: 'run_shell_command', arguments: { command: 'pnpm build' } }] },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        text: '',
+        toolCalls: [{ id: `c${i}`, name: 'backlog_update_task', arguments: { id: 'VL-1', type: 'feature' } }],
+      })),
+    ];
+    const { llm } = fakeLlm(scripts);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec, noopSpec()] });
+    assert.equal(res.is_error, true, 'ненулевой код возврата — не работа');
+  });
+
+  it('shell-команда вне класса работы (ls, cat) работой не считается', async () => {
+    const { spec } = shellSpec([() => 'exit code: 0\nstdout:\nfile.txt\nstderr:\n']);
+    const scripts = [
+      { text: '', toolCalls: [{ id: 's1', name: 'run_shell_command', arguments: { command: 'ls -la' } }] },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        text: '',
+        toolCalls: [{ id: `c${i}`, name: 'backlog_update_task', arguments: { id: 'VL-1', type: 'feature' } }],
+      })),
+    ];
+    const { llm } = fakeLlm(scripts);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec, noopSpec()] });
+    assert.equal(res.is_error, true, 'чтение каталога — не след работы');
+  });
+});

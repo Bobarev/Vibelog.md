@@ -19,6 +19,9 @@
  */
 
 import { isValidToolCall, type ChatMessage } from './llm.js';
+// VL-361: директивы цикла отдаются тем же JSON-контрактом, что и ответ
+// инструмента (`serializeAck`) — модель не должна видеть два формата.
+import { serializeAck } from '../mcp/tool-result.js';
 
 /** Порог повторов поиска (grep_search/glob с тем же pattern, дефолт 3). */
 export const REPEAT_SEARCH_LIMIT_DEFAULT = 3;
@@ -810,17 +813,83 @@ export function loopDetectionDirective(
 }
 
 /**
+ * VL-361: машиночитаемый «следующий шаг» из ответа инструмента.
+ *
+ * Директивы цикла (`appliedNoopDirective`/`noopRepeatDirective`) обязаны нести
+ * ТО ЖЕ, что нёс ответ инструмента: конкретное недостающее поле (`missing`) и
+ * готовые аргументы (`retryWith`). Иначе модель видит два разных формата —
+ * JSON от инструмента и плоский текст от директивы — и повторяет вызов
+ * дословно (сессия `agent-1794064942811`: модель даже написала «понял, не
+ * передавал content» и снова вызвала без `content`).
+ */
+export interface AckNext {
+  missing?: { field: string; reason: string }[];
+  hint?: string;
+  retryWith?: Record<string, unknown>;
+}
+
+/**
+ * Извлекает `missing`/`hint`/`retryWith` из JSON-ответа инструмента (VL-361).
+ *
+ * Читает и v2-форму (`next.*`), и старую (поля в корне) — как `parsedErrorText`.
+ *
+ * @returns null, если ответ не JSON или в нём нет ни одного из полей
+ */
+export function parsedAckNext(output: string): AckNext | null {
+  try {
+    const parsed = JSON.parse(output) as {
+      missing?: unknown;
+      hint?: unknown;
+      retryWith?: unknown;
+      next?: { missing?: unknown; hint?: unknown; retryWith?: unknown };
+    } | null;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const rawMissing = parsed.next?.missing ?? parsed.missing;
+    const missing = Array.isArray(rawMissing)
+      ? (rawMissing.filter(
+          (m): m is { field: string; reason: string } =>
+            m !== null && typeof m === 'object' && typeof (m as { field?: unknown }).field === 'string',
+        ) as { field: string; reason: string }[])
+      : undefined;
+    const rawHint = parsed.next?.hint ?? parsed.hint;
+    const hint = typeof rawHint === 'string' && rawHint.trim() !== '' ? rawHint : undefined;
+    const rawRetry = parsed.next?.retryWith ?? parsed.retryWith;
+    const retryWith =
+      rawRetry !== null && typeof rawRetry === 'object' && !Array.isArray(rawRetry)
+        ? (rawRetry as Record<string, unknown>)
+        : undefined;
+    if (missing === undefined && hint === undefined && retryWith === undefined) return null;
+    return {
+      ...(missing !== undefined && missing.length > 0 ? { missing } : {}),
+      ...(hint !== undefined ? { hint } : {}),
+      ...(retryWith !== undefined ? { retryWith } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Текст директивы для повтора вызова, чей результат уже был ok/noop (VL-303).
  *
  * Отличие от `loopDetectionDirective`: вызов УЖЕ применён, поэтому фазу
  * прерывать нельзя — модели нужно лишь перейти к отчёту. Маркерная подстрока
  * «уже применён» используется тестами и разборами сессий.
+ *
+ * VL-361: директива отдаётся тем же JSON-контрактом, что и ответ инструмента
+ * (`serializeAck`), и несёт `missing`/`hint`/`retryWith` последнего ответа —
+ * плоского текста в директивах цикла не остаётся.
  */
-export function appliedNoopDirective(name: string): string {
-  return (
-    `Вызов ${name} уже применён ранее — повтор с теми же аргументами НЕ выполнен, он ничего не изменит. ` +
-    'Изменения применены; переходи к следующему пункту фазы, а если работа сделана — к отчёту (backlog_finish_phase).'
-  );
+export function appliedNoopDirective(name: string, lastAck?: AckNext): string {
+  return serializeAck({
+    outcome: 'noop',
+    reason: 'noop_repeat',
+    message:
+      `Вызов ${name} уже применён ранее — повтор НЕ выполнен, он ничего не изменит. ` +
+      'Переходи к следующему пункту фазы, а если работа сделана — к отчёту.',
+    next: ackNextFields(lastAck),
+    extra: { applied_repeat: true },
+  });
 }
 
 /**
@@ -835,10 +904,33 @@ export function appliedNoopDirective(name: string): string {
  * первый же ответ был noop, вызов не исполнялся. Модель читала «не выполнен» и
  * повторяла дословно (сессия agent-1793712738536: 4 повтора `lesson_update`
  * без `content` → кап → fail).
+ *
+ * VL-361: директива отдаётся JSON-контрактом `serializeAck` и несёт
+ * `missing`/`hint`/`retryWith` последнего ответа — модель видит КОНКРЕТНОЕ
+ * недостающее поле, а не описательное «добавь отсутствующее поле».
  */
-export function noopRepeatDirective(name: string): string {
-  return (
-    `Изменений нет: вызов ${name} НЕ исполнен (поля уже такие). Повтор ничего не изменит. ` +
-    'Следующий шаг: прочитай состояние (lesson_view) или смени аргумент — добавь отсутствующее поле.'
-  );
+export function noopRepeatDirective(name: string, lastAck?: AckNext): string {
+  return serializeAck({
+    outcome: 'noop',
+    reason: 'noop_repeat',
+    message:
+      `Изменений нет: вызов ${name} НЕ исполнен (поля уже такие). Повтор ничего не изменит. ` +
+      'Следующий шаг: прочитай состояние или смени аргумент.',
+    next: ackNextFields(lastAck),
+    extra: { noop_repeat: true },
+  });
+}
+
+/** Собирает `next` для директивы из последнего ответа инструмента (VL-361). */
+function ackNextFields(lastAck?: AckNext): {
+  missing?: { field: string; reason: string }[];
+  hint?: string;
+  retryWith?: Record<string, unknown>;
+} {
+  if (lastAck === undefined) return {};
+  return {
+    ...(lastAck.missing !== undefined && lastAck.missing.length > 0 ? { missing: lastAck.missing } : {}),
+    ...(lastAck.hint !== undefined ? { hint: lastAck.hint } : {}),
+    ...(lastAck.retryWith !== undefined ? { retryWith: lastAck.retryWith } : {}),
+  };
 }

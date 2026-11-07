@@ -21,6 +21,7 @@ import {
   loopDetectionDirective,
   appliedNoopDirective,
   noopRepeatDirective,
+  parsedAckNext,
   parsedErrorText,
   clipErrorText,
 } from '../../dist/agent/repeat-tracker.js';
@@ -81,6 +82,45 @@ describe('VL-357 — директивы повторов: один словар�
   it('appliedNoopDirective и noopRepeatDirective — разные исходы, разные тексты', () => {
     assert.match(appliedNoopDirective('lesson_update'), /уже применён/);
     assert.match(noopRepeatDirective('backlog_update_task'), /Изменений нет/);
+  });
+
+  it('VL-361: директивы цикла — валидный JSON с outcome noop и флагом причины', () => {
+    for (const [text, flag] of [
+      [noopRepeatDirective('lesson_update'), 'noop_repeat'],
+      [appliedNoopDirective('lesson_update'), 'applied_repeat'],
+    ]) {
+      const parsed = JSON.parse(text);
+      assert.equal(parsed.outcome, 'noop', 'исход объявлен, а не выводится из текста');
+      assert.equal(parsed.ok, false);
+      assert.equal(parsed.noop, true);
+      assert.equal(parsed.reason, 'noop_repeat');
+      assert.equal(parsed[flag], true, `флаг причины ${flag}`);
+      assert.equal(typeof parsed.message, 'string');
+    }
+  });
+
+  it('VL-361: директива несёт missing/hint/retryWith последнего ответа инструмента', () => {
+    const lastAck = {
+      missing: [{ field: 'content', reason: 'тело урока не заполнено' }],
+      hint: 'Добавь в вызов `content` с непустым markdown.',
+      retryWith: { content: '## Проблема\n…' },
+    };
+    const parsed = JSON.parse(noopRepeatDirective('lesson_update', lastAck));
+    assert.deepEqual(parsed.missing, [{ field: 'content', reason: 'тело урока не заполнено' }]);
+    assert.match(parsed.hint, /content/);
+    assert.deepEqual(parsed.retryWith, { content: '## Проблема\n…' });
+    // applied-директива — тот же контракт
+    const applied = JSON.parse(appliedNoopDirective('lesson_update', lastAck));
+    assert.deepEqual(applied.missing, [{ field: 'content', reason: 'тело урока не заполнено' }]);
+  });
+
+  it('VL-361: parsedAckNext читает next-форму и старую (поля в корне)', () => {
+    const v2 = JSON.stringify({ outcome: 'noop', next: { missing: [{ field: 'content', reason: 'r' }], hint: 'h' } });
+    assert.deepEqual(parsedAckNext(v2), { missing: [{ field: 'content', reason: 'r' }], hint: 'h' });
+    const v1 = JSON.stringify({ ok: false, missing: [{ field: 'content', reason: 'r' }], retryWith: { content: 'x' } });
+    assert.deepEqual(parsedAckNext(v1), { missing: [{ field: 'content', reason: 'r' }], retryWith: { content: 'x' } });
+    assert.equal(parsedAckNext('плоский текст'), null);
+    assert.equal(parsedAckNext(JSON.stringify({ ok: true })), null);
   });
 
   it('parsedErrorText читает retryWith и hint из контракта v2 (next)', () => {
