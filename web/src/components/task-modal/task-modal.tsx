@@ -281,15 +281,33 @@ function TaskModalBody({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-h-[calc(100%-2rem)] overflow-y-auto sm:max-w-2xl">
-        <DialogHeader>
+      {/* VL-346: в режиме просмотра диалог — flex-колонка фиксированной
+          высоты с overflow-hidden: скроллится только контент активной
+          вкладки (TabsContent), а заголовок, поле комментария и кнопки
+          остаются на месте. Без заданной высоты flex-1 внутри не создаёт
+          скролл-область — контент просто растягивал диалог и наезжал на
+          поле ввода. В create/edit высоту не фиксируем: короткая форма
+          иначе получила бы пустое место, там достаточно max-h + скролл. */}
+      <DialogContent
+        className={
+          internalMode === 'view' && task
+            ? 'flex h-[calc(100%-2rem)] max-h-[calc(100%-2rem)] flex-col gap-4 overflow-hidden sm:max-w-2xl'
+            : 'max-h-[calc(100%-2rem)] overflow-y-auto sm:max-w-2xl'
+        }
+      >
+        <DialogHeader className={internalMode === 'view' && task ? 'shrink-0' : undefined}>
           {internalMode === 'create' ? (
             <DialogTitle>Создать задачу</DialogTitle>
           ) : internalMode === 'edit' && task ? (
             <DialogTitle>Редактировать {task.id}</DialogTitle>
           ) : task ? (
+            // Заголовок по образцу ProfileHeader (ref-2): крупный title,
+            // под ним отдельная строка метаданных с бейджами — ID, статус,
+            // приоритет, срок, метки (VL-346).
             <>
-              <DialogTitle>{task.title}</DialogTitle>
+              <DialogTitle className="truncate text-xl leading-6 font-semibold tracking-tight">
+                {task.title}
+              </DialogTitle>
               <DialogDescription asChild>
                 <div className="flex flex-wrap items-center gap-2 text-sm">
                   <span className="font-mono text-xs">{task.id}</span>
@@ -326,9 +344,9 @@ function TaskModalBody({
           />
         )}
 
-        {error ? <p className="text-destructive text-sm">{error}</p> : null}
+        {error ? <p className="text-destructive shrink-0 text-sm">{error}</p> : null}
 
-        <DialogFooter className="flex-wrap">
+        <DialogFooter className="flex-wrap shrink-0">
           {internalMode === 'view' && task ? (
             <>
               {startTo ? (

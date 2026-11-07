@@ -76,32 +76,47 @@ export function TaskView({
   );
 
   return (
-    <div className="flex min-h-0 flex-col gap-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
       {detailLoading ? (
-        <p className="text-muted-foreground text-sm">Загрузка задачи…</p>
+        <p className="text-muted-foreground shrink-0 text-sm">Загрузка задачи…</p>
       ) : null}
 
-      <Tabs defaultValue="description">
-        <TabsList className="h-auto flex-wrap justify-start">
-          <TabsTrigger value="description">Описание</TabsTrigger>
-          {filled(ac) ? (
-            <TabsTrigger value="ac">Acceptance Criteria</TabsTrigger>
-          ) : null}
-          {filled(dod) ? (
-            <TabsTrigger value="dod">Definition of Done</TabsTrigger>
-          ) : null}
-          {filled(plan) ? <TabsTrigger value="plan">Implementation Plan</TabsTrigger> : null}
-          {filled(notes) ? (
-            <TabsTrigger value="notes">Implementation Notes</TabsTrigger>
-          ) : null}
-          {filled(finalSummary) ? (
-            <TabsTrigger value="final">Final Summary</TabsTrigger>
-          ) : null}
-          {hasTokens ? <TabsTrigger value="tokens">Токены</TabsTrigger> : null}
-          <TabsTrigger value="comments">Комментарии ({comments.length})</TabsTrigger>
-        </TabsList>
+      {/* Композиция из ref-2 (ProfileHeader/Tabs, VL-346): табы-подчёркивания
+          в одну строку с горизонтальным скроллом, под ними линия на всю
+          ширину, дальше — единственная скролл-область (TabsContent,
+          min-h-0 flex-1 overflow-y-auto из tabs.tsx). gap-0 убирает зазор
+          между списком и контентом, чтобы линия border-y не «висела». */}
+      <Tabs defaultValue="description" className="min-h-0 flex-1 gap-0">
+        <div className="shrink-0 touch-pan-x overflow-x-auto overscroll-x-contain border-y [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {/* w-max min-w-full — при нехватке ширины список шире контейнера и
+              скроллится; *:flex-none отменяет растягивание триггеров, чтобы
+              вкладки не сжимались и оставались в одну строку. */}
+          <TabsList
+            variant="line"
+            className="w-max min-w-full justify-start gap-4 px-1 *:data-[slot=tabs-trigger]:flex-none"
+          >
+            <TabsTrigger value="description">Описание</TabsTrigger>
+            {filled(ac) ? (
+              <TabsTrigger value="ac">Acceptance Criteria</TabsTrigger>
+            ) : null}
+            {filled(dod) ? (
+              <TabsTrigger value="dod">Definition of Done</TabsTrigger>
+            ) : null}
+            {filled(plan) ? (
+              <TabsTrigger value="plan">Implementation Plan</TabsTrigger>
+            ) : null}
+            {filled(notes) ? (
+              <TabsTrigger value="notes">Implementation Notes</TabsTrigger>
+            ) : null}
+            {filled(finalSummary) ? (
+              <TabsTrigger value="final">Final Summary</TabsTrigger>
+            ) : null}
+            {hasTokens ? <TabsTrigger value="tokens">Токены</TabsTrigger> : null}
+            <TabsTrigger value="comments">Комментарии ({comments.length})</TabsTrigger>
+          </TabsList>
+        </div>
 
-        <TabsContent value="description">
+        <TabsContent className="pt-3" value="description">
           {filled(description) ? (
             <MarkdownView>{description}</MarkdownView>
           ) : (
@@ -115,27 +130,27 @@ export function TaskView({
         </TabsContent>
 
         {filled(ac) ? (
-          <TabsContent value="ac">
+          <TabsContent className="pt-3" value="ac">
             <MarkdownView>{checklistToMd(ac)}</MarkdownView>
           </TabsContent>
         ) : null}
         {filled(dod) ? (
-          <TabsContent value="dod">
+          <TabsContent className="pt-3" value="dod">
             <MarkdownView>{checklistToMd(dod)}</MarkdownView>
           </TabsContent>
         ) : null}
         {filled(plan) ? (
-          <TabsContent value="plan">
+          <TabsContent className="pt-3" value="plan">
             <MarkdownView>{plan}</MarkdownView>
           </TabsContent>
         ) : null}
         {filled(notes) ? (
-          <TabsContent value="notes">
+          <TabsContent className="pt-3" value="notes">
             <MarkdownView>{notes}</MarkdownView>
           </TabsContent>
         ) : null}
         {filled(finalSummary) ? (
-          <TabsContent value="final">
+          <TabsContent className="pt-3" value="final">
             <MarkdownView>{finalSummary}</MarkdownView>
           </TabsContent>
         ) : null}
@@ -143,7 +158,7 @@ export function TaskView({
         {/* Секция «Токены» (VL-198): totals + вклад по фазам. Деньги не
             показываем — считаются аналитикой по тарифу (calculateCost). */}
         {hasTokens && tokenUsage ? (
-          <TabsContent value="tokens">
+          <TabsContent className="pt-3" value="tokens">
             <div className="space-y-3 text-sm">
               <div className="grid grid-cols-2 gap-x-6 gap-y-1 sm:grid-cols-3">
                 <p>Input: <span className="font-medium tabular-nums">{tokenUsage.input}</span></p>
@@ -185,7 +200,7 @@ export function TaskView({
           </TabsContent>
         ) : null}
 
-        <TabsContent value="comments">
+        <TabsContent className="pt-3" value="comments">
           {comments.length === 0 ? (
             <p className="text-muted-foreground text-sm">Комментариев нет.</p>
           ) : (
@@ -203,8 +218,10 @@ export function TaskView({
         </TabsContent>
       </Tabs>
 
-      {/* Поле комментария вне Tabs — видно на любой вкладке (AC2) */}
-      <div className="space-y-1.5 border-t pt-3">
+      {/* Поле комментария вне Tabs — видно на любой вкладке (AC2) и всегда
+          на месте: shrink-0 не даёт ему сжаться при длинном контенте вкладки
+          (VL-346, скроллится только TabsContent). */}
+      <div className="shrink-0 space-y-1.5 border-t pt-3">
         <Label htmlFor="task-comment">Комментарий</Label>
         <Textarea
           id="task-comment"
