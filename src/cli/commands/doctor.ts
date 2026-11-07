@@ -89,6 +89,10 @@ export async function runDoctor(
   // битые ссылки в легаси-задачах не должны делать doctor красным.
   checks.push(checkTaskIntegrityReport(cwd));
 
+  // 12. Корневой `.gitignore` при существующем `.env` (VL-348): без него
+  // секреты уезжают в git первым же `git add -A`.
+  checks.push(checkRootGitignore(cwd));
+
   // Предупреждение про кэш MCP
   warnings.push('Qwen Code: MCP-сервер мог быть закэширован. Если Qwen не видит новые инструменты — перезапусти Qwen.');
 
@@ -514,6 +518,31 @@ function checkGitPolicy(cwd: string): CheckResult[] {
   }
 
   return results;
+}
+
+/**
+ * Проверка 12: корневой `.gitignore` существует при существующем `.env` (VL-348).
+ *
+ * Смысл: `.env` с токенами и API-ключами не должен попадать в git. Проверка
+ * срабатывает только когда `.env` реально есть — в проекте без секретов
+ * отсутствие `.gitignore` не проблема. Подсказка перечисляет минимальный
+ * набор правил из `ROOT_GITIGNORE_TEMPLATE` (один источник правды с init).
+ *
+ * @param cwd — каталог проекта
+ */
+function checkRootGitignore(cwd: string): CheckResult {
+  const hasEnv = existsSync(join(cwd, '.env'));
+  const hasGitignore = existsSync(join(cwd, '.gitignore'));
+  const ok = !hasEnv || hasGitignore;
+  return {
+    name: 'root_gitignore_exists',
+    ok,
+    value: hasGitignore ? join(cwd, '.gitignore') : null,
+    expected: '.gitignore',
+    hint: ok
+      ? undefined
+      : 'Нет корневого .gitignore при существующем .env: секреты могут уехать в git. Запустите vibelog init (создаст правила) или добавьте вручную: .env, node_modules/, dist/',
+  };
 }
 
 /**

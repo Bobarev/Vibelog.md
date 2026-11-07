@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import {
   applySetup,
@@ -339,6 +340,43 @@ describe('VL-210 — ядро setup', () => {
     );
     assert.ok(log.includes('env (системные переменные'), log);
     assert.ok(log.includes('вендор: openai'), log);
+  });
+
+  it('VL-348: applySetup пишет git-политику до git-шага и не коммитит .env', () => {
+    const result = applySetup(testDir, baseAnswers({ git: { init: true, commit: true } }));
+    assert.ok(result.written.includes('.gitignore'), result.written.join('; '));
+    assert.ok(result.written.includes('.vibelog/.gitignore'), result.written.join('; '));
+    assert.ok(
+      result.written.some((p) => p.startsWith('git (репозиторий инициализирован')),
+      result.written.join('; '),
+    );
+    assert.ok(result.written.includes('git (первый коммит)'), result.written.join('; '));
+    // .env в индексе отсутствует
+    const tracked = spawnSync('git', ['ls-files'], { cwd: testDir, encoding: 'utf-8' })
+      .stdout.split('\n');
+    assert.ok(!tracked.includes('.env'), tracked.join(','));
+    assert.ok(tracked.includes('.gitignore'), tracked.join(','));
+  });
+
+  it('VL-348: без секции git репозиторий не создаётся (поведение прежних версий)', () => {
+    const result = applySetup(testDir, baseAnswers());
+    assert.ok(!existsSync(join(testDir, '.git')), 'git init не должен выполняться');
+    // Политика при этом записана — она не зависит от git-шага
+    assert.ok(result.written.includes('.gitignore'));
+  });
+
+  it('VL-348: readSetupState сообщает, находится ли проект в git', () => {
+    assert.equal(readSetupState(testDir).git.inRepo, false);
+    spawnSync('git', ['init', '-q'], { cwd: testDir, stdio: 'ignore' });
+    assert.equal(readSetupState(testDir).git.inRepo, true);
+  });
+
+  it('VL-348: formatSetupLog отражает состояние git-шага', () => {
+    const state = readSetupState(testDir);
+    const log = formatSetupLog(baseAnswers({ git: { init: true, commit: true } }), state, testDir);
+    assert.ok(log.includes('Git: репозиторий инициализирован'), log);
+    const logNoGit = formatSetupLog(baseAnswers(), state, testDir);
+    assert.ok(logNoGit.includes('Git: нет'), logNoGit);
   });
 
   it('derivePrefix: инициалы слов имени проекта (VL-320)', () => {    assert.equal(derivePrefix('Vibelog Templates'), 'VT');

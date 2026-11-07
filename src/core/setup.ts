@@ -40,6 +40,12 @@ import {
   writeLock,
 } from './components-config.js';
 import type { ComponentsConfig } from './components-config.js';
+import {
+  vibelogGitignoreDiffers,
+  writeRootGitignore,
+  writeVibelogGitignore,
+} from './gitignore.js';
+import { addRemote, gitInit, initialCommit, isInsideGitRepo } from './git-init.js';
 
 /** Режим работы wizard-а. */
 export type SetupMode = 'fresh' | 'upgrade';
@@ -83,6 +89,12 @@ export interface SetupAnswers {
    * заполняют, и тогда секция `components` не создаётся вовсе.
    */
   components?: { enabled: boolean };
+  /**
+   * VL-348: шаг git — инициализация репозитория, первый коммит и remote.
+   * Необязательное: веб-мастер и старые ответы его не заполняют, и тогда
+   * git не трогается вовсе (поведение прежних версий).
+   */
+  git?: { init: boolean; commit?: boolean; remote?: string };
   /** Перезаписать существующие настройки. */
   force: boolean;
 }
@@ -104,6 +116,8 @@ export interface SetupState {
   gateways: Record<string, GatewayConfig>;
   models: ModelsConfig;
   mcp: { qwen: boolean; opencode: boolean };
+  /** VL-348: проект уже внутри git-репозитория (шаг git в wizard-е пропускается). */
+  git: { inRepo: boolean };
   /** Текст проблемы с backlog/config.yml (битый YAML) — wizard её покажет. */
   configError?: string;
 }
@@ -262,6 +276,9 @@ export function readSetupState(cwd: string, modeOverride?: SetupMode): SetupStat
       qwen: hasVibelogMcp(cwd, 'qwen'),
       opencode: hasVibelogMcp(cwd, 'opencode'),
     },
+    // VL-348: шаг git предлагается только вне репозитория — в чужом
+    // монорепо вложенный репозиторий не создаём
+    git: { inRepo: isInsideGitRepo(cwd) },
     configError,
   };
 }
@@ -529,6 +546,12 @@ export function applySetup(cwd: string, answers: SetupAnswers): SetupResult {
     }
   }
 
+  // --- 4b. git-политика (VL-348) ---
+  // Порядок критичен: правила пишутся ДО первого коммита, иначе `.env` с
+  // токенами уедет в git первым же `git add -A`. Шаг идемпотентен, поэтому
+  // повторный `init` файл не меняет.
+  applyGitignoreStep(cwd, result);
+
   // --- 5. MCP (только для выбранных внешних агентов) ---
   const mcpTargets = answers.agents.filter((a): a is McpTarget => MCP_AGENTS.includes(a));
   if (answers.mcp && mcpTargets.length > 0) {
@@ -548,7 +571,100 @@ export function applySetup(cwd: string, answers: SetupAnswers): SetupResult {
     applyComponentsStep(cwd, answers.force === true, result);
   }
 
+  // --- 7. git: init, первый коммит, remote (VL-348) ---
+  // Последним шагом: к этому моменту все файлы (включая .gitignore) на месте,
+  // и первый коммит не притащит `.env`.
+  if (answers.git?.init) {
+    applyGitStep(cwd, answers.git, result);
+  }
+
   return result;
+}
+
+/**
+ * Шаг git-политики: корневой `.gitignore` и `.vibelog/.gitignore` (VL-348).
+ *
+ * Корневой файл мержится (чужой контент сохраняется), файл политики
+ * `.vibelog/` создаётся только при отсутствии — существующий не
+ * перезаписываем, но о расхождении предупреждаем.
+ */
+function applyGitignoreStep(cwd: string, result: SetupResult): void {
+  try {
+    const root = writeRootGitignore(cwd);
+    if (root === 'created') result.written.push('.gitignore');
+    else if (root === 'updated') result.written.push('.gitignore (дописаны правила)');
+    else result.skipped.push('.gitignore (правила уже на месте)');
+  } catch (err) {
+    result.warnings.push(`.gitignore не записан: ${(err as Error).message}`);
+  }
+
+  try {
+    const vibelog = writeVibelogGitignore(cwd);
+    if (vibelog === 'created') {
+      result.written.push('.vibelog/.gitignore');
+    } else {
+      result.skipped.push('.vibelog/.gitignore (уже существует)');
+      if (vibelogGitignoreDiffers(cwd)) {
+        result.warnings.push(
+          '.vibelog/.gitignore отличается от политики VL-329 — файл не изменён, проверьте правила вручную',
+        );
+      }
+    }
+  } catch (err) {
+    result.warnings.push(`.vibelog/.gitignore не записан: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Шаг git: `git init` → первый коммит → remote (VL-348).
+ *
+ * Отсутствие git в PATH и ошибки git — предупреждения, а не исключения:
+ * проект уже создан и рабочий. Существующий репозиторий не переинициализируется
+ * (`gitInit` идемпотентен), поэтому `vb create` и повторный `init` безопасны.
+ */
+function applyGitStep(
+  cwd: string,
+  git: { init: boolean; commit?: boolean; remote?: string },
+  result: SetupResult,
+): void {
+  const init = gitInit(cwd);
+  if (!init.ok) {
+    result.warnings.push(
+      init.reason === 'no-git'
+        ? 'git не найден в PATH: репозиторий не инициализирован, выполните git init вручную'
+        : `git init не выполнен (${init.message ?? 'неизвестная ошибка'}): инициализируйте репозиторий вручную`,
+    );
+    return;
+  }
+  if (init.reason === 'exists') {
+    result.skipped.push('git (репозиторий уже существует)');
+  } else {
+    result.written.push('git (репозиторий инициализирован, ветка main)');
+  }
+
+  // Коммит — только в свежесозданном дереве без истории: в upgrade-репозитории
+  // `add -A` затащил бы в коммит всё незакоммиченное (риск из описания задачи)
+  if (git.commit !== false && init.reason !== 'exists') {
+    const commit = initialCommit(cwd, 'Initial commit');
+    if (commit.ok) {
+      result.written.push('git (первый коммит)');
+    } else {
+      result.warnings.push(
+        `первый коммит не создан (${commit.message ?? 'неизвестная ошибка'}): закоммитьте вручную`,
+      );
+    }
+  }
+
+  if (git.remote !== undefined && git.remote !== '') {
+    const remote = addRemote(cwd, git.remote);
+    if (remote.ok) {
+      result.written.push(`git (remote origin: ${git.remote})`);
+    } else if (remote.reason === 'exists') {
+      result.skipped.push('git (remote origin уже настроен)');
+    } else {
+      result.warnings.push(`remote не добавлен: ${remote.message ?? 'неизвестная ошибка'}`);
+    }
+  }
 }
 
 /**
@@ -646,6 +762,20 @@ export function formatSetupLog(answers: SetupAnswers, state: SetupState, cwd: st
     }
   } else {
     lines.push('Компоненты: нет');
+  }
+
+  // VL-348: состояние шага git в итоговом логе
+  if (answers.git?.init) {
+    const remote = answers.git.remote ? `, remote: ${answers.git.remote}` : '';
+    lines.push(
+      state.git.inRepo
+        ? 'Git: репозиторий уже существует (шаг пропущен)'
+        : `Git: репозиторий инициализирован${answers.git.commit === false ? ' (без коммита)' : ', первый коммит'}${remote}`,
+    );
+  } else {
+    lines.push(
+      state.git.inRepo ? 'Git: репозиторий уже существует' : 'Git: нет (проект не в git)',
+    );
   }
 
   if (answers.mode === 'upgrade') {
