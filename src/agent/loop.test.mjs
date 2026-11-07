@@ -536,6 +536,58 @@ describe('runLoop loop detection (VL-83)', () => {
     assert.equal(res.messages[res.messages.length - 1].role, 'assistant');
   });
 
+  it('VL-349 (AC6): регресс agent-1794045441657 — 4 повтора lesson_update без content на теле-скелете не упираются в кап noop', async () => {
+    // Реальная сессия Close VL-346: урок-СКЕЛЕТ (тело «## Проблема\n\n## Решение\n\n## Пример\n»),
+    // lesson_update {id, title, tags, sourceTasks, verifiedBy} БЕЗ content →
+    // ackNoopDetailed «Изменений нет» → 4 дословных повтора → MAX_NOOP_REPEATS_PER_RUN
+    // → fail. VL-349: такой вызов обязан быть ошибкой (ackErrorDetailed без noop),
+    // а не noop: сигнатура не попадает в noopSignatures, повтор исполняется.
+    const state = { calls: 0 };
+    const spec = {
+      name: 'lesson_update',
+      description: 'write-заглушка урока',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => {
+        state.calls++;
+        return JSON.stringify({
+          ok: false, reason: 'error',
+          error: 'Тело урока lesson-232 не заполнено (пустое или дефолтный скелет) — в вызове нет `content`. '
+            + 'Передай непустой markdown (Проблема / Решение / Пример).',
+          applied: {}, skipped: [],
+          missing: [{ field: 'content', reason: 'тело урока не заполнено (пустое или дефолтный скелет)' }],
+          hint: 'Добавь в вызов `content` с непустым markdown (Проблема/Решение/Пример).',
+        });
+      },
+    };
+    const same = { id: 'lesson-232', title: 'T', tags: ['a'], sourceTasks: ['VL-346'], verifiedBy: 'agent' };
+    const { llm } = fakeLlm([
+      ...Array.from({ length: 4 }, (_, i) => ({
+        text: '', toolCalls: [{ id: `c${i + 1}`, name: 'lesson_update', arguments: same }],
+      })),
+      { text: 'передаю content и заполняю тело' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false, `ран не должен падать по капу noop-повторов: ${res.result}`);
+    assert.equal(res.result, 'передаю content и заполняю тело', 'модель дошла до финального текста');
+    assert.ok(!/изменений нет/i.test(String(res.result)), 'формулировки «изменений нет» в итоге нет');
+    assert.ok(state.calls >= 1, `вызов исполнялся (не заглушён noop-путём): ${state.calls}`);
+    const toolMsgs = res.messages.filter(m => m.role === 'tool');
+    const dump = toolMsgs.map(m => String(m.content)).join(' ⏎ ');
+    assert.ok(toolMsgs.length >= 3, `модель получила tool-результаты: ${dump}`);
+    // Первый результат — ошибка инструмента с требованием content (не noop)
+    assert.match(String(toolMsgs[0].content), /content/, `первый результат: ${dump}`);
+    assert.ok(!/"noop":true/.test(String(toolMsgs[0].content)), 'первый результат — ошибка, не noop');
+    // Дальше идут директивы блокировки с ПРИЧИНОЙ отказа (VL-323)
+    const directives = toolMsgs.slice(1).map(m => String(m.content)).filter(t => /Loop detection/.test(t));
+    assert.ok(directives.length > 0, `директивы блокировки: ${dump}`);
+    assert.ok(
+      directives.every(t => /Проблема|отклонён/.test(t)),
+      `директива несёт текст отказа, а не общее «смени аргументы»: ${dump}`,
+    );
+    // И ни в одном результате нет noop-формулировки
+    assert.ok(toolMsgs.every(m => !/Изменений нет/.test(String(m.content))), `noop «изменений нет» нет: ${dump}`);
+  });
+
   it('VL-310 (AC4): исчерпание капа повторов применённого вызова → честный fail', async () => {
     // Кап MAX_APPLIED_REPEATS_PER_RUN = 3: если модель игнорирует директивы и
     // дословно повторяет уже применённый вызов, ран завершается is_error:true —

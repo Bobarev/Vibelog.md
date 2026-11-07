@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os';
 import {
   LESSON_STATUSES, normalizeLessonStatus, createLesson, lessonToMarkdown,
   markdownToLesson, createLessonFile, listLessons, getLesson, loadLessonsForTask,
+  LESSON_BODY_SKELETON, isLessonBodyUnfilled,
 } from '../../dist/core/lesson.js';
 import {
   auditLessons, applyLessonAudit, extractLessonPaths, formatLessonAuditMarkdown,
@@ -70,8 +71,16 @@ afterAll(() => {
   rmSync(testRoot, { recursive: true, force: true });
 });
 
-/** Создаёт lesson-файл напрямую (быстрее, чем через createLessonFile с id). */
-function writeLesson(id, fields, body = '') {
+/**
+ * Создаёт lesson-файл напрямую (быстрее, чем через createLessonFile с id).
+ *
+ * VL-349: тело по умолчанию — заполненный markdown, а НЕ пустая строка: аудит
+ * теперь считает незаполненным и тело-скелет, поэтому фикстуры-«пустышки» по
+ * умолчанию рождали десятки находок empty_body и раздували payload
+ * lesson_audit. Тесты, которым нужен именно пустой/скелетный урок, передают
+ * тело явно.
+ */
+function writeLesson(id, fields, body = `## Проблема\n\nшум ${id}\n\n## Решение\n\nшум ${id}\n\n## Пример\n\nшум ${id}\n`) {
   const lesson = createLesson({
     id,
     title: fields.title || id,
@@ -140,7 +149,7 @@ describe('VL-279 — статус needs-review (AC7)', () => {
   it('фильтр `lesson list --status needs-review` находит переведённый урок', () => {
     // CLI list фильтрует по status через listLessons — проверяем то же ядро
     createLessonFile(testRoot, {
-      id: 'lesson-905', title: 'Ждёт проверки', status: 'needs-review', tags: ['nrfilter'],
+      id: 'lesson-905', title: 'Ждёт проверки', status: 'needs-review', tags: ['nrfilter'], content: '## Проблема\n\nшум\n',
     });
     const filtered = listLessons(testRoot)
       .filter(e => e.lesson.status === 'needs-review')
@@ -331,7 +340,7 @@ describe('VL-279 — loadLessonsForTask: фильтры и кап (AC8)', () => 
       last_verified: '2020-01-01', updated_date: '2020-01-01',
     });
     // Задача с labels promptfilter — подбор идёт по labels задачи
-    createLessonFile(testRoot, { id: 'lesson-824', title: 'Активный второй', tags: ['promptfilter'] });
+    createLessonFile(testRoot, { id: 'lesson-824', title: 'Активный второй', tags: ['promptfilter'], content: '## Проблема\n\nшум\n' });
 
     const taskFile = join(tasksPath, 'VL-77 - Задача с меткой.md');
     writeFileSync(taskFile, [
@@ -390,6 +399,37 @@ describe('VL-279 — applyLessonAudit и отчёт (AC9, AC10)', () => {
     assert.match(md, /\| Lesson \| Тип \| Детали \|/);
     assert.match(md, /missing_path/);
     assert.ok(md.includes(report.total.toString()), 'число проверенных уроков');
+  });
+
+  it('VL-349 (AC5): урок с телом-скелетом → finding empty_body с details.skeleton', () => {
+    writeLesson('lesson-853', {
+      title: 'Урок-скелет из MCP', tags: ['skeletonbody'],
+      source_tasks: ['VL-1'], linked_tasks: ['VL-1'], updated_date: '2026-05-20',
+    }, LESSON_BODY_SKELETON);
+    // Скелет, записанный без хвостового \n — нормализация по trim()
+    writeLesson('lesson-854', {
+      title: 'Урок-скелет без хвоста', tags: ['skeletonbody'],
+      source_tasks: ['VL-1'], linked_tasks: ['VL-1'], updated_date: '2026-05-20',
+    }, LESSON_BODY_SKELETON.trim());
+    const report = auditLessons(testRoot, { now: NOW });
+    const empty = report.findings.filter(f => f.type === 'empty_body');
+    const sk = empty.find(f => f.lessonId === 'lesson-853');
+    assert.ok(sk, `empty_body для тела-скелета: ${JSON.stringify(empty)}`);
+    assert.equal(sk.details.skeleton, true, 'флаг skeleton отличает заглушку от пустого тела');
+    assert.match(sk.message, /скелет/);
+    assert.ok(empty.some(f => f.lessonId === 'lesson-854'), 'скелет без хвостового \\n тоже найден');
+    // Пустое тело — без флага skeleton
+    writeLesson('lesson-855', {
+      title: 'Урок с пустым телом для VL-349', tags: ['skeletonbody'],
+      source_tasks: ['VL-1'], updated_date: '2026-05-20',
+    }, '');
+    const report2 = auditLessons(testRoot, { now: NOW });
+    const empty2 = report2.findings.filter(f => f.type === 'empty_body');
+    const truly = empty2.find(f => f.lessonId === 'lesson-855');
+    assert.ok(truly, 'пустое тело по-прежнему находится');
+    assert.equal(truly.details.skeleton, undefined, 'у пустого тела флага skeleton нет');
+    assert.equal(report.summary.empty_body, empty.length, 'сводка согласована с находками');
+    assert.match(formatLessonAuditMarkdown(report), /empty_body/, 'тип в markdown-отчёте');
   });
 
   it('VL-319 (AC8): урок с пустым телом → finding empty_body', () => {
