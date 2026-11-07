@@ -1,11 +1,11 @@
 ---
 id: VL-354
 title: 'grep_search: длинные строки CHANGELOG/doc-* съедают весь бюджет 8 КБ — совпадения из src/ не попадают в вывод, модель повторяет поиск до loop detection'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-07 15:07'
-updated_date: '2026-11-07 19:15'
+updated_date: '2026-11-07 21:00'
 due_date: ''
 labels:
   - agent
@@ -26,15 +26,16 @@ modified_files:
   - src/agent/search-files.test.mjs
   - src/agent/tools.test.mjs
   - src/web/tool-policy.ts
-lessons: []
+lessons:
+  - lesson-240
 token_usage:
-  input: 3937280
-  output: 29643
-  cache: 3730944
-  total: 3966923
-  requests: 86
-  duration_ms: 823944
-  reasoning: 11979
+  input: 4996443
+  output: 37246
+  cache: 4651520
+  total: 5033689
+  requests: 107
+  duration_ms: 1103944
+  reasoning: 15481
   by_phase:
     code:
       input: 2267327
@@ -42,10 +43,10 @@ token_usage:
       cache: 2103296
       requests: 44
     close:
-      input: 1669953
-      output: 8427
-      cache: 1627648
-      requests: 42
+      input: 2729116
+      output: 16030
+      cache: 2548224
+      requests: 63
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -94,13 +95,13 @@ VL-353 (инцидент-источник), VL-229 (порог повторов 
 - [x] #6 Тест: одна строка-совпадение длиной 20 КБ усекается, остальные совпадения в выдаче присутствуют (сейчас тест `tools.test.mjs:493` проверяет только наличие маркера обрезки)
 - [x] #7 Тест: порядок выдачи — `src/...` раньше `CHANGELOG.md` при равном числе совпадений
 - [x] #8 `pnpm build && pnpm test` проходят без регрессий
-- [ ] #9 Документация: doc-10 (поведение `grep_search`: усечение строк, приоритет выдачи), CHANGELOG.md
+- [x] #9 Документация: doc-10 (поведение `grep_search`: усечение строк, приоритет выдачи), CHANGELOG.md
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -258,5 +259,10 @@ DoD не отмечены (1): 2. Документация обновлена
 Фрагмент плана: ## Файлы - `src/agent/tools.ts` — `makeGrepSearch` (~:1415), `truncateToolOutput` (~:92). - `src/agent/search-files.ts` — проверить `searchProjectFiles` на ту же проблему. - Тесты: `src/agent/tools.test.mjs`, `src/agent/search-files.test.mjs`. - Документация: `backlog/docs/doc-10`, `CHANGELOG.md`. #…
 Отчёт собран сервером автоматически (VL-253): модель не передала comment.
 Статус не изменён: терминальный «Done» при неотмеченных пунктах (DoD: #2; AC: #9) возможен только через backlog_finish_phase с dodOverride или aborted (VL-248/VL-309). Задача оставлена в «Review».
+---
+author: @agent
+created: 2026-11-07 21:00
+---
+Фаза Close выполнена. Статус: Done. Коммиты: feat — не требовался (код VL-354 закоммичен ранее в c5184e1/merge 2e7ccdd); docs 82d2d0d (CHANGELOG.md + doc-10 §5: усечение строки-совпадения, приоритет src/, маркер потерь); docs(task) 7f89516 (lesson-240). Не закоммичено: нет — lesson-241 и ref-26/27/28 относятся к другим задачам (VL-362, VL-363/VL-358), их файлы не трогал. Проверки: pnpm build — успешно; точечно src/agent/tools.test.mjs + src/agent/search-files.test.mjs — 115 passed; полный прогон pnpm test:fast — 190 файлов, 3561 passed, 4 skipped, 0 failed. Документация: doc-10 §5 обновлён, CHANGELOG.md Unreleased/Исправлено — AC9 и DoD «Документация обновлена» закрыты.
 ---
 <!-- COMMENTS:END -->
