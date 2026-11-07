@@ -28,7 +28,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { handleToolCall, listTools } from '../../dist/mcp/tools.js';
-import { commitFiles, foreignPaths } from '../../dist/mcp/git-commit.js';
+import { commitFiles, foreignPaths, normalizeGitPath, unquoteGitPath } from '../../dist/mcp/git-commit.js';
 import { createTaskFile } from '../../dist/core/store.js';
 
 /** Ключи фазового env, которые снимаются на время теста (VL-286). */
@@ -239,17 +239,81 @@ describe('VL-311 — git_commit: коммит явными путями с тр�
     assert.equal(notArray.ok, false);
   });
 
-  it('AC2: посторонний staged-файл чужих процессов → отказ, свой коммит не создан', () => {
+  it('AC2/VL-360: staged-файл вне paths не блокирует коммит — остаётся в индексе и в warnings', () => {
     writeFileSync(join(root, 'a.txt'), 'eight\n', 'utf-8');
     writeFileSync(join(root, 'b.txt'), 'staged by someone\n', 'utf-8');
     git(root, 'add', 'b.txt'); // чужой процесс успел проиндексировать свой файл
     const before = commitCount(root);
 
     const ack = parseAck(commitFiles(root, { paths: ['a.txt'], message: 'feat: только a' }));
-    assert.equal(ack.ok, false, JSON.stringify(ack));
-    assert.match(ack.error, /посторонние файлы/);
-    assert.match(ack.error, /b\.txt/);
-    assert.equal(commitCount(root), before, 'коммит с чужим файлом не создан');
+    assert.equal(ack.ok, true, `коммит не должен блокироваться: ${JSON.stringify(ack)}`);
+    assert.equal(commitCount(root), before + 1, 'коммит создан');
+    const files = git(root, '-c', 'core.quotePath=false', 'show', '--name-only', '--pretty=format:', 'HEAD')
+      .split('\n')
+      .filter(Boolean);
+    assert.deepEqual(files, ['a.txt'], 'в коммит попал только переданный путь (git commit --only)');
+    assert.ok(
+      (ack.applied.warnings ?? []).some(w => w.includes('b.txt')),
+      `чужой staged-файл должен быть в warnings: ${JSON.stringify(ack.applied)}`,
+    );
+    assert.match(git(root, 'status', '--porcelain'), /^[AM]  b\.txt$/m, 'чужой файл остался staged');
+  });
+
+  it('AC1/VL-360: кириллический путь коммитится при core.quotepath=true', () => {
+    // Регрессия: git экранировал не-ASCII путь в octal, сравнение с paths
+    // ломалось и коммит был невозможен (инцидент VL-360).
+    git(root, 'config', 'core.quotepath', 'true');
+    const dir = join(root, 'backlog', 'lessons');
+    mkdirSync(dir, { recursive: true });
+    const name = 'lesson-1-Коммить-сгенерированный-артефакт-вместе-с-тестом.md';
+    const rel = `backlog/lessons/${name}`;
+    writeFileSync(join(dir, name), '# урок\n', 'utf-8');
+    git(root, 'add', '--', rel);
+    const before = commitCount(root);
+
+    const ack = parseAck(commitFiles(root, { paths: [rel], message: 'docs: урок с кириллицей' }));
+    assert.equal(ack.ok, true, `кириллический путь должен коммититься: ${JSON.stringify(ack)}`);
+    assert.equal(commitCount(root), before + 1);
+    assert.deepEqual(ack.applied.paths, [rel], 'в ack читаемый путь, не escaped');
+    const files = git(root, '-c', 'core.quotePath=false', 'show', '--name-only', '--pretty=format:', 'HEAD')
+      .split('\n')
+      .filter(Boolean);
+    assert.deepEqual(files, [rel]);
+  });
+
+  it('AC5/VL-360: core.quotepath=false — поведение не изменилось', () => {
+    git(root, 'config', 'core.quotepath', 'false');
+    const dir = join(root, 'backlog', 'lessons');
+    mkdirSync(dir, { recursive: true });
+    const rel = 'backlog/lessons/lesson-2-Проверка-без-экранирования.md';
+    writeFileSync(join(dir, 'lesson-2-Проверка-без-экранирования.md'), '# урок 2\n', 'utf-8');
+    git(root, 'add', '--', rel);
+    const before = commitCount(root);
+
+    const ack = parseAck(commitFiles(root, { paths: [rel], message: 'docs: урок 2' }));
+    assert.equal(ack.ok, true, JSON.stringify(ack));
+    assert.equal(commitCount(root), before + 1);
+    assert.deepEqual(ack.applied.paths, [rel]);
+  });
+
+  it('AC2/VL-360: unquoteGitPath раскрывает C-style escape и идемпотентна', () => {
+    // Кириллица в octal-экранировании (как её печатает git при quotepath=true)
+    assert.equal(
+      unquoteGitPath('"backlog/lessons/lesson-1-\\320\\232\\320\\276\\320\\274.md"'),
+      'backlog/lessons/lesson-1-Ком.md',
+    );
+    // Путь с пробелами в кавычках
+    assert.equal(unquoteGitPath('"a b/c d.txt"'), 'a b/c d.txt');
+    // Экранированные кавычка и обратный слэш
+    assert.equal(unquoteGitPath('"a\\"b\\\\c.txt"'), 'a"b\\c.txt');
+    // Управляющие символы
+    assert.equal(unquoteGitPath('"a\\tb\\nc"'), 'a\tb\nc');
+    // ASCII без кавычек — как есть (идемпотентность)
+    assert.equal(unquoteGitPath('src/mcp/git-commit.ts'), 'src/mcp/git-commit.ts');
+    assert.equal(unquoteGitPath(unquoteGitPath('"a b.txt"')), 'a b.txt');
+    // Нормализация разделителей и ведущего ./
+    assert.equal(normalizeGitPath('.\\src\\mcp\\x.ts'), 'src/mcp/x.ts');
+    assert.equal(normalizeGitPath('./a.txt'), 'a.txt');
   });
 
   it('AC7/AC8: схема инструмента и классификация (write, не в grant)', () => {
