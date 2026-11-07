@@ -270,6 +270,8 @@ const MCP_TOOL_PREFIXES = [
   'lesson_',
   'project_map',
   'git_commit',
+  // VL-363: репорт бага в upstream через GitVerse Issues
+  'upstream_',
 ];
 
 /**

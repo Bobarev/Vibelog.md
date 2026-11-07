@@ -46,6 +46,8 @@ import { runLesson } from './commands/lesson.js';
 import { runExperiment } from './commands/experiment.js';
 import { runInstall } from './commands/install.js';
 import { runCreate } from './commands/create.js';
+// VL-363: репорт бага в upstream-проект через GitVerse Issues
+import { runUpstream } from './commands/upstream.js';
 
 /**
  * Обработать аргументы командной строки и вызвать соответствующую команду.
@@ -84,6 +86,10 @@ export async function route(args: string[]): Promise<void> {
     // аргумент (имя проекта) парсер кладёт в subcommand — склеиваем.
     case 'create':
       return runCreate([subcommand, ...positional].filter(Boolean), flags, cwd);
+    // VL-363: репорт бага в upstream-проект (GitVerse Issues). Первый
+    // позиционный аргумент (подкоманда report) парсер кладёт в subcommand.
+    case 'upstream':
+      return runUpstream([subcommand, ...positional].filter(Boolean), flags, cwd);
     case 'task':
       return runTask(subcommand, positional, flags, cwd);
     case 'board':
@@ -164,6 +170,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('init', colors.cyan)} [name] [--yes] [--mode fresh|upgrade]  Wizard настройки проекта
   ${colorize('install', colors.cyan)} <alias>/<repo>/<name> [--yes] [--force] [--dry-run] [--branch b]  Установка компонента из реестра
   ${colorize('create', colors.cyan)} <name> --template <alias>/<repo>/<t> [--branch b] [--package-manager pm] [--no-install] [--no-git] [--yes]  Новый проект из шаблона
+  ${colorize('upstream', colors.cyan)} report --title <t> [--body <b>|--body-file <f>] [--severity s] [--area a] [--source-task ID] [--label l] [--json]  Репорт бага в upstream через GitVerse Issues
   ${colorize('task', colors.cyan)} create|list|view|edit|...     Управление задачами
   ${colorize('board', colors.cyan)} [--export]                   Канбан-доска
   ${colorize('browser', colors.cyan)} [--port N] [--host ADDR]   Веб-интерфейс
@@ -288,6 +295,39 @@ vibelog create <name> --template <alias>/<repo>/<template> [флаги]
 Коды выхода: 0 — успех, 1 — использование (имя, флаги, путь шаблона),
 2 — каталог уже существует (--force не предусмотрен), 3 — клон/шаблон/
 зависимости/postCreate, 5 — отмена.`,
+
+    upstream: `
+vibelog upstream report --title <t> [--body <b>|--body-file <f>] [--severity s] [--area a] [--source-task ID] [--label l] [--json]
+
+Репорт бага в upstream-проект через GitVerse Issues (VL-363). Дочерний
+проект (ui/templates) не может завести задачу в родительском backlog —
+команда создаёт issue в репозитории из секции upstream и печатает его номер.
+
+Настройка (.vibelog/settings.json):
+  "upstream": {
+    "repo": "owner/name",          — репозиторий-получатель (обязателен)
+    "labels": ["upstream"],        — метки issue (по умолчанию upstream + from-<prefix>)
+    "type": "bug",                 — task|bug|story|epic (по умолчанию bug)
+    "token_env": "GITVERSE_TOKEN", — имя переменной с токеном (опционально)
+    "project_id": 42,              — id проекта GitVerse (для закрытия, следующая задача)
+    "done_column": "Done"          — колонка «Done» (для закрытия, следующая задача)
+  }
+
+Токен: GITVERSE_TOKEN=<токен> в .env в корне проекта (файл не коммитится).
+Создать: https://gitverse.ru/settings/tokens, права — Запись на репозиторий.
+
+Флаги:
+  --title <t>        — заголовок issue (обязателен)
+  --body <b>         — что произошло (описание проблемы)
+  --body-file <f>    — то же из файла (--body приоритетнее)
+  --severity <s>     — low|medium|high|critical
+  --area <a>         — cli|mcp|web|agent|install|…
+  --source-task <ID> — ID задачи проекта-источника
+  --label <l>        — дополнительная метка (можно повторять)
+  --json             — ack как есть (контракт VL-306)
+
+Коды выхода: 0 — успех, 1 — использование, 2 — конфиг не настроен,
+3 — сеть/данные, 4 — нет токена.`,
 
     'qwen-debug': `
 vibelog qwen-debug
