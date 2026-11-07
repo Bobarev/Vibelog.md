@@ -143,9 +143,9 @@
         "model": "deepseek/deepseek-v4.1-flash",
         "api_mode": "responses",
         "pricing": {
-          "input_per_1m": 3.737214624,
-          "output_per_1m": 58.3939785,
-          "cache_per_1m": 0.583939785
+          "input_per_1m": 2.584080356,
+          "output_per_1m": 46.9832792,
+          "cache_per_1m": 0.469832792
         }
       },
       "selectel/deepseek/deepseek-v4.1-flash": {

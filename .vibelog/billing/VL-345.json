@@ -108,6 +108,78 @@
       },
       "agent": "vb",
       "fallback": true
+    },
+    {
+      "sessionId": "agent-1793894272061",
+      "phase": "close",
+      "startedAt": "2026-11-05T15:57:51.917Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-05T16:05:59.061Z",
+      "durationMs": 483763,
+      "usage": {
+        "input": 553491,
+        "output": 2288,
+        "cache": 536064,
+        "total": 555779,
+        "requests": 14,
+        "reasoning": 1144
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793894272061",
+      "phase": "close",
+      "startedAt": "2026-11-05T15:57:51.917Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-05T16:05:59.093Z",
+      "durationMs": 483763,
+      "usage": {
+        "input": 553491,
+        "output": 2288,
+        "cache": 536064,
+        "total": 555779,
+        "requests": 14,
+        "reasoning": 1144
+      },
+      "agent": "vb",
+      "fallback": true
+    },
+    {
+      "sessionId": "agent-1793894988173",
+      "phase": "close",
+      "startedAt": "2026-11-05T16:09:48.012Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-05T16:13:16.326Z",
+      "durationMs": 204702,
+      "usage": {
+        "input": 474341,
+        "output": 5730,
+        "cache": 395776,
+        "total": 480071,
+        "requests": 12,
+        "reasoning": 4004
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb"
+    },
+    {
+      "sessionId": "agent-1793894988173",
+      "phase": "close",
+      "startedAt": "2026-11-05T16:09:48.012Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-05T16:13:16.348Z",
+      "durationMs": 204702,
+      "usage": {
+        "input": 474341,
+        "output": 5730,
+        "cache": 395776,
+        "total": 480071,
+        "requests": 12,
+        "reasoning": 4004
+      },
+      "agent": "vb",
+      "fallback": true
     }
   ]
 }
