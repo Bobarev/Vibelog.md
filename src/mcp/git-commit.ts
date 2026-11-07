@@ -84,9 +84,22 @@ interface GitResult {
   stderr: string;
 }
 
-/** Синхронный git в каталоге проекта: без shell, с таймаутом. */
+/**
+ * Синхронный git в каталоге проекта: без shell, с таймаутом.
+ *
+ * VL-360: `-c core.quotepath=false` передаётся ВСЕМ вызовам инструмента.
+ * Без него git экранирует не-ASCII пути octal-последовательностями
+ * (`"backlog/lessons/lesson-1-\320\232..."`), и сравнение вывода
+ * `git diff --cached --name-only` с путями из `paths` ломается — кириллица
+ * в именах задач/уроков/референсов делала коммит невозможным (урок VL-88;
+ * тот же флаг стоит в `core/git.ts` и `core/status.ts`).
+ */
 function git(cwd: string, args: string[]): GitResult {
-  const res = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000 });
+  const res = spawnSync('git', ['-c', 'core.quotepath=false', ...args], {
+    cwd,
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
   return {
     ok: !res.error && res.status === 0,
     stdout: (res.stdout ?? '').trim(),
@@ -236,10 +249,85 @@ export function buildAmendMessage(originalFull: string, requested: string, enabl
   return appendCommitTrailer(message, enabled);
 }
 
+/**
+ * Раскрывает C-style экранирование пути из вывода git (VL-360).
+ *
+ * git печатает не-ASCII и «специальные» пути в кавычках с octal-escape
+ * (`"backlog/lessons/lesson-1-\320\232..."`), если `core.quotepath` включён
+ * (глобальный конфиг пользователя, `-c` в env, чужой репозиторий). Сравнивать
+ * такие строки с путями из `paths` нельзя — кириллица никогда не совпадёт.
+ * Инструмент уже вызывает git с `-c core.quotepath=false`, но полагаться
+ * только на это нельзя: настройку можно перебить снаружи, а цена ошибки —
+ * заблокированный коммит (инцидент VL-360). Функция чистая → тестируется
+ * без git.
+ *
+ * Раскрываются: `\ooo` (1–3 восьмеричные цифры → байт, затем UTF-8-декод
+ * всей последовательности байтов), `\n \t \r \a \b \f \v \\ \"`.
+ * Строка без кавычек возвращается как есть (идемпотентность).
+ *
+ * @param raw — строка из `git diff --cached --name-only` / `git log`
+ * @returns читаемый путь (UTF-8)
+ */
+export function unquoteGitPath(raw: string): string {
+  const text = raw.trim();
+  if (text.length < 2 || !text.startsWith('"') || !text.endsWith('"')) return text;
+  const body = text.slice(1, -1);
+  const bytes: number[] = [];
+  const simple: Record<string, number> = {
+    a: 0x07, b: 0x08, f: 0x0c, n: 0x0a, r: 0x0d, t: 0x09, v: 0x0b,
+    '\\': 0x5c, '"': 0x22,
+  };
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i] as string;
+    if (ch !== '\\') {
+      // Обычный символ: кодируем в UTF-8, чтобы смешать с раскрытыми байтами.
+      bytes.push(...Buffer.from(ch, 'utf8'));
+      continue;
+    }
+    const next = body[i + 1] ?? '';
+    if (/[0-7]/.test(next)) {
+      // До трёх восьмеричных цифр — один байт.
+      let oct = '';
+      let j = i + 1;
+      while (j < body.length && oct.length < 3 && /[0-7]/.test(body[j] as string)) {
+        oct += body[j] as string;
+        j += 1;
+      }
+      bytes.push(Number.parseInt(oct, 8) & 0xff);
+      i = j - 1;
+      continue;
+    }
+    const mapped = simple[next];
+    if (mapped !== undefined) {
+      bytes.push(mapped);
+      i += 1;
+      continue;
+    }
+    // Неизвестная escape-последовательность — оставляем как есть.
+    bytes.push(...Buffer.from(`\\${next}`, 'utf8'));
+    i += 1;
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+/**
+ * Нормализует путь для сравнения: unquote + прямые слэши + без ведущего `./`.
+ *
+ * @param raw — путь из git или из `paths`
+ */
+export function normalizeGitPath(raw: string): string {
+  return unquoteGitPath(raw)
+    .replaceAll('\\', '/')
+    .replace(/^\.\//, '')
+    .replace(/\/+$/, '');
+}
+
 /** Пути из индекса, которых нет среди коммитируемых (посторонние staged-файлы). */
 function stagingOutsiders(stagedAll: string[], relPaths: string[]): string[] {
-  const ours = new Set(relPaths);
-  return stagedAll.filter(p => !ours.has(p.replaceAll('\\', '/')));
+  const ours = new Set(relPaths.map(normalizeGitPath));
+  return stagedAll
+    .map(normalizeGitPath)
+    .filter(p => p !== '' && !ours.has(p));
 }
 
 /**
@@ -319,21 +407,23 @@ export function commitFiles(cwd: string, opts: GitCommitOptions): string {
     return ackError(`git_commit: git add не выполнена: ${gitError(add, 'неизвестная ошибка git')}`);
   }
 
-  // 4. Что реально оказалось в индексе: посторонний staged-контент чужих
-  // процессов коммитить нельзя — инструмент отвечает только за явные пути.
+  // 4. Что реально оказалось в индексе по НАШИМ путям. VL-360: коммит идёт
+  // через `git commit --only -- <paths>`, поэтому staged-файлы вне `paths`
+  // физически не попадают в коммит и блокировать его не должны — раньше
+  // отказ «в индексе посторонние файлы» запирал инструмент в состоянии, из
+  // которого не было выхода (повтор с теми же путями давал ту же ошибку).
+  // Теперь это предупреждение в `applied.warnings`.
+  const stagedOurs = git(commitCwd, ['diff', '--cached', '--name-only', '--', ...relPaths]).stdout
+    .split('\n')
+    .map(s => s.trim())
+    .filter(Boolean);
   const stagedAll = git(commitCwd, ['diff', '--cached', '--name-only']).stdout
     .split('\n')
     .map(s => s.trim())
     .filter(Boolean);
   const outsiders = stagingOutsiders(stagedAll, relPaths);
-  if (outsiders.length > 0) {
-    return ackError(
-      `git_commit: в индексе уже есть посторонние файлы: ${outsiders.join(', ')}. `
-      + 'Инструмент коммитит только переданные пути — убери их из индекса (git restore --staged <пути>) и повтори.',
-    );
-  }
   const amend = opts.amend === true;
-  if (stagedAll.length === 0 && !amend) {
+  if (stagedOurs.length === 0 && !amend) {
     return ackNoop(
       `Изменений нет: по путям ${relPaths.join(', ')} коммитить нечего — коммит не создан, переходи к следующему шагу.`,
       { paths: relPaths },
@@ -354,9 +444,13 @@ export function commitFiles(cwd: string, opts: GitCommitOptions): string {
     commitMessage = appendCommitTrailer(message, coauthor);
   }
 
+  // VL-360: `--only -- <paths>` — коммит содержит РОВНО переданные пути,
+  // даже если в индексе лежит чужая работа (staged-файлы вне paths остаются
+  // в индексе и попадают в warnings). Без `--only` `git commit -m` забрал бы
+  // весь индекс.
   const commitArgs = amend
-    ? ['commit', '--amend', '--no-verify', '-m', commitMessage]
-    : ['commit', '--no-verify', '-m', commitMessage];
+    ? ['commit', '--amend', '--no-verify', '--only', '-m', commitMessage, '--', ...relPaths]
+    : ['commit', '--no-verify', '--only', '-m', commitMessage, '--', ...relPaths];
   const commit = git(commitCwd, commitArgs);
   if (!commit.ok) {
     return ackError(`git_commit: git commit не выполнен: ${gitError(commit, 'неизвестная ошибка git')}`);
@@ -374,6 +468,11 @@ export function commitFiles(cwd: string, opts: GitCommitOptions): string {
     .map(p => (statMtime(p) === null ? null : { path: p, mtimeMs: statMtime(p) as number }))
     .filter((e): e is { path: string; mtimeMs: number } => e !== null);
   const warnings = raceWarnings(entries, runStartedAtMs, taskId);
+  if (outsiders.length > 0) {
+    warnings.push(
+      `в индексе остались staged-файлы вне paths: ${outsiders.join(', ')} — они НЕ вошли в коммит (git commit --only) и остались в индексе`,
+    );
+  }
 
   const applied: Record<string, unknown> = { hash, subject, paths: relPaths };
   if (amend) applied.amended = true;
