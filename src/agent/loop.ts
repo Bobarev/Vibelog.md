@@ -388,13 +388,28 @@ const NEXT_STEP_HINT =
  * @param lastError — текст последнего отказа по этой сигнатуре (если был)
  * @param fromHint — текст взят из поля `hint` (VL-351): он короткий по
  *   построению, обрезка по голове+хвосту его только калечит
+ * @param retryWith — VL-353: машиночитаемое исправление из отказа
+ *   (`ackErrorDetailed.retryWith`). Если задано, директива выдаёт ГОТОВЫЙ
+ *   вызов, а не описательное «исправь аргументы»
+ * @param callArgs — VL-353: аргументы повторённого вызова (из `call.arguments`);
+ *   вместе с `retryWith` дают полный JSON готового вызова
  */
 export function loopDetectionDirective(
   name: string,
   repeatLimit: number,
   lastError?: string,
   fromHint = false,
+  retryWith?: Record<string, unknown>,
+  callArgs?: Record<string, unknown>,
 ): string {
+  // VL-353: готовый вызов приоритетнее текста ошибки. Причина: директива
+  // «исправь аргументы» требует от модели шага «прочитать текст → вывести
+  // аргумент → переписать вызов», и слабая модель его не делает (инцидент
+  // agent-1794050949211: 6 дословных повторов `git_commit` без
+  // `allowForeign`, подсказка была в тексте — не помогло).
+  if (retryWith !== undefined && Object.keys(retryWith).length > 0) {
+    return retryDirective(name, retryWith, callArgs);
+  }
   const reason = lastError === undefined ? '' : clipErrorText(lastError, fromHint);
   if (reason !== '') {
     return (
@@ -405,6 +420,54 @@ export function loopDetectionDirective(
     `Loop detection: инструмент ${name} вызван ${repeatLimit} раза подряд с одинаковыми аргументами — вызов НЕ выполнен и заблокирован. ` +
     `Повтор с теми же аргументами бесполезен. ${NEXT_STEP_HINT}`
   );
+}
+
+/**
+ * Предел длины директивы в байтах (инвариант VL-310).
+ *
+ * Готовый JSON-вызов с кириллическими путями легко его превышает, поэтому
+ * `retryDirective` перебирает варианты усечения, сохраняя `retryWith` —
+ * именно он и есть смысл директивы.
+ */
+const DIRECTIVE_MAX_BYTES = 400;
+
+/**
+ * Собирает директиву с ГОТОВЫМ вызовом (VL-353).
+ *
+ * Модель получает строку, которую можно скопировать в следующий tool_call
+ * без размышлений: имя инструмента + JSON аргументов повторённого вызова с
+ * подставленным `retryWith`. Если JSON не влезает в лимит VL-310, `paths`
+ * усекается до первого элемента с пометкой «остальные пути — те же»: смысл
+ * директивы (`retryWith`) сохраняется всегда.
+ *
+ * @param name — имя инструмента
+ * @param retryWith — что добавить/изменить в аргументах
+ * @param callArgs — аргументы повторённого вызова (может отсутствовать)
+ */
+function retryDirective(
+  name: string,
+  retryWith: Record<string, unknown>,
+  callArgs?: Record<string, unknown>,
+): string {
+  const head = `Loop detection: ${name} — предыдущий вызов отклонён. Повтори так: ${name} `;
+  const merged: Record<string, unknown> = { ...(callArgs ?? {}), ...retryWith };
+  const paths = merged.paths;
+  const samePathsNote = ' (остальные пути — те же)';
+  const candidates: string[] = [JSON.stringify(merged)];
+  if (Array.isArray(paths) && paths.length > 1) {
+    // Усечение по путям: первый путь + пометка. `retryWith` не трогаем.
+    candidates.push(JSON.stringify({ ...merged, paths: [paths[0]] }) + samePathsNote);
+  }
+  if (Array.isArray(paths)) {
+    candidates.push(JSON.stringify({ ...merged, paths: [] }) + samePathsNote);
+  }
+  for (const candidate of candidates) {
+    const text = head + candidate;
+    if (Buffer.byteLength(text, 'utf8') < DIRECTIVE_MAX_BYTES) return text;
+  }
+  // Последний рубеж: только фрагмент retryWith, обрезанный по правилу
+  // clipErrorText. Маркер «Loop detection» и поля исправления остаются.
+  return head + clipErrorText(JSON.stringify(retryWith), false);
 }
 
 /**
@@ -432,17 +495,35 @@ const ERROR_IN_DIRECTIVE_TAIL_CHARS = 35;
  * директива заканчивалась куском «## Пример»). `fromHint` сообщает вызывающему,
  * что текст короткий по построению и резать его не нужно.
  */
-function parsedErrorText(output: string): { text: string; fromHint: boolean } | null {
+function parsedErrorText(
+  output: string,
+): { text: string; fromHint: boolean; retryWith?: Record<string, unknown> } | null {
   try {
-    const parsed = JSON.parse(output) as { hint?: unknown; error?: unknown; message?: unknown } | null;
+    const parsed = JSON.parse(output) as {
+      hint?: unknown;
+      error?: unknown;
+      message?: unknown;
+      retryWith?: unknown;
+    } | null;
     if (!parsed || typeof parsed !== 'object') return null;
+    // VL-353: машиночитаемое исправление из отказа — приоритетнее текста:
+    // директива соберёт из него готовый вызов.
+    const retryWith =
+      parsed.retryWith !== null && typeof parsed.retryWith === 'object' && !Array.isArray(parsed.retryWith)
+        ? (parsed.retryWith as Record<string, unknown>)
+        : undefined;
     for (const [value, fromHint] of [
       [parsed.hint, true],
       [parsed.error, false],
       [parsed.message, false],
     ] as const) {
-      if (typeof value === 'string' && value.trim() !== '') return { text: value, fromHint };
+      if (typeof value === 'string' && value.trim() !== '') {
+        return retryWith === undefined ? { text: value, fromHint } : { text: value, fromHint, retryWith };
+      }
     }
+    // Текст не найден, но исправление есть — директива всё равно соберёт
+    // готовый вызов (текст пустой).
+    if (retryWith !== undefined) return { text: '', fromHint: false, retryWith };
     return null;
   } catch {
     return null;
@@ -624,7 +705,12 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   const errorSignatures = new Set<string>();
   // Текст последнего отказа по сигнатуре — попадает в директиву блокировки.
   // VL-351: храним и признак «текст из hint» — такой текст не обрезается.
-  const lastErrorBySignature = new Map<string, { text: string; fromHint: boolean }>();
+  // VL-353: плюс машиночитаемое исправление `retryWith` — из него директива
+  // собирает готовый вызов.
+  const lastErrorBySignature = new Map<
+    string,
+    { text: string; fromHint: boolean; retryWith?: Record<string, unknown> }
+  >();
   // VL-323: серия подряд повторов вызова, вернувшего ackError. Порог фазового
   // прерывания — MAX_ERROR_REPEATS_PER_RUN (5), не 3: модели нужно время
   // применить подсказку из текста ошибки (инцидент Close VL-320).
@@ -1193,7 +1279,14 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           await pushMessage({
             role: 'tool',
             tool_call_id: call.id,
-            content: loopDetectionDirective(call.name, repeatLimit, last?.text, last?.fromHint ?? false),
+            content: loopDetectionDirective(
+              call.name,
+              repeatLimit,
+              last?.text,
+              last?.fromHint ?? false,
+              last?.retryWith,
+              call.arguments,
+            ),
           });
           console.error(`[vibelog-agent] повтор вызова с отказом: ${call.name}`);
           return;
@@ -1209,7 +1302,14 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           await pushMessage({
             role: 'tool',
             tool_call_id: call.id,
-            content: loopDetectionDirective(call.name, repeatLimit, last?.text, last?.fromHint ?? false),
+            content: loopDetectionDirective(
+              call.name,
+              repeatLimit,
+              last?.text,
+              last?.fromHint ?? false,
+              last?.retryWith,
+              call.arguments,
+            ),
           });
         }
         // Диагностика в точке срабатывания → logTail оркестратора (lesson-77)

@@ -489,3 +489,33 @@ describe('VL-326 — hint в noop-ответе update_task', () => {
     assert.deepEqual(parsed.skipped, []);
   });
 });
+
+describe('VL-353 — ackErrorDetailed несёт машиночитаемое исправление retryWith', () => {
+  it('AC1: retryWith попадает в JSON-ответ аддитивно', async () => {
+    const { ackErrorDetailed } = await import('../../dist/mcp/tool-result.js');
+    const parsed = JSON.parse(
+      ackErrorDetailed('git_commit: чужой путь', {
+        retryWith: { allowForeign: true },
+        hint: 'Добавь allowForeign: true',
+      }),
+    );
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.error, 'git_commit: чужой путь');
+    assert.deepEqual(parsed.retryWith, { allowForeign: true });
+    assert.equal(parsed.hint, 'Добавь allowForeign: true');
+  });
+
+  it('AC1: без retryWith (или с пустым объектом) поля в ответе нет', async () => {
+    const { ackErrorDetailed } = await import('../../dist/mcp/tool-result.js');
+    const plain = JSON.parse(ackErrorDetailed('ошибка'));
+    assert.ok(!('retryWith' in plain), 'поле аддитивное — без исправления его нет');
+    const empty = JSON.parse(ackErrorDetailed('ошибка', { retryWith: {} }));
+    assert.ok(!('retryWith' in empty), 'пустой retryWith не отдаём: модель прочтёт как «повтори как есть»');
+  });
+
+  it('AC1: ackError остаётся обёрткой без деталей', async () => {
+    const { ackError } = await import('../../dist/mcp/tool-result.js');
+    const parsed = JSON.parse(ackError('ошибка'));
+    assert.deepEqual(Object.keys(parsed).sort(), ['error', 'ok']);
+  });
+});
