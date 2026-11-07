@@ -16,6 +16,7 @@ import {
   MAX_ERROR_REPEATS_PER_RUN,
   MAX_NOOP_REPEATS_PER_RUN,
   NON_SEMANTIC_ARGS,
+  DIRECTIVE_MAX_BYTES,
   callSignature,
   repeatKey,
   loopDetectionDirective,
@@ -76,7 +77,11 @@ describe('VL-357 — директивы повторов: один словар�
     const text = loopDetectionDirective('git_commit', 3, 'чужой путь', false, { allowForeign: true }, { paths: ['a.ts'] });
     assert.match(text, /Повтори так: git_commit /);
     assert.match(text, /allowForeign/);
-    assert.ok(Buffer.byteLength(text, 'utf8') < 400, 'директива < 400 байт (инвариант VL-310)');
+    // VL-371: порог берётся из единственной константы, а не копией числа.
+    assert.ok(
+      Buffer.byteLength(text, 'utf8') <= DIRECTIVE_MAX_BYTES,
+      `директива укладывается в DIRECTIVE_MAX_BYTES (${Buffer.byteLength(text, 'utf8')})`,
+    );
   });
 
   it('appliedNoopDirective и noopRepeatDirective — разные исходы, разные тексты', () => {
