@@ -33,27 +33,27 @@ Vibelog.md реализует MCP-сервер поверх stdio (JSON-RPC 2.0)
 | `reference_update` | Обновить теги/описание/набор ссылок reference (полная замена) |
 | `reference_link` | Двусторонняя связь reference ↔ задача (linked_tasks ↔ task.references) |
 | `reference_sync` | Доклонировать отсутствующие репозитории (type=repo) |
-| `document_list` | Список документов (docs/) с текстовым фильтром |
-| `document_view` | Показать документ по id (фронтматтер + содержимое) |
+| `document_list` | Список документов (`backlog/docs/`) с текстовым фильтром по id/title/tags/телу |
+| `document_view` | Показать документ по id (frontmatter + содержимое) |
 | `document_create` | Создать документ (readme / guide / specification / other) |
-| `document_update` | Обновить документ (только переданные поля) |
+| `document_update` | Обновить документ (только переданные поля; `content` — полная замена) |
 | `document_search` | Поиск документов по запросу |
-| `lesson_list` | Список lessons с фильтрами status/tags |
+| `lesson_list` | Список lessons (уроков из задач) с фильтрами status/tags |
 | `lesson_view` | Показать lesson: метаданные, linked_tasks, тело |
-| `lesson_create` | Создать lesson (урок из опыта задач) |
-| `lesson_update` | Обновить lesson: поля и/или тело |
-| `lesson_search_lessons` | Поиск lessons по запросу |
-| `lesson_link` | Двусторонняя связь lesson ↔ задача |
-| `lesson_supersede` | Пометить lesson заменённым (old → superseded) |
-| `lesson_audit` | Механический аудит актуальности lessons (read-only по умолчанию) |
-| `lesson_classify` | Классификация lessons и черновики задач техдолга (opt-in) |
-| `backlog_finish_phase` | Завершение фазы: статус + отчёт + modifiedFiles + отметки AC/DoD |
-| `backlog_trigger_phase` | Запустить фазу задачи через оркестратор фаз |
-| `backlog_phase_status` | Состояние запуска фазы (running, exitCode, logTail, result) |
-| `backlog_auto_queue` | Управление автоочередью фаз (add / start / stop / status) |
-| `backlog_supervisor` | Прогон супервизора: plan / start / stop / status |
-| `project_map` | Карта проекта: путь + назначение + экспорты модулей src/ |
-| `git_commit` | Коммит явными путями с трейлером Co-authored-by |
+| `lesson_create` | Создать lesson (title-императив, tags, sourceTasks, тело) |
+| `lesson_update` | Обновить lesson: поля и/или тело (updated_date — автоматически) |
+| `lesson_search_lessons` | Поиск lessons по запросу (substring по id/title/tags/телу) |
+| `lesson_link` | Двусторонняя связь lesson ↔ задача (linked_tasks ↔ task.lessons) |
+| `lesson_supersede` | Пометить lesson заменённым: oldId → superseded, newId → active |
+| `lesson_audit` | Механический аудит актуальности lessons (битые пути, висячие ссылки, дубли, протухание); read-only по умолчанию |
+| `lesson_classify` | Классификация lessons (rule/workaround/fact/stale) и черновики задач техдолга; opt-in, по умолчанию ничего не пишет |
+| `project_map` | Карта проекта: модули `src/` — путь, назначение, экспорты; `query` — узкая выборка по символу |
+| `git_commit` | Коммит явными путями с трейлером Co-authored-by (массовый add отклоняется) |
+| `backlog_trigger_phase` | Запустить фазу задачи (spec/plan/code/close/comment и др.) через оркестратор фаз |
+| `backlog_phase_status` | Состояние запуска фазы: running, phase, pid, exitCode, logTail, result, repeat_stats |
+| `backlog_finish_phase` | Завершение фазы одним вызовом: статус + отчёт + modifiedFiles + батч-отметки AC/DoD |
+| `backlog_auto_queue` | Автоочередь фаз (add/start/stop/status) — то же, что команды бота `/auto` |
+| `backlog_supervisor` | Прогон супервизора: plan (сухой прогон) / start (нужно подтверждение) / stop / status |
 
 Число инструментов в тексте не фиксируется: актуальный список отдаёт
 `vibelog doctor` (проверка `mcp_tools_invariants` — непустота реестра, отсутствие
