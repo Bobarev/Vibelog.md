@@ -110,6 +110,25 @@ describe('collectActivity (VL-347)', () => {
     expect(events[0].taskId).toBe('VL-4');
   });
 
+  // VL-368: ран, упавший через fail() (кап повторов/лимит), не пишет
+  // run_progress — причина должна браться из текста результата рана.
+  it('VL-368: причина падения без run_progress берётся из last_run.result', () => {
+    appendBilling(cwd, 'VL-11', session({ sessionId: 'k1', fallback: true }));
+    writeMeta('k1', {
+      taskId: 'VL-11',
+      last_run: {
+        is_error: true,
+        finishedAt: '2026-11-12T10:05:00.000Z',
+        result: 'Кап повторов исчерпан: модель 4 раза повторила вызов lesson_update',
+      },
+    });
+    const { events } = collectActivity(cwd, { types: ['phase_failed'] });
+    expect(events).toHaveLength(1);
+    expect(events[0].summary).toContain('Кап повторов исчерпан');
+    expect(events[0].summary).not.toContain('причина не записана');
+    expect(events[0].details.reason).toContain('Кап повторов исчерпан');
+  });
+
   it('запись без source → unknown (AC4)', () => {
     appendBilling(cwd, 'VL-5', session({ sessionId: 'e1' }));
     const { events } = collectActivity(cwd, { types: ['phase_finished'] });

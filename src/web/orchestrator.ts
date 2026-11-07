@@ -1342,7 +1342,12 @@ function spawnQwenRun(
               billing_recorded: { sessionId: result.session_id, finishedAt },
               // VL-253: исход рана — finish_phase не доверяет явному tokenUsage
               // после упавшей фазы (паритет с CLI-путём)
-              last_run: { is_error: result.is_error === true, finishedAt: new Date().toISOString() },
+              // VL-368: текст результата — причина падения для ленты активности
+              last_run: {
+                is_error: result.is_error === true,
+                finishedAt: new Date().toISOString(),
+                result: String(result.result ?? '').slice(0, 500),
+              },
             });
             // VL-259: история ранов в мете — по ней разбор восстанавливает
             // «сколько ранов, в какой фазе, когда начался» (раньше была видна

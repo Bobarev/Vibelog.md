@@ -52,6 +52,23 @@ describe('phase-transient (VL-196)', () => {
   createTaskFile(root, { id: 'VL-907', title: 'Транзиент: aborted при exit 0', status: 'Spec' });
   createTaskFile(root, { id: 'VL-908', title: 'Транзиент: aborted без записи кэша', status: 'Spec' });
   createTaskFile(root, { id: 'VL-911', title: 'Транзиент: статус до фазы (VL-245)', status: 'Spec' });
+  // VL-368: гейт терминальности в finalizePhaseStatus — Review + close → Done
+  createTaskFile(root, {
+    id: 'VL-912',
+    title: 'Транзиент: close с неотмеченным DoD (VL-368)',
+    status: 'Review',
+    noDodDefaults: true,
+    acceptanceCriteria: [{ text: 'AC выполнен', checked: true }],
+    definitionOfDone: [{ text: 'DoD не выполнен', checked: false }],
+  });
+  createTaskFile(root, {
+    id: 'VL-913',
+    title: 'Транзиент: close со всеми отмеченными пунктами (VL-368)',
+    status: 'Review',
+    noDodDefaults: true,
+    acceptanceCriteria: [{ text: 'AC выполнен', checked: true }],
+    definitionOfDone: [{ text: 'DoD выполнен', checked: true }],
+  });
 
   afterAll(() => {
     rmSync(root, { recursive: true, force: true });
@@ -143,6 +160,36 @@ describe('phase-transient (VL-196)', () => {
   it('finalizePhaseStatus без транзиента возвращает null (fail-open)', () => {
     rmSync(cacheFile, { force: true });
     assert.equal(finalizePhaseStatus(root, 'VL-901', 'plan', { exitCode: 0 }), null);
+  });
+
+  // ── VL-368: гейт терминальности (общий с авто-отчётом) ──
+
+  it('VL-368: close с неотмеченным DoD не ставит Done — статус остаётся Review + комментарий-причина', () => {
+    rmSync(cacheFile, { force: true });
+    markPhaseStarted(root, 'VL-912', 'close', 424248);
+    assert.equal(getTask(root, 'VL-912').status, 'In Progress', 'транзиент поставлен');
+    const out = finalizePhaseStatus(root, 'VL-912', 'close', { exitCode: 0, result: { type: 'result' } });
+    assert.ok(out, 'исход возвращён');
+    assert.equal(out.outcome, 'failed', 'блокировка гейтом — не «ok» для супервизора');
+    const task = getTask(root, 'VL-912');
+    assert.equal(task.status, 'Review', 'терминальный Done не поставлен');
+    assert.equal(task.comments.length, 1, 'ровно один комментарий-причина');
+    assert.equal(task.comments[0].author, '@agent');
+    assert.match(task.comments[0].text, /Статус не изменён/);
+    assert.match(task.comments[0].text, /DoD: #1/, 'номер неотмеченного пункта назван');
+    assert.match(task.comments[0].text, /Задача оставлена в «Review»/);
+    assert.equal('VL-912' in readCache(), false, 'запись кэша удалена');
+  });
+
+  it('VL-368: close со всеми отмеченными пунктами ставит Done (гейт не мешает)', () => {
+    rmSync(cacheFile, { force: true });
+    markPhaseStarted(root, 'VL-913', 'close', 424249);
+    const out = finalizePhaseStatus(root, 'VL-913', 'close', { exitCode: 0, result: { type: 'result' } });
+    assert.ok(out, 'исход возвращён');
+    assert.equal(out.outcome, 'ok');
+    const task = getTask(root, 'VL-913');
+    assert.equal(task.status, 'Done', 'переход Review + close → Done применён');
+    assert.equal(task.comments.length, 0, 'успех без комментария');
   });
 
   it('markPhaseAborted без записи кэша — no-op, false, не бросает', () => {

@@ -211,3 +211,91 @@ describe('VL-361 — shell-работа учитывается как прогр
     assert.equal(res.is_error, true, 'чтение каталога — не след работы');
   });
 });
+
+/**
+ * VL-368 — в фазах с обязательным отчётом след работы не доказывает успех.
+ *
+ * Close с коммитом документации и последующим капом повторов `lesson_update`
+ * завершался «штатно» (is_error:false) при неотмеченных AC/DoD: статус не
+ * откатывался, авто-resume не запускался, задача молча висела. Теперь для
+ * `REPORT_REQUIRED_PHASES` (close) `runHasProgress()` требует `reportWritten`.
+ */
+describe('VL-368 — close без отчёта: кап повторов даёт честный fail()', () => {
+  const appliedSpec = {
+    name: 'lesson_update',
+    description: 'write-заглушка, ответ ok',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+    handler: async () => JSON.stringify({ ok: true, message: 'обновлено' }),
+  };
+  const commitSpec = {
+    name: 'git_commit',
+    description: 'коммит',
+    inputSchema: { type: 'object', properties: { paths: { type: 'array' } } },
+    handler: async () => JSON.stringify({ ok: true, message: 'закоммичено', applied: {} }),
+  };
+  const finishSpec = {
+    name: 'backlog_finish_phase',
+    description: 'отчёт фазы',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+    handler: async () => JSON.stringify({ ok: true, message: 'отчёт записан' }),
+  };
+
+  it('close: коммит документации + кап повторов lesson_update → is_error:true', async () => {
+    const same = { id: 'lesson-1' };
+    const scripts = [
+      { text: '', toolCalls: [{ id: 'g1', name: 'git_commit', arguments: { paths: ['docs/a.md'] } }] },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        text: '',
+        toolCalls: [{ id: `c${i}`, name: 'lesson_update', arguments: same }],
+      })),
+    ];
+    const { llm } = fakeLlm(scripts);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [commitSpec, appliedSpec],
+      phase: 'close',
+    });
+    assert.equal(res.is_error, true, `без отчёта фаза не завершена: ${res.result.slice(0, 300)}`);
+    assert.match(res.result, /отчёт фазы \(backlog_finish_phase\) не записан/);
+  });
+
+  it('close: тот же сценарий с записанным отчётом → штатное завершение', async () => {
+    const same = { id: 'lesson-1' };
+    const scripts = [
+      { text: '', toolCalls: [{ id: 'g1', name: 'git_commit', arguments: { paths: ['docs/a.md'] } }] },
+      { text: '', toolCalls: [{ id: 'f1', name: 'backlog_finish_phase', arguments: { id: 'VL-1' } }] },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        text: '',
+        toolCalls: [{ id: `c${i}`, name: 'lesson_update', arguments: same }],
+      })),
+    ];
+    const { llm } = fakeLlm(scripts);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [commitSpec, finishSpec, appliedSpec],
+      phase: 'close',
+    });
+    assert.equal(res.is_error, false, `отчёт записан — ран завершается штатно: ${res.result.slice(0, 300)}`);
+  });
+
+  it('вне close (code) след работы по-прежнему достаточен', async () => {
+    const same = { id: 'lesson-1' };
+    const scripts = [
+      { text: '', toolCalls: [{ id: 'g1', name: 'git_commit', arguments: { paths: ['src/a.ts'] } }] },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        text: '',
+        toolCalls: [{ id: `c${i}`, name: 'lesson_update', arguments: same }],
+      })),
+    ];
+    const { llm } = fakeLlm(scripts);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [commitSpec, appliedSpec],
+      phase: 'code',
+    });
+    assert.equal(res.is_error, false, `code: коммит — достаточный след работы: ${res.result.slice(0, 300)}`);
+  });
+});

@@ -149,7 +149,7 @@ interface MetaLite {
   taskId?: string;
   phase?: string;
   lastRunPhase?: string;
-  last_run?: { is_error?: boolean; finishedAt?: string };
+  last_run?: { is_error?: boolean; finishedAt?: string; result?: string };
   run_progress?: {
     reason?: string;
     phase?: string;
@@ -184,14 +184,26 @@ function readSessionMetas(cwd: string, sinceMs: number): Map<string, MetaLite> {
   return map;
 }
 
-/** Причина падения рана из меты: reason + текст «что сделано / что осталось». */
+/**
+ * Причина падения рана из меты: reason + текст «что сделано / что осталось».
+ *
+ * VL-368: `run_progress` пишется только на путях `buildRunProgress`
+ * (wall-time/max-requests/idle). Ран, упавший через `fail()` (кап повторов,
+ * лимиты, loop detection), оставлял ленту с «причина не записана», хотя текст
+ * результата есть в мете (`last_run.result`). Поэтому при отсутствии
+ * `run_progress` берём текст результата рана — «причина не записана» остаётся
+ * только для действительно пустого результата.
+ */
 function failureReason(meta: MetaLite | undefined): string | undefined {
   const progress = meta?.run_progress;
-  if (!progress) return undefined;
-  const reason = typeof progress.reason === 'string' ? progress.reason.trim() : '';
-  const text = typeof progress.text === 'string' ? progress.text.trim() : '';
-  if (!reason && !text) return undefined;
-  return [reason ? `причина: ${reason}` : '', text].filter(Boolean).join(' — ');
+  const reason = typeof progress?.reason === 'string' ? progress.reason.trim() : '';
+  const text = typeof progress?.text === 'string' ? progress.text.trim() : '';
+  if (reason || text) return [reason ? `причина: ${reason}` : '', text].filter(Boolean).join(' — ');
+  // Fallback: текст результата упавшего рана (обрезка — лента не должна пухнуть)
+  const raw = typeof meta?.last_run?.result === 'string' ? meta.last_run.result : '';
+  const flat = raw.replace(/\s+/g, ' ').trim();
+  if (flat === '') return undefined;
+  return `причина: ${flat.length > 200 ? `${flat.slice(0, 200)}…` : flat}`;
 }
 
 /** События из billing: завершённые раны (phase_started + finished/failed). */
