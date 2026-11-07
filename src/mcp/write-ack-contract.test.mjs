@@ -495,12 +495,17 @@ describe('VL-319 — noop-ответ называет незаполненное
     // Обнуляем тело: имитируем урок, созданный шаблоном Close без content
     const entry = getLesson(cwd, l.id);
     writeFileSync(entry.path, lessonToMarkdown(entry.lesson, ''), 'utf-8');
-    // Первый вызов на пустом теле — ошибка (AC1), не noop
-    const err = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+    // VL-355: отказ — только когда применять нечего (кроме `id` ничего не передано)
+    const err = JSON.parse(await handleToolCall('lesson_update', { id: l.id }, cwd));
     assert.equal(err.ok, false, `ожидалась ошибка: ${JSON.stringify(err)}`);
     assert.ok(!err.noop, 'пустое тело без content — ошибка, а не noop');
     assert.equal(err.missing[0].field, 'content', 'missing называет пропущенное поле');
     assert.equal(typeof err.hint, 'string', 'hint со следующим шагом');
+    // VL-355: вызов с ДРУГИМ полем на пустом теле применяется и предупреждает
+    const partial = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+    assert.equal(partial.ok, true, `частичное применение: ${JSON.stringify(partial)}`);
+    assert.equal(partial.missing[0].field, 'content', 'успех тоже называет незаполненное тело');
+    assert.equal(typeof partial.hint, 'string', 'hint обязателен и в успешном ответе');
     // Дополняем тело → повторный вызов даёт noop с missing (тело уже непустое,
     // но проверяем форму ответа: applied — только переданные поля)
     writeFileSync(entry.path, lessonToMarkdown(entry.lesson, '## Проблема\n\nx\n'), 'utf-8');

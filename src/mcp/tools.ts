@@ -60,7 +60,7 @@ import { markPhaseAborted, getPhaseTransientStatus } from '../core/phase-transie
 import { getWorkflowForTask, phaseStatusTransitionError, isTerminalStatus } from '../core/workflow.js';
 import { buildProjectMap } from '../core/project-map.js';
 import { truncateToolOutput } from '../agent/tools.js';
-import { ackOk, ackRead, ackNoop, ackNoopDetailed, ackError, ackErrorDetailed, unknownFields, sameValue, sameFieldsUpToDate, SET_FIELDS, BODY_FIELD } from './tool-result.js';
+import { ackOk, ackOkDetailed, ackRead, ackNoop, ackNoopDetailed, ackError, ackErrorDetailed, unknownFields, sameValue, sameFieldsUpToDate, SET_FIELDS, BODY_FIELD } from './tool-result.js';
 import { buildAutoReport, uncheckedItems } from './auto-report.js';
 import type { SkippedField } from './tool-result.js';
 import { withIdempotency } from './idempotency.js';
@@ -2739,9 +2739,6 @@ function toolLessonUpdate(args: ToolArgs, cwd: string): string {
   if (args.appliesTo !== undefined) updates.applies_to = args.appliesTo as string[];
   if (args.kind !== undefined) updates.kind = (args.kind as string) || null;
   if (args.content !== undefined) updates.content = args.content as string;
-  if (Object.keys(updates).length === 0) {
-    throw new Error('Не указаны поля для обновления.');
-  }
   // VL-306: no-op детект для уроков (симметрия с backlog_update_task, VL-303).
   // Раньше файл переписывался всегда, ответ был «обновлён: …», и модель не
   // получала сигнала «работа сделана» — сессия agent-1793634687751 (Close
@@ -2761,18 +2758,13 @@ function toolLessonUpdate(args: ToolArgs, cwd: string): string {
     // в noopSignatures (ok:false без noop:true → failed), поэтому повтор
     // ИСПОЛНЯЕТСЯ заново и снова возвращает текст ошибки — модель видит, чего
     // не хватает, а не «изменений нет».
-    if (updates.content === undefined && isLessonBodyUnfilled(current.body)) {
-      return ackErrorDetailed(
-        `Тело урока ${current.lesson.id} не заполнено (пустое или дефолтный скелет) — в вызове нет \`content\`. ` +
-          'Передай непустой markdown (Проблема / Решение / Пример): ' +
-          'lesson_update {"id": "...", "content": "## Проблема\\n\\n…\\n\\n## Решение\\n\\n…\\n\\n## Пример\\n\\n…"}.',
-        {
-          missing: [{ field: 'content', reason: 'тело урока не заполнено (пустое или дефолтный скелет)' }],
-          hint: 'Добавь в вызов `content` с непустым markdown (Проблема/Решение/Пример) — без него урок остаётся пустым.',
-          applied: Object.fromEntries(Object.keys(updates).map(k => [k, (updates as Record<string, unknown>)[k]])),
-        },
-      );
-    }
+    //
+    // VL-355: проверка ПЕРЕСТАВЛЕНА после вычисления `unchanged` (ниже).
+    // Прежний порядок отсекал ЛЮБОЙ вызов на уроке-скелете: модель пришла
+    // привязать задачу (`linkedTasks`), а получила отказ «нет content» и
+    // 6 раз повторила вызов дословно → MAX_ERROR_REPEATS_PER_RUN → fail
+    // (сессия agent-1794053090709, Close VL-346 в тупике). Теперь отказ
+    // остаётся только для вызова, который НИЧЕГО не меняет.
     // VL-319: явно переданное пустое тело — ошибка, файл не перезаписывается.
     if (updates.content !== undefined && String(updates.content).trim() === '') {
       return ackErrorDetailed(
@@ -2791,6 +2783,53 @@ function toolLessonUpdate(args: ToolArgs, cwd: string): string {
         ? updates.content === current.body
         : sameValue(key, (updates as Record<string, unknown>)[key], currentRaw[key], LESSON_SET_FIELDS),
     );
+    const bodyUnfilled = isLessonBodyUnfilled(current.body);
+    // VL-355: вызов БЕЗ полей вообще (только `id`) на уроке-скелете — отказ с
+    // `missing: content` (кейс VL-349 сохранён): применять нечего, а noop
+    // скрыл бы от модели, что тело не заполнено. Для урока с заполненным
+    // телом такой вызов — прежняя ошибка «не указаны поля».
+    if (Object.keys(updates).length === 0) {
+      if (bodyUnfilled) {
+        return ackErrorDetailed(
+          `Тело урока ${current.lesson.id} не заполнено (пустое или дефолтный скелет) — в вызове нет \`content\`. ` +
+            'Передай непустой markdown (Проблема / Решение / Пример): ' +
+            'lesson_update {"id": "...", "content": "## Проблема\\n\\n…\\n\\n## Решение\\n\\n…\\n\\n## Пример\\n\\n…"}.',
+          {
+            missing: [{ field: 'content', reason: 'тело урока не заполнено (пустое или дефолтный скелет)' }],
+            hint: 'Добавь в вызов `content` с непустым markdown (Проблема/Решение/Пример) — без него урок остаётся пустым.',
+          },
+        );
+      }
+      throw new Error('Не указаны поля для обновления.');
+    }
+    // VL-355: тело не заполнено, `content` не передан, НО есть другие
+    // изменения — применяем их и ПРЕДУПРЕЖДАЕМ (missing/hint), а не
+    // отказываем. Именно этот случай делает шаг 6.5 Close (привязка урока к
+    // задаче) выполнимым на накопленных уроках-скелетах.
+    if (bodyUnfilled && updates.content === undefined && !unchanged) {
+      const patched = updateLesson(cwd, args.id as string, updates);
+      if (!patched) throw new Error(`Lesson ${args.id} не найден.`);
+      const patchedRaw = patched.lesson as unknown as Record<string, unknown>;
+      const appliedNow: Record<string, unknown> = {};
+      for (const key of Object.keys(updates)) {
+        appliedNow[key] = key === 'content' ? patched.body.length : patchedRaw[key];
+      }
+      return ackOkDetailed(
+        `Lesson ${patched.lesson.id} обновлён: ${Object.keys(updates).join(', ')} ` +
+          '(тело урока всё ещё не заполнено)',
+        appliedNow,
+        [],
+        {
+          missing: [{ field: 'content', reason: 'тело урока не заполнено (пустое или дефолтный скелет)' }],
+          hint: 'Добавь в вызов `content` с непустым markdown (Проблема/Решение/Пример) — без него урок остаётся пустым.',
+        },
+      );
+    }
+    // VL-355: ветка «тело не заполнено, content не передан, других изменений
+    // нет» больше НЕ отказ, а обычный noop с `missing: content` (ниже):
+    // повтор уже применённого вызова не должен превращаться в серию отказов
+    // (иначе MAX_ERROR_REPEATS_PER_RUN — ровно инцидент agent-1794053090709).
+    // Отказ остаётся только для вызова без полей вообще (см. выше).
     if (unchanged) {
       // applied — фактическое состояние (как в обычном пути), но без записи:
       // updated_date и файл не трогаются.

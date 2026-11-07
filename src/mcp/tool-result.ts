@@ -59,6 +59,15 @@ export interface WriteAck {
   skipped: SkippedField[];
   /** true — ответ взят из кэша идемпотентности, повторного эффекта не было. */
   idempotentReplay?: true;
+  /**
+   * VL-355: обязательные по смыслу поля, которые НЕ заполнены в сущности и НЕ
+   * переданы в вызове, хотя запись состоялась. Отличается от `skipped`:
+   * пропуск не помешал применить остальные поля (на уроке-скелете можно
+   * привязать задачу, но тело остаётся пустым).
+   */
+  missing?: SkippedField[];
+  /** VL-355: следующий шаг для модели в успешном ответе (что дописать). */
+  hint?: string;
 }
 
 /**
@@ -110,6 +119,41 @@ export function ackOk(
     applied,
     skipped,
     ...(idempotentReplay ? { idempotentReplay: true as const } : {}),
+  };
+  return JSON.stringify(ack, null, 2);
+}
+
+/**
+ * Формирует ответ успешного write-вызова с незаполненными полями (VL-355).
+ *
+ * Зачем отдельный хелпер: `ackOk` не умеет сообщать о пропущенном
+ * обязательном поле, а `ackErrorDetailed` означает «ничего не применено».
+ * Возник случай «применили часть, но урок остался незаполненным»: на
+ * уроке-скелете модель привязывала задачу (`linkedTasks`) и получала ОТКАЗ
+ * целиком, потому что не было `content` (сессия agent-1794053090709 —
+ * 6 дословных повторов `lesson_update` → `MAX_ERROR_REPEATS_PER_RUN` → fail,
+ * Close VL-346 в тупике). Теперь остальные поля применяются, а `missing`/
+ * `hint` предупреждают о незаполненном теле.
+ *
+ * @param message — человекочитаемая строка результата
+ * @param applied — фактически записанные поля (значения из сущности после записи)
+ * @param skipped — переданные, но не применённые поля
+ * @param extra — missing/hint (предупреждение, а не блокировка)
+ */
+export function ackOkDetailed(
+  message: string,
+  applied: Record<string, unknown> = {},
+  skipped: SkippedField[] = [],
+  extra: { missing?: SkippedField[]; hint?: string } = {},
+): string {
+  const missing = extra.missing ?? [];
+  const ack: WriteAck = {
+    ok: true,
+    message,
+    applied,
+    skipped,
+    ...(missing.length > 0 ? { missing } : {}),
+    ...(extra.hint ? { hint: extra.hint } : {}),
   };
   return JSON.stringify(ack, null, 2);
 }

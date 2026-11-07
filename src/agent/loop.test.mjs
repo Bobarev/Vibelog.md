@@ -588,6 +588,39 @@ describe('runLoop loop detection (VL-83)', () => {
     assert.ok(toolMsgs.every(m => !/Изменений нет/.test(String(m.content))), `noop «изменений нет» нет: ${dump}`);
   });
 
+  it('VL-355 (AC5): регресс agent-1794053090709 — lesson_update с missing в УСПЕШНОМ ответе не упирается в кап', async () => {
+    // Реальная сессия Close VL-346: модель пришла привязать урок к задаче
+    // (linkedTasks) на уроке-скелете, а получала ОТКАЗ ackErrorDetailed
+    // «нет content» 6 раз дословно → MAX_ERROR_REPEATS_PER_RUN → fail.
+    // VL-355: такой вызов применяется, ответ — ackOk с missing/hint.
+    const state = { calls: 0 };
+    const spec = {
+      name: 'lesson_update',
+      description: 'write-заглушка урока',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => {
+        state.calls++;
+        return JSON.stringify({
+          ok: true,
+          message: 'Lesson lesson-232 обновлён: linked_tasks (тело урока всё ещё не заполнено)',
+          applied: { linked_tasks: ['VL-346'] },
+          skipped: [],
+          missing: [{ field: 'content', reason: 'тело урока не заполнено (пустое или дефолтный скелет)' }],
+          hint: 'Добавь в вызов `content` с непустым markdown (Проблема/Решение/Пример).',
+        });
+      },
+    };
+    const same = { id: 'lesson-232', linkedTasks: ['VL-346'], verifiedBy: 'agent' };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'lesson_update', arguments: same }] },
+      { text: 'привязка сделана, перехожу к следующему шагу' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false, `ран не должен падать: ${res.result}`);
+    assert.equal(res.result, 'привязка сделана, перехожу к следующему шагу', 'модель дошла до финального текста');
+    assert.equal(state.calls, 1, 'вызов исполнен один раз, без повторов');
+  });
+
   it('VL-310 (AC4): исчерпание капа повторов применённого вызова → честный fail', async () => {
     // Кап MAX_APPLIED_REPEATS_PER_RUN = 3: если модель игнорирует директивы и
     // дословно повторяет уже применённый вызов, ран завершается is_error:true —
