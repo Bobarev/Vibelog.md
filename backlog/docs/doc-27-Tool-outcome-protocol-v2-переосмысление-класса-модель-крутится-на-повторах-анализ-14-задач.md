@@ -13,7 +13,7 @@ tags:
 ---
 # Tool outcome protocol v2 — переосмысление класса «модель крутится на повторах»
 
-**Статус:** реализовано (VL-357, 2026-11-07) — см. §9 «Фактическая реализация»
+**Статус:** реализовано (VL-357, 2026-11-07) — см. §9 «Фактическая реализация»; доделано в VL-359 (2026-11-07) — см. §10; остаток закрыт в VL-361 (2026-11-07) — см. §11
 **Дата:** 2026-11-07
 **Повод:** VL-356 — третья задача подряд об одном и том же; суммарно ~14 задач за две недели.
 
@@ -156,4 +156,46 @@ VL-303, VL-304, VL-306, VL-310, VL-318, VL-319, VL-323, VL-326, VL-349, VL-351, 
 
 **Тесты:** `src/mcp/tool-outcome.test.mjs` (10), `src/core/tool-classify.test.mjs` (6), `src/agent/loop-repeat-cap.test.mjs` (3), `src/agent/repeat-tracker-vl357.test.mjs` (10), блок partial в `write-ack-contract.test.mjs` (3 кейса). Полный прогон после merge: 189 файлов, 3536 passed, 4 skipped.
 
-**Что осталось открытым:** явной трассировки «14 задач класса → именованный тест» не сделано (покрытие есть в `loop.test.mjs`/`write-ack.test.mjs`, но без поимённой привязки) — AC6 задачи остался неотмеченным.
+## 10. Доделка (VL-359, 2026-11-07)
+
+VL-357 оставила четыре незакрытых места; VL-359 их закрыла (коммит `67171e5`, ветка `vb/vl-359`, слита в master).
+
+**1. `ToolSpec.kind` стал читаемым (вариант A плана).** `src/core/tool-classify.ts`: добавлен `registerLocalToolKinds(fn)` + резолвер модуля; `declaredToolKind(name) = toolKindOf(name) ?? localKindResolver?.(name) ?? LOCAL_TOOL_KINDS[name]`. `LOCAL_TOOL_KINDS` экспортирован и остался фолбэком для путей без реестра. `src/agent/tools.ts`: `listLocalTools` собирает `specs` и регистрирует резолвер `name => specs.find(s => s.name === name)?.kind` (идемпотентен по набору — вид от cwd не зависит). Тест паритета в `src/core/tool-classify.test.mjs` обходит `listLocalTools()` и сверяет `ToolSpec.kind` ↔ `declaredToolKind` ↔ `LOCAL_TOOL_KINDS` в обе стороны, плюс проверяет, что в таблице нет имён вне реестра.
+
+**2. Пороги повторов сведены.** `REPEAT_BLOCK_MAX_PER_RUN = REPEAT_LIMITS.blockedCalls` (объявление перенесено ниже `REPEAT_LIMITS` — TDZ). В `REPEAT_LIMITS` добавлены `phantom: 3` и `intent: 4` с перенесёнными комментариями-обоснованиями; `PHANTOM_CALL_LIMIT_DEFAULT`/`INTENT_LOOP_REPEAT_DEFAULT` теперь экспортируемые производные в `repeat-tracker.ts`, `loop.ts` импортирует их оттуда. Тест в `repeat-tracker.test.mjs` сверяет все три с `REPEAT_LIMITS`.
+
+**3. Guard-ответы веб-чата через `serializeAck`.** `ToolAckInput` получил аддитивное `extra?: Record<string, unknown>`; `serializeAck` дописывает его ключи, НЕ перезаписывая вычисленные из `outcome` (исход остаётся единственным источником правды). `duplicateCallResult` → `outcome:'rejected', reason:'duplicate', extra:{duplicate:true}`; `limitCallResult` → `rejected`/`limit`; `noopRepeatCallResult` → `outcome:'noop', reason:'noop_repeat', extra:{noop_repeat:true}`. Тексты `message` не менялись (инвариант VL-262). Путь подтверждений не затронут — `ackDenied` не тронут.
+
+**4. Трассировка 13 задач класса → именованный тест.** Фаза Code не правит `backlog/docs`, поэтому AC6 VL-357 закрыт тест-матрицей `src/mcp/tool-outcome-trace.test.mjs`: 13 задач → файл + подстрока имени `it(...)` (ссылки по имени, не по номеру строки — номера протухают). Тест падает, если регресс переименовали или удалили.
+
+| Задача | Файл теста | Подстрока имени `it(...)` |
+|---|---|---|
+| VL-303 | `src/mcp/write-ack.test.mjs` | `VL-303 — no-op update_task не пишет файл` |
+| VL-304 | `src/agent/loop.test.mjs` | `VL-304` |
+| VL-306 | `src/agent/loop.test.mjs` | `VL-306/VL-351 — не-JSON ответ write-инструмента` |
+| VL-310 | `src/agent/loop.test.mjs` | `VL-310 (AC4)` |
+| VL-318 | `src/agent/loop.test.mjs` | `VL-318 — ackError (ok:false) не считается применённым` |
+| VL-319 | `src/agent/loop.test.mjs`, `src/mcp/write-ack.test.mjs` | `VL-319 (AC7)`, `VL-319 — пустое тело урока` |
+| VL-323 | `src/agent/loop.test.mjs` | `VL-323 — серия ackError не убивает фазу` |
+| VL-326 | `src/web/chat.test.mjs`, `src/web/tool-dedup.test.mjs` | `VL-326` |
+| VL-349 | `src/agent/loop.test.mjs`, `src/mcp/write-ack.test.mjs` | `VL-349 (AC6)`, `VL-349 — тело-скелет урока` |
+| VL-351 | `src/agent/loop.test.mjs` | `VL-306/VL-351` |
+| VL-353 | `src/agent/loop.test.mjs` | `VL-353 — директива loop detection несёт ГОТОВЫЙ вызов` |
+| VL-355 | `src/agent/loop.test.mjs`, `src/mcp/write-ack.test.mjs` | `VL-355 (AC5)`, `VL-355 — незаполненное тело урока` |
+| VL-356 | `src/agent/loop.test.mjs`, `src/mcp/lesson-tools.test.mjs` | `VL-356 (AC5)`, `VL-356: create без content через MCP` |
+
+**Проверки:** `pnpm build` — ок; полный `pnpm test` — 189 файлов, 3533 passed, 4 skipped (предсуществующие skip в `src/core/frontmatter.test.mjs`), 0 failed.
+
+**Что осталось открытым после VL-359:** `runHasProgress` (`src/agent/loop.ts`) не учитывает `run_shell_command` — в фазе Close-worktree вся работа идёт через shell (merge/build/test), поэтому кап повторов по-прежнему может уронить ран с выполненной работой (сессия `agent-1794064942811`). Вынесено в VL-361. Там же — директивы цикла (`noopRepeatDirective`/`appliedNoopDirective`) всё ещё отдают плоский текст вместо JSON с `outcome` и теряют `missing` из последнего ответа инструмента.
+
+## 11. Закрытие остатка (VL-361, 2026-11-07)
+
+Оба пункта, оставшихся открытыми после VL-359, закрыты (коммит `8b1b63c`, ветка `vb/vl-361`, слита в master).
+
+**1. Прогресс рана видит shell-работу — по разбору ответа, а не по имени инструмента.** `runHasProgress()` (`src/agent/loop.ts`) получил отдельную ветку для `run_shell_command` и экспортированный предикат `shellCallIsWork(command, output)`: команда должна относиться к классу «меняет состояние / проверяет результат» (`SHELL_WORK_PATTERNS`: `git merge|commit|rebase|cherry-pick|worktree remove|branch -d`, `pnpm build|test`, `npx vitest`, `npm run build|test`) И не нести маркеров провала (`SHELL_FAILURE_MARKERS`: `^exit code: [1-9]`, `^fatal:`, `ERR_*`, `command not found`, `N failed`, `^error`). `WORK_EVIDENCE_TOOLS` остался из трёх инструментов — наивное добавление имени дало бы регресс VL-124 (упавшая команда выдала бы себя за работу). Код возврата доступен всегда: `makeRunShellCommand` (`src/agent/tools.ts`) печатает первой строкой `exit code: N`, правка `tools.ts` не потребовалась.
+
+**2. Директивы цикла — на JSON-контракте.** `noopRepeatDirective`/`appliedNoopDirective` (`src/agent/repeat-tracker.ts`) отдают `serializeAck({outcome:'noop', reason:'noop_repeat', next:{missing,hint,retryWith}, extra:{noop_repeat|applied_repeat}})` — плоского текста в директивах цикла не осталось, модель видит тот же формат, что и от инструмента. `extra` в `ToolAckInput` уже добавлена VL-359 (пункт 3 §10) — переиспользована, правка `tool-result.ts` не потребовалась. Новый `parsedAckNext(output)` читает `missing`/`hint`/`retryWith` из v2-формы (`next.*`) и старой (поля в корне); в цикле — `lastAckBySignature`, заполняется в точке классификации noop-ответа, читается в `blockAndPush` для обеих директив. Модель видит КОНКРЕТНОЕ недостающее поле, а не «добавь отсутствующее».
+
+**Тесты:** `src/agent/loop-repeat-cap.test.mjs` +4 (регресс `agent-1794064942811` → штатное завершение с блоком `buildRunProgress`; регресс VL-124 `fatal:` → `fail()`; `exit code: 1` → не работа; `ls` вне класса → не работа), `src/agent/repeat-tracker-vl357.test.mjs` +3 (JSON-контракт директив, проброс `missing`/`hint`/`retryWith`, `parsedAckNext`), `src/agent/loop.test.mjs` (регресс-кейс VL-319 дополнен проверкой `missing`/`hint`; инвариант размера директивы поднят с 400 до 1200 байт — JSON по построению длиннее плоской строки, смысл инварианта сохранён).
+
+**Проверки:** `pnpm build` — ок; полный `pnpm test` — 189 файлов, 3540 passed, 4 skipped, 0 failed; после merge в master — полный прогон повторён, регрессий нет.
