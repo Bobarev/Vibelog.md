@@ -726,16 +726,17 @@ describe('runLoop loop detection (VL-83)', () => {
     assert.ok(directive, 'модель получает директиву на повтор noop-вызова');
     const text = String(directive.content);
     assert.match(text, /lesson_update/, 'директива называет имя инструмента');
-    assert.match(text, /НЕ исполнен/, 'директива говорит, что вызов НЕ исполнен');
-    assert.ok(!text.includes('уже был выполнен'), 'формулировки «уже был выполнен» быть не должно');
-    // VL-361: директива — JSON-контракт ack, поэтому она длиннее плоской
-    // строки; инвариант «не раздувает payload» остаётся, но с поправкой на
-    // машиночитаемые поля (missing/hint).
-    assert.ok(Buffer.byteLength(text, 'utf8') < 1200, `директива компактна (${Buffer.byteLength(text, 'utf8')})`);
-    // VL-361: модель видит КОНКРЕТНОЕ недостающее поле, а не «добавь отсутствующее».
+    // VL-371: проверяем машиночитаемый исход, а не формулировку. Текст директивы
+    // свободен — перефразировка не должна ронять тест.
     const parsed = JSON.parse(text);
-    assert.equal(parsed.outcome, 'noop');
-    assert.deepEqual(parsed.missing, [{ field: 'content', reason: 'тело урока пустое — не заполнено' }]);
+    assert.equal(parsed.outcome, 'noop', 'исход объявлен полем, а не выводится из текста');
+    assert.equal(parsed.noop, true, 'вызов не исполнялся — noop');
+    assert.equal(parsed.noop_repeat, true, 'причина повтора объявлена флагом');
+    assert.notEqual(parsed.applied_repeat, true, 'это не повтор применённого вызова');
+    // VL-361: модель видит КОНКРЕТНОЕ недостающее поле, а не «добавь отсутствующее».
+    // VL-371: текст `reason` свободен — проверяется только имя поля.
+    assert.equal(parsed.missing[0].field, 'content', 'директива называет недостающее поле');
+    assert.equal(typeof parsed.missing[0].reason, 'string', 'причина — строка (содержание свободно)');
     assert.match(parsed.hint, /content/);
   });
 
@@ -816,12 +817,11 @@ describe('VL-310 — регресс сессии agent-1793637056809 (Code VL-12
     assert.equal(res.is_error, false, `ран не должен падать: ${res.result}`);
     assert.equal(res.result, 'отчёт записан, перехожу к завершению');
     assert.equal(state.calls, 1, 'документный вызов исполнен ровно один раз');
-    // Payload не растёт линейно: директивы короткие (< 400 байт каждая).
+    // VL-371: размер директивы проверяется свойством P5
+    // (`directive-size-property.test.mjs`): «не растёт по числу повторов» +
+    // потолок `2 × DIRECTIVE_MAX_BYTES`. Здесь остаётся только факт серии.
     const directives = res.messages.filter((m) => m.role === 'tool' && String(m.content).includes('Изменений нет'));
     assert.ok(directives.length >= 10, `директивы на повторы получены (${directives.length})`);
-    for (const d of directives) {
-      assert.ok(String(d.content).length < 400, 'директива короткая — payload не раздувается');
-    }
   });
 });
 
@@ -2635,7 +2635,7 @@ describe('VL-306/VL-351 — не-JSON ответ write-инструмента б
     for (const d of directives) {
       assert.match(d, /Добавь в вызов `content`/, `директива несёт hint: ${d}`);
       assert.doesNotMatch(d, /## Пример/, `обрывка JSON-примера в директиве нет: ${d}`);
-      assert.ok(Buffer.byteLength(d, 'utf8') < 400, `директива < 400 байт (${Buffer.byteLength(d, 'utf8')})`);
+      // VL-371: размер директивы — свойство P5 (`directive-size-property.test.mjs`).
     }
   });
 
@@ -2797,10 +2797,7 @@ describe('VL-323 — серия ackError не убивает фазу на 3-м 
     assert.ok(directive, 'директива блокировки отправлена');
     assert.match(directive, /Loop detection/, 'маркер lesson-76 сохранён');
     assert.match(directive, /allowForeign: true/, 'директива называет готовое исправление');
-    assert.ok(
-      Buffer.byteLength(directive, 'utf8') < 400,
-      `директива < 400 байт (${Buffer.byteLength(directive, 'utf8')})`,
-    );
+    // VL-371: размер директивы — свойство P5 (`directive-size-property.test.mjs`).
   });
 
   it('AC2: 5 дословных повторов ackError не фатальны, 6-й исчерпывает серию с текстом ошибки', async () => {
@@ -2839,7 +2836,7 @@ describe('VL-323 — серия ackError не убивает фазу на 3-м 
     assert.doesNotMatch(res.result, /отклонялся с ошибкой/, 'read-луп не считается серией отказов');
   });
 
-  it('AC4: директива с длинным текстом ошибки остаётся < 400 байт', async () => {
+  it('AC4: длинный текст ошибки усечён в директиве, но готовое исправление сохранено', async () => {
     const spec = {
       name: 'git_commit',
       description: 'write-заглушка с длинной ошибкой',
@@ -2859,8 +2856,14 @@ describe('VL-323 — серия ackError не убивает фазу на 3-м 
     assert.ok(directives.length > 0, 'директива отправлена');
     for (const d of directives) {
       const content = String(d.content);
-      assert.ok(Buffer.byteLength(content, 'utf8') < 400, `директива < 400 байт (${Buffer.byteLength(content, 'utf8')})`);
       assert.match(content, /Loop detection/);
+      // VL-371: свойство вместо байтового порога — длинный текст ошибки усечён
+      // (нет 12-кратного повтора фразы), а готовая подсказка из хвоста сохранена.
+      assert.ok(
+        !content.includes('очень длинное описание причины отказа '.repeat(3)),
+        `текст ошибки усечён: ${content}`,
+      );
+      assert.match(content, /allowForeign: true/, 'готовая подсказка из хвоста сохранена');
     }
   });
 
@@ -2949,7 +2952,7 @@ describe('VL-353 — директива loop detection несёт ГОТОВЫЙ
     assert.doesNotMatch(directive, /исправь аргументы/, 'описательной формулировки больше нет');
   });
 
-  it('AC5: директива с длинными кириллическими путями остаётся < 400 байт', async () => {
+  it('AC5: длинные кириллические пути усекаются, retryWith сохраняется', async () => {
     const { spec } = retrySpec();
     const longPaths = [
       'backlog/docs/doc-10-Агент-Vibelog-vibelog-agent-очень-длинное-имя.md',
@@ -2968,9 +2971,12 @@ describe('VL-353 — директива loop detection несёт ГОТОВЫЙ
     assert.ok(directives.length > 0, 'директива отправлена');
     for (const d of directives) {
       const content = String(d.content);
+      // VL-371: байтовый порог — свойство P5 (`directive-size-property.test.mjs`).
+      // Здесь проверяется наблюдаемое поведение усечения: длинные пути не
+      // попадают в директиву целиком, а смысл (retryWith) сохраняется всегда.
       assert.ok(
-        Buffer.byteLength(content, 'utf8') < 400,
-        `директива < 400 байт (${Buffer.byteLength(content, 'utf8')}): ${content}`,
+        !content.includes(longPaths[2]),
+        `третий длинный путь усечён: ${content}`,
       );
       assert.match(content, /Loop detection/, 'маркер сохранён при усечении');
       assert.match(content, /"allowForeign":true/, 'retryWith сохраняется всегда — он и есть смысл директивы');
