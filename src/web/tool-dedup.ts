@@ -30,6 +30,7 @@
 
 import { REPEAT_LIMITS, callSignature, toolRepeatTarget } from '../agent/repeat-tracker.js';
 import { loadSettings } from '../core/settings.js';
+import { serializeAck } from '../mcp/tool-result.js';
 import { isWriteOperation } from './tool-policy.js';
 import { isInteractiveTool } from '../core/tool-classify.js';
 
@@ -288,21 +289,33 @@ export function resolveChatMaxToolCalls(cwd: string): number {
   return raw;
 }
 
-/** JSON-ответ модели на дословный дубль вызова (контракт VL-262: ok:false). */
+/**
+ * JSON-ответ модели на дословный дубль вызова (контракт VL-262: ok:false).
+ *
+ * VL-359: ответ идёт через `serializeAck` (протокол v2) — модель в веб-чате
+ * видит ОДИН формат ответа, а не два. `outcome: 'rejected'` даёт `ok:false`,
+ * флаг `duplicate` едет в `extra` (машиночитаемо для модели и тестов).
+ */
 export function duplicateCallResult(): string {
-  return JSON.stringify({
-    ok: false,
-    duplicate: true,
+  return serializeAck({
+    outcome: 'rejected',
+    reason: 'duplicate',
     message: 'Идентичный вызов уже выполнен в этом ходе — используй полученный ранее результат.',
+    extra: { duplicate: true },
   });
 }
 
-/** JSON-ответ модели при исчерпании лимита вызовов на один ответ. */
+/**
+ * JSON-ответ модели при исчерпании лимита вызовов на один ответ.
+ *
+ * VL-359: через `serializeAck` (протокол v2), флаг `limit` — в `extra`.
+ */
 export function limitCallResult(maxPerResponse: number): string {
-  return JSON.stringify({
-    ok: false,
-    limit: true,
+  return serializeAck({
+    outcome: 'rejected',
+    reason: 'limit',
     message: `Лимит tool-вызовов на один ответ исчерпан (${maxPerResponse}) — заверши ход и продолжи следующим.`,
+    extra: { limit: true },
   });
 }
 
@@ -316,13 +329,17 @@ export function limitCallResult(maxPerResponse: number): string {
  * поэтому ничто не останавливало круг. Теперь на 4-м дословном noop-повторе
  * модели уходит этот ответ: он называет причину («поля уже такие») и требует
  * ИЗМЕНИТЬ аргументы, а не повторять вызов.
+ *
+ * VL-359: через `serializeAck` с `outcome: 'noop'` (даёт `ok:false, noop:true,
+ * reason:'noop'`), флаг `noop_repeat` — в `extra`.
  */
 export function noopRepeatCallResult(maxNoopRepeats: number): string {
-  return JSON.stringify({
-    ok: false,
-    noop_repeat: true,
+  return serializeAck({
+    outcome: 'noop',
+    reason: 'noop_repeat',
     message:
       `Подряд ${maxNoopRepeats} вызова вернули «Изменений нет» — передаваемые значения уже такие, повтор с теми же аргументами бесполезен. ` +
       'Передай недостающие поля в этом же вызове (например, description/acceptanceCriteria/plan) или переходи к отчёту.',
+    extra: { noop_repeat: true },
   });
 }

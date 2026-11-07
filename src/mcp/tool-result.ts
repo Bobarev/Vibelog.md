@@ -97,6 +97,15 @@ export interface ToolAckInput {
   tool?: string;
   /** Ответ восстановлен из кэша идемпотентности. */
   idempotentReplay?: boolean;
+  /**
+   * VL-359: дополнительные машиночитаемые поля ответа (аддитивно).
+   *
+   * Нужны guard-ответам веб-чата (`duplicate`/`limit`/`noop_repeat`): они
+   * отдают исход через `serializeAck`, но модель и тесты читают и флаг
+   * причины. Ключи, уже вычисленные из `outcome` (`ok`/`outcome`/`noop`/
+   * `reason`/…), НЕ перезаписываются — `extra` только добавляет.
+   */
+  extra?: Record<string, unknown>;
 }
 
 /**
@@ -128,6 +137,14 @@ export function serializeAck(ack: ToolAckInput): string {
   if (next.hint !== undefined && next.hint !== '') out.hint = next.hint;
   if (next.retryWith !== undefined && Object.keys(next.retryWith).length > 0) out.retryWith = next.retryWith;
   if (ack.idempotentReplay === true) out.idempotentReplay = true;
+  // VL-359: аддитивные поля (guard-ответы веб-чата: duplicate/limit/noop_repeat).
+  // Вычисленные из `outcome` ключи не перезаписываются — исход остаётся
+  // единственным источником правды.
+  if (ack.extra !== undefined) {
+    for (const [key, value] of Object.entries(ack.extra)) {
+      if (out[key] === undefined) out[key] = value;
+    }
+  }
   return JSON.stringify(out, null, 2);
 }
 

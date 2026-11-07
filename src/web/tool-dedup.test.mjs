@@ -353,6 +353,9 @@ describe('VL-255 — тексты ответов модели', () => {
     const parsed = JSON.parse(duplicateCallResult());
     assert.equal(parsed.ok, false);
     assert.equal(parsed.duplicate, true);
+    // VL-359: guard-ответ идёт через протокол v2 — исход объявлен
+    assert.equal(parsed.outcome, 'rejected');
+    assert.equal(parsed.reason, 'duplicate');
     assert.match(parsed.message, /Идентичный вызов уже выполнен в этом ходе/);
     assert.match(parsed.message, /используй полученный ранее результат/);
   });
@@ -361,6 +364,8 @@ describe('VL-255 — тексты ответов модели', () => {
     const parsed = JSON.parse(limitCallResult(16));
     assert.equal(parsed.ok, false);
     assert.equal(parsed.limit, true);
+    assert.equal(parsed.outcome, 'rejected');
+    assert.equal(parsed.reason, 'limit');
     assert.match(parsed.message, /Лимит tool-вызовов на один ответ исчерпан \(16\)/);
     assert.match(parsed.message, /заверши ход и продолжи следующим/);
   });
@@ -369,6 +374,9 @@ describe('VL-255 — тексты ответов модели', () => {
     const parsed = JSON.parse(noopRepeatCallResult(3));
     assert.equal(parsed.ok, false);
     assert.equal(parsed.noop_repeat, true);
+    // VL-359: исход noop (а не rejected) — серия «изменений нет», не отказ
+    assert.equal(parsed.outcome, 'noop');
+    assert.equal(parsed.noop, true);
     assert.match(parsed.message, /Изменений нет/);
     assert.match(parsed.message, /повтор с теми же аргументами бесполезен/);
     assert.match(parsed.message, /переходи к отчёту/);

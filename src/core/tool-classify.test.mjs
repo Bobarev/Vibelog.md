@@ -12,9 +12,10 @@
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
-import { isWriteOperation, isInteractiveTool, declaredToolKind } from '../../dist/core/tool-classify.js';
+import { isWriteOperation, isInteractiveTool, declaredToolKind, LOCAL_TOOL_KINDS } from '../../dist/core/tool-classify.js';
 import { TOOL_KINDS } from '../../dist/core/tool-kinds.js';
 import { listTools } from '../../dist/mcp/tools.js';
+import { listLocalTools } from '../../dist/agent/tools.js';
 
 describe('VL-357 — вид операции объявлен, а не выводится из имени', () => {
   it('каждый MCP-инструмент реестра имеет объявленный вид', () => {
@@ -60,5 +61,38 @@ describe('VL-357 — вид операции объявлен, а не выво�
     assert.equal(isWriteOperation('some_manage_thing'), true);
     // А объявленный read с «write-токеном» в имени остаётся read
     assert.equal(isWriteOperation('milestone_list'), false);
+  });
+
+  it('VL-359: ToolSpec.kind локальных инструментов совпадает с LOCAL_TOOL_KINDS', () => {
+    // Паритет двух объявлений одного набора: вид живёт рядом с инструментом
+    // (`ToolSpec.kind` в src/agent/tools.ts) и читается классификатором через
+    // registerLocalToolKinds; LOCAL_TOOL_KINDS — фолбэк для путей без реестра.
+    // Расхождение означает, что новый инструмент объявил вид только в одном
+    // месте, и классификация молча уедет в fail-safe write.
+    const specs = listLocalTools(process.cwd());
+    assert.ok(specs.length > 0, 'реестр локальных инструментов не пуст');
+    const mismatches = [];
+    for (const spec of specs) {
+      const declared = declaredToolKind(spec.name);
+      if (spec.kind === undefined) {
+        mismatches.push(`${spec.name}: kind не объявлен в ToolSpec`);
+      } else if (declared !== spec.kind) {
+        mismatches.push(`${spec.name}: ToolSpec.kind=${spec.kind}, declaredToolKind=${declared}`);
+      }
+      if (LOCAL_TOOL_KINDS[spec.name] !== spec.kind) {
+        mismatches.push(`${spec.name}: LOCAL_TOOL_KINDS=${LOCAL_TOOL_KINDS[spec.name]}, ToolSpec.kind=${spec.kind}`);
+      }
+    }
+    assert.deepEqual(
+      mismatches,
+      [],
+      `расхождение объявлений вида: ${mismatches.join('; ')}. Добавь строку в LOCAL_TOOL_KINDS или убери kind из ToolSpec.`,
+    );
+  });
+
+  it('VL-359: LOCAL_TOOL_KINDS не содержит инструментов вне реестра', () => {
+    const names = new Set(listLocalTools(process.cwd()).map((spec) => spec.name));
+    const extra = Object.keys(LOCAL_TOOL_KINDS).filter((name) => !names.has(name));
+    assert.deepEqual(extra, [], `в LOCAL_TOOL_KINDS есть имена вне реестра: ${extra.join(', ')}`);
   });
 });

@@ -52,14 +52,21 @@ const MIXED_READ_ACTIONS: Readonly<Record<string, readonly string[]>> = {
 const INTERACTIVE_TOOLS: ReadonlySet<string> = new Set(['ask_user']);
 
 /**
- * Вид локальных файловых инструментов агента (VL-357).
+ * Вид локальных файловых инструментов агента (VL-357, VL-359).
  *
  * Они не входят в MCP-реестр (`listTools()`), поэтому не могут объявить вид
  * там же и описаны отдельной таблицей. До VL-357 это делали маркеры имени
  * (`read`/`write`/`edit`/`run`) — маркеры удалены, потому что ошибались на
  * любом новом имени с посторонним токеном.
+ *
+ * VL-359: таблица — ФОЛБЭК, а не единственный источник. Настоящее объявление
+ * живёт рядом с инструментом (`ToolSpec.kind` в `src/agent/tools.ts`), и
+ * реестр регистрирует его через `registerLocalToolKinds`. Таблица остаётся
+ * для путей, где реестр не собран (тесты классификатора, веб-слой до первого
+ * `listLocalTools`), и тест паритета (`tool-classify.test.mjs`) сверяет её с
+ * `ToolSpec.kind` — расхождение валит сборку.
  */
-const LOCAL_TOOL_KINDS: Readonly<Record<string, ToolKind>> = {
+export const LOCAL_TOOL_KINDS: Readonly<Record<string, ToolKind>> = {
   read_file: 'read',
   write_file: 'write',
   edit: 'write',
@@ -69,6 +76,34 @@ const LOCAL_TOOL_KINDS: Readonly<Record<string, ToolKind>> = {
   search_files: 'read',
   agent_session_outline: 'read',
 };
+
+/**
+ * Резолвер вида локальных инструментов, зарегистрированный реестром (VL-359).
+ *
+ * Зачем колбэк, а не импорт: `src/core/tool-classify.ts` не может тянуть
+ * `src/agent/tools.ts` (там fs, llm, оркестратор — core не должен зависеть от
+ * агентского слоя, это записано в шапке модуля). Реестр сам сообщает
+ * классификатору свой набор видов при сборке.
+ *
+ * Состояние модуля: последний вызов `registerLocalToolKinds` перезаписывает
+ * предыдущий. Это безопасно, потому что набор инструментов у всех вызовов
+ * `listLocalTools` одинаковый (различается только cwd, а вид от cwd не
+ * зависит) — резолвер идемпотентен по набору.
+ */
+let localKindResolver: ((name: string) => ToolKind | undefined) | null = null;
+
+/**
+ * Регистрирует резолвер вида локальных инструментов (VL-359).
+ *
+ * Вызывается реестром (`listLocalTools` в `src/agent/tools.ts`) при сборке:
+ * вид объявлен рядом с инструментом (`ToolSpec.kind`), а классификатор
+ * получает его отсюда. Без регистрации действует фолбэк `LOCAL_TOOL_KINDS`.
+ *
+ * @param fn — функция «имя → объявленный вид» (undefined — имя не из реестра)
+ */
+export function registerLocalToolKinds(fn: (name: string) => ToolKind | undefined): void {
+  localKindResolver = fn;
+}
 
 /**
  * Интерактивный ли инструмент: вызов = пауза хода, а не исполнение.
@@ -82,12 +117,19 @@ export function isInteractiveTool(name: string): boolean {
 /**
  * Объявленный вид инструмента.
  *
+ * VL-359: три источника в порядке приоритета — реестр MCP (`TOOL_KINDS`),
+ * резолвер локального реестра (`ToolSpec.kind`, регистрируется из
+ * `src/agent/tools.ts`) и фолбэк-таблица `LOCAL_TOOL_KINDS`. До VL-359 поле
+ * `ToolSpec.kind` заполнялось, но не читалось: одни и те же 8 инструментов
+ * были объявлены дважды, и новый локальный инструмент с `kind: 'read'` без
+ * строки в таблице молча классифицировался как write.
+ *
  * @param name — имя инструмента (MCP-реестр или локальный файловый)
  * @returns вид либо `undefined` — имя не объявлено (внешний MCP-сервер,
  *   новое имя до декларации)
  */
 export function declaredToolKind(name: string): ToolKind | undefined {
-  return toolKindOf(name) ?? LOCAL_TOOL_KINDS[name];
+  return toolKindOf(name) ?? localKindResolver?.(name) ?? LOCAL_TOOL_KINDS[name];
 }
 
 /**
