@@ -621,6 +621,49 @@ describe('runLoop loop detection (VL-83)', () => {
     assert.equal(state.calls, 1, 'вызов исполнен один раз, без повторов');
   });
 
+  it('VL-356 (AC5): регресс agent-1794054631174 — lesson_create без content отвечает ok+missing, ран доходит до финала', async () => {
+    // Реальная сессия Close VL-355: модель 6 раз дословно повторила
+    // lesson_create {title} без content, каждый раз получала жёсткий отказ
+    // (файл не создан) → MAX_ERROR_REPEATS_PER_RUN → fail. VL-356: вызов
+    // создаёт урок со скелетом и отвечает ackOkDetailed с missing/hint —
+    // успешный ответ не пополняет счётчик ошибок, модель идёт дальше.
+    const state = { calls: 0 };
+    const spec = {
+      name: 'lesson_create',
+      description: 'write-заглушка урока',
+      inputSchema: { type: 'object', properties: { title: { type: 'string' } } },
+      handler: async () => {
+        state.calls++;
+        return JSON.stringify({
+          ok: true,
+          message: 'Lesson lesson-240 создан: Не блокируй частичное обновление (active) — тело не заполнено (скелет)',
+          applied: { id: 'lesson-240', title: 'Не блокируй частичное обновление', status: 'active', content: 33 },
+          skipped: [],
+          missing: [{ field: 'content', reason: 'content не передан — тело урока осталось скелетом' }],
+          hint: 'Заполни тело: lesson_update {"id": "lesson-240", "content": "## Проблема\\n\\n…"}.',
+        });
+      },
+    };
+    const same = { title: 'Не блокируй частичное обновление валидацией одного поля' };
+    // Два дословных повтора: первый исполняется, второй получает директиву
+    // «уже применён» (кап MAX_APPLIED_REPEATS_PER_RUN = 3 не достигается) —
+    // серии ОТКАЗОВ, как в инциденте, больше нет.
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'lesson_create', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'lesson_create', arguments: same }] },
+      { text: 'урок создан, привязываю к задаче' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false, `ран не должен падать по капу повторов: ${res.result}`);
+    assert.equal(res.result, 'урок создан, привязываю к задаче', 'модель дошла до финального текста');
+    assert.equal(state.calls, 1, 'первый вызов исполнен, повтор — директива');
+    const toolMsgs = res.messages.filter(m => m.role === 'tool');
+    assert.ok(toolMsgs.length >= 2, 'модель получила tool-результаты');
+    assert.match(String(toolMsgs[0].content), /"ok":\s*true/, 'первый результат — успех, не отказ');
+    assert.match(String(toolMsgs[0].content), /missing/, 'успех называет незаполненное поле');
+    assert.ok(!/"ok":\s*false/.test(String(toolMsgs[0].content)), 'отказа нет');
+  });
+
   it('VL-310 (AC4): исчерпание капа повторов применённого вызова → честный fail', async () => {
     // Кап MAX_APPLIED_REPEATS_PER_RUN = 3: если модель игнорирует директивы и
     // дословно повторяет уже применённый вызов, ран завершается is_error:true —
