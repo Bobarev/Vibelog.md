@@ -25,7 +25,9 @@ import {
   loadChatSystemTemplate,
   CHAT_DISALLOWED_TOOLS,
   makeReadFileTool,
+  makeEditTool,
 } from '../../dist/web/tool-policy.js';
+import { makeEdit } from '../../dist/agent/tools.js';
 import { listTools } from '../../dist/mcp/tools.js';
 
 const bundledPath = fileURLToPath(new URL('../../templates/prompts/chat-system.md', import.meta.url));
@@ -200,6 +202,8 @@ describe('VL-219 — loadChatSystemTemplate', () => {
     const text = readFileSync(bundledPath, 'utf8');
     assert.ok(text.includes('read_file'), 'описание read_file');
     assert.ok(text.includes('write_file'), 'описание write_file');
+    // VL-366: edit подключён к чату — правило выбора edit vs write_file в промпте
+    assert.ok(text.includes('edit'), 'описание edit');
     assert.ok(text.includes('backlog_update_task'), 'описание backlog_update_task');
     assert.ok(text.includes('backlog_create_task'), 'описание backlog_create_task');
     // Общее правило read-сразу / write-с-подтверждением
@@ -303,5 +307,102 @@ describe('VL-252 — диапазон строк в path для read_file веб
     writeFileSync(join(cwd, 's.jsonl'), 'one\ntwo\n', 'utf-8');
     const out = await makeReadFileTool(cwd).handler({ path: 's.jsonl:10-5' });
     assert.match(out, /Некорректный диапазон строк/);
+  });
+});
+
+describe('VL-366 — инструмент edit в веб-чате', () => {
+  const makeCwd = () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'vl366-edit-'));
+    tmpDirs.push(cwd);
+    return cwd;
+  };
+
+  it('AC1: chatToolDefs содержит edit с той же схемой, что у агента', () => {
+    const cwd = makeCwd();
+    const defs = chatToolDefs(cwd);
+    const editDef = defs.find(d => d.name === 'edit');
+    assert.ok(editDef, 'edit должен быть в инструментах чата');
+    const props = Object.keys(editDef.inputSchema.properties ?? {});
+    for (const key of ['path', 'old_string', 'new_string', 'replace_all']) {
+      assert.ok(props.includes(key), `edit: параметр ${key}`);
+    }
+    assert.deepEqual(editDef.inputSchema.required, ['path', 'old_string', 'new_string']);
+    // Схема — общий код с агентом, а не копия (AC1)
+    const agentSpec = makeEdit(cwd);
+    assert.deepEqual(editDef.inputSchema, agentSpec.inputSchema);
+    assert.equal(typeof editDef.handler, 'function', 'handler присутствует');
+  });
+
+  it('AC2: isWriteOperation("edit") === true (approval-gate)', () => {
+    assert.equal(isWriteOperation('edit'), true);
+  });
+
+  it('AC3: успешная замена одной строки', async () => {
+    const cwd = makeCwd();
+    writeFileSync(join(cwd, 'a.txt'), 'alpha\nbeta\ngamma\n', 'utf-8');
+    const tool = makeEditTool(cwd);
+    const out = await tool.handler({ path: 'a.txt', old_string: 'beta', new_string: 'BETA' });
+    assert.match(out, /Выполнено замен: 1/);
+    assert.equal(readFileSync(join(cwd, 'a.txt'), 'utf8'), 'alpha\nBETA\ngamma\n');
+  });
+
+  it('AC3: old_string не найдена → отказ «не найдена»', async () => {
+    const cwd = makeCwd();
+    writeFileSync(join(cwd, 'a.txt'), 'alpha\n', 'utf-8');
+    const out = await makeEditTool(cwd).handler({ path: 'a.txt', old_string: 'zzz', new_string: 'y' });
+    assert.match(out, /не найдена/);
+    assert.equal(readFileSync(join(cwd, 'a.txt'), 'utf8'), 'alpha\n', 'файл не изменён');
+  });
+
+  it('AC3: old_string встречается 2 раза без replace_all → отказ «найдена 2 раз(а)»', async () => {
+    const cwd = makeCwd();
+    writeFileSync(join(cwd, 'a.txt'), 'x\nx\n', 'utf-8');
+    const out = await makeEditTool(cwd).handler({ path: 'a.txt', old_string: 'x', new_string: 'y' });
+    assert.match(out, /найдена 2 раз\(а\)/);
+    assert.equal(readFileSync(join(cwd, 'a.txt'), 'utf8'), 'x\nx\n', 'файл не изменён');
+  });
+
+  it('AC3: replace_all: true заменяет все вхождения', async () => {
+    const cwd = makeCwd();
+    writeFileSync(join(cwd, 'a.txt'), 'x\nx\nx\n', 'utf-8');
+    const out = await makeEditTool(cwd).handler({
+      path: 'a.txt', old_string: 'x', new_string: 'y', replace_all: true,
+    });
+    assert.match(out, /Выполнено замен: 3/);
+    assert.equal(readFileSync(join(cwd, 'a.txt'), 'utf8'), 'y\ny\ny\n');
+  });
+
+  it('AC3: $-символы в new_string не трактуются как подстановки (split/join)', async () => {
+    const cwd = makeCwd();
+    writeFileSync(join(cwd, 'a.txt'), 'price: OLD\n', 'utf-8');
+    await makeEditTool(cwd).handler({ path: 'a.txt', old_string: 'OLD', new_string: '$& $1 $$' });
+    assert.equal(readFileSync(join(cwd, 'a.txt'), 'utf8'), 'price: $& $1 $$\n');
+  });
+
+  it('AC3: путь вне проекта отклоняется', async () => {
+    const cwd = makeCwd();
+    const out = await makeEditTool(cwd).handler({
+      path: '../secret.txt', old_string: 'a', new_string: 'b',
+    });
+    assert.match(out, /выходит за пределы проекта/);
+  });
+
+  it('AC4: точечная правка большого файла не меняет остальное содержимое', async () => {
+    const cwd = makeCwd();
+    const lines = Array.from({ length: 600 }, (_, i) => `строка ${i + 1}`);
+    writeFileSync(join(cwd, 'big.md'), lines.join('\n') + '\n', 'utf-8');
+    const before = readFileSync(join(cwd, 'big.md'), 'utf8');
+
+    const out = await makeEditTool(cwd).handler({
+      path: 'big.md',
+      old_string: 'строка 300\n',
+      new_string: 'строка 300\nвставленная строка\n',
+    });
+    assert.match(out, /Выполнено замен: 1/);
+
+    const after = readFileSync(join(cwd, 'big.md'), 'utf8');
+    const expected = before.replace('строка 300\n', 'строка 300\nвставленная строка\n');
+    assert.equal(after, expected, 'изменилась ровно одна вставка, остальное байт-в-байт');
+    assert.equal(after.split('\n').length, before.split('\n').length + 1);
   });
 });

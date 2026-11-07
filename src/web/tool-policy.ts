@@ -10,7 +10,7 @@
  *    если его имя начинается с read-глагола — без правки инструкции чата).
  * 2. `chatToolDefs()` — инструменты модели: ВСЕ из MCP-реестра listTools()
  *    (минус CHAT_DISALLOWED_TOOLS — технический запрет destructive-операций,
- *    вариант (c) плана VL-219) + локальные read_file/write_file.
+ *    вариант (c) плана VL-219) + локальные read_file/write_file/edit/search_files.
  * 3. `loadChatSystemTemplate(cwd)` — статическая часть системного промпта
  *    чата: переопределение проектом .vibelog/prompts/chat-system.md →
  *    встроенный templates/prompts/chat-system.md, иначе fail-closed throw
@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ToolDef } from '../agent/llm.js';
-import { resolveInProject, truncateToolOutput, formatDirListing, formatFileSlice, parseReadPath, formatMissingPathHint } from '../agent/tools.js';
+import { resolveInProject, truncateToolOutput, formatDirListing, formatFileSlice, parseReadPath, formatMissingPathHint, makeEdit } from '../agent/tools.js';
 import { searchProjectFiles } from '../agent/search-files.js';
 import { listTools } from '../mcp/tools.js';
 import { ASK_USER_TOOL, MAX_OPTIONS, MIN_OPTIONS } from './chat-question.js';
@@ -177,6 +177,33 @@ export function makeWriteFileTool(cwd: string): ChatLocalTool {
 }
 
 /**
+ * Инструмент edit чата (VL-366): точечная правка файла С обязательным
+ * подтверждением (isWriteOperation('edit') === true → approval-gate).
+ *
+ * Схема и handler берутся из агентского `makeEdit` (src/agent/tools.ts), а не
+ * описываются заново: два независимых описания разъехались бы при следующей
+ * правке агентского инструмента (та же причина, по которой классификатор
+ * вынесен в core — lesson-37). Переопределяется только description: модели
+ * чата нужно правило выбора edit vs write_file.
+ */
+export function makeEditTool(cwd: string): ChatLocalTool {
+  const spec = makeEdit(cwd);
+  return {
+    name: spec.name,
+    description:
+      'Точечная правка файла: заменяет old_string на new_string. ' +
+      'ВЫПОЛНЯЕТСЯ ТОЛЬКО С ПОДТВЕРЖДЕНИЯ (Allow/Deny). ' +
+      'Без replace_all old_string обязан встречаться ровно один раз — иначе отказ ' +
+      '(защита от двусмысленных правок). Предпочитай edit вместо write_file для правок ' +
+      'в существующих файлах: write_file перезаписывает файл целиком. ' +
+      'replace_all: true на короткой строке может переписать весь файл — используй осознанно. ' +
+      'Доступ только в пределах директории проекта.',
+    inputSchema: spec.inputSchema,
+    handler: spec.handler,
+  };
+}
+
+/**
  * Инструмент search_files чата (VL-234): поиск по исходникам БЕЗ подтверждения
  * (isWriteOperation('search_files') === false). Общий handler с агентом —
  * searchProjectFiles; границы проекта, пропуск node_modules/.git/dist,
@@ -268,7 +295,7 @@ export function makeAskUserTool(): ToolDef {
 
 /**
  * Инструменты модели чата: все MCP-инструменты (кроме
- * CHAT_DISALLOWED_TOOLS) + локальные read_file/write_file/search_files +
+ * CHAT_DISALLOWED_TOOLS) + локальные read_file/write_file/edit/search_files +
  * интерактивный ask_user (VL-330). Схемы совпадают с реестром listTools() —
  * дублирования нет (Р2 плана VL-219).
  */
@@ -276,7 +303,7 @@ export function chatToolDefs(cwd: string): (ToolDef | ChatLocalTool)[] {
   const defs: (ToolDef | ChatLocalTool)[] = listTools()
     .filter(t => !CHAT_DISALLOWED_TOOLS.includes(t.name))
     .map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
-  defs.push(makeReadFileTool(cwd), makeWriteFileTool(cwd), makeSearchFilesTool(cwd));
+  defs.push(makeReadFileTool(cwd), makeWriteFileTool(cwd), makeEditTool(cwd), makeSearchFilesTool(cwd));
   // VL-330: интерактивный вопрос — только в веб-чате (в headless его нет)
   defs.push(makeAskUserTool());
   return defs;
