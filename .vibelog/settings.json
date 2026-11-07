@@ -185,5 +185,10 @@
     "enabled": true,
     "on_drift": "ask",
     "offline": "allow"
+  },
+  "upstream": {
+    "repo": "bobarev/Vibelog.md",
+    "labels": ["upstream", "from-vl"],
+    "type": "bug"
   }
 }
