@@ -1,0 +1,81 @@
+{
+  "taskId": "VL-362",
+  "sessions": [
+    {
+      "sessionId": "agent-1794069448095",
+      "phase": "code",
+      "startedAt": "2026-11-07T16:37:27.979Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T16:42:26.676Z",
+      "durationMs": 295916,
+      "usage": {
+        "input": 2030461,
+        "output": 15530,
+        "cache": 1968640,
+        "total": 2045991,
+        "requests": 34,
+        "reasoning": 5692
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794069448095",
+      "phase": "code",
+      "startedAt": "2026-11-07T16:37:27.979Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T16:42:26.710Z",
+      "durationMs": 295916,
+      "usage": {
+        "input": 2030461,
+        "output": 15530,
+        "cache": 1968640,
+        "total": 2045991,
+        "requests": 34,
+        "reasoning": 5692
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794071480918",
+      "phase": "close",
+      "startedAt": "2026-11-07T17:11:20.785Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T17:17:19.721Z",
+      "durationMs": 355776,
+      "usage": {
+        "input": 813483,
+        "output": 3031,
+        "cache": 792576,
+        "total": 816514,
+        "requests": 21,
+        "reasoning": 1111
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794071480918",
+      "phase": "close",
+      "startedAt": "2026-11-07T17:11:20.785Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T17:17:19.861Z",
+      "durationMs": 355776,
+      "usage": {
+        "input": 813483,
+        "output": 3031,
+        "cache": 792576,
+        "total": 816514,
+        "requests": 21,
+        "reasoning": 1111
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    }
+  ]
+}
