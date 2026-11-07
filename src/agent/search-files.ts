@@ -136,6 +136,124 @@ export interface SearchHit {
 }
 
 /**
+ * Бюджет одной строки-совпадения в выдаче (VL-354).
+ *
+ * Инцидент `agent-1794052713009`: `grep_search` собирал совпадения в
+ * алфавитном порядке (`walkFiles` → `out.sort()`), поэтому `CHANGELOG.md` и
+ * `backlog/docs/*` шли раньше `src/`. Одна запись CHANGELOG — это строка
+ * длиной ~4 КБ, а `truncateToolOutput` режет вывод по СИМВОЛАМ (8 КБ). Итог:
+ * первые 8 КБ выдачи занимали две-три строки документации, а файл
+ * `src/agent/loop.ts`, ради которого шёл поиск, в вывод не попадал вообще —
+ * модель повторяла тот же запрос и упиралась в loop detection.
+ *
+ * 300 символов при бюджете 8 КБ даёт ~25 совпадений в выдаче вместо 2–3.
+ */
+export const MATCH_LINE_MAX_CHARS = 300;
+
+/** Сколько символов контекста оставить перед совпадением при сдвиге окна. */
+const MATCH_LINE_LEAD_CHARS = 100;
+
+/**
+ * Усекает одну строку-совпадение до `MATCH_LINE_MAX_CHARS` (VL-354).
+ *
+ * Маркер содержит готовый `path` для `read_file` — модель не гадает, откуда
+ * взять полный текст. Если совпадение оказалось за пределами окна (паттерн
+ * встретился в позиции 5000 длинной строки), окно сдвигается так, чтобы
+ * совпадение было видно: иначе модель получила бы «совпадение есть», но не
+ * поняла бы контекст.
+ *
+ * @param text — исходная строка файла
+ * @param pathLabel — путь для маркера (относительно корня проекта)
+ * @param lineNo — 1-based номер строки для маркера
+ * @param matchIndex — позиция совпадения в строке (-1 — неизвестна/контекст)
+ */
+export function truncateMatchLine(
+  text: string,
+  pathLabel: string,
+  lineNo: number,
+  matchIndex = -1,
+): string {
+  if (text.length <= MATCH_LINE_MAX_CHARS) return text;
+  const marker = `…[строка усечена: ${text.length} символов, читай read_file "${pathLabel}:${lineNo}"]`;
+  const head = MATCH_LINE_MAX_CHARS - MATCH_LINE_LEAD_CHARS;
+  if (matchIndex > head) {
+    const from = Math.max(0, matchIndex - MATCH_LINE_LEAD_CHARS);
+    return `…${text.slice(from, from + MATCH_LINE_MAX_CHARS)}${marker}`;
+  }
+  return `${text.slice(0, MATCH_LINE_MAX_CHARS)}${marker}`;
+}
+
+/**
+ * Префиксы путей, которые в выдаче поиска идут раньше остальных (VL-354).
+ *
+ * Эвристика: для поиска СИМВОЛОВ код важнее документации. `walkFiles`
+ * сортирует по алфавиту, и `CHANGELOG.md`/`backlog/` оказываются впереди
+ * `src/` — при усечении вывода по бюджету код выпадает. Список вынесен в
+ * константу: структура проекта может измениться, правится в одном месте.
+ */
+export const PRIORITY_PREFIXES = ['src/', 'templates/', 'scripts/', 'web/src/'];
+
+/**
+ * Индекс приоритета пути: меньше — раньше в выдаче.
+ *
+ * Префикс ищется на границе сегмента (`/src/`), а не только в начале строки:
+ * при поиске с явным `path` пути в выдаче получают его префикс
+ * (`backlog/docs/src/...`), и проверка `startsWith` не сработала бы
+ * (на этом упал первый вариант VL-354-теста).
+ */
+export function pathPriority(rel: string): number {
+  const padded = `/${rel}`;
+  const idx = PRIORITY_PREFIXES.findIndex((p) => padded.includes(`/${p}`));
+  return idx === -1 ? PRIORITY_PREFIXES.length : idx;
+}
+
+/**
+ * Переупорядочивает файлы поиска: код (`src/`, `templates/`, `scripts/`,
+ * `web/src/`) → остальное по алфавиту (VL-354). Мутирует и возвращает
+ * переданный массив — вызывающий код и так владеет им единолично.
+ */
+export function sortFilesByPriority<T extends { relOut: string }>(files: T[]): T[] {
+  return files.sort(
+    (a, b) => pathPriority(a.relOut) - pathPriority(b.relOut) || a.relOut.localeCompare(b.relOut),
+  );
+}
+
+/**
+ * Обрезает собранную выдачу поиска и, если что-то потерялось, дописывает
+ * маркер потерь (VL-354).
+ *
+ * `truncateToolOutput` сообщает только «показаны первые N из M символов» —
+ * модель не понимает, ЧТО выпало, и повторяет тот же запрос. Здесь
+ * добавляется счётчик показанных элементов и подсказка сузить запрос.
+ *
+ * @param joined — уже собранный текст выдачи (с лимитным суффиксом)
+ * @param total — сколько элементов (совпадений) собрано всего
+ * @param unit — слово для маркера («совпадений»)
+ * @param countShown — как посчитать показанные элементы в обрезанном тексте
+ */
+export function truncateWithLossMarker(
+  joined: string,
+  total: number,
+  unit: string,
+  countShown: (out: string) => number,
+): string {
+  const out = truncateToolOutput(joined);
+  if (out.length >= joined.length) return out;
+  const shown = countShown(out);
+  return `${out}\n…[показано ${shown} из ${total} ${unit}; сузь path или glob]`;
+}
+
+/** Считает строки формата `file:line: …` — совпадения в выдаче grep_search. */
+export function countGrepMatchLines(out: string): number {
+  return out.split('\n').filter((line) => /^.+:\d+:/.test(line)).length;
+}
+
+/** Считает строки-совпадения в выдаче search_files (`  N: текст`). */
+export function countSearchMatchLines(out: string): number {
+  return out.split('\n').filter((line) => /^\s+\d+:/.test(line)).length;
+}
+
+/**
  * Форматирует выдачу в стиле `grep -n`/`-C`: заголовок файла, затем строки
  * `  N: текст` (совпадение) и `  N- текст` (контекст). Результаты
  * сгруппированы по файлу, между файлами — пустая строка.
@@ -239,13 +357,15 @@ export async function searchProjectFiles(
     ];
   } else {
     const relStart = relative(cwd, start.path).split(sep).join('/');
-    files = walkFiles(start.path, WALK_LIMIT).map((rel) => ({
-      // glob матчится по пути ОТНОСИТЕЛЬНО корня поиска (как его пишет
-      // пользователь), а выдача — относительно корня проекта.
-      relRoot: rel,
-      relOut: relStart === '' ? rel : `${relStart}/${rel}`,
-      abs: join(start.path, rel),
-    }));
+    files = sortFilesByPriority(
+      walkFiles(start.path, WALK_LIMIT).map((rel) => ({
+        // glob матчится по пути ОТНОСИТЕЛЬНО корня поиска (как его пишет
+        // пользователь), а выдача — относительно корня проекта.
+        relRoot: rel,
+        relOut: relStart === '' ? rel : `${relStart}/${rel}`,
+        abs: join(start.path, rel),
+      })),
+    );
   }
 
   const globRegex = opts.glob ? miniGlobToRegex(opts.glob) : null;
@@ -293,7 +413,16 @@ export async function searchProjectFiles(
       }
     }
     for (const [idx, isMatch] of [...marks.entries()].sort((a, b) => a[0] - b[0])) {
-      hits.push({ file: file.relOut, line: idx + 1, text: lines[idx], isMatch });
+      // VL-354: каждая строка выдачи усекается отдельно — одна гигантская
+      // строка (запись CHANGELOG, абзац doc-*) не должна съедать бюджет 8 КБ.
+      const raw = lines[idx];
+      const matchIndex = isMatch ? raw.search(regex) : -1;
+      hits.push({
+        file: file.relOut,
+        line: idx + 1,
+        text: truncateMatchLine(raw, file.relOut, idx + 1, matchIndex),
+        isMatch,
+      });
     }
     if (truncated) break outer;
   }
@@ -301,5 +430,6 @@ export async function searchProjectFiles(
   if (matchCount === 0) return 'Совпадений не найдено';
   const body = formatSearchResults(hits);
   const suffix = truncated ? `\n…[достигнут лимит ${opts.limit} совпадений; сузь pattern/glob]` : '';
-  return truncateToolOutput(body + suffix);
+  // VL-354: маркер потерь — сколько совпадений реально попало в вывод.
+  return truncateWithLossMarker(body + suffix, matchCount, 'совпадений', countSearchMatchLines);
 }

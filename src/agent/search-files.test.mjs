@@ -55,8 +55,11 @@ describe('search_files: базовый поиск (VL-234)', () => {
   it('literal-паттерн, выдача сгруппирована по файлу', async () => {
     const out = await searchProjectFiles(TMP, { pattern: 'createLlmClient' });
     const lines = out.split('\n');
-    assert.equal(lines[0], 'docs/c.md', 'заголовок первого файла (сортировка путей)');
-    assert.match(lines[1], /^ {2}1: createLlmClient/);
+    // VL-354: выдача приоритезирована — src/ раньше docs/ и корня, внутри
+    // группы по алфавиту (раньше был чистый алфавит `walkFiles`).
+    assert.equal(lines[0], 'src/a.ts', 'заголовок первого файла: src/ приоритетнее docs/');
+    assert.match(lines[1], /^ {2}2: export function createLlmClient/);
+    assert.ok(lines.includes('docs/c.md'));
     assert.ok(lines.includes('src/a.ts'));
     assert.ok(lines.includes('src/sub/b.ts'));
     // node_modules/.git/dist и бинарники не попали в выдачу
@@ -170,5 +173,38 @@ describe('search_files: границы и обход (VL-234)', () => {
     assert.equal(re.test('fooXbar('), false);
     const bad = buildSearchRegex('([', { regex: true });
     assert.ok(!(bad instanceof RegExp) && /Невалидный regex/.test(bad.error));
+  });
+});
+
+describe('search_files: длинные строки и приоритет выдачи (VL-354)', () => {
+  // Та же проблема, что у grep_search: одна строка-совпадение в несколько КБ
+  // съедала общий бюджет 8 КБ, а совпадения из src/ не попадали в вывод.
+  const DIR = 'vl354';
+
+  beforeAll(() => {
+    mkdirSync(join(TMP, DIR, 'src'), { recursive: true });
+    writeFileSync(join(TMP, DIR, 'CHANGELOG.md'), `запись ${'я'.repeat(4000)} zeta\n`);
+    writeFileSync(join(TMP, DIR, 'src', 'loop.ts'), '// шапка\nexport const zeta = 1;\n');
+  });
+
+  it('строка-совпадение усекается, код из src/ остаётся в выдаче', async () => {
+    const out = await searchProjectFiles(TMP, { pattern: 'zeta', path: DIR });
+    assert.match(out, /…\[строка усечена: \d+ символов, читай read_file "vl354\/CHANGELOG\.md:1"\]/);
+    assert.ok(out.includes('src/loop.ts'), 'совпадение из src/ попало в выдачу');
+    assert.ok(!out.includes('я'.repeat(400)), 'тело 4 КБ строки не попало в вывод');
+  });
+
+  it('порядок: src/ раньше CHANGELOG.md', async () => {
+    const out = await searchProjectFiles(TMP, { pattern: 'zeta', path: DIR });
+    assert.ok(out.indexOf('src/loop.ts') < out.indexOf('CHANGELOG.md'), 'src/ раньше корня');
+  });
+
+  it('маркер обрезки сообщает, сколько совпадений не показано', async () => {
+    mkdirSync(join(TMP, DIR, 'many'), { recursive: true });
+    const lines = Array.from({ length: 40 }, (_, i) => `omega ${i} ${'м'.repeat(400)}`).join('\n');
+    writeFileSync(join(TMP, DIR, 'many', 'lines.txt'), lines + '\n');
+    const out = await searchProjectFiles(TMP, { pattern: 'omega', path: `${DIR}/many` });
+    assert.match(out, /…\[вывод обрезан/);
+    assert.match(out, /…\[показано \d+ из 40 совпадений; сузь path или glob\]/);
   });
 });

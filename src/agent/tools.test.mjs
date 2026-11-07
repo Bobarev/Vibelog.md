@@ -490,10 +490,14 @@ describe('truncateToolOutput — обрезка вывода для модели
     assert.match(out, /…\[вывод обрезан/);
   });
 
-  it('grep_search: одна огромная строка-совпадение обрезается', async () => {
+  it('grep_search: одна огромная строка-совпадение усекается поштучно (VL-354)', async () => {
     writeFileSync(join(TMP, 'grep', 'big-line.txt'), 'alpha ' + 'б'.repeat(20000), 'utf-8');
     const out = await byName.get('grep_search').handler({ pattern: 'alpha', path: 'grep' });
-    assert.match(out, /…\[вывод обрезан/);
+    // VL-354: строка режется до MATCH_LINE_MAX_CHARS, а не весь вывод —
+    // иначе одна запись съедала бюджет 8 КБ и остальные совпадения терялись.
+    assert.match(out, /…\[строка усечена: \d+ символов, читай read_file "grep\/big-line\.txt:1"\]/);
+    // Остальные совпадения каталога grep на месте — общий вывод не обрезан.
+    assert.doesNotMatch(out, /…\[вывод обрезан/);
   });
 });
 
@@ -861,5 +865,74 @@ describe('VL-249 — запрет удаления собственного ра
     // Контроль: без guard'а команда бы выполнилась (тот же вызов без cwd-ограничения).
     const safe = await byName.get('run_shell_command').handler({ command: 'rm -rf dist', cwd: 'vl249/self' });
     assert.doesNotMatch(safe, /удаление собственного рабочего каталога/);
+  });
+});
+
+describe('grep_search: длинные строки и приоритет выдачи (VL-354)', () => {
+  // Инцидент agent-1794052713009: CHANGELOG.md с записью ~4 КБ шёл в выдаче
+  // раньше src/, занимал весь бюджет 8 КБ, и файл src/agent/loop.ts в вывод
+  // не попадал — модель повторяла grep до loop detection.
+  const DIR = 'vl354';
+
+  beforeAll(() => {
+    mkdirSync(join(TMP, DIR, 'src', 'agent'), { recursive: true });
+    mkdirSync(join(TMP, DIR, 'backlog', 'docs'), { recursive: true });
+    writeFileSync(
+      join(TMP, DIR, 'CHANGELOG.md'),
+      `## [Unreleased]\n## Исправлено\n- loopDetectionDirective ${'я'.repeat(4000)}\n`,
+    );
+    writeFileSync(
+      join(TMP, DIR, 'src', 'agent', 'loop.ts'),
+      ['// шапка', 'export function loopDetectionDirective() {}', ''].join('\n'),
+    );
+    writeFileSync(
+      join(TMP, DIR, 'backlog', 'docs', 'doc-10.md'),
+      `doc: loopDetectionDirective ${'д'.repeat(2000)}\n`,
+    );
+  });
+
+  it('регресс agent-1794052713009: код из src/ попадает в выдачу при 4 КБ строке в CHANGELOG', async () => {
+    const out = await byName.get('grep_search').handler({ pattern: 'loopDetectionDirective', path: DIR });
+    assert.ok(out.includes('src/agent/loop.ts:2:'), `в выдаче есть src/agent/loop.ts:\n${out.slice(0, 500)}`);
+    assert.ok(out.length <= TOOL_OUTPUT_MAX_CHARS + 300, `длина ${out.length} в пределах бюджета + маркер`);
+    assert.ok(!out.includes('я'.repeat(400)), 'тело 4 КБ строки CHANGELOG не попало в вывод');
+  });
+
+  it('порядок: src/... раньше CHANGELOG.md и backlog/', async () => {
+    const out = await byName.get('grep_search').handler({ pattern: 'loopDetectionDirective', path: DIR });
+    const srcAt = out.indexOf('src/agent/loop.ts');
+    const changelogAt = out.indexOf('CHANGELOG.md');
+    const docAt = out.indexOf('backlog/docs/doc-10.md');
+    assert.ok(srcAt !== -1 && changelogAt !== -1 && docAt !== -1, 'все три файла в выдаче');
+    assert.ok(srcAt < changelogAt, 'src/ раньше CHANGELOG.md');
+    assert.ok(srcAt < docAt, 'src/ раньше backlog/docs');
+  });
+
+  it('строка-совпадение усекается с маркером path:N для read_file', async () => {
+    const out = await byName.get('grep_search').handler({
+      pattern: 'loopDetectionDirective',
+      path: DIR,
+      glob: 'CHANGELOG.md',
+    });
+    assert.match(out, /…\[строка усечена: \d+ символов, читай read_file "vl354\/CHANGELOG\.md:3"\]/);
+  });
+
+  it('одна строка 20 КБ усекается, остальные совпадения присутствуют', async () => {
+    mkdirSync(join(TMP, DIR, 'big'), { recursive: true });
+    writeFileSync(join(TMP, DIR, 'big', 'giant.txt'), 'alpha ' + 'б'.repeat(20_000) + '\nalpha короткая\n');
+    writeFileSync(join(TMP, DIR, 'big', 'small.txt'), 'alpha тут\n');
+    const out = await byName.get('grep_search').handler({ pattern: 'alpha', path: `${DIR}/big` });
+    assert.match(out, /…\[строка усечена: \d+ символов/);
+    assert.ok(out.includes('big/giant.txt:2:alpha короткая'), 'короткое совпадение того же файла видно');
+    assert.ok(out.includes('big/small.txt:1:alpha тут'), 'совпадение из другого файла видно');
+  });
+
+  it('маркер обрезки сообщает, сколько совпадений не показано', async () => {
+    mkdirSync(join(TMP, DIR, 'many'), { recursive: true });
+    const lines = Array.from({ length: 40 }, (_, i) => `omega ${i} ${'м'.repeat(400)}`).join('\n');
+    writeFileSync(join(TMP, DIR, 'many', 'lines.txt'), lines + '\n');
+    const out = await byName.get('grep_search').handler({ pattern: 'omega', path: `${DIR}/many` });
+    assert.match(out, /…\[вывод обрезан/);
+    assert.match(out, /…\[показано \d+ из 40 совпадений; сузь path или glob\]/);
   });
 });

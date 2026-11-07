@@ -26,7 +26,14 @@ import {
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
-import { searchProjectFiles, walkFiles } from './search-files.js';
+import {
+  countGrepMatchLines,
+  searchProjectFiles,
+  sortFilesByPriority,
+  truncateMatchLine,
+  truncateWithLossMarker,
+  walkFiles,
+} from './search-files.js';
 import type { ChatMessage } from './llm.js';
 import {
   OUTLINE_MAX_FILE_BYTES,
@@ -1450,13 +1457,15 @@ function makeGrepSearch(cwd: string): ToolSpec {
         );
       }
       const rootFiles = startIsDir
-        ? walkFiles(start.path, 10_000).map((rel) => ({
-            // glob матчится по пути ОТНОСИТЕЛЬНО корня поиска (как пишет
-            // пользователь), а вывод — относительно проекта.
-            relRoot: rel,
-            relOut: startRel === '.' ? rel : `${startRel.replace(/\/+$/, '')}/${rel}`,
-            abs: join(start.path, rel),
-          }))
+        ? sortFilesByPriority(
+            walkFiles(start.path, 10_000).map((rel) => ({
+              // glob матчится по пути ОТНОСИТЕЛЬНО корня поиска (как пишет
+              // пользователь), а вывод — относительно проекта.
+              relRoot: rel,
+              relOut: startRel === '.' ? rel : `${startRel.replace(/\/+$/, '')}/${rel}`,
+              abs: join(start.path, rel),
+            })),
+          )
         : [
             {
               relRoot: '.',
@@ -1477,12 +1486,22 @@ function makeGrepSearch(cwd: string): ToolSpec {
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           if (matches.length >= LIMIT) break;
-          if (regex.test(lines[i])) matches.push(`${file.relOut}:${i + 1}:${lines[i]}`);
+          if (!regex.test(lines[i])) continue;
+          // VL-354: строка-совпадение усекается поштучно — иначе одна запись
+          // CHANGELOG (~4 КБ) съедает весь бюджет 8 КБ и код в вывод не попадает.
+          const shown = truncateMatchLine(lines[i], file.relOut, i + 1, lines[i].search(regex));
+          matches.push(`${file.relOut}:${i + 1}:${shown}`);
         }
       }
       if (matches.length === 0) return 'Совпадений не найдено';
       const suffix = matches.length >= LIMIT ? `\n…[достигнут лимит ${LIMIT} совпадений]` : '';
-      return truncateToolOutput(matches.join('\n') + suffix);
+      // VL-354: маркер потерь — сколько совпадений реально попало в вывод.
+      return truncateWithLossMarker(
+        matches.join('\n') + suffix,
+        matches.length,
+        'совпадений',
+        countGrepMatchLines,
+      );
     },
   };
 }

@@ -207,8 +207,9 @@ export function makeSearchFilesTool(cwd: string): ChatLocalTool {
       },
       required: ['pattern'],
     },
-    handler: async (args: Record<string, unknown>): Promise<string> =>
-      truncateToolOutput(await searchProjectFiles(cwd, args)),
+    // VL-354: searchProjectFiles сам обрезает вывод и дописывает маркер потерь —
+    // повторный truncateToolOutput срезал бы этот маркер (вывод уже на границе бюджета).
+    handler: async (args: Record<string, unknown>): Promise<string> => searchProjectFiles(cwd, args),
   };
 }
 
