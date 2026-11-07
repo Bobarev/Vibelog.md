@@ -2680,39 +2680,41 @@ function toolLessonList(args: ToolArgs, cwd: string): string {
 }
 
 function toolLessonCreate(args: ToolArgs, cwd: string): string {
-  // VL-349: MCP-путь больше не создаёт урок-скелет. Раньше `lesson_create` без
-  // `content` молча подставлял LESSON_BODY_SKELETON и отвечал ackOk — модель
-  // считала урок готовым, а на `lesson_update` без `content` получала noop
-  // (сессия agent-1794045441657: 4 повтора → кап → fail). Тело — обязательный
-  // аргумент MCP-инструмента; CLI (`vibelog lesson create` без `-d`) остаётся
-  // со скелетом: там интерактивный пользователь, а не модель.
+  // VL-356: жёсткий отказ (VL-349) замыкал петлю — урок не создан, привязать
+  // нечего, модель повторяла вызов до капа (сессия agent-1794054631174: 6
+  // дословных повторов `lesson_create` без `content` → MAX_ERROR_REPEATS_PER_RUN
+  // → Close VL-355 в тупике). Теперь урок создаётся со скелетом
+  // (createLessonFile подставляет LESSON_BODY_SKELETON), а про незаполненное
+  // тело сообщают missing/hint. Контроль «склада пустышек» — finding
+  // empty_body в lesson_audit, а не блокировка создания.
   const rawContent = args.content as string | undefined;
-  if (rawContent === undefined || String(rawContent).trim() === '') {
-    return ackErrorDetailed(
-      'Урок без тела не создаётся: в вызове нет непустого `content`. ' +
-        'Передай markdown с Проблемой/Решением/Примером: ' +
-        'lesson_create {"title": "...", "content": "## Проблема\\n\\n…\\n\\n## Решение\\n\\n…\\n\\n## Пример\\n\\n…"}. ' +
-        'Файл урока не создан.',
-      {
-        missing: [{ field: 'content', reason: 'content не передан или пуст — тело урока обязательно' }],
-        hint: 'Добавь `content` с markdown (Проблема/Решение/Пример) и повтори вызов.',
-      },
-    );
-  }
+  const bodyUnfilled = rawContent === undefined || String(rawContent).trim() === '';
   const lesson = createLessonFile(cwd, {
     title: args.title as string,
     tags: (args.tags as string[] | undefined) || [],
     source_tasks: (args.sourceTasks as string[] | undefined) || [],
     content: rawContent,
   });
-  // VL-319/VL-349: JSON-ack с длиной фактического тела. `content` проверен
-  // выше (MCP без тела не создаёт урок), поэтому длина здесь — длина
-  // переданного markdown.
+  // VL-319/VL-349: JSON-ack с длиной фактического тела (после записи).
   const entry = getLesson(cwd, lesson.id);
-  return ackOk(
-    `Lesson ${lesson.id} создан: ${lesson.title} (${lesson.status})`,
-    { id: lesson.id, title: lesson.title, status: lesson.status, content: entry ? entry.body.length : 0 },
-  );
+  const applied = {
+    id: lesson.id,
+    title: lesson.title,
+    status: lesson.status,
+    content: entry ? entry.body.length : 0,
+  };
+  if (bodyUnfilled) {
+    return ackOkDetailed(
+      `Lesson ${lesson.id} создан: ${lesson.title} (${lesson.status}) — тело не заполнено (скелет)`,
+      applied,
+      [],
+      {
+        missing: [{ field: 'content', reason: 'content не передан — тело урока осталось скелетом' }],
+        hint: 'Заполни тело: lesson_update {"id": "' + lesson.id + '", "content": "## Проблема\\n\\n…\\n\\n## Решение\\n\\n…\\n\\n## Пример\\n\\n…"}.',
+      },
+    );
+  }
+  return ackOk(`Lesson ${lesson.id} создан: ${lesson.title} (${lesson.status})`, applied);
 }
 
 function toolLessonView(args: ToolArgs, cwd: string): string {

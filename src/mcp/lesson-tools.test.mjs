@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { listTools, handleToolCall } from '../../dist/mcp/tools.js';
-import { createLessonFile, getLesson } from '../../dist/core/lesson.js';
+import { createLessonFile, getLesson, LESSON_BODY_SKELETON } from '../../dist/core/lesson.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 
 const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-mcp-lesson-test-'));
@@ -93,25 +93,62 @@ describe('VL-153 — lesson_create / view / list / search / update', () => {
     await assert.rejects(handleToolCall('lesson_update', { id: 'lesson-1' }, testRoot), /Не указаны поля/);
   });
 
-  it('VL-349: create без content через MCP → ok:false, файл не создан; CLI-путь → скелет', async () => {
+  it('VL-356: create без content через MCP → ok:true со скелетом + missing/hint; файл создан', async () => {
     const before = JSON.parse(await handleToolCall('lesson_list', {}, testRoot)).length;
     const out = await handleToolCall('lesson_create', { title: 'Урок без тела' }, testRoot);
     const ack = JSON.parse(out);
-    assert.equal(ack.ok, false, `create без content — ошибка: ${out}`);
-    assert.ok(!ack.noop, 'это ошибка, а не noop — сигнатура не попадает в noopSignatures');
+    // VL-356: жёсткий отказ VL-349 замыкал петлю (урок не создан → привязать
+    // нечего → модель повторяла вызов до капа). Теперь урок создаётся со
+    // скелетом, а о незаполненном теле сообщают missing/hint.
+    assert.equal(ack.ok, true, `create без content — успех со скелетом: ${out}`);
+    assert.ok(!ack.noop, 'это не noop');
     assert.equal(ack.missing[0].field, 'content', 'missing называет content');
     assert.equal(typeof ack.hint, 'string', 'hint со следующим шагом');
-    assert.match(String(ack.error), /content/);
+    assert.match(String(ack.message), /тело не заполнено \(скелет\)/, 'message явно говорит про скелет');
+    assert.equal(typeof ack.applied.id, 'string', 'applied.id — фактический id');
+    assert.equal(ack.applied.title, 'Урок без тела', 'applied.title — фактический заголовок');
+    assert.equal(ack.applied.status, 'active', 'applied.status — фактический статус');
+    assert.ok(ack.applied.content > 0, 'applied.content — длина тела-скелета');
+
     const after = JSON.parse(await handleToolCall('lesson_list', {}, testRoot)).length;
-    assert.equal(after, before, 'файл урока не создан');
+    assert.equal(after, before + 1, 'файл урока реально создан');
+
+    // Файл на диске: тело — скелет LESSON_BODY_SKELETON
+    const entry = getLesson(testRoot, ack.applied.id);
+    assert.ok(entry, 'файл урока существует');
+    assert.equal(entry.body.trim(), LESSON_BODY_SKELETON.trim(), 'тело — дефолтный скелет');
+
+    // Тупика нет: сразу после создания без content привязка к задаче работает
+    await handleToolCall('backlog_create_task', { title: 'Задача для скелета' }, testRoot);
+    const tasks = JSON.parse(await handleToolCall('backlog_list_tasks', {}, testRoot));
+    const taskId = tasks[0].id;
+    const linked = JSON.parse(await handleToolCall('lesson_link', { lessonId: ack.applied.id, taskId }, testRoot));
+    assert.equal(linked.ok, true, `привязка на уроке-скелете проходит: ${JSON.stringify(linked)}`);
+    const linkedView = JSON.parse(await handleToolCall('lesson_view', { id: ack.applied.id }, testRoot));
+    assert.deepEqual(linkedView.linked_tasks, [taskId], 'linked_tasks записан');
+
+    // Повтор того же вызова создаёт ВТОРОЙ урок (create не идемпотентен —
+    // поведение зафиксировано, чтобы не удивляться), но не даёт серию отказов.
+    const second = JSON.parse(await handleToolCall('lesson_create', { title: 'Урок без тела' }, testRoot));
+    assert.equal(second.ok, true, `повтор тоже успех: ${JSON.stringify(second)}`);
+    assert.notEqual(second.applied.id, ack.applied.id, 'повтор создаёт второй урок (create не идемпотентен)');
 
     // CLI/ядро-путь без content по-прежнему подставляет скелет (VL-319)
     const core = createLessonFile(testRoot, { title: 'Урок из CLI' });
-    const entry = getLesson(testRoot, core.id);
-    assert.ok(entry, 'ядро создало файл');
-    assert.match(entry.body, /## Проблема/, 'скелет: раздел Проблема');
-    assert.match(entry.body, /## Решение/, 'скелет: раздел Решение');
-    assert.match(entry.body, /## Пример/, 'скелет: раздел Пример');
+    const coreEntry = getLesson(testRoot, core.id);
+    assert.ok(coreEntry, 'ядро создало файл');
+    assert.match(coreEntry.body, /## Проблема/, 'скелет: раздел Проблема');
+    assert.match(coreEntry.body, /## Решение/, 'скелет: раздел Решение');
+    assert.match(coreEntry.body, /## Пример/, 'скелет: раздел Пример');
+  });
+
+  it('VL-356: create с content → ok:true без missing (регресс не задет)', async () => {
+    const out = await handleToolCall('lesson_create', { title: 'Урок с телом', content: '## Проблема\n\nбыло\n' }, testRoot);
+    const ack = JSON.parse(out);
+    assert.equal(ack.ok, true, `create с content — успех: ${out}`);
+    assert.equal(ack.missing, undefined, 'missing нет — тело заполнено');
+    assert.equal(ack.hint, undefined, 'hint нет');
+    assert.ok(!/скелет/.test(String(ack.message)), 'message не упоминает скелет');
   });
 });
 
