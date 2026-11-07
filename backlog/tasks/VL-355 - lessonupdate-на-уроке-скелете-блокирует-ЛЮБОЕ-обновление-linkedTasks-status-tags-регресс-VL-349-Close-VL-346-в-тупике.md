@@ -1,11 +1,11 @@
 ---
 id: VL-355
 title: 'lesson_update на уроке-скелете блокирует ЛЮБОЕ обновление (linkedTasks, status, tags) — регресс VL-349, Close VL-346 в тупике'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-07 15:11'
-updated_date: '2026-11-07 15:38'
+updated_date: '2026-11-07 15:39'
 due_date: ''
 labels:
   - mcp
@@ -27,15 +27,16 @@ modified_files:
   - src/mcp/write-ack.test.mjs
   - src/mcp/write-ack-contract.test.mjs
   - src/agent/loop.test.mjs
-lessons: []
+lessons:
+  - lesson-234
 token_usage:
-  input: 6325769
-  output: 48646
-  cache: 6030848
-  total: 6374415
-  requests: 118
-  duration_ms: 1218212
-  reasoning: 26584
+  input: 6883808
+  output: 50902
+  cache: 6577152
+  total: 6934710
+  requests: 127
+  duration_ms: 1247045
+  reasoning: 27140
   by_phase:
     code:
       input: 3526252
@@ -43,10 +44,10 @@ token_usage:
       cache: 3393536
       requests: 51
     close:
-      input: 2799517
-      output: 10705
-      cache: 2637312
-      requests: 67
+      input: 3357556
+      output: 12961
+      cache: 3183616
+      requests: 76
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -103,13 +104,13 @@ VL-319 (проверка пустого тела), VL-349 (расширение 
 - [x] #5 Регресс-тест на сессию `agent-1794053090709`: `lesson_update {id:'lesson-232', linkedTasks:['VL-346'], verifiedBy:'agent'}` на уроке-скелете → `ok:true`, `linked_tasks` записан, `missing` содержит `content`; повтор того же вызова → noop (не отказ), ран не падает
 - [x] #6 Существующие кейсы VL-319/VL-349 не ломаются: вызов без `content` и без других изменений на уроке-скелете по-прежнему даёт `ok:false` с `missing: content` (не noop)
 - [x] #7 `pnpm build && pnpm test` проходят без регрессий
-- [ ] #8 Документация: doc-8 (поведение `lesson_update` на незаполненном теле: частичное применение + `missing`), doc-10 §6 (разбор инцидента `agent-1794053090709`), CHANGELOG.md
+- [x] #8 Документация: doc-8 (поведение `lesson_update` на незаполненном теле: частичное применение + `missing`), doc-10 §6 (разбор инцидента `agent-1794053090709`), CHANGELOG.md
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -228,5 +229,15 @@ author: @agent
 created: 2026-11-07 15:33
 ---
 Фаза close не удалась (код выхода 1): ет, блокировок=0, payload последнего запроса=160321 байт (макс 160321), usage={"input_tokens":622103,"output_tokens":1643,"cache_read_input_tokens":605184,"total_tokens":623746,"reasoning_tokens":446} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-07 15:39
+---
+Фаза Close выполнена. Ветка vb/vl-355 слита в master (1 коммит a89f300, merge --no-ff без конфликтов), worktree удалена (force — в ней был только untracked-симлинк backlog/references/data от оркестратора), ветка vb/vl-355 удалена.
+**Проверки после merge:** `pnpm build` — ок; ранний точечный прогон затронутых diff'ом файлов (`src/mcp/write-ack.test.mjs`, `src/mcp/write-ack-contract.test.mjs`, `src/agent/loop.test.mjs`) — 178 passed; полный `pnpm test` — 184 файла, 3494 passed, 4 skipped, exit 0 (один прогон, повторов не было).
+**Документация (AC8, DoD2):** коммит a02ef30 — `backlog/docs/doc-8` (поведение `lesson_update` на незаполненном теле: четыре случая, частичное применение + `missing`/`hint`, разбор регресса VL-349), `backlog/docs/doc-10` §6 (новый буллет VL-355 с разбором инцидента `agent-1794053090709`), `CHANGELOG.md` → `## [Unreleased]` / «Исправлено».
+**Lessons:** создан lesson-234 «Валидация одного поля не должна блокировать применение остальных — предупреждай через missing/hint, а не отказом» (с телом), связан с VL-355; коммит 7a10565.
+**DoD:** 1 «Тесты проходят» — выполнен (полный прогон зелёный); 2 «Документация обновлена» — выполнен (a02ef30); 3 «Нет регрессий» — выполнен. Все три отмечены.
+**Замечание по процессу:** в этой сессии модель дважды уходила в дословные повторы (`lesson_create` без `content` и `git_commit` без `allowForeign`) — ровно тот класс, который чинит сама задача; вызовы прошли только после явной передачи недостающего аргумента.
 ---
 <!-- COMMENTS:END -->
