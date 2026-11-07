@@ -1,0 +1,81 @@
+{
+  "taskId": "VL-353",
+  "sessions": [
+    {
+      "sessionId": "agent-1794052713009",
+      "phase": "code",
+      "startedAt": "2026-11-07T11:58:32.817Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T11:58:57.447Z",
+      "durationMs": 20805,
+      "usage": {
+        "input": 495510,
+        "output": 917,
+        "cache": 462336,
+        "total": 496427,
+        "requests": 11,
+        "reasoning": 193
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794052713009",
+      "phase": "code",
+      "startedAt": "2026-11-07T11:58:32.817Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T11:58:57.490Z",
+      "durationMs": 20805,
+      "usage": {
+        "input": 495510,
+        "output": 917,
+        "cache": 462336,
+        "total": 496427,
+        "requests": 11,
+        "reasoning": 193
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794052713009",
+      "phase": "code",
+      "startedAt": "2026-11-07T12:07:48.628Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T12:14:02.684Z",
+      "durationMs": 370263,
+      "usage": {
+        "input": 4374066,
+        "output": 23072,
+        "cache": 4299264,
+        "total": 4397138,
+        "requests": 47,
+        "reasoning": 11272
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "web"
+    },
+    {
+      "sessionId": "agent-1794053680338",
+      "phase": "close",
+      "startedAt": "2026-11-07T12:14:40.238Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-07T12:17:38.431Z",
+      "durationMs": 174707,
+      "usage": {
+        "input": 676214,
+        "output": 2096,
+        "cache": 656384,
+        "total": 678310,
+        "requests": 18,
+        "reasoning": 717
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    }
+  ]
+}
