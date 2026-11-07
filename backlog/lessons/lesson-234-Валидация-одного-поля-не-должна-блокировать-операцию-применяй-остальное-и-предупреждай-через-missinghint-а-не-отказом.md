@@ -1,21 +1,24 @@
 ---
 id: lesson-234
-title: 'Валидация одного поля не должна блокировать применение остальных — предупреждай через missing/hint, а не отказом'
+title: 'Валидация одного поля не должна блокировать операцию — применяй остальное и предупреждай через missing/hint, а не отказом'
 status: active
 tags:
   - mcp
   - lessons
   - ack
   - loop-detection
+  - create
 source_tasks:
   - VL-355
+  - VL-356
 linked_tasks:
   - VL-355
+  - VL-356
 created_date: 2026-11-07
 updated_date: 2026-11-07
 supersedes: ''
 last_verified: ''
-verified_by: ''
+verified_by: agent
 applies_to: []
 kind:
 ---
