@@ -85,6 +85,11 @@ export async function runDoctor(
   // 10. Git-политика `.vibelog/` (VL-340, ROADMAP «Переносимый .vibelog/»)
   checks.push(...checkGitPolicy(cwd));
 
+  // 10.5. Незакоммиченные billing/settings (VL-352): billing уходит в коммит
+  // файла задачи только в фазе close — задача, не дошедшая до close, оставляет
+  // его грязным; settings.json правится вручную по определению.
+  checks.push(...checkVibelogDirty(cwd));
+
   // 11. Целостность ссылок задач (VL-342): не блокирующая проверка —
   // битые ссылки в легаси-задачах не должны делать doctor красным.
   checks.push(checkTaskIntegrityReport(cwd));
@@ -514,6 +519,84 @@ function checkGitPolicy(cwd: string): CheckResult[] {
   }
 
   return results;
+}
+
+/**
+ * Проверки 15–16: незакоммиченные `.vibelog/billing/` и `.vibelog/settings.json`
+ * (VL-352).
+ *
+ * Billing коммитится вместе с файлом задачи, но только в фазе close: задача,
+ * не дошедшая до close (отменена, брошена), оставляет файл грязным навсегда —
+ * без напоминания это возвращает исходную жалобу «рабочее дерево вечно
+ * грязное». settings.json правится вручную (тарифы/модели — осознанное
+ * действие), поэтому doctor только предупреждает.
+ *
+ * Обе проверки предупреждающие (в `requiredNames` не входят) и вне
+ * git-репозитория дают `ok: true` — как остальные проверки git-политики.
+ *
+ * @param cwd — каталог проекта
+ */
+function checkVibelogDirty(cwd: string): CheckResult[] {
+  const results: CheckResult[] = [];
+  if (!isGitRepo(cwd)) {
+    return [
+      { name: 'vibelog_billing_clean', ok: true, value: 'не git-репозиторий' },
+      { name: 'vibelog_settings_clean', ok: true, value: 'не git-репозиторий' },
+    ];
+  }
+
+  // 1. billing: грязный каталог = задача не дошла до close
+  const billingDirty = gitStatusPorcelain(cwd, '.vibelog/billing/');
+  if (billingDirty === null) {
+    results.push({ name: 'vibelog_billing_clean', ok: true, value: 'git не дал ответа' });
+  } else {
+    const files = billingDirty
+      .split('\n')
+      .map((line) => line.slice(3).trim())
+      .filter(Boolean);
+    const ok = files.length === 0;
+    results.push({
+      name: 'vibelog_billing_clean',
+      ok,
+      value: ok ? 'чисто' : files.slice(0, 5),
+      expected: 'чисто',
+      hint: ok
+        ? undefined
+        : 'Billing не закоммичен: задача не дошла до close — billing закоммитится вместе с файлом задачи. ' +
+          'Закоммитить сейчас: git add .vibelog/billing && git commit -m "chore(billing): …"',
+    });
+  }
+
+  // 2. settings.json: правки тарифов/моделей коммитятся вручную
+  const settingsDirty = gitStatusPorcelain(cwd, '.vibelog/settings.json');
+  if (settingsDirty === null) {
+    results.push({ name: 'vibelog_settings_clean', ok: true, value: 'git не дал ответа' });
+  } else {
+    const ok = settingsDirty === '';
+    results.push({
+      name: 'vibelog_settings_clean',
+      ok,
+      value: ok ? 'чисто' : 'изменён',
+      expected: 'чисто',
+      hint: ok
+        ? undefined
+        : 'settings.json изменён — правки тарифов/моделей коммитятся вручную (git add .vibelog/settings.json).',
+    });
+  }
+
+  return results;
+}
+
+/**
+ * `git status --porcelain` по явному пути (VL-352).
+ *
+ * @returns вывод git (пустая строка — чисто) либо null, если git не ответил
+ *          (не репозиторий, git недоступен)
+ */
+function gitStatusPorcelain(cwd: string, path: string): string | null {
+  const res = spawnSync('git', ['status', '--porcelain', '--', path], { cwd, encoding: 'utf-8' });
+  if (res.error || res.status !== 0) return null;
+  return String(res.stdout ?? '').trim();
 }
 
 /**

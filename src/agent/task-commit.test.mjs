@@ -196,4 +196,96 @@ describe('VL-277 — автокоммит файла задачи после clo
     const body = git(root, 'log', '-1', '--pretty=%B');
     assert.equal(body.split('Co-authored-by:').length - 1, 1, 'трейлер ровно один раз');
   });
+
+  // ── VL-352: billing уходит тем же коммитом, что и файл задачи ──
+  /** Путь billing-файла задачи в фикстуре. */
+  const billingRel = '.vibelog/billing/VL-500.json';
+
+  /** Создаёт billing-файл задачи (имитация appendBilling). */
+  function writeBilling() {
+    mkdirSync(join(root, '.vibelog', 'billing'), { recursive: true });
+    writeFileSync(join(root, billingRel), '{"taskId":"VL-500","sessions":[]}\n', 'utf-8');
+    return join(root, billingRel);
+  }
+
+  /** Список путей последнего коммита (без квотирования кириллицы). */
+  function headFiles() {
+    return git(root, '-c', 'core.quotePath=false', 'show', '--name-only', '--pretty=format:', 'HEAD')
+      .split('\n')
+      .filter(Boolean)
+      .sort();
+  }
+
+  it('billing + файл задачи → ОДИН коммит с обоими путями (AC1, AC2)', () => {
+    addTaskTokenUsage(root, 'VL-500', 'close', { input: 10, output: 5, total: 15, requests: 1 }, 1000);
+    const billingAbs = writeBilling();
+    const before = commitCount(root);
+
+    const hash = commitTaskFile(root, 'VL-500', 'close', [billingAbs]);
+
+    assert.ok(hash, 'коммит создан');
+    assert.equal(commitCount(root), before + 1, 'ровно один коммит (не два)');
+    assert.deepEqual(headFiles(), [billingRel, relPath].sort(), 'в коммите файл задачи и billing');
+    assert.equal(git(root, 'status', '--porcelain', '--', '.vibelog/billing/'), '', 'billing чист');
+    assert.equal(git(root, 'status', '--porcelain', '--', taskPath), '', 'файл задачи чист');
+  });
+
+  it('несуществующий billing-путь в extraPaths не ломает коммит (AC2)', () => {
+    addTaskTokenUsage(root, 'VL-500', 'close', { input: 1, output: 1, total: 2, requests: 1 }, 100);
+    const before = commitCount(root);
+    const hash = commitTaskFile(root, 'VL-500', 'close', [join(root, '.vibelog', 'billing', 'VL-500.json')]);
+    assert.ok(hash, 'коммит по файлу задачи прошёл');
+    assert.equal(commitCount(root), before + 1);
+    assert.deepEqual(headFiles(), [relPath], 'в коммите только файл задачи');
+  });
+
+  it('amend своего docs(task)-коммита включает billing (AC1)', () => {
+    writeFileSync(taskPath, `${readFileSync(taskPath, 'utf-8')}\nКомментарий фазы.\n`, 'utf-8');
+    git(root, 'add', '--', relPath);
+    git(root, 'commit', '-q', '-m', 'docs(task): VL-500 — закрытие задачи (Done)');
+    const before = commitCount(root);
+
+    addTaskTokenUsage(root, 'VL-500', 'close', { input: 7, output: 3, total: 10, requests: 1 }, 500);
+    const billingAbs = writeBilling();
+    const hash = commitTaskFile(root, 'VL-500', 'close', [billingAbs]);
+
+    assert.ok(hash);
+    assert.equal(commitCount(root), before, 'amend не добавляет коммит');
+    assert.equal(git(root, 'log', '-1', '--pretty=%s'), 'docs(task): VL-500 — закрытие задачи (Done)');
+    assert.deepEqual(headFiles(), [billingRel, relPath].sort(), 'billing попал в amend-коммит');
+  });
+
+  it('чужой HEAD → новый коммит с обоими путями (AC1)', () => {
+    writeFileSync(join(root, 'README.md'), 'feat', 'utf-8');
+    git(root, 'add', 'README.md');
+    git(root, 'commit', '-q', '-m', 'feat: чужая правка');
+    const before = commitCount(root);
+
+    addTaskTokenUsage(root, 'VL-500', 'close', { input: 1, output: 2, total: 3, requests: 1 }, 100);
+    const billingAbs = writeBilling();
+    const hash = commitTaskFile(root, 'VL-500', 'close', [billingAbs]);
+
+    assert.ok(hash);
+    assert.equal(commitCount(root), before + 1, 'создан новый коммит');
+    assert.equal(git(root, 'log', '-1', '--pretty=%s'), 'docs(task): VL-500 — token_usage (close)');
+    assert.deepEqual(headFiles(), [billingRel, relPath].sort(), 'в новом коммите оба пути');
+  });
+
+  it('только billing грязный (файл задачи чист) → коммит создаётся (AC2)', () => {
+    const billingAbs = writeBilling();
+    const before = commitCount(root);
+    const hash = commitTaskFile(root, 'VL-500', 'close', [billingAbs]);
+    assert.ok(hash, 'грязь по extraPaths тоже триггерит коммит');
+    assert.equal(commitCount(root), before + 1);
+    assert.deepEqual(headFiles(), [billingRel], 'в коммите только billing');
+  });
+
+  it('чистые файл задачи и billing → null, коммитов не добавилось', () => {
+    const billingAbs = writeBilling();
+    git(root, 'add', '--', billingRel);
+    git(root, 'commit', '-q', '-m', 'chore(billing): init');
+    const before = commitCount(root);
+    assert.equal(commitTaskFile(root, 'VL-500', 'close', [billingAbs]), null);
+    assert.equal(commitCount(root), before);
+  });
 });

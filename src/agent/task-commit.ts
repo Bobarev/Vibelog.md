@@ -16,8 +16,9 @@
  *
  * Границы (риски R1–R4 плана):
  * - коммитится ТОЛЬКО явный путь файла задачи в главном репозитории
- *   (`taskCwd` = VIBELOG_CWD в branch-mode): `backlog/references/data/` и
- *   любые иные файлы не трогаются, `git add -A` не используется;
+ *   (`taskCwd` = VIBELOG_CWD в branch-mode) плюс переданные `extraPaths`
+ *   (VL-352: billing-файл задачи): `backlog/references/data/` и любые иные
+ *   файлы не трогаются, `git add -A` не используется;
  * - гейт по фазе: `TASK_COMMIT_PHASES` (сейчас только close) — иначе
  *   framework начал бы коммитить backlog во всех фазах;
  * - любая git-ошибка глушится в stderr и не меняет exit-код и статус уже
@@ -26,7 +27,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { findBacklogDir, tasksDir, completedDir } from '../core/paths.js';
 import { appendCommitTrailer, commitMessageArgs, resolveCommitCoauthor } from '../core/commit-trailer.js';
 
@@ -100,22 +101,43 @@ function isHeadPushed(cwd: string): boolean {
  * Порядок: грязь по явному пути → `git add -- <путь>` → `--amend`, если HEAD
  * это docs(task)-коммит этой задачи и он не запушен, иначе новый коммит.
  *
+ * VL-352: `extraPaths` — дополнительные файлы, которые должны уехать ТЕМ ЖЕ
+ * коммитом (сейчас это `.vibelog/billing/<TASK>.json`). Отдельный
+ * `chore(billing)`-коммит на каждый ран давал бы коммит-шум, поэтому billing
+ * копится до close и уходит вместе с файлом задачи, где появился token_usage.
+ * Несуществующие пути отбрасываются: `appendBilling` мог упасть, а `git add`
+ * на отсутствующем пути вернул бы ошибку и отменил весь коммит.
+ *
  * @param cwd — главный репозиторий, где живут файлы задач (VIBELOG_CWD)
  * @param taskId — ID задачи
  * @param phase — фаза рана (попадает в тему нового коммита)
+ * @param extraPaths — дополнительные пути (абсолютные или относительно cwd)
  * @returns short-hash созданного/изменённого коммита либо null
  *          (нечего коммитить / файл не найден / ошибка git)
  */
-export function commitTaskFile(cwd: string, taskId: string, phase: string): string | null {
+export function commitTaskFile(
+  cwd: string,
+  taskId: string,
+  phase: string,
+  extraPaths: string[] = [],
+): string | null {
   try {
     const taskPath = resolveTaskPath(cwd, taskId);
     if (!taskPath) return null;
-    // Явный путь, не весь backlog: чужие/генерируемые файлы (references/data/)
-    // в коммит попасть не должны.
-    const dirty = git(cwd, ['status', '--porcelain', '--', taskPath]);
+    // Явные пути, не весь backlog: чужие/генерируемые файлы (references/data/)
+    // в коммит попасть не должны. billingPath() отдаёт абсолютный путь —
+    // join(cwd, absolute) склеил бы его неверно, поэтому абсолютные берём как есть.
+    const paths = [taskPath];
+    for (const extra of extraPaths) {
+      const abs = isAbsolute(extra) ? extra : join(cwd, extra);
+      if (existsSync(abs)) paths.push(abs);
+    }
+    // Грязь проверяем по ВСЕМ путям: billing мог измениться, когда файл задачи
+    // уже чист (например, повторный вызов после fallback-учёта).
+    const dirty = git(cwd, ['status', '--porcelain', '--', ...paths]);
     if (dirty === '') return null;
 
-    git(cwd, ['add', '--', taskPath]);
+    git(cwd, ['add', '--', ...paths]);
 
     const subject = git(cwd, ['log', '-1', '--pretty=%s']);
     // Предикат темы (риск R2): амендить можно ТОЛЬКО коммит закрытия этой

@@ -1288,6 +1288,47 @@ describe('vibelog-agent CLI (VL-85)', () => {
     }
   });
 
+  it('пост-ран close коммитит billing тем же коммитом, что и файл задачи (VL-352, AC1/AC3)', async () => {
+    const { dir, taskFile } = makeGitProject('vibelog-agent-commitbilling-', 'VL-99', 'Задача billing в коммите');
+    try {
+      const env = { ...llmEnv(), VIBELOG_PHASE_TASK_ID: 'VL-99', VIBELOG_PHASE_NAME: 'close' };
+      const { code, stdout } = await runCli(['Просто запрос', '--no-mcp'], env, dir);
+      assert.equal(code, 0, stdout);
+      const billingRel = '.vibelog/billing/VL-99.json';
+      // billing записан раном и закоммичен — грязного остатка нет
+      assert.equal(existsSync(join(dir, billingRel)), true, 'billing-файл создан раном');
+      assert.equal(porcelain(dir, '.vibelog/billing/'), '', 'billing закоммичен (AC1)');
+      assert.equal(porcelain(dir, taskFile), '', 'файл задачи закоммичен');
+      // ОДИН коммит содержит оба пути — отдельного chore(billing) нет
+      const files = execFileSync(
+        '/usr/bin/git',
+        ['-c', 'core.quotePath=false', 'show', '--name-only', '--pretty=format:', 'HEAD'],
+        { cwd: dir, encoding: 'utf8' },
+      )
+        .split('\n')
+        .filter(Boolean)
+        .sort();
+      assert.deepEqual(files, [billingRel, taskFile].sort(), 'в последнем коммите файл задачи и billing');
+      const subjects = execFileSync('/usr/bin/git', ['log', '--pretty=%s'], { cwd: dir, encoding: 'utf8' });
+      assert.doesNotMatch(subjects, /chore\(billing\)/, 'отдельного billing-коммита нет (AC1)');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('пост-ран code billing НЕ коммитит — копится до close (VL-352, AC5)', async () => {
+    const { dir } = makeGitProject('vibelog-agent-billingcode-', 'VL-96', 'Задача billing вне close');
+    try {
+      const env = { ...llmEnv(), VIBELOG_PHASE_TASK_ID: 'VL-96', VIBELOG_PHASE_NAME: 'code' };
+      const { code, stdout } = await runCli(['Просто запрос', '--no-mcp'], env, dir);
+      assert.equal(code, 0, stdout);
+      assert.equal(existsSync(join(dir, '.vibelog', 'billing', 'VL-96.json')), true, 'billing записан');
+      assert.notEqual(porcelain(dir, '.vibelog/billing/'), '', 'вне close billing остаётся грязным (копится)');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('пост-ран code файл задачи НЕ коммитит (VL-277, AC7)', async () => {
     const { dir, taskFile } = makeGitProject('vibelog-agent-commitcode-', 'VL-98', 'Задача без автокоммита');
     try {

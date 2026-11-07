@@ -323,3 +323,76 @@ describe('Диагностика — git-политика .vibelog/ (VL-340)', (
     assert.equal(check.ok, false, 'корневой .gitignore не должен игнорировать .vibelog/');
   });
 });
+
+describe('Диагностика — незакоммиченные billing/settings (VL-352)', () => {
+  const dirs = [];
+
+  /** Фикстура: git-репозиторий с политикой `.vibelog/.gitignore` (VL-329). */
+  function makeFixture() {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-doctor-dirty-'));
+    dirs.push(dir);
+    mkdirSync(join(dir, '.vibelog'), { recursive: true });
+    writeFileSync(
+      join(dir, '.vibelog', '.gitignore'),
+      '*\n!*/\n!.gitignore\n!settings.json\n!billing/\n!billing/**\n',
+    );
+    execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir, stdio: 'ignore' });
+    return dir;
+  }
+
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('грязный .vibelog/billing/ → предупреждение с подсказкой', () => {
+    const dir = makeFixture();
+    mkdirSync(join(dir, '.vibelog', 'billing'), { recursive: true });
+    writeFileSync(join(dir, '.vibelog', 'billing', 'VL-1.json'), '{"taskId":"VL-1","sessions":[]}\n', 'utf-8');
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    const check = json.checks.find(c => c.name === 'vibelog_billing_clean');
+    assert.ok(check, 'проверка vibelog_billing_clean присутствует');
+    assert.equal(check.ok, false, 'грязный billing — не ok');
+    assert.ok(Array.isArray(check.value), 'перечень файлов');
+    assert.ok(check.value.some(f => f.includes('VL-1.json')), 'файл billing в перечне');
+    assert.match(check.hint, /git add \.vibelog\/billing/, 'подсказка закоммитить вручную');
+  });
+
+  it('грязный settings.json → предупреждение', () => {
+    const dir = makeFixture();
+    writeFileSync(join(dir, '.vibelog', 'settings.json'), '{"commit_coauthor":false}\n', 'utf-8');
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    const check = json.checks.find(c => c.name === 'vibelog_settings_clean');
+    assert.ok(check, 'проверка vibelog_settings_clean присутствует');
+    assert.equal(check.ok, false, 'изменённый settings.json — не ok');
+    assert.match(check.hint, /вручную/, 'подсказка про ручной коммит');
+  });
+
+  it('чистое дерево → обе проверки ok', () => {
+    const dir = makeFixture();
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    for (const name of ['vibelog_billing_clean', 'vibelog_settings_clean']) {
+      const check = json.checks.find(c => c.name === name);
+      assert.ok(check, `проверка ${name} присутствует`);
+      assert.equal(check.ok, true, `${name} ok на чистом дереве`);
+    }
+  });
+
+  it('вне git-репозитория проверки не падают', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-doctor-dirty-nogit-'));
+    dirs.push(dir);
+    mkdirSync(join(dir, '.vibelog', 'billing'), { recursive: true });
+    writeFileSync(join(dir, '.vibelog', 'billing', 'VL-1.json'), '{}\n', 'utf-8');
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    for (const name of ['vibelog_billing_clean', 'vibelog_settings_clean']) {
+      const check = json.checks.find(c => c.name === name);
+      assert.equal(check.ok, true, `${name} не падает вне git`);
+      assert.equal(check.value, 'не git-репозиторий');
+    }
+  });
+});

@@ -43,7 +43,7 @@ import { markPhaseStarted, finalizePhaseStatus, readPhaseTransient } from '../co
 import { agentSessionsDir, analyzeToolRepeatsFromJsonlSync, appendSessionRun, findTaskPhaseSessionSync, listTaskSessionMetas, loadSessionMetaSync, saveSessionMeta, updateSessionMeta } from '../agent/session.js';
 import { hasUsageDelta, usageDelta } from '../core/analytics.js';
 import type { TokenUsage } from '../core/analytics.js';
-import { appendBilling } from '../core/billing.js';
+import { appendBilling, billingPath } from '../core/billing.js';
 import type { BillingSource } from '../core/billing.js';
 import { RUN_SOURCE_ENV } from '../core/billing.js';
 // VL-276: живость процесса фазы — reap залипших локов (см. reapStaleRuns);
@@ -1365,7 +1365,9 @@ function spawnQwenRun(
             // без worktree). Гейт по фазе + внутренний try/catch хелпера:
             // git не может отменить уже записанный учёт (риск R4).
             if (isTaskCommitPhase(byPhaseKey)) {
-              commitTaskFile(cwd, phaseTaskId, byPhaseKey);
+              // VL-352: billing-файл задачи уходит тем же коммитом, что и файл
+              // задачи с token_usage (appendBilling выше уже записал его).
+              commitTaskFile(cwd, phaseTaskId, byPhaseKey, [billingPath(cwd, phaseTaskId)]);
             }
           })
           .catch((err) => {
@@ -1434,6 +1436,17 @@ function spawnQwenRun(
             console.log(
               `[phase ${key}] ${ts()} billing дописан оркестратором (fallback: CLI-пост-ран не записал)`
             );
+            // VL-352: fallback-запись billing тоже должна уехать в коммит —
+            // иначе billing остаётся грязным (CLI-пост-ран не дошёл до коммита).
+            // Идемпотентно: грязно → закоммитит, чисто → null. Ошибка глушится
+            // здесь же, чтобы не всплывать в .catch учёта токенов.
+            if (isTaskCommitPhase(vbRunPhase)) {
+              try {
+                commitTaskFile(cwd, phaseTaskId, vbRunPhase, [billingPath(cwd, phaseTaskId)]);
+              } catch (err) {
+                console.log(`[phase ${key}] ${ts()} коммит billing не выполнен: ${(err as Error).message}`);
+              }
+            }
           })
           .catch((err) => {
             console.log(`[phase ${key}] ${ts()} fallback-учёт не записан: ${(err as Error).message}`);
