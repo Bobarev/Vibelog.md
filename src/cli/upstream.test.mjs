@@ -55,10 +55,12 @@ function makeProject(settings, env) {
  */
 function runCli(cwd, ...args) {
   return new Promise((resolve) => {
-    const child = spawn('node', [cliPath, ...args], {
-      cwd,
-      env: testSpawnEnv({ VIBELOG_GITVERSE_API_BASE: `http://127.0.0.1:${port}` }),
-    });
+    const env = testSpawnEnv({ VIBELOG_GITVERSE_API_BASE: `http://127.0.0.1:${port}` });
+    // GITVERSE_TOKEN из окружения агентской сессии ломает тест «нет токена»:
+    // CLI читает shell env раньше .env, и вместо кода 4 приходит 3. Тест
+    // должен видеть только тот токен, который сам положил в .env (VL-367).
+    delete env.GITVERSE_TOKEN;
+    const child = spawn('node', [cliPath, ...args], { cwd, env });
     let out = '';
     child.stdout.on('data', (chunk) => { out += chunk; });
     child.stderr.on('data', (chunk) => { out += chunk; });

@@ -787,13 +787,14 @@ export async function createIssue(
 /**
  * Список меток репозитория (AC1).
  *
- * Пагинация не разворачивается: меток в репозитории единицы, а `per_page=100`
- * покрывает реальный случай. Если когда-нибудь понадобится — `listIssues`
- * показывает приём работы с `Link`.
+ * Пагинация не разворачивается: меток в репозитории единицы, а `limit=100`
+ * покрывает реальный случай. ВАЖНО: у `/labels` параметр называется `limit`,
+ * а не `per_page` (у `/issues` — наоборот, см. `listIssues`). GitVerse
+ * отвечает 400 VALIDATION_ERROR на неизвестный query-параметр (VL-367).
  */
 export async function listLabels(cfg: UpstreamConfig, opts: RequestOptions = {}): Promise<string[]> {
-  const url = buildUrl(cfg.apiBase, labelsPath(cfg), { per_page: 100 });
-  const result = await request(cfg, 'GET', labelsPath(cfg), { query: { per_page: 100 }, ...opts });
+  const url = buildUrl(cfg.apiBase, labelsPath(cfg), { limit: 100 });
+  const result = await request(cfg, 'GET', labelsPath(cfg), { query: { limit: 100 }, ...opts });
   const parsed = parseJson(result.text, url, cfg.token);
   if (!Array.isArray(parsed)) {
     throw new GitverseError(
@@ -869,6 +870,9 @@ export function parseNextLink(linkHeader: string | null | undefined): string | u
  *
  * Пагинация — по заголовку `Link` (документация рекомендует ходить по URL из
  * него, а не собирать параметры вручную).
+ *
+ * ВНИМАНИЕ: здесь `per_page` (как в документации `/issues`), а в `listLabels` —
+ * `limit`. Параметры у эндпоинтов разные, перепутать легко (VL-367).
  */
 export async function listIssues(
   cfg: UpstreamConfig,

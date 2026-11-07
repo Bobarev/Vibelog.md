@@ -99,6 +99,9 @@ beforeEach(async () => {
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
       bodies.push(Buffer.concat(chunks).toString('utf8'));
+      // Фикстура ведёт себя как реальный GitVerse: неизвестный query-параметр
+      // к /labels или /issues → 400 VALIDATION_ERROR (VL-367).
+      if (rejectUnknownQuery(req, res)) return;
       handler(req, res);
     });
   });
@@ -148,6 +151,47 @@ function json(status, payload, headers = {}) {
     res.writeHead(status, { 'content-type': 'application/json', ...headers });
     res.end(JSON.stringify(payload));
   };
+}
+
+/**
+ * Допустимые query-параметры по эндпоинту — как в реальном GitVerse (ref-27).
+ *
+ * У `/labels` параметр называется `limit`, у `/issues` — `per_page`; на
+ * неизвестный параметр GitVerse отвечает 400 VALIDATION_ERROR (VL-367).
+ * Список НЕ расширять «чтобы тест прошёл»: расхождение — это баг клиента.
+ */
+const ALLOWED_QUERY = {
+  labels: ['page', 'limit', 'sort'],
+  issues: [
+    'state', 'q', 'labels', 'milestones', 'created_by', 'assigned_by',
+    'mentioned_by', 'type', 'sort', 'direction', 'since', 'before',
+    'per_page', 'page',
+  ],
+};
+
+/**
+ * Отвечает 400 VALIDATION_ERROR, если query-параметр не из белого списка.
+ * Возвращает true, если ответ уже отправлен (handler вызывать не нужно).
+ */
+function rejectUnknownQuery(req, res) {
+  const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+  const kind = url.pathname.endsWith('/labels')
+    ? 'labels'
+    : url.pathname.endsWith('/issues')
+      ? 'issues'
+      : null;
+  if (kind === null) return false;
+  const allowed = ALLOWED_QUERY[kind];
+  for (const key of url.searchParams.keys()) {
+    if (!allowed.includes(key)) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        error: { code: 'VALIDATION_ERROR', message: 'Invalid request', status: 400 },
+      }));
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Опции запроса для фикстуры. */
@@ -231,6 +275,23 @@ describe('VL-363 — метки', () => {
   it('listLabels возвращает имена', async () => {
     handler = json(200, [{ name: 'upstream' }, { name: 'from-ui' }]);
     assert.deepEqual(await listLabels(cfg(), opts()), ['upstream', 'from-ui']);
+  });
+
+  it('listLabels шлёт limit, а не per_page (VL-367)', async () => {
+    handler = json(200, [{ name: 'upstream' }]);
+    await listLabels(cfg(), opts());
+    assert.match(paths[0], /[?&]limit=100/);
+    assert.doesNotMatch(paths[0], /per_page/);
+  });
+
+  it('фикстура отвергает per_page у /labels как реальный GitVerse (VL-367)', async () => {
+    // Проверяем сам контракт фикстуры: ручной запрос с per_page → 400.
+    const res = await fetch(`${base()}/repos/bobarev/Vibelog.md/labels?per_page=100`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    assert.equal(res.status, 400);
+    const payload = await res.json();
+    assert.equal(payload.error.code, 'VALIDATION_ERROR');
   });
 
   it('ensureLabels создаёт отсутствующую метку', async () => {
@@ -518,6 +579,13 @@ describe('VL-363 — listIssues', () => {
     const result = await listIssues(cfg(), {}, opts());
     assert.equal(result.hasMore, false);
     assert.equal(result.nextUrl, undefined);
+  });
+
+  it('listIssues шлёт per_page, а не limit (VL-367)', async () => {
+    handler = json(200, []);
+    await listIssues(cfg(), { perPage: 50 }, opts());
+    assert.match(paths[0], /[?&]per_page=50/);
+    assert.doesNotMatch(paths[0], /[?&]limit=/);
   });
 
   it('parseNextLink разбирает rel="next"', () => {
