@@ -79,6 +79,11 @@ function TabsTrigger({
         "relative inline-flex h-[calc(100%-1px)] items-center justify-center gap-1.5 rounded-md border border-transparent px-1.5 py-0.5 text-sm font-medium whitespace-nowrap text-foreground/60 transition-all group-data-vertical/tabs:w-full group-data-vertical/tabs:justify-start hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50 has-data-[icon=inline-end]:pr-1 has-data-[icon=inline-start]:pl-1 dark:text-muted-foreground dark:hover:text-foreground group-data-[variant=default]/tabs-list:data-active:shadow-sm group-data-[variant=line]/tabs-list:data-active:shadow-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         "group-data-[variant=line]/tabs-list:bg-transparent group-data-[variant=line]/tabs-list:data-active:bg-transparent dark:group-data-[variant=line]/tabs-list:data-active:border-transparent dark:group-data-[variant=line]/tabs-list:data-active:bg-transparent",
         "data-active:bg-background data-active:text-foreground dark:data-active:border-input dark:data-active:bg-input/30 dark:data-active:text-foreground",
+        // Подчёркивание активной вкладки для variant="line" (VL-346): в ref-2
+        // индикатор — псевдоэлемент after, который появляется только у
+        // активного триггера; без этих классов variant="line" был объявлен,
+        // но визуально ничем не отличался от обычного текста.
+        "after:absolute after:bg-foreground after:opacity-0 after:transition-opacity group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-[-5px] group-data-horizontal/tabs:after:h-0.5 group-data-vertical/tabs:after:inset-y-0 group-data-vertical/tabs:after:-right-1 group-data-vertical/tabs:after:w-0.5 group-data-[variant=line]/tabs-list:data-active:after:opacity-100",
         className
       )}
       {...props}
@@ -93,7 +98,10 @@ function TabsContent({
   return (
     <TabsPrimitive.Content
       data-slot="tabs-content"
-      // Наш класс (не ref-2): скролл-контейнер вкладок модалки task-view
+      // Наш класс (не ref-2): скролл-контейнер вкладок модалки task-view — при
+// VL-346 он остаётся ЕДИНСТВЕННОЙ точкой вертикального скролла контента
+// вкладки (диалог задачи сам не скроллится: flex-колонка фиксированной
+// высоты, см. dialog.tsx/task-modal.tsx).
       className={cn("min-h-0 flex-1 overflow-y-auto outline-none", className)}
       {...props}
     />
