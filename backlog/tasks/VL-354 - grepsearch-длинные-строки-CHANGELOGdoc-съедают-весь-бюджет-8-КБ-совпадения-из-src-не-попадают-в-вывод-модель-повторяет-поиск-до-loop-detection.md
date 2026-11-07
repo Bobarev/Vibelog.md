@@ -1,11 +1,11 @@
 ---
 id: VL-354
 title: 'grep_search: длинные строки CHANGELOG/doc-* съедают весь бюджет 8 КБ — совпадения из src/ не попадают в вывод, модель повторяет поиск до loop detection'
-status: Planned
+status: Review
 assignee: []
 reporter: ''
 created_date: '2026-11-07 15:07'
-updated_date: '2026-11-07 15:07'
+updated_date: '2026-11-07 19:15'
 due_date: ''
 labels:
   - agent
@@ -20,8 +20,32 @@ project: ''
 parent_task_id: ''
 ordinal: 0
 documentation: []
-modified_files: []
+modified_files:
+  - src/agent/search-files.ts
+  - src/agent/tools.ts
+  - src/agent/search-files.test.mjs
+  - src/agent/tools.test.mjs
+  - src/web/tool-policy.ts
 lessons: []
+token_usage:
+  input: 3937280
+  output: 29643
+  cache: 3730944
+  total: 3966923
+  requests: 86
+  duration_ms: 823944
+  reasoning: 11979
+  by_phase:
+    code:
+      input: 2267327
+      output: 21216
+      cache: 2103296
+      requests: 44
+    close:
+      input: 1669953
+      output: 8427
+      cache: 1627648
+      requests: 42
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -62,22 +86,22 @@ VL-353 (инцидент-источник), VL-229 (порог повторов 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `grep_search` усекает КАЖДУЮ строку-совпадение до разумного предела (по образцу `read_file`: `READ_LINE_MIN_CHARS`/маркер усечения строки), а не только общий вывод — одна гигантская строка не съедает бюджет 8 КБ
-- [ ] #2 Маркер усечения строки содержит путь и номер строки, чтобы модель могла прочитать её через `read_file "файл:N"`
-- [ ] #3 Порядок выдачи приоритезирован: файлы `src/` идут раньше `backlog/` и корня (или сортировка по числу совпадений в файле убыв.), а не чистый алфавит `walkFiles`
-- [ ] #4 Маркер общей обрезки сообщает, сколько совпадений/файлов НЕ показано, и подсказывает сузить `path`/`glob`
-- [ ] #5 Регресс-тест на сессию `agent-1794052713009`: поиск по паттерну, встречающемуся в `CHANGELOG.md` (строка ~4 КБ) и в `src/agent/loop.ts`, возвращает совпадения из `src/` в пределах 8 КБ
-- [ ] #6 Тест: одна строка-совпадение длиной 20 КБ усекается, остальные совпадения в выдаче присутствуют (сейчас тест `tools.test.mjs:493` проверяет только наличие маркера обрезки)
-- [ ] #7 Тест: порядок выдачи — `src/...` раньше `CHANGELOG.md` при равном числе совпадений
-- [ ] #8 `pnpm build && pnpm test` проходят без регрессий
+- [x] #1 `grep_search` усекает КАЖДУЮ строку-совпадение до разумного предела (по образцу `read_file`: `READ_LINE_MIN_CHARS`/маркер усечения строки), а не только общий вывод — одна гигантская строка не съедает бюджет 8 КБ
+- [x] #2 Маркер усечения строки содержит путь и номер строки, чтобы модель могла прочитать её через `read_file "файл:N"`
+- [x] #3 Порядок выдачи приоритезирован: файлы `src/` идут раньше `backlog/` и корня (или сортировка по числу совпадений в файле убыв.), а не чистый алфавит `walkFiles`
+- [x] #4 Маркер общей обрезки сообщает, сколько совпадений/файлов НЕ показано, и подсказывает сузить `path`/`glob`
+- [x] #5 Регресс-тест на сессию `agent-1794052713009`: поиск по паттерну, встречающемуся в `CHANGELOG.md` (строка ~4 КБ) и в `src/agent/loop.ts`, возвращает совпадения из `src/` в пределах 8 КБ
+- [x] #6 Тест: одна строка-совпадение длиной 20 КБ усекается, остальные совпадения в выдаче присутствуют (сейчас тест `tools.test.mjs:493` проверяет только наличие маркера обрезки)
+- [x] #7 Тест: порядок выдачи — `src/...` раньше `CHANGELOG.md` при равном числе совпадений
+- [x] #8 `pnpm build && pnpm test` проходят без регрессий
 - [ ] #9 Документация: doc-10 (поведение `grep_search`: усечение строк, приоритет выдачи), CHANGELOG.md
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тесты проходят
+- [x] #1 Тесты проходят
 - [ ] #2 Документация обновлена
-- [ ] #3 Нет регрессий
+- [x] #3 Нет регрессий
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -169,3 +193,70 @@ return out;
 - **`truncateToolOutput` общий** — не менять его поведение, иначе поедут тесты `read_file`/`run_shell_command`.
 - **`search_files` может иметь ту же проблему** — шаг 4 обязателен, иначе фикс закроет половину инцидента.
 <!-- SECTION:PLAN:END -->
+
+## Comments
+<!-- COMMENTS:BEGIN -->
+author: @agent
+created: 2026-11-07 17:08
+---
+Фаза 3 (Code) выполнена. Коммит 0bb696d.
+**Что сделано** (все три дефекта из плана + шаг 4):
+1. **Усечение строк-совпадений** — `src/agent/search-files.ts`: новая экспортируемая `truncateMatchLine(text, pathLabel, lineNo, matchIndex)` с `MATCH_LINE_MAX_CHARS = 300`. Маркер: `…[строка усечена: N символов, читай read_file "путь:N"]`. Если совпадение оказалось за пределами окна (паттерн в позиции 5000 длинной строки), окно сдвигается на 100 символов перед совпадением — риск из плана «усечение отрежет само совпадение» закрыт.
+2. **Приоритет выдачи** — `PRIORITY_PREFIXES = ['src/', 'templates/', 'scripts/', 'web/src/']`, `pathPriority()` + `sortFilesByPriority()`. Применено и в `grep_search` (`tools.ts`), и в `searchProjectFiles`. `walkFiles` не тронут (общий с `glob`). Важная поправка к плану: префикс ищется на границе сегмента (`/src/`), а не `startsWith` — при поиске с явным `path` пути в выдаче получают его префикс (`vl354/src/...`), и `startsWith` не срабатывал (поймано тестом).
+3. **Маркер потерь** — `truncateWithLossMarker()` + счётчики `countGrepMatchLines`/`countSearchMatchLines`: к выводу дописывается `…[показано N из M совпадений; сузь path или glob]`. `truncateToolOutput` не менялся (общий с `read_file`/`run_shell_command`).
+4. **`search_files`** — проблема была та же (тот же `walkFiles` + `truncateToolOutput`, усечения строк не было): применены те же два приёма. Дополнительно убран двойной `truncateToolOutput` в `src/web/tool-policy.ts:211` — он срезал бы новый маркер потерь, т.к. `searchProjectFiles` уже возвращает вывод на границе бюджета.
+**Тесты** (`src/agent/tools.test.mjs`, `src/agent/search-files.test.mjs`):
+- регресс `agent-1794052713009`: CHANGELOG.md со строкой 4 КБ + `src/agent/loop.ts` → `src/agent/loop.ts:2:` в выдаче, длина ≤ 8 КБ + маркер, тело 4 КБ строки не попало;
+- порядок: `src/...` раньше `CHANGELOG.md` и `backlog/docs/`;
+- строка 20 КБ усекается, короткие совпадения того же и соседнего файла присутствуют (старый тест `:493` расширен: проверяет маркер строки и отсутствие общей обрезки);
+- маркер «показано N из 40 совпадений» для grep_search и search_files;
+- обновлён существующий тест `search_files: базовый поиск` — первый файл теперь `src/a.ts` (приоритет), а не `docs/c.md` (алфавит).
+**Проверки**: `pnpm build` — ок; полный `pnpm test` — 184 файла, 3489 passed, 4 skipped (предсуществующие `it.skip` в `src/core/frontmatter.test.mjs`, не связаны с задачей), 0 failed. Ручная проверка `grep_search {pattern:"loopDetectionDirective"}` на реальном репозитории: первые строки выдачи — `src/agent/loop.ts:392/474/1196/1212`, в конце `…[показано 24 из 31 совпадений; сузь path или glob]`.
+**Что осталось**: документация (doc-10, CHANGELOG.md) — по правилам фазы Code её пишет Close после слияния.
+---
+author: @agent
+created: 2026-11-07 19:08
+---
+Фаза Close прервана: конфликт слияния vb/vl-354 → master (файлы: UU src/agent/tools.ts). Merge выполнен `git merge --no-ff vb/vl-354` из главного репозитория, конфликтные маркеры оставлены в рабочем дереве как есть (merge не откатывался, конфликт не резолвился — по правилу фазы Close).
+Что нужно сделать вручную, чтобы повторить Close:
+1. Разрешить конфликт в `src/agent/tools.ts` в главном репозитории (конфликт между правками VL-354 — усечение строк-совпадений `truncateMatchLine`/`countGrepMatchLines`/`sortFilesByPriority` в `makeGrepSearch` — и изменениями master в том же файле). Ориентир по составу ветки: коммит 0bb696d, изменённые файлы задачи — src/agent/tools.ts, src/agent/search-files.ts, src/agent/tools.test.mjs, src/agent/search-files.test.mjs, src/web/tool-policy.ts.
+2. `git add src/agent/tools.ts && git commit` (завершить merge-коммит).
+3. Запустить `pnpm build && pnpm test` (полный прогон) и повторить Фазу Close.
+Статус задачи не менялся, DoD не отмечался, документация (doc-10, CHANGELOG.md) не обновлялась — всё это остаётся на повторный ран Close.
+---
+author: @agent
+created: 2026-11-07 19:08
+---
+Фаза close прервана агентом (aborted): Фаза Close прервана: конфликт слияния vb/vl-354 → master (файлы: UU src/agent/tools.ts). Merge выполнен `git merge --no-ff vb/vl-354` из главного репозитория, конфликтные маркеры оставлены в рабочем дереве как есть (merge не откатывался, конфликт не резолвился — по правилу фазы Close).
+Что нужно сделать вручную, чтобы повторить Close:
+1. Разрешить конфликт в `src/agent/tools.ts` в главном репозитории (конфликт между правками VL-354 — усечение строк-совпадений `truncateMatchLine`/`countGrepMatch — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-07 19:14
+---
+Фаза: авто-отчёт (comment не передан моделью)
+Статус: Done
+AC отмечено: 8 из 9
+DoD отмечено: 2 из 3
+AC не отмечены (1): 9. Документация: doc-10 (поведение `grep_search`: усечение строк, приоритет выдачи), CHANGELOG.md
+DoD не отмечены (1): 2. Документация обновлена
+Файлы (5): src/agent/search-files.ts, src/agent/tools.ts, src/agent/search-files.test.mjs, src/agent/tools.test.mjs, src/web/tool-policy.ts
+Фрагмент плана: ## Файлы - `src/agent/tools.ts` — `makeGrepSearch` (~:1415), `truncateToolOutput` (~:92). - `src/agent/search-files.ts` — проверить `searchProjectFiles` на ту же проблему. - Тесты: `src/agent/tools.test.mjs`, `src/agent/search-files.test.mjs`. - Документация: `backlog/docs/doc-10`, `CHANGELOG.md`. #…
+Отчёт собран сервером автоматически (VL-253): модель не передала comment.
+Статус не изменён: терминальный «Done» при неотмеченных пунктах (DoD: #2; AC: #9) возможен только через backlog_finish_phase с dodOverride или aborted (VL-248/VL-309). Задача оставлена в «Review».
+---
+author: @agent
+created: 2026-11-07 19:15
+---
+Фаза: авто-отчёт (comment не передан моделью)
+Статус: Done
+AC отмечено: 8 из 9
+DoD отмечено: 2 из 3
+AC не отмечены (1): 9. Документация: doc-10 (поведение `grep_search`: усечение строк, приоритет выдачи), CHANGELOG.md
+DoD не отмечены (1): 2. Документация обновлена
+Файлы (5): src/agent/search-files.ts, src/agent/tools.ts, src/agent/search-files.test.mjs, src/agent/tools.test.mjs, src/web/tool-policy.ts
+Фрагмент плана: ## Файлы - `src/agent/tools.ts` — `makeGrepSearch` (~:1415), `truncateToolOutput` (~:92). - `src/agent/search-files.ts` — проверить `searchProjectFiles` на ту же проблему. - Тесты: `src/agent/tools.test.mjs`, `src/agent/search-files.test.mjs`. - Документация: `backlog/docs/doc-10`, `CHANGELOG.md`. #…
+Отчёт собран сервером автоматически (VL-253): модель не передала comment.
+Статус не изменён: терминальный «Done» при неотмеченных пунктах (DoD: #2; AC: #9) возможен только через backlog_finish_phase с dodOverride или aborted (VL-248/VL-309). Задача оставлена в «Review».
+---
+<!-- COMMENTS:END -->
