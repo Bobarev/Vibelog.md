@@ -22,7 +22,7 @@ import { createTaskFile, getTask, listTasks } from '../../dist/core/store.js';
 import { statSync } from 'node:fs';
 import { writeDocument, getDocument } from '../../dist/core/document.js';
 import { writeReference } from '../../dist/core/reference.js';
-import { createLessonFile, getLesson, lessonToMarkdown } from '../../dist/core/lesson.js';
+import { createLessonFile, getLesson, lessonToMarkdown, LESSON_BODY_SKELETON } from '../../dist/core/lesson.js';
 
 const cwd = mkdtempSync(join(tmpdir(), 'vibelog-write-ack-'));
 const backlogDir = join(cwd, 'backlog');
@@ -226,7 +226,7 @@ describe('VL-262 — applied у остальных write-инструменто�
 
 describe('VL-306 — noop-детекция lesson_update', () => {
   it('AC2: повтор с теми же аргументами → ackNoop, файл и updated_date не тронуты', async () => {
-    const l = createLessonFile(cwd, { title: 'Урок noop', tags: ['a'] });
+    const l = createLessonFile(cwd, { title: 'Урок noop', tags: ['a'], content: '## Проблема\n\nшум\n' });
     const first = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
     assert.equal(first.ok, true, `первый вызов — успех: ${JSON.stringify(first)}`);
     const afterFirst = getLesson(cwd, l.id);
@@ -243,13 +243,13 @@ describe('VL-306 — noop-детекция lesson_update', () => {
   });
 
   it('AC2: теги в другом порядке → noop (сравнение как множества)', async () => {
-    const l = createLessonFile(cwd, { title: 'Урок теги', tags: ['a', 'b'] });
+    const l = createLessonFile(cwd, { title: 'Урок теги', tags: ['a', 'b'], content: '## Проблема\n\nшум\n' });
     const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, tags: ['b', 'a'] }, cwd));
     assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
   });
 
   it('AC2: реальное изменение поля → обычный успех без noop', async () => {
-    const l = createLessonFile(cwd, { title: 'Урок сброс', tags: ['a'] });
+    const l = createLessonFile(cwd, { title: 'Урок сброс', tags: ['a'], content: '## Проблема\n\nшум\n' });
     const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, tags: ['a', 'c'] }, cwd));
     assert.equal(ack.ok, true);
     assert.ok(!ack.noop, 'есть реальное изменение — noop быть не должно');
@@ -300,6 +300,58 @@ describe('VL-319 — пустое тело урока: ошибка вместо
     assert.equal(noop.noop, true, `ожидался noop: ${JSON.stringify(noop)}`);
     assert.deepEqual(Object.keys(noop.applied), ['verified_by'], 'applied — только переданные поля');
     assert.equal(typeof noop.hint, 'string', 'hint со следующим шагом обязателен');
+  });
+});
+
+describe('VL-349 — тело-скелет урока: ошибка вместо noop', () => {
+  /** Создаёт урок, тело которого — дефолтный скелет createLessonFile (VL-319). */
+  function createSkeletonLesson(title) {
+    const l = createLessonFile(cwd, { title, tags: ['skeleton'] });
+    const entry = getLesson(cwd, l.id);
+    assert.equal(entry.body.trim(), LESSON_BODY_SKELETON.trim(), 'фикстура: тело — дефолтный скелет');
+    return l;
+  }
+
+  it('AC2: lesson_update без content на теле-скелете → ok:false БЕЗ noop, повтор исполняется', async () => {
+    const l = createSkeletonLesson('Урок-скелет');
+    const path = getLesson(cwd, l.id).path;
+    const before = readFileSync(path, 'utf-8');
+    const args = { id: l.id, title: 'Урок-скелет', tags: ['skeleton'], verifiedBy: 'agent' };
+    const first = JSON.parse(await handleToolCall('lesson_update', args, cwd));
+    assert.equal(first.ok, false, `ожидалась ошибка: ${JSON.stringify(first)}`);
+    assert.ok(!first.noop, 'это НЕ noop — сигнатура не должна попадать в noopSignatures');
+    assert.equal(first.missing[0].field, 'content', 'missing называет content');
+    assert.equal(typeof first.hint, 'string', 'hint со следующим шагом');
+    assert.match(String(first.error), /content/);
+    assert.equal(readFileSync(path, 'utf-8'), before, 'файл не перезаписан');
+
+    // Повтор той же сигнатуры ИСПОЛНЯЕТСЯ (а не глушится noop-директивой)
+    const second = JSON.parse(await handleToolCall('lesson_update', args, cwd));
+    assert.equal(second.ok, false, `повтор тоже ошибка: ${JSON.stringify(second)}`);
+    assert.ok(!second.noop, 'повтор не превращается в noop');
+    assert.equal(second.missing[0].field, 'content');
+  });
+
+  it('AC2: после передачи content урок-скелет дополняется', async () => {
+    const l = createSkeletonLesson('Урок-скелет 2');
+    const ack = JSON.parse(await handleToolCall('lesson_update', {
+      id: l.id, content: '## Проблема\n\nбыло\n\n## Решение\n\nстало\n\n## Пример\n\nпример\n',
+    }, cwd));
+    assert.equal(ack.ok, true, `заполнение тела проходит: ${JSON.stringify(ack)}`);
+    assert.ok(ack.applied.content > LESSON_BODY_SKELETON.length, 'длина тела выросла');
+  });
+
+  it('AC3: noop при теле-скелете заполняет missing полем content', async () => {
+    // Скелет + вызов с тем же телом в content: unchanged → noop-ветка.
+    // soop обязан назвать content: тело по-прежнему скелет, не заполнено.
+    const l = createSkeletonLesson('Урок-скелет 3');
+    const entry = getLesson(cwd, l.id);
+    const ack = JSON.parse(await handleToolCall('lesson_update', {
+      id: l.id, content: entry.body,
+    }, cwd));
+    assert.equal(ack.reason, 'noop', `ожидался noop: ${JSON.stringify(ack)}`);
+    assert.equal(ack.missing[0].field, 'content', 'noop называет незаполненное тело');
+    assert.match(String(ack.hint), /content/);
   });
 });
 

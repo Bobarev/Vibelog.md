@@ -44,6 +44,7 @@ import {
 import {
   listLessons, getLesson, createLessonFile,
   updateLesson, searchLessons, linkLesson, supersedeLesson,
+  isLessonBodyUnfilled,
 } from '../core/lesson.js';
 import type { UpdateLessonInput } from '../core/lesson.js';
 import {
@@ -2627,15 +2628,34 @@ function toolLessonList(args: ToolArgs, cwd: string): string {
 }
 
 function toolLessonCreate(args: ToolArgs, cwd: string): string {
+  // VL-349: MCP-путь больше не создаёт урок-скелет. Раньше `lesson_create` без
+  // `content` молча подставлял LESSON_BODY_SKELETON и отвечал ackOk — модель
+  // считала урок готовым, а на `lesson_update` без `content` получала noop
+  // (сессия agent-1794045441657: 4 повтора → кап → fail). Тело — обязательный
+  // аргумент MCP-инструмента; CLI (`vibelog lesson create` без `-d`) остаётся
+  // со скелетом: там интерактивный пользователь, а не модель.
+  const rawContent = args.content as string | undefined;
+  if (rawContent === undefined || String(rawContent).trim() === '') {
+    return ackErrorDetailed(
+      'Урок без тела не создаётся: в вызове нет непустого `content`. ' +
+        'Передай markdown с Проблемой/Решением/Примером: ' +
+        'lesson_create {"title": "...", "content": "## Проблема\\n\\n…\\n\\n## Решение\\n\\n…\\n\\n## Пример\\n\\n…"}. ' +
+        'Файл урока не создан.',
+      {
+        missing: [{ field: 'content', reason: 'content не передан или пуст — тело урока обязательно' }],
+        hint: 'Добавь `content` с markdown (Проблема/Решение/Пример) и повтори вызов.',
+      },
+    );
+  }
   const lesson = createLessonFile(cwd, {
     title: args.title as string,
     tags: (args.tags as string[] | undefined) || [],
     source_tasks: (args.sourceTasks as string[] | undefined) || [],
-    content: args.content as string | undefined,
+    content: rawContent,
   });
-  // VL-319: JSON-ack с длиной фактического тела. Пустой `content` больше не
-  // даёт урок-пустышку — createLessonFile подставляет скелет
-  // «Проблема/Решение/Пример», и applied.content показывает его длину.
+  // VL-319/VL-349: JSON-ack с длиной фактического тела. `content` проверен
+  // выше (MCP без тела не создаёт урок), поэтому длина здесь — длина
+  // переданного markdown.
   const entry = getLesson(cwd, lesson.id);
   return ackOk(
     `Lesson ${lesson.id} создан: ${lesson.title} (${lesson.status})`,
@@ -2677,21 +2697,25 @@ function toolLessonUpdate(args: ToolArgs, cwd: string): string {
   // Сравнение — по фактическим значениям из файла; `content` — против тела.
   const current = getLesson(cwd, args.id as string);
   if (current) {
-    // VL-319: урок с ПУСТЫМ телом — не «изменений нет», а незавершённая
-    // сущность. Раньше такой вызов без `content` уходил в noop, модель
-    // читала «изменений нет» и повторяла дословно (сессия
-    // agent-1793712738536, Close VL-318: 4 повтора → кап → fail → авто-resume
-    // → тот же урок снова пустой). Теперь это ackError: сигнатура НЕ попадает
+    // VL-319 (расширено VL-349): урок с НЕЗАПОЛНЕННЫМ телом (пустое или
+    // дефолтный скелет LESSON_BODY_SKELETON) — не «изменений нет», а
+    // незавершённая сущность. Раньше такой вызов без `content` уходил в noop,
+    // модель читала «изменений нет» и повторяла дословно (сессия
+    // agent-1793712738536, Close VL-318: 4 повтора → кап → fail → авто-resume).
+    // VL-349: VL-319 проверял только `trim() === ''`, поэтому урок-скелет
+    // (созданный createLessonFile) проходил мимо: сессия agent-1794045441657
+    // сделала 4 дословных повтора → кап → fail. Теперь предикат
+    // isLessonBodyUnfilled. Это ackError: сигнатура НЕ попадает
     // в noopSignatures (ok:false без noop:true → failed), поэтому повтор
     // ИСПОЛНЯЕТСЯ заново и снова возвращает текст ошибки — модель видит, чего
     // не хватает, а не «изменений нет».
-    if (updates.content === undefined && current.body.trim() === '') {
+    if (updates.content === undefined && isLessonBodyUnfilled(current.body)) {
       return ackErrorDetailed(
-        `Тело урока ${current.lesson.id} пустое — в вызове нет \`content\`. ` +
+        `Тело урока ${current.lesson.id} не заполнено (пустое или дефолтный скелет) — в вызове нет \`content\`. ` +
           'Передай непустой markdown (Проблема / Решение / Пример): ' +
           'lesson_update {"id": "...", "content": "## Проблема\\n\\n…\\n\\n## Решение\\n\\n…\\n\\n## Пример\\n\\n…"}.',
         {
-          missing: [{ field: 'content', reason: 'тело урока пустое — не заполнено' }],
+          missing: [{ field: 'content', reason: 'тело урока не заполнено (пустое или дефолтный скелет)' }],
           hint: 'Добавь в вызов `content` с непустым markdown (Проблема/Решение/Пример) — без него урок остаётся пустым.',
           applied: Object.fromEntries(Object.keys(updates).map(k => [k, (updates as Record<string, unknown>)[k]])),
         },
@@ -2722,17 +2746,24 @@ function toolLessonUpdate(args: ToolArgs, cwd: string): string {
       for (const key of Object.keys(updates)) {
         applied[key] = key === 'content' ? current.body.length : currentRaw[key];
       }
-      // VL-319: noop обязан назвать, чего в вызове не хватает. Для урока
-      // обязательное по смыслу поле — тело: пустое тело означает, что урок
-      // создан шаблоном без `content` (phase-close.md до VL-319).
+      // VL-319/VL-349: noop обязан назвать, чего в вызове не хватает. Для
+      // урока обязательное по смыслу поле — тело: незаполненное тело (пустое
+      // ИЛИ дефолтный скелет) означает, что урок создан шаблоном без
+      // `content`, и дополнять его нечем. VL-349: проверка расширена на скелет
+      // — раньше `missing` оставался пустым, а hint звал «к следующему шагу».
       const missing: SkippedField[] = [];
-      if (current.body.trim() === '') {
-        missing.push({ field: 'content', reason: 'тело урока пустое — не заполнено' });
+      if (isLessonBodyUnfilled(current.body)) {
+        missing.push({
+          field: 'content',
+          reason: current.body.trim() === ''
+            ? 'тело урока пустое — не заполнено'
+            : 'тело урока — дефолтный скелет, не заполнено по смыслу',
+        });
       }
       return ackNoopDetailed(
         `Изменений нет: ${Object.keys(updates).join(', ')} уже имеют эти значения. ` +
           (missing.length > 0
-            ? 'ВНИМАНИЕ: тело урока пустое — передай непустой `content` (Проблема/Решение/Пример). '
+            ? 'ВНИМАНИЕ: тело урока не заполнено (пустое или дефолтный скелет) — передай непустой `content` (Проблема/Решение/Пример). '
             : '') +
           'Следующий шаг: backlog_finish_phase (или следующий шаг плана) — повтор этого вызова ничего не изменит.',
         applied,

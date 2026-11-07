@@ -14,6 +14,7 @@ import {
   createLesson, lessonToMarkdown, markdownToLesson,
   listLessons, getLesson, createLessonFile, updateLesson,
   searchLessons, linkLesson, supersedeLesson, loadLessonsForTask,
+  LESSON_BODY_SKELETON, isLessonBodyUnfilled,
 } from '../../dist/core/lesson.js';
 import { parseFrontmatter } from '../../dist/core/frontmatter.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
@@ -114,6 +115,26 @@ describe('VL-153 — CRUD lessons', () => {
 });
 
 // ── Поиск ──
+
+describe('VL-349 — isLessonBodyUnfilled', () => {
+  it('пустое/пробельное тело → true', () => {
+    for (const body of ['', '   ', '\n\n\t', undefined, null]) {
+      assert.equal(isLessonBodyUnfilled(body), true, `пустое тело (${JSON.stringify(body)})`);
+    }
+  });
+
+  it('тело равно скелету (с нормализацией trim) → true', () => {
+    assert.equal(isLessonBodyUnfilled(LESSON_BODY_SKELETON), true);
+    assert.equal(isLessonBodyUnfilled(LESSON_BODY_SKELETON.trim()), true);
+    assert.equal(isLessonBodyUnfilled(`\n${LESSON_BODY_SKELETON}\n\n`), true);
+  });
+
+  it('заполненное тело → false', () => {
+    assert.equal(isLessonBodyUnfilled('## Проблема\n\nбыло\n\n## Решение\n\nстало\n\n## Пример\n\nпример\n'), false);
+    assert.equal(isLessonBodyUnfilled(LESSON_BODY_SKELETON + 'дополнительный абзац\n'), false);
+    assert.equal(isLessonBodyUnfilled('# Заголовок\n\nтекст'), false);
+  });
+});
 
 describe('VL-153 — searchLessons', () => {
   beforeAll(() => {

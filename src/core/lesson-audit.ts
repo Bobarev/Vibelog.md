@@ -24,7 +24,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 import { parseFrontmatter } from './frontmatter.js';
 import { findBacklogDir, tasksDir, completedDir } from './paths.js';
-import { listLessons, readLessonSettings, LESSON_DEFAULTS, updateLesson } from './lesson.js';
+import { listLessons, readLessonSettings, LESSON_DEFAULTS, updateLesson, isLessonBodyUnfilled } from './lesson.js';
 import type { Lesson, LessonEntry } from './lesson.js';
 
 /** Типы находок аудита. */
@@ -318,16 +318,25 @@ export function auditLessons(cwd: string, opts: LessonAuditOptions = {}): Lesson
   for (const entry of entries) {
     const lesson = entry.lesson;
 
-    // 0. VL-319: пустое тело — урок-пустышка. Детерминированно, без порогов:
-    // такие уроки рождались шаблоном Close без `content` (lesson-191) и потом
-    // не поддавались дополнению через lesson_update (noop → повтор → кап →
-    // fail → авто-resume). Находка делает склад пустых уроков видимым.
-    if (String(entry.body || '').trim() === '') {
+    // 0. VL-319/VL-349: незаполненное тело — урок-пустышка. Детерминированно,
+    // без порогов: такие уроки рождались шаблоном Close без `content`
+    // (lesson-191) и потом не поддавались дополнению через lesson_update
+    // (noop → повтор → кап → fail → авто-resume). VL-349: VL-319 ловил только
+    // пустую строку, а createLessonFile подставляет скелет — склад
+    // уроков-заглушек был невидим. Находка делает его видимым: флаг
+    // `skeleton: true` отличает заглушку от по-настоящему пустого тела.
+    if (isLessonBodyUnfilled(entry.body)) {
+      const bodyText = String(entry.body || '');
+      const skeleton = bodyText.trim() !== '';
       push({
         type: 'empty_body',
         lessonId: lesson.id,
-        details: { body_length: String(entry.body || '').length },
-        message: 'тело урока пустое — урок не содержит ни Проблемы, ни Решения',
+        details: skeleton
+          ? { body_length: bodyText.length, skeleton: true }
+          : { body_length: bodyText.length },
+        message: skeleton
+          ? 'тело урока не заполнено — дефолтный скелет (Проблема/Решение/Пример пустые)'
+          : 'тело урока пустое — урок не содержит ни Проблемы, ни Решения',
       });
     }
 

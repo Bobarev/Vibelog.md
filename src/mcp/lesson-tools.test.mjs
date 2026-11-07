@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { listTools, handleToolCall } from '../../dist/mcp/tools.js';
+import { createLessonFile, getLesson } from '../../dist/core/lesson.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 
 const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-mcp-lesson-test-'));
@@ -57,7 +58,7 @@ describe('VL-153 — lesson_create / view / list / search / update', () => {
   });
 
   it('create: невалидный статус через update → ошибка', async () => {
-    await handleToolCall('lesson_create', { title: 'Второй' }, testRoot);
+    await handleToolCall('lesson_create', { title: 'Второй', content: 'Тело второго урока' }, testRoot);
     await assert.rejects(
       handleToolCall('lesson_update', { id: 'lesson-2', status: 'nope' }, testRoot),
       /Недопустимый статус lesson/
@@ -65,7 +66,7 @@ describe('VL-153 — lesson_create / view / list / search / update', () => {
   });
 
   it('list: фильтры status/tags', async () => {
-    await handleToolCall('lesson_create', { title: 'Про active', status: 'active', tags: ['a', 'b'] }, testRoot);
+    await handleToolCall('lesson_create', { title: 'Про active', status: 'active', tags: ['a', 'b'], content: 'Тело' }, testRoot);
     const all = JSON.parse(await handleToolCall('lesson_list', {}, testRoot));
     assert.ok(all.length >= 3);
     const actives = JSON.parse(await handleToolCall('lesson_list', { status: 'active' }, testRoot));
@@ -92,17 +93,25 @@ describe('VL-153 — lesson_create / view / list / search / update', () => {
     await assert.rejects(handleToolCall('lesson_update', { id: 'lesson-1' }, testRoot), /Не указаны поля/);
   });
 
-  it('VL-319: create без content → файл со скелетом (тело непустое)', async () => {
+  it('VL-349: create без content через MCP → ok:false, файл не создан; CLI-путь → скелет', async () => {
+    const before = JSON.parse(await handleToolCall('lesson_list', {}, testRoot)).length;
     const out = await handleToolCall('lesson_create', { title: 'Урок без тела' }, testRoot);
     const ack = JSON.parse(out);
-    assert.equal(ack.ok, true, `create отвечает JSON-ack: ${out}`);
-    assert.ok(ack.applied.content > 0, 'applied.content — длина непустого тела');
-    const lessons = JSON.parse(await handleToolCall('lesson_list', {}, testRoot));
-    const created = lessons.find(l => l.title === 'Урок без тела');
-    const view = JSON.parse(await handleToolCall('lesson_view', { id: created.id }, testRoot));
-    assert.match(view.body, /## Проблема/, 'скелет содержит раздел Проблема');
-    assert.match(view.body, /## Решение/, 'скелет содержит раздел Решение');
-    assert.match(view.body, /## Пример/, 'скелет содержит раздел Пример');
+    assert.equal(ack.ok, false, `create без content — ошибка: ${out}`);
+    assert.ok(!ack.noop, 'это ошибка, а не noop — сигнатура не попадает в noopSignatures');
+    assert.equal(ack.missing[0].field, 'content', 'missing называет content');
+    assert.equal(typeof ack.hint, 'string', 'hint со следующим шагом');
+    assert.match(String(ack.error), /content/);
+    const after = JSON.parse(await handleToolCall('lesson_list', {}, testRoot)).length;
+    assert.equal(after, before, 'файл урока не создан');
+
+    // CLI/ядро-путь без content по-прежнему подставляет скелет (VL-319)
+    const core = createLessonFile(testRoot, { title: 'Урок из CLI' });
+    const entry = getLesson(testRoot, core.id);
+    assert.ok(entry, 'ядро создало файл');
+    assert.match(entry.body, /## Проблема/, 'скелет: раздел Проблема');
+    assert.match(entry.body, /## Решение/, 'скелет: раздел Решение');
+    assert.match(entry.body, /## Пример/, 'скелет: раздел Пример');
   });
 });
 
@@ -142,8 +151,8 @@ describe('VL-153 — lesson_link + backlog_update_task lessons', () => {
 
 describe('VL-153 — lesson_supersede', () => {
   it('oldId → superseded, newId → active с supersedes', async () => {
-    await handleToolCall('lesson_create', { title: 'Старый урок', status: 'active' }, testRoot);
-    await handleToolCall('lesson_create', { title: 'Новый урок', status: 'active' }, testRoot);
+    await handleToolCall('lesson_create', { title: 'Старый урок', status: 'active', content: 'Старое тело' }, testRoot);
+    await handleToolCall('lesson_create', { title: 'Новый урок', status: 'active', content: 'Новое тело' }, testRoot);
     const lessons = JSON.parse(await handleToolCall('lesson_list', {}, testRoot));
     const oldId = lessons.find(l => l.title === 'Старый урок').id;
     const newId = lessons.find(l => l.title === 'Новый урок').id;

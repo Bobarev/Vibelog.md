@@ -352,6 +352,26 @@ export interface WriteLessonInput extends LessonInput {
 export const LESSON_BODY_SKELETON = '## Проблема\n\n## Решение\n\n## Пример\n';
 
 /**
+ * Тело урока не заполнено по смыслу (VL-349).
+ *
+ * Два состояния: пусто/пробелы И тело, равное скелету `LESSON_BODY_SKELETON`.
+ * Второе появилось после VL-319: `createLessonFile` подставляет скелет, и
+ * урок-заглушка перестал отличаться от заполненного по проверке `trim() === ''`.
+ * Из-за этого `lesson_update` без `content` уходил в noop вместо ошибки
+ * (сессия agent-1794045441657: 4 повтора → кап → fail).
+ *
+ * Единственная точка правды: этим предикатом обязаны пользоваться
+ * `toolLessonUpdate`, `toolLessonCreate` и audit-finding `empty_body`.
+ * Нормализация — `trim()` с обеих сторон: скелет оканчивается `\n`, файл может
+ * быть перезаписан без него (или с CRLF-хвостами).
+ */
+export function isLessonBodyUnfilled(body: string | undefined | null): boolean {
+  const text = String(body ?? '').trim();
+  if (text === '') return true;
+  return text === LESSON_BODY_SKELETON.trim();
+}
+
+/**
  * Создаёт lesson-файл (id генерируется lesson-N, даты — сегодня, если не заданы).
  *
  * VL-319: пустой/пробельный `content` заменяется скелетом

@@ -126,8 +126,8 @@ describe('VL-306 — все write-инструменты отвечают JSON-a
   });
 
   it('AC1: lesson_update / lesson_link / lesson_supersede', async () => {
-    const l1 = createLessonFile(cwd, { title: 'Урок 1', tags: ['a'] });
-    const l2 = createLessonFile(cwd, { title: 'Урок 2', tags: ['b'] });
+    const l1 = createLessonFile(cwd, { title: 'Урок 1', tags: ['a'], content: '## Проблема\n\nшум\n' });
+    const l2 = createLessonFile(cwd, { title: 'Урок 2', tags: ['b'], content: '## Проблема\n\nшум\n' });
     const t = createTaskFile(cwd, { title: 'Задача для связи' });
 
     const upd = parseAck(await handleToolCall('lesson_update', { id: l1.id, verifiedBy: 'agent' }, cwd), 'lesson_update');
@@ -226,7 +226,7 @@ const NOOP_SCENARIOS = {
     return JSON.parse(await handleToolCall('reference_update', { id: ref.id, tags: ['a'] }, cwd));
   },
   lesson_update: async () => {
-    const l = createLessonFile(cwd, { title: 'Noop-урок контракта', tags: ['a'] });
+    const l = createLessonFile(cwd, { title: 'Noop-урок контракта', tags: ['a'], content: '## Проблема\n\nшум\n' });
     await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd);
     return JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
   },
