@@ -27,6 +27,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import type { ToolKind } from '../core/tool-classify.js';
+import { registerLocalToolKinds } from '../core/tool-classify.js';
 import { searchProjectFiles, walkFiles } from './search-files.js';
 import type { ChatMessage } from './llm.js';
 import {
@@ -58,8 +59,11 @@ export interface ToolSpec {
    * VL-357: объявленный вид операции ('read' | 'write' | 'mixed').
    *
    * Живёт ТОЛЬКО в TS-описании: в MCP-схему инструмента (inputSchema) не
-   * попадает — лишнее поле смутило бы модель. Читается классификатором
-   * isWriteOperation через таблицу src/core/tool-kinds.ts; для внешних
+   * попадает — лишнее поле смутило бы модель. VL-359: поле ЧИТАЕТСЯ —
+   * `listLocalTools` регистрирует его в классификаторе
+   * (`registerLocalToolKinds`), и `isWriteOperation` берёт вид отсюда, а
+   * `LOCAL_TOOL_KINDS` остаётся фолбэком. Тест паритета
+   * (`src/core/tool-classify.test.mjs`) сверяет оба набора. Для внешних
    * MCP-инструментов (VL-84) остаётся undefined — тогда действует fail-safe
    * «неизвестное имя → write».
    */
@@ -1565,7 +1569,7 @@ function makeSearchFiles(cwd: string): ToolSpec {
 /** Список локальных инструментов для loop агента (привязка к cwd проекта). */
 export function listLocalTools(cwd: string): ToolSpec[] {
   const root = resolve(cwd);
-  return [
+  const specs: ToolSpec[] = [
     makeReadFile(root),
     makeWriteFile(root),
     makeEdit(root),
@@ -1575,4 +1579,11 @@ export function listLocalTools(cwd: string): ToolSpec[] {
     makeSearchFiles(root),
     makeSessionOutline(root),
   ];
+  // VL-359: вид объявлен рядом с инструментом (`ToolSpec.kind`), а
+  // классификатор (`src/core/tool-classify.ts`) не может импортировать этот
+  // модуль (fs, llm, оркестратор — core не тянет агентский слой). Поэтому
+  // реестр сам сообщает ему свой набор видов. Резолвер идемпотентен по
+  // набору: cwd различается, вид от него не зависит.
+  registerLocalToolKinds((name) => specs.find((spec) => spec.name === name)?.kind);
+  return specs;
 }

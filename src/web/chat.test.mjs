@@ -1005,7 +1005,7 @@ describe('VL-255 — дедупликация и лимит tool-вызовов'
       );
       const ends = events.filter(e => e.type === 'tool_end');
       assert.equal(ends.length, 3);
-      assert.ok(!ends[2].result.includes('"duplicate":true'), 'повтор чтения после write разрешён');
+      assert.ok(!ends[2].result.includes('"duplicate": true'), 'повтор чтения после write разрешён');
       assert.match(ends[2].result, /новое/, 'прочитано новое содержимое');
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1117,7 +1117,7 @@ describe('VL-255 — дедупликация и лимит tool-вызовов'
       );
       const ends = events.filter(e => e.type === 'tool_end');
       assert.equal(ends.length, calls.length);
-      const blocked = ends.filter(e => e.result.includes('"noop_repeat":true'));
+      const blocked = ends.filter(e => e.result.includes('"noop_repeat": true'));
       assert.ok(blocked.length > 0, 'кап noop-серии сработал');
       assert.match(blocked[0].result, /повтор с теми же аргументами бесполезен/);
       assert.ok(

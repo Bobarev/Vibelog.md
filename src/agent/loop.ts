@@ -37,11 +37,13 @@ import { compactWireMessages } from './compact.js';
 // VL-351: в loop.ts больше не используется (страховка VL-306 удалена), но
 // классификатор остаётся нужен веб-слою и инвариант-тестам контракта ack.
 import {
+  INTENT_LOOP_REPEAT_DEFAULT,
   MAX_APPLIED_REPEATS_PER_RUN,
   MAX_BLOCKED_CALLS_PER_RUN,
   MAX_ERROR_REPEATS_PER_RUN,
   MAX_NOOP_REPEATS_PER_RUN,
   NEXT_STEP_HINT,
+  PHANTOM_CALL_LIMIT_DEFAULT,
   REPEAT_BLOCK_MAX_PER_RUN,
   REPEAT_READ_LIMIT_DEFAULT,
   REPEAT_SEARCH_LIMIT_DEFAULT,
@@ -352,15 +354,10 @@ const WORK_EVIDENCE_TOOLS = new Set(['edit', 'write_file', 'git_commit']);
 // `MAX_NOOP_REPEATS_PER_TURN`: инцидент попадал в тот детектор, что сработал
 // первым, и получал директиву из его словаря. Локальные константы оставлены
 // только как реэкспорт (их импортируют тесты).
-// Фантомные tool_calls (пустые name/id, VL-215): сколько ходов ПОДРЯД модель
-// может отдавать фантомы до fail(). 3 — по образцу loop detection VL-83:
-// фантомный ход тратит LLM-запрос, но единичный случай модель исправляет
-// сама (получает текст-ошибку), 3 подряд — признак сломанного провайдера.
-const PHANTOM_CALL_LIMIT_DEFAULT = 3;
-// Дефолт guard'а зацикливания намерений (VL-119): 4 хода подряд с одним
-// промежуточным текстом. Порог 4, а не 3 — снизить ложные срабатывания:
-// одинаковый короткий текст («Ок.») на паре ходов ещё не зацикливание.
-const INTENT_LOOP_REPEAT_DEFAULT = 4;
+// VL-359: `PHANTOM_CALL_LIMIT_DEFAULT` (VL-215) и `INTENT_LOOP_REPEAT_DEFAULT`
+// (VL-119) тоже переехали в `REPEAT_LIMITS` (`phantom`/`intent`) — это пороги
+// детекторов повторов, и AC3 VL-357 требовал единственного источника.
+// Импортируются из repeat-tracker.js выше.
 
 // Компакшн истории (VL-122, wire-усечение по doc-13 §4.1): хвост 50 сообщений —
 // tool-вывод ≤8KB (лимит VL-110, tools.ts) → ≤400KB ≈ ≤130K токенов ≈ 13% окна

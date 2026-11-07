@@ -10,7 +10,10 @@ import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {
+  INTENT_LOOP_REPEAT_DEFAULT,
+  PHANTOM_CALL_LIMIT_DEFAULT,
   REPEAT_BLOCK_MAX_PER_RUN,
+  REPEAT_LIMITS,
   REPEAT_READ_LIMIT_DEFAULT,
   REPEAT_SEARCH_LIMIT_DEFAULT,
   REPEAT_SHELL_LIMIT_DEFAULT,
@@ -281,6 +284,17 @@ describe('repeat-tracker: guard-предупреждение (VL-229, AC2)', () 
     assert.equal(REPEAT_WRITE_LIMIT_DEFAULT, 6);
     assert.equal(REPEAT_WRITE_BLOCK_DEFAULT, 8);
     assert.equal(REPEAT_BLOCK_MAX_PER_RUN, 5);
+  });
+
+  it('VL-359: пороги детекторов повторов — из единого REPEAT_LIMITS', () => {
+    // AC3 VL-357 требовал единственного источника порогов: раньше
+    // REPEAT_BLOCK_MAX_PER_RUN дублировал REPEAT_LIMITS.blockedCalls, а
+    // PHANTOM_CALL_LIMIT_DEFAULT/INTENT_LOOP_REPEAT_DEFAULT жили локально в loop.ts.
+    assert.equal(REPEAT_BLOCK_MAX_PER_RUN, REPEAT_LIMITS.blockedCalls);
+    assert.equal(PHANTOM_CALL_LIMIT_DEFAULT, REPEAT_LIMITS.phantom);
+    assert.equal(INTENT_LOOP_REPEAT_DEFAULT, REPEAT_LIMITS.intent);
+    assert.equal(REPEAT_LIMITS.phantom, 3);
+    assert.equal(REPEAT_LIMITS.intent, 4);
   });
 
   it('AC1: shell-скелет — предупреждение на 3-м вызове, «используй полученный вывод»', () => {
