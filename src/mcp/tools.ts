@@ -74,6 +74,8 @@ import {
 } from '../agent/session.js';
 import { SUPERVISOR_TOOL_DEFS, handleSupervisorTool } from './supervisor.js';
 import { commitFiles } from './git-commit.js';
+// VL-363: репорт бага в upstream через GitVerse Issues
+import { GitverseError, reportBug, tokenHint } from '../core/gitverse-issues.js';
 
 // completeTaskFile импортирован для паритета с оригинальным модулем;
 // в текущей логике инструментов не вызывается (оставлено без изменений).
@@ -784,6 +786,35 @@ export function listTools(): ToolDefinition[] {
         required: ['paths', 'message'],
       },
     },
+    // === GitVerse Issues: репорт бага в upstream-проект (VL-363) ===
+    {
+      name: 'upstream_report_bug',
+      description:
+        'Репорт бага в upstream-репозиторий через GitVerse Issues (VL-363). Дочерний проект ' +
+        '(ui/templates) не может завести задачу в родительском backlog — инструмент создаёт issue ' +
+        'и возвращает его номер как ack. Конфиг — секция upstream в .vibelog/settings.json ' +
+        '({repo: "owner/name", labels, type, project_id?, done_column?}), токен — GITVERSE_TOKEN в .env ' +
+        '(права: Запись на репозиторий). Тело issue собирается детерминированно из полей ' +
+        '(«Что произошло», «Воспроизведение», «Окружение», «Источник»). Метки создаются автоматически, ' +
+        'если их нет. Ответ — JSON-ack: {ok:true, applied:{number, url, labels}, message} либо ' +
+        '{ok:false, error, hint}.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Заголовок issue (обязателен, непустой)' },
+          body: { type: 'string', description: 'Что произошло: описание проблемы, шаги, ожидаемое поведение' },
+          severity: { type: 'string', description: 'Важность: low|medium|high|critical (попадает в «Окружение»)' },
+          area: { type: 'string', description: 'Область: cli|mcp|web|agent|install|… (попадает в «Окружение»)' },
+          source_task: { type: 'string', description: 'ID задачи проекта-источника (например VL-12) — для секции «Источник»' },
+          labels: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Дополнительные метки поверх upstream.labels (создаются при отсутствии)',
+          },
+        },
+        required: ['title'],
+      },
+    },
     // === Супервизор: запуск фаз, очередь, прогон (VL-268) ===
     ...SUPERVISOR_TOOL_DEFS,
   ];
@@ -904,6 +935,11 @@ export async function handleToolCall(
         allowForeign: args.allowForeign === true,
         cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
       });
+    // VL-363: репорт бага в upstream через GitVerse Issues. Сетевой write:
+    // идемпотентность by-key не применяется (дедуп даёт номер issue, а
+    // повторный вызов создаст второй issue — это осознанно: репорт уникален).
+    case 'upstream_report_bug':
+      return toolUpstreamReportBug(args, cwd);
     // VL-268: инструменты супервизора (фазы, очередь, прогон). Идемпотентность
     // by-key здесь не применяется: они не пишут поля задачи, а запускают фазы
     // и прогоны (дедуп add-очереди и «фаза уже идёт» даёт ядро/оркестратор).
@@ -3126,6 +3162,47 @@ async function toolLessonClassify(args: ToolArgs, cwd: string): Promise<string> 
  * игнорируется (дефолт ядра). Вывод капится truncateToolOutput — единая точка
  * ограничения размера tool-вывода (lesson-30).
  */
+/**
+ * Репорт бага в upstream-репозиторий через GitVerse Issues (VL-363).
+ *
+ * Ответ — JSON-ack по контракту VL-306: успех `{ok:true, applied:{number,url,labels}, message}`,
+ * ошибка `{ok:false, error, hint}`. Токен в ответ не попадает (маскируется в ядре).
+ */
+async function toolUpstreamReportBug(args: ToolArgs, cwd: string): Promise<string> {
+  const title = typeof args.title === 'string' ? args.title.trim() : '';
+  if (title === '') {
+    return ackErrorDetailed('поле title обязательно: заголовок issue не может быть пустым', {
+      hint: 'передай title — короткое описание проблемы, например «install: файл компонента не копируется»',
+    });
+  }
+  const labels = Array.isArray(args.labels)
+    ? (args.labels as unknown[]).filter((l): l is string => typeof l === 'string')
+    : undefined;
+
+  return reportBug(cwd, {
+    title,
+    ...(typeof args.body === 'string' ? { body: args.body } : {}),
+    ...(typeof args.severity === 'string' ? { severity: args.severity } : {}),
+    ...(typeof args.area === 'string' ? { area: args.area } : {}),
+    ...(typeof args.source_task === 'string' ? { sourceTask: args.source_task } : {}),
+    ...(labels !== undefined ? { labels } : {}),
+  })
+    .then((result) => {
+      const createdNote =
+        result.createdLabels.length > 0 ? ` (созданы метки: ${result.createdLabels.join(', ')})` : '';
+      return ackOk(
+        `Issue #${result.number} создан: ${title}${createdNote}`,
+        { number: result.number, url: result.url, labels: result.labels },
+      );
+    })
+    .catch((err: unknown) => {
+      if (err instanceof GitverseError) {
+        return ackErrorDetailed(err.message, { hint: err.kind === 'no_token' ? tokenHint() : undefined });
+      }
+      return ackError(err instanceof Error ? err.message : String(err));
+    });
+}
+
 function toolProjectMap(args: ToolArgs, cwd: string): string {
   const query = args.query;
   const dir = args.dir;

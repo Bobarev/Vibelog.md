@@ -175,6 +175,8 @@ describe('VL-306 — все write-инструменты отвечают JSON-a
       'write_file',
       // VL-311: git_commit отвечает JSON-ack (hash/subject/paths) и noop
       'git_commit',
+      // VL-363: upstream_report_bug отвечает JSON-ack (number/url/labels)
+      'upstream_report_bug',
     ]);
     // Явные исключения с причиной: инструменты супервизора/очереди (VL-268)
     // управляют прогоном фаз, а не данными backlog; их ответ — карточка
@@ -310,6 +312,7 @@ const ACK_OUT_OF_SCOPE = {
   backlog_auto_queue: 'очередь прогона, а не данные backlog (VL-268)',
   backlog_supervisor: 'прогон супервизора, а не данные backlog (VL-268)',
   reference_sync: 'ходит в сеть — сценарий недетерминирован в офлайн-тесте',
+  upstream_report_bug: 'ходит в сеть (GitVerse Issues) — сценарий недетерминирован в офлайн-тесте; JSON-ack проверяется в gitverse-issues.test.mjs и upstream-tool.test.mjs',
 };
 
 describe('VL-351 — каждый write-инструмент отвечает JSON-ack', () => {
@@ -449,6 +452,7 @@ const NOOP_NOT_APPLICABLE = {
   lesson_audit: 'аудит read-only по умолчанию, отчёт, а не снимок состояния',
   lesson_classify: 'LLM-классификация: отчёт по умолчанию, записи только по явному подтверждению',
   write_file: 'запись файла: сравнение содержимого вне домена backlog (отдельный инструмент)',
+  upstream_report_bug: 'создание issue во внешней системе: каждый вызов даёт новый номер (дедуп — номер issue, а не сравнение полей)',
 };
 
 describe('VL-310 — инвариант «каждый write-инструмент умеет noop»', () => {  it('AC2: каждый noop-способный инструмент отвечает {ok:false, noop:true} на повторной идентичной записи', async () => {
@@ -546,6 +550,7 @@ const PARTIAL_SCENARIOS = {
  */
 const PARTIAL_EXEMPT = {
   backlog_create_task: 'title — единственное обязательное поле и оно действительно обязательное (задача без заголовка не существует)',
+  upstream_report_bug: 'title обязателен: issue без заголовка не существует; body/severity/area/source_task — дополнение к телу, их отсутствие не делает репорт неполным',
   backlog_update_task: 'обновление применяет переданные поля; незаполненных «по смыслу» полей у задачи нет',
   backlog_update_status: 'status обязателен: без него операция не имеет смысла',
   backlog_add_comment: 'comment обязателен: пустой комментарий не является записью',

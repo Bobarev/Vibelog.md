@@ -81,6 +81,8 @@ export const TOOL_KINDS: Readonly<Record<string, ToolKind>> = {
   // === Прочее ===
   project_map: 'read',
   git_commit: 'write',
+  // VL-363: репорт бага в upstream-репозиторий через GitVerse Issues — сетевой write
+  upstream_report_bug: 'write',
   // === Супервизор (VL-268) ===
   backlog_trigger_phase: 'write',
   backlog_phase_status: 'read',

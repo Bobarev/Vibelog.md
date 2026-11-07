@@ -50,9 +50,9 @@ afterAll(() => {
 });
 
 describe('VL-152 — регистрация reference_* инструментов', () => {
-  it('все 8 reference_* в listTools; всего 45 инструментов', () => {
+  it('все 8 reference_* в listTools; всего 46 инструментов', () => {
     const tools = listTools();
-    assert.equal(tools.length, 45);
+    assert.equal(tools.length, 46);
     const names = tools.map(t => t.name);
     for (const n of ['reference_list', 'reference_add', 'reference_view', 'reference_search', 'reference_remove', 'reference_update', 'reference_link', 'reference_sync']) {
       assert.ok(names.includes(n), `${n} не найден`);
