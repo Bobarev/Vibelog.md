@@ -34,8 +34,8 @@ import { truncateToolOutput } from './tools.js';
 // реэкспорт ниже сохраняет публичный API loop.ts (тесты импортируют отсюда).
 import { compactWireMessages } from './compact.js';
 // VL-306: классификатор read/write — общий с веб-слоем (src/core/tool-classify.ts)
-import { isWriteOperation } from '../core/tool-classify.js';
-import { listTools } from '../mcp/tools.js';
+// VL-351: в loop.ts больше не используется (страховка VL-306 удалена), но
+// классификатор остаётся нужен веб-слою и инвариант-тестам контракта ack.
 import {
   REPEAT_BLOCK_MAX_PER_RUN,
   REPEAT_READ_LIMIT_DEFAULT,
@@ -287,25 +287,6 @@ const IDLE_TIMEOUT_MS_DEFAULT = 600_000;
 const LOOP_DETECTION_REPEAT_DEFAULT = 3;
 
 /**
- * VL-306: имена write-инструментов MCP-реестра (ленивый кэш).
- *
- * Страховка `appliedSignatures` для не-JSON ответов применяется ТОЛЬКО к
- * инструментам из этого набора. Причина: `isWriteOperation` — fail-safe
- * классификатор (неизвестное имя → write), и без ограничения по реестру
- * страховка ловила бы любые тестовые/внешние инструменты с произвольным
- * именем, ломая обычный loop detection (проверено: заглушка `t` в
- * src/agent/loop.test.mjs перестала падать по loop detection).
- */
-let mcpWriteToolsCache: Set<string> | null = null;
-function isMcpWriteTool(name: string): boolean {
-  if (mcpWriteToolsCache === null) {
-    mcpWriteToolsCache = new Set(
-      listTools().filter(t => isWriteOperation(t.name)).map(t => t.name),
-    );
-  }
-  return mcpWriteToolsCache.has(name);
-}
-/**
  * VL-310: инструменты, которыми модель «доотчитывается» за фазу.
  *
  * Признак нужен терминальному выходу на повторе уже применённого вызова:
@@ -405,9 +386,16 @@ const NEXT_STEP_HINT =
  * @param name — имя повторённого инструмента
  * @param repeatLimit — порог повторов, при котором сработала блокировка
  * @param lastError — текст последнего отказа по этой сигнатуре (если был)
+ * @param fromHint — текст взят из поля `hint` (VL-351): он короткий по
+ *   построению, обрезка по голове+хвосту его только калечит
  */
-export function loopDetectionDirective(name: string, repeatLimit: number, lastError?: string): string {
-  const reason = lastError === undefined ? '' : clipErrorText(lastError);
+export function loopDetectionDirective(
+  name: string,
+  repeatLimit: number,
+  lastError?: string,
+  fromHint = false,
+): string {
+  const reason = lastError === undefined ? '' : clipErrorText(lastError, fromHint);
   if (reason !== '') {
     return (
       `Loop detection: ${name} — предыдущий вызов отклонён: ${reason}. Повтор даст тот же отказ — исправь аргументы.`
@@ -436,13 +424,24 @@ const ERROR_IN_DIRECTIVE_TAIL_CHARS = 35;
  * ackError кладёт причину в `error`, ackDenied — в `message`; для прочих
  * форм берём первое непустое из них. null — текста нет (директива останется
  * общей, как до VL-323).
+ *
+ * VL-351: `hint` идёт ПЕРВЫМ. Это короткое готовое действие («Добавь в вызов
+ * `content`…»), добавленное VL-319/VL-349 именно для модели; `error` у
+ * ackErrorDetailed бывает длинным и содержит примеры markdown, из которых
+ * обрезка оставляла бессмысленный обрывок (сессия agent-1794045441657:
+ * директива заканчивалась куском «## Пример»). `fromHint` сообщает вызывающему,
+ * что текст короткий по построению и резать его не нужно.
  */
-function parsedErrorText(output: string): string | null {
+function parsedErrorText(output: string): { text: string; fromHint: boolean } | null {
   try {
-    const parsed = JSON.parse(output) as { error?: unknown; message?: unknown } | null;
+    const parsed = JSON.parse(output) as { hint?: unknown; error?: unknown; message?: unknown } | null;
     if (!parsed || typeof parsed !== 'object') return null;
-    for (const value of [parsed.error, parsed.message]) {
-      if (typeof value === 'string' && value.trim() !== '') return value;
+    for (const [value, fromHint] of [
+      [parsed.hint, true],
+      [parsed.error, false],
+      [parsed.message, false],
+    ] as const) {
+      if (typeof value === 'string' && value.trim() !== '') return { text: value, fromHint };
     }
     return null;
   } catch {
@@ -458,10 +457,13 @@ function parsedErrorText(output: string): string | null {
  * сообщения, и простое усечение по голове её съедало — модель снова читала
  * бесполезный текст (риск R2 плана: директива обязана остаться < 400 байт,
  * инвариант VL-310).
+ *
+ * VL-351: текст из `hint` не режется вовсе — он короткий по построению
+ * (готовая инструкция), а обрезка по голове+хвосту калечила его.
  */
-function clipErrorText(text: string): string {
+function clipErrorText(text: string, fromHint = false): string {
   const flat = text.replace(/\s+/g, ' ').trim();
-  if (flat.length <= ERROR_IN_DIRECTIVE_MAX_CHARS) return flat;
+  if (fromHint || flat.length <= ERROR_IN_DIRECTIVE_MAX_CHARS) return flat;
   const head = ERROR_IN_DIRECTIVE_MAX_CHARS - ERROR_IN_DIRECTIVE_TAIL_CHARS - 1;
   return `${flat.slice(0, head)}…${flat.slice(-ERROR_IN_DIRECTIVE_TAIL_CHARS)}`;
 }
@@ -621,7 +623,8 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // поэтому модели нужна не блокировка-запрет, а готовое исправление.
   const errorSignatures = new Set<string>();
   // Текст последнего отказа по сигнатуре — попадает в директиву блокировки.
-  const lastErrorBySignature = new Map<string, string>();
+  // VL-351: храним и признак «текст из hint» — такой текст не обрезается.
+  const lastErrorBySignature = new Map<string, { text: string; fromHint: boolean }>();
   // VL-323: серия подряд повторов вызова, вернувшего ackError. Порог фазового
   // прерывания — MAX_ERROR_REPEATS_PER_RUN (5), не 3: модели нужно время
   // применить подсказку из текста ошибки (инцидент Close VL-320).
@@ -1186,10 +1189,11 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         // несёт ТЕКСТ ошибки и требование исправить аргументы.
         if (errorSignatures.has(signature)) {
           noteErrorRepeat(signature);
+          const last = lastErrorBySignature.get(signature);
           await pushMessage({
             role: 'tool',
             tool_call_id: call.id,
-            content: loopDetectionDirective(call.name, repeatLimit, lastErrorBySignature.get(signature)),
+            content: loopDetectionDirective(call.name, repeatLimit, last?.text, last?.fromHint ?? false),
           });
           console.error(`[vibelog-agent] повтор вызова с отказом: ${call.name}`);
           return;
@@ -1200,11 +1204,14 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         blockedTotal++;
         // Директива — tool-результатом (AC4): привязка tool_call_id
         // сохраняет паринг assistant↔tool, провайдер payload принимает.
-        await pushMessage({
-          role: 'tool',
-          tool_call_id: call.id,
-          content: loopDetectionDirective(call.name, repeatLimit, lastErrorBySignature.get(signature)),
-        });
+        {
+          const last = lastErrorBySignature.get(signature);
+          await pushMessage({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: loopDetectionDirective(call.name, repeatLimit, last?.text, last?.fromHint ?? false),
+          });
+        }
         // Диагностика в точке срабатывания → logTail оркестратора (lesson-77)
         console.error(`[vibelog-agent] loop detection: ${call.name} заблокирован`);
       };
@@ -1270,7 +1277,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         // вызову (из них ≥3 — директивы с текстом ошибки) прежде, чем ран
         // прерывается. Строгое < , а не <=: на 5-м обращении ещё даём шанс.
         if (errorRepeatCount <= MAX_ERROR_REPEATS_PER_RUN) return null;
-        const detail = lastErrorBySignature.get(signature) ?? '';
+        const detail = lastErrorBySignature.get(signature)?.text ?? '';
         return fail(
           `Loop detection: модель ${errorRepeatCount} раз подряд повторила вызов ${name} с одними и теми же аргументами, хотя он отклонялся с ошибкой${detail === '' ? '' : `: ${detail}`} — фаза прервана (работа не завершена). ${NEXT_STEP_HINT}`,
         );
@@ -1495,9 +1502,16 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         // повтор исполняется заново и модель получает свежий текст ошибки.
         let failed = false;
         try {
-          const parsed = JSON.parse(output) as { ok?: unknown; noop?: unknown } | null;
+          const parsed = JSON.parse(output) as { ok?: unknown; noop?: unknown; read?: unknown } | null;
           if (parsed && typeof parsed === 'object' && parsed.noop === true) {
             noop = true;
+          } else if (parsed && typeof parsed === 'object' && parsed.read === true) {
+            // VL-351: чтение внутри write-инструмента (backlog_manage_*
+            // action:list). Эффекта не было — сигнатура не пополняет ни
+            // appliedSignatures, ни noopSignatures: повтор исполняется заново
+            // и отдаёт свежее состояние, без ложной директивы «уже применён
+            // ранее» (сессия agent-1794047067509, Close VL-349).
+            applied = false;
           } else if (parsed && typeof parsed === 'object' && parsed.ok === true) {
             applied = true;
           } else if (parsed && typeof parsed === 'object' && parsed.ok === false) {
@@ -1510,27 +1524,17 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
             failed = true;
           }
         } catch {
-          // не JSON — решает страховка ниже
-        }
-        // VL-306: страховка для write-инструментов, чей ответ пришёл не-JSON
-        // (текст). Раньше appliedSignatures пополнялся ТОЛЬКО по JSON-ack, и
-        // механизм VL-304 работал ровно для одного инструмента из десяти:
-        // lesson_update отвечал «Lesson X обновлён: …», повтор не опознавался,
-        // срабатывал обычный loop detection → fail (сессия
-        // agent-1793634687751, Close VL-304: 10 дословных повторов).
-        // Ограничения страховки:
-        // - только ВСТРОЕННЫЕ инструменты (spec !== undefined): внешние MCP
-        //   (chrome-devtools и пр.) не классифицируются и не должны завершать
-        //   ран по повтору;
-        // - только write по природе операции (isWriteOperation, VL-219);
-        // - текст-ошибка («Ошибка …») не считается применённой — иначе повтор
-        //   упавшего вызова закрывал бы фазу как успешную.
-        // VL-309: noop-JSON страховкой НЕ перекрывается — noop означает
-        // «изменений нет», его нельзя превращать в «применён».
-        // VL-318: JSON-отказ (ok:false) — тоже не «применено»: страховка
-        // существует ровно для не-JSON ответов, а не для распознанного отказа.
-        if (!applied && !noop && !failed && spec && isMcpWriteTool(call.name) && !/^\s*Ошибка/.test(output)) {
-          applied = true;
+          // не JSON — исход неизвестен: ни applied, ни noop, ни failed.
+          // VL-351: страховка VL-306 («не-JSON ответ write-инструмента =
+          // применено») удалена. Она существовала, пока write-инструменты
+          // отвечали плоским текстом, и превращала ЛЮБОЙ не-JSON ответ в
+          // «применено» — в том числе чтение `backlog_manage_dod {action:list}`
+          // (сессия agent-1794047067509: повтор чтения получал ложную
+          // директиву «уже применён ранее»). Теперь все write-инструменты
+          // отвечают JSON-ack (инвариант закреплён
+          // src/mcp/write-ack-contract.test.mjs), поэтому не-JSON ответ —
+          // неизвестный исход: повтор исполняется заново, а вечный круг
+          // ограничивает обычный loop detection.
         }
         if (applied) {
           appliedSignatures.add(signature);

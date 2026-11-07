@@ -2439,11 +2439,15 @@ describe('VL-254: бюджет wall-time и прогресс до обрыва (
   });
 });
 
-describe('VL-306 — страховка appliedSignatures для не-JSON ответов write-инструментов', () => {
-  it('AC3/AC4: регресс сессии agent-1793634687751 — 14× lesson_update с текстовым ответом завершают ран штатно', async () => {
-    // Реальная сессия Close VL-304: 4 разных вызова lesson_update + 10
-    // дословных повторов. Инструмент отвечал ПЛОСКИМ ТЕКСТОМ, appliedSignatures
-    // не пополнялся, срабатывал обычный loop detection → fail, код 1.
+describe('VL-306/VL-351 — не-JSON ответ write-инструмента больше не считается применённым', () => {
+  it('AC3: плоский текст → НЕ applied, повтор исполняется заново (новый контракт VL-351)', async () => {
+    // До VL-351 здесь стояла страховка «не-JSON ответ write-инструмента =
+    // применено» (регресс сессии agent-1793634687751). Она же превращала
+    // ЧТЕНИЕ `backlog_manage_dod {action:list}` в «применённую запись»
+    // (сессия agent-1794047067509). Теперь все write-инструменты отвечают
+    // JSON-ack, поэтому не-JSON ответ — неизвестный исход: сигнатура НЕ
+    // пополняет appliedSignatures, повтор доходит до handler, а вечный круг
+    // ограничивает обычный loop detection.
     const state = { calls: 0 };
     const spec = {
       name: 'lesson_update',
@@ -2454,25 +2458,101 @@ describe('VL-306 — страховка appliedSignatures для не-JSON от�
         return 'Lesson lesson-174 обновлён: verified_by (updated_date: 2026-11-02)';
       },
     };
-    const a = { id: 'lesson-174', tags: ['x'], title: 'T', verifiedBy: 'agent' };
-    const b = { id: 'lesson-174', sourceTasks: ['VL-304'], supersedes: 'lesson-173', tags: ['x'], title: 'T', verifiedBy: 'agent' };
-    const c = { id: 'lesson-174', sourceTasks: ['VL-304'], supersedes: 'lesson-173', verifiedBy: 'agent' };
-    const d = { id: 'lesson-174', title: 'T', verifiedBy: 'agent' };
-    const script = [];
-    let n = 0;
-    for (const args of [a, b, c, c, c, d, d, d, d, d, d, d, d, d]) {
-      script.push({ text: '', toolCalls: [{ id: `c${++n}`, name: 'lesson_update', arguments: args }] });
-    }
-    const { llm } = fakeLlm(script);
+    const same = { id: 'lesson-174', verifiedBy: 'agent' };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'lesson_update', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'lesson_update', arguments: same }] },
+      { text: 'Готово' },
+    ]);
     const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
-    // VL-310: повторы больше не терминальны, но и не бесконечны — серия
-    // дословных повторов исчерпывает кап и даёт честный fail (статус
-    // откатит оркестратор), а не ложный «успех» с недоделанной работой.
-    assert.equal(res.is_error, true, `вечный повтор обязан прерывать ран: ${res.result}`);
-    assert.match(res.result, /повторила уже применённый вызов|Loop detection/);
-    // Исполнены только разные вызовы (a, b, c, d): повторы не исполнялись.
-    assert.equal(state.calls, 4, 'исполнены только 4 разных вызова, повторы не исполняются');
-    assert.equal(res.blocked_signatures, undefined, 'сигнатуры не попали в блок-лист');
+    assert.equal(res.is_error, false, `ран не должен падать: ${res.result}`);
+    assert.equal(res.result, 'Готово');
+    assert.equal(state.calls, 2, 'повтор не-JSON ответа исполняется заново (не «уже применён»)');
+    for (const m of res.messages) {
+      assert.doesNotMatch(String(m.content ?? ''), /уже применён ранее/, 'ложной директивы «уже применено» нет');
+    }
+  });
+
+  it('AC5: регресс agent-1794047067509 — чтение manage_dod после finish_phase не получает «уже применён ранее»', async () => {
+    // Реальная сессия Close VL-349: backlog_finish_phase {acChecks, dodChecks,
+    // status:'Done'} → успех, затем backlog_manage_dod {action:'list'} →
+    // «Вызов backlog_manage_dod уже применён ранее — повтор НЕ выполнен».
+    // Причина: manageChecklist отвечал плоским текстом, страховка VL-306
+    // считала не-JSON ответ write-инструмента применённым. VL-351: чтение
+    // отвечает ackRead (read:true) — сигнатура не пополняет appliedSignatures.
+    const state = { listCalls: 0 };
+    const finishSpec = {
+      name: 'backlog_finish_phase',
+      description: 'write-заглушка отчёта',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => JSON.stringify({ ok: true, message: 'Фаза завершена', applied: { status: 'Done' }, skipped: [] }),
+    };
+    const listSpec = {
+      name: 'backlog_manage_dod',
+      description: 'чтение чеклиста',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' }, action: { type: 'string' } } },
+      handler: async () => {
+        state.listCalls++;
+        return JSON.stringify({
+          ok: true, read: true, message: '1. ✓ Тесты проходят', applied: { items: [{ index: 1, checked: true, text: 'Тесты проходят' }] }, skipped: [],
+        });
+      },
+    };
+    const listArgs = { id: 'VL-349', action: 'list' };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'backlog_finish_phase', arguments: { id: 'VL-349', status: 'Done' } }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'backlog_manage_dod', arguments: listArgs }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'backlog_manage_dod', arguments: listArgs }] },
+      { text: 'Работа завершена' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [finishSpec, listSpec] });
+    assert.equal(res.is_error, false, `ран не должен падать: ${res.result}`);
+    assert.equal(res.result, 'Работа завершена', 'ран доходит до финального текста');
+    assert.equal(state.listCalls, 2, 'повтор чтения исполняется заново (не «уже применён»)');
+    for (const m of res.messages) {
+      assert.doesNotMatch(String(m.content ?? ''), /уже применён ранее/, 'ложного факта «уже применено» нет');
+    }
+  });
+
+  it('AC6: регресс agent-1794045441657 — директива несёт hint, а не обрывок JSON-примера', async () => {
+    // Реальная сессия Close VL-346: lesson_update без content на теле-скелете
+    // → ackError с длинным `error` (пример markdown) и коротким `hint`.
+    // parsedErrorText брал `error`, clipErrorText сохранял голову + хвост 35
+    // символов — в директиву попадал обрывок «## Пример», а готовая инструкция
+    // вырезалась. VL-351: приоритет `hint`, текст из hint не режется.
+    const spec = {
+      name: 'lesson_update',
+      description: 'write-заглушка урока',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => JSON.stringify({
+        ok: false,
+        reason: 'error',
+        error: 'Тело урока lesson-232 не заполнено (пустое или дефолтный скелет) — в вызове нет `content`. '
+          + 'Передай непустой markdown по образцу:\n\n## Проблема\n\n<что было не так>\n\n## Решение\n\n<что сделали>\n\n## Пример\n\n<конкретный пример>',
+        applied: {},
+        skipped: [],
+        missing: [{ field: 'content', reason: 'тело урока не заполнено' }],
+        hint: 'Добавь в вызов `content` с непустым markdown (Проблема/Решение/Пример).',
+      }),
+    };
+    const same = { id: 'lesson-232', title: 'T', tags: ['a'], verifiedBy: 'agent' };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'lesson_update', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'lesson_update', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'lesson_update', arguments: same }] },
+      { text: '', toolCalls: [{ id: 'c4', name: 'lesson_update', arguments: same }] },
+      { text: 'передаю content' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    const directives = res.messages
+      .filter((m) => m.role === 'tool' && String(m.content).includes('Loop detection'))
+      .map((m) => String(m.content));
+    assert.ok(directives.length > 0, 'директива блокировки отправлена');
+    for (const d of directives) {
+      assert.match(d, /Добавь в вызов `content`/, `директива несёт hint: ${d}`);
+      assert.doesNotMatch(d, /## Пример/, `обрывка JSON-примера в директиве нет: ${d}`);
+      assert.ok(Buffer.byteLength(d, 'utf8') < 400, `директива < 400 байт (${Buffer.byteLength(d, 'utf8')})`);
+    }
   });
 
   it('AC3: текст-ошибка не считается применённой — обычный loop detection', async () => {

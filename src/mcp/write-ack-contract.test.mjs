@@ -193,6 +193,173 @@ describe('VL-306 — все write-инструменты отвечают JSON-a
 });
 
 /**
+ * VL-351: таблица «каждый write-инструмент отвечает JSON-ack хотя бы в одной
+ * ветке».
+ *
+ * Зачем динамическая проверка поверх статического списка `covered` (AC5
+ * VL-306): статический список проверяет только НАЛИЧИЕ имени, поэтому
+ * инструмент, вернувшийся к плоскому тексту, тест не валил. Здесь каждый
+ * write-инструмент реально вызывается, и ответ обязан быть JSON с полем `ok`.
+ *
+ * Причина, по которой это критично: цикл агента (`src/agent/loop.ts`)
+ * классифицирует исход вызова по JSON-ack. Плоский текст = неизвестный исход,
+ * и до VL-351 страховка «не-JSON = применено» превращала чтение
+ * (`backlog_manage_dod {action:list}`) в «применённую запись» — повтор получал
+ * ложную директиву «уже применён ранее» (сессия agent-1794047067509).
+ */
+const ACK_SCENARIOS = {
+  backlog_create_task: async () => handleToolCall('backlog_create_task', { title: 'Ack-задача' }, cwd),
+  backlog_update_task: async () => {
+    const t = createTaskFile(cwd, { title: 'Ack-update' });
+    return handleToolCall('backlog_update_task', { id: t.id, type: 'feature' }, cwd);
+  },
+  backlog_update_status: async () => {
+    const t = createTaskFile(cwd, { title: 'Ack-status' });
+    return handleToolCall('backlog_update_status', { id: t.id, status: 'In Progress' }, cwd);
+  },
+  backlog_add_comment: async () => {
+    const t = createTaskFile(cwd, { title: 'Ack-comment' });
+    return handleToolCall('backlog_add_comment', { id: t.id, comment: 'текст' }, cwd);
+  },
+  backlog_update_dependencies: async () => {
+    const base = createTaskFile(cwd, { title: 'Ack-база' });
+    const t = createTaskFile(cwd, { title: 'Ack-зависимая' });
+    return handleToolCall('backlog_update_dependencies', { id: t.id, add: [base.id] }, cwd);
+  },
+  // VL-351: все пять веток action — JSON-ack, включая чтение (read-семантика).
+  backlog_manage_ac: async () => {
+    const t = createTaskFile(cwd, { title: 'Ack-ac' });
+    await handleToolCall('backlog_manage_ac', { id: t.id, action: 'add', text: 'A1' }, cwd);
+    await handleToolCall('backlog_manage_ac', { id: t.id, action: 'check', index: 1 }, cwd);
+    await handleToolCall('backlog_manage_ac', { id: t.id, action: 'uncheck', index: 1 }, cwd);
+    await handleToolCall('backlog_manage_ac', { id: t.id, action: 'list' }, cwd);
+    return handleToolCall('backlog_manage_ac', { id: t.id, action: 'remove', index: 1 }, cwd);
+  },
+  backlog_manage_dod: async () => {
+    const t = createTaskFile(cwd, { title: 'Ack-dod' });
+    await handleToolCall('backlog_manage_dod', { id: t.id, action: 'add', text: ['D1', 'D2'] }, cwd);
+    await handleToolCall('backlog_manage_dod', { id: t.id, action: 'check', index: [1, 2] }, cwd);
+    await handleToolCall('backlog_manage_dod', { id: t.id, action: 'uncheck', index: 1 }, cwd);
+    await handleToolCall('backlog_manage_dod', { id: t.id, action: 'list' }, cwd);
+    return handleToolCall('backlog_manage_dod', { id: t.id, action: 'remove', index: 1 }, cwd);
+  },
+  milestone_add: async () => handleToolCall('milestone_add', { name: 'AckM', description: 'd' }, cwd),
+  milestone_rename: async () => {
+    await handleToolCall('milestone_add', { name: 'AckM2', description: 'd' }, cwd);
+    return handleToolCall('milestone_rename', { from: 'AckM2', to: 'AckM3' }, cwd);
+  },
+  milestone_archive: async () => {
+    await handleToolCall('milestone_add', { name: 'AckM4', description: 'd' }, cwd);
+    return handleToolCall('milestone_archive', { name: 'AckM4' }, cwd);
+  },
+  milestone_remove: async () => {
+    await handleToolCall('milestone_add', { name: 'AckM5', description: 'd' }, cwd);
+    return handleToolCall('milestone_remove', { name: 'AckM5' }, cwd);
+  },
+  document_create: async () => handleToolCall('document_create', { title: 'Ack-док', content: 'тело' }, cwd),
+  document_update: async () => {
+    const doc = writeDocument(backlogDir, { title: 'Ack-док 2', content: 'тело' });
+    return handleToolCall('document_update', { id: doc.id, title: 'Ack-док 3' }, cwd);
+  },
+  reference_add: async () => handleToolCall('reference_add', { title: 'Ack-ref', type: 'url', url: 'https://example.org' }, cwd),
+  reference_update: async () => {
+    const ref = writeReference(cwd, { title: 'Ack-ref 2', type: 'url', url: 'https://example.org/2' });
+    return handleToolCall('reference_update', { id: ref.id, tags: ['t'] }, cwd);
+  },
+  reference_link: async () => {
+    const ref = writeReference(cwd, { title: 'Ack-ref 3', type: 'url', url: 'https://example.org/3' });
+    const t = createTaskFile(cwd, { title: 'Ack-ref-задача' });
+    return handleToolCall('reference_link', { referenceId: ref.id, taskId: t.id }, cwd);
+  },
+  reference_remove: async () => {
+    const ref = writeReference(cwd, { title: 'Ack-ref 4', type: 'url', url: 'https://example.org/4' });
+    return handleToolCall('reference_remove', { id: ref.id }, cwd);
+  },
+  lesson_create: async () => handleToolCall('lesson_create', { title: 'Ack-урок', content: '## Проблема\n\nx\n' }, cwd),
+  lesson_update: async () => {
+    const l = createLessonFile(cwd, { title: 'Ack-урок 2', tags: ['a'], content: '## Проблема\n\nx\n' });
+    return handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd);
+  },
+  lesson_link: async () => {
+    const l = createLessonFile(cwd, { title: 'Ack-урок 3', content: '## Проблема\n\nx\n' });
+    const t = createTaskFile(cwd, { title: 'Ack-урок-задача' });
+    return handleToolCall('lesson_link', { lessonId: l.id, taskId: t.id }, cwd);
+  },
+  lesson_supersede: async () => {
+    const l1 = createLessonFile(cwd, { title: 'Ack-урок 4', content: '## Проблема\n\nx\n' });
+    const l2 = createLessonFile(cwd, { title: 'Ack-урок 5', content: '## Проблема\n\nx\n' });
+    return handleToolCall('lesson_supersede', { oldId: l1.id, newId: l2.id }, cwd);
+  },
+  git_commit: async () => {
+    writeFileSync(join(cwd, 'ack-contract.txt'), 'ack', 'utf-8');
+    return handleToolCall('git_commit', { paths: ['ack-contract.txt'], message: 'chore: ack-контракт' }, cwd);
+  },
+};
+
+/**
+ * VL-351: write-инструменты вне таблицы ACK_SCENARIOS — с причиной.
+ *
+ * Инструменты прогона фаз/очереди (VL-268) управляют прогоном, а не данными
+ * backlog: их ответ — карточка состояния, а не снимок applied/skipped.
+ * `reference_sync` ходит в сеть (клонирование/скачивание) — в офлайн-тесте
+ * сценарий недетерминирован; JSON-ack у него уже есть (VL-262).
+ */
+const ACK_OUT_OF_SCOPE = {
+  backlog_finish_phase: 'сводка фазы — человекочитаемый текст (её читают шаблоны и тесты); повтор отклоняется сервером (already_finished) → toolError, ложного «применено» не возникает',
+  backlog_trigger_phase: 'прогон фаз, а не данные backlog (VL-268)',
+  backlog_auto_queue: 'очередь прогона, а не данные backlog (VL-268)',
+  backlog_supervisor: 'прогон супервизора, а не данные backlog (VL-268)',
+  reference_sync: 'ходит в сеть — сценарий недетерминирован в офлайн-тесте',
+};
+
+describe('VL-351 — каждый write-инструмент отвечает JSON-ack', () => {
+  it('AC1/AC4: все write-инструменты реестра покрыты таблицей ACK_SCENARIOS', () => {
+    const missing = listTools()
+      .map(t => t.name)
+      .filter(name => isWriteOperation(name))
+      .filter(name => !(name in ACK_SCENARIOS) && !(name in ACK_OUT_OF_SCOPE));
+    assert.deepEqual(
+      missing,
+      [],
+      `write-инструменты без JSON-ack сценария: ${missing.join(', ')}. ` +
+        'Добавь вызов в ACK_SCENARIOS (ответ обязан быть JSON с полем ok) ' +
+        'или строку с причиной в ACK_OUT_OF_SCOPE.',
+    );
+  });
+
+  it('AC1/AC4: каждый сценарий возвращает JSON с полем ok', async () => {
+    for (const [name, scenario] of Object.entries(ACK_SCENARIOS)) {
+      const out = await scenario();
+      let ack;
+      try {
+        ack = JSON.parse(out);
+      } catch {
+        assert.fail(`${name}: ответ не JSON — ${String(out).slice(0, 200)}`);
+      }
+      assert.equal(typeof ack.ok, 'boolean', `${name}: поле ok должно быть boolean — ${String(out).slice(0, 200)}`);
+    }
+  });
+
+  it('AC2: backlog_manage_ac/dod action:list — read-семантика (read:true, не applied)', async () => {
+    const t = createTaskFile(cwd, { title: 'Read-семантика' });
+    await handleToolCall('backlog_manage_ac', { id: t.id, action: 'add', text: 'R1' }, cwd);
+    const ac = JSON.parse(await handleToolCall('backlog_manage_ac', { id: t.id, action: 'list' }, cwd));
+    assert.equal(ac.ok, true, 'чтение — успешный ответ');
+    assert.equal(ac.read, true, 'признак read обязателен: цикл не считает его применённой записью');
+    assert.deepEqual(ac.applied.items, [{ index: 1, checked: false, text: 'R1' }], 'снимок прочитанного');
+    assert.match(ac.message, /1\. ○ R1/, 'привычный текст списка сохранён');
+
+    const empty = createTaskFile(cwd, { title: 'Пустой чеклист' });
+    // У задачи из конфига есть дефолтный DoD — чистим, чтобы проверить пустой список
+    await handleToolCall('backlog_manage_dod', { id: empty.id, action: 'remove', index: 'all' }, cwd);
+    const emptyAck = JSON.parse(await handleToolCall('backlog_manage_dod', { id: empty.id, action: 'list' }, cwd));
+    assert.equal(emptyAck.read, true);
+    assert.equal(emptyAck.message, 'Чеклист пуст.', 'привычная подстрока сохранена');
+    assert.deepEqual(emptyAck.applied.items, []);
+  });
+});
+
+/**
  * VL-310: таблица noop-способных write-инструментов.
  *
  * Каждый вход — сценарий «первый вызов применяет, второй с ТЕМИ ЖЕ

@@ -130,6 +130,28 @@ export function ackNoop(message: string, applied: Record<string, unknown> = {}):
 }
 
 /**
+ * Формирует ответ ЧТЕНИЯ внутри write-инструмента (VL-351).
+ *
+ * Зачем отдельная форма: `backlog_manage_ac`/`backlog_manage_dod` классифицируются
+ * как write по имени (токен `manage` в `WRITE_MARKERS`), но ветка `action:list`
+ * ничего не пишет. Плоский текст в этой ветке цикл агента принимал за
+ * «применённую запись» (страховка VL-306), и повтор чтения получал ложную
+ * директиву «уже применён ранее» (сессия agent-1794047067509, Close VL-349).
+ *
+ * `read: true` — машиночитаемый признак «это чтение, эффекта не было»: цикл
+ * (`src/agent/loop.ts`) не пополняет такой ответ ни `appliedSignatures`, ни
+ * `noopSignatures`, поэтому повтор исполняется заново и отдаёт свежее
+ * состояние. Форма совместима с `ackOk` (`ok: true`, `message`, `applied`),
+ * поэтому существующие проверки текста и JSON-контракт не ломаются.
+ *
+ * @param message — прежняя текстовая формулировка инструмента
+ * @param applied — прочитанное состояние (снимок, не запись)
+ */
+export function ackRead(message: string, applied: Record<string, unknown> = {}): string {
+  return JSON.stringify({ ok: true, read: true, message, applied, skipped: [] }, null, 2);
+}
+
+/**
  * Формирует noop-ответ с перечнем НЕЗАПОЛНЕННЫХ обязательных полей (VL-319).
  *
  * Зачем отдельный хелпер: noop-ответ «изменений нет» не сообщает, ЧЕГО в
