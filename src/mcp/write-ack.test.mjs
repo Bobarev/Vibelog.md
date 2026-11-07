@@ -431,6 +431,52 @@ describe('VL-355 — незаполненное тело урока: части�
   });
 });
 
+describe('VL-362 — retryWith с каркасом тела урока', () => {
+  /** Создаёт урок, тело которого — дефолтный скелет createLessonFile. */
+  function createSkeletonLesson(title) {
+    const l = createLessonFile(cwd, { title, tags: ['vl362'] });
+    assert.equal(getLesson(cwd, l.id).body.trim(), LESSON_BODY_SKELETON.trim(), 'фикстура: тело — скелет');
+    return l;
+  }
+
+  it('AC1/AC2/AC3: частичное применение (linkedTasks без content) → retryWith.content с каркасом', async () => {
+    // Регресс agent-1794067677112: модель пришла привязать задачу, получила
+    // partial с missing, но БЕЗ образца тела — и 4 раза повторила вызов.
+    const t = createTaskFile(cwd, { title: 'Задача VL-362' });
+    const l = createSkeletonLesson('Урок-каркас');
+    const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, linkedTasks: [t.id] }, cwd));
+    assert.equal(ack.outcome, 'partial', `ожидался partial: ${JSON.stringify(ack)}`);
+    assert.equal(ack.missing[0].field, 'content');
+    assert.equal(typeof ack.retryWith, 'object', 'retryWith обязателен на пути partial');
+    const template = String(ack.retryWith.content);
+    assert.match(template, /## Проблема/, 'каркас содержит заголовок Проблема');
+    assert.match(template, /## Решение/, 'каркас содержит заголовок Решение');
+    assert.match(template, /## Пример/, 'каркас содержит заголовок Пример');
+    assert.match(template, /<что было не так>/, 'плейсхолдеры в угловых скобках');
+    assert.match(String(ack.hint), /замени плейсхолдеры/, 'hint говорит заменить плейсхолдеры, а не копировать');
+  });
+
+  it('AC2: повтор уже применённого вызова (noop) → retryWith.content тоже есть', async () => {
+    const t = createTaskFile(cwd, { title: 'Задача VL-362 повтор' });
+    const l = createSkeletonLesson('Урок-каркас повтор');
+    const args = { id: l.id, linkedTasks: [t.id] };
+    const first = JSON.parse(await handleToolCall('lesson_update', args, cwd));
+    assert.equal(first.outcome, 'partial', `первый вызов применяет: ${JSON.stringify(first)}`);
+    const second = JSON.parse(await handleToolCall('lesson_update', args, cwd));
+    assert.equal(second.noop, true, `повтор — noop: ${JSON.stringify(second)}`);
+    assert.equal(second.missing[0].field, 'content');
+    assert.match(String(second.retryWith?.content), /## Проблема/, 'noop тоже несёт каркас тела');
+  });
+
+  it('AC1: урок с заполненным телом не получает retryWith', async () => {
+    const t = createTaskFile(cwd, { title: 'Задача VL-362 тело' });
+    const l = createLessonFile(cwd, { title: 'Урок с телом VL-362', tags: ['vl362'], content: '## Проблема\n\nшум\n' });
+    const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, linkedTasks: [t.id] }, cwd));
+    assert.equal(ack.ok, true, `успех: ${JSON.stringify(ack)}`);
+    assert.equal(ack.retryWith, undefined, 'заполненное тело не даёт retryWith');
+  });
+});
+
 describe('VL-310 — noop-детекция общая для write-инструментов', () => {
   it('AC1: document_update {id, type} дважды → noop, файл не перезаписан', async () => {
     const doc = writeDocument(backlogDir, { title: 'Док noop', type: 'guide', content: 'тело' });

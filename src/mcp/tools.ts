@@ -2759,6 +2759,26 @@ function toolLessonView(args: ToolArgs, cwd: string): string {
   }, null, 2);
 }
 
+/**
+ * VL-362: каркас тела урока для `retryWith`.
+ *
+ * Модель умеет писать markdown (в сессии agent-1794067677112 заголовок урока
+ * сформулирован точно), но копирует ОБРАЗЕЦ вызова из промпта — а шаблон
+ * Close даёт вызов без `content`. Текстовое требование «передай content» этот
+ * паттерн не перебивает: модель дважды написала «сейчас передаю content» и не
+ * передала. Готовый каркас в `retryWith` даёт правильный образец в момент
+ * ошибки — тот же приём, что сработал для `allowForeign` (VL-353).
+ *
+ * Плейсхолдеры в угловых скобках: модель обычно их заменяет, а дословное
+ * копирование каркаса всё равно даёт валидную структуру урока.
+ */
+const LESSON_BODY_TEMPLATE =
+  '## Проблема\n\n<что было не так>\n\n## Решение\n\n<что сделали>\n\n## Пример\n\n<конкретный пример>';
+
+/** VL-362: hint для `missing: content` — заменить плейсхолдеры, а не копировать каркас. */
+const LESSON_BODY_HINT =
+  'Заполни тело урока: замени плейсхолдеры в каркасе из retryWith.content на фактические Проблему/Решение/Пример.';
+
 function toolLessonUpdate(args: ToolArgs, cwd: string): string {
   const updates: UpdateLessonInput = {};
   if (args.title !== undefined) updates.title = args.title as string;
@@ -2855,7 +2875,10 @@ function toolLessonUpdate(args: ToolArgs, cwd: string): string {
         [],
         {
           missing: [{ field: 'content', reason: 'тело урока не заполнено (пустое или дефолтный скелет)' }],
-          hint: 'Добавь в вызов `content` с непустым markdown (Проблема/Решение/Пример) — без него урок остаётся пустым.',
+          hint: LESSON_BODY_HINT,
+          // VL-362: готовый образец тела — модель копирует образец вызова, а
+          // не текст требования (см. LESSON_BODY_TEMPLATE).
+          retryWith: { content: LESSON_BODY_TEMPLATE },
         },
       );
     }
@@ -2894,8 +2917,11 @@ function toolLessonUpdate(args: ToolArgs, cwd: string): string {
         applied,
         missing,
         missing.length > 0
-          ? 'Добавь в вызов `content` с непустым markdown (Проблема/Решение/Пример) — без него урок остаётся пустым.'
+          ? LESSON_BODY_HINT
           : 'Переходи к следующему шагу фазы: повтор с теми же аргументами ничего не изменит.',
+        // VL-362: готовый образец тела и на повторе уже применённого вызова —
+        // именно этот путь давал 4 дословных повтора в agent-1794064942811.
+        missing.length > 0 ? { content: LESSON_BODY_TEMPLATE } : undefined,
       );
     }
   }

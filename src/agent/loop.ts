@@ -1578,9 +1578,18 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         }
         if (noop) {
           noopSignatures.add(signature);
-          // VL-361: запоминаем «следующий шаг» из noop-ответа — директива
-          // повтора назовёт КОНКРЕТНОЕ недостающее поле (`missing`) и готовые
-          // аргументы (`retryWith`), а не описательное «добавь отсутствующее».
+        }
+        // VL-361/VL-362: запоминаем «следующий шаг» из ответа инструмента —
+        // директива повтора назовёт КОНКРЕТНОЕ недостающее поле (`missing`) и
+        // готовые аргументы (`retryWith`), а не описательное «добавь
+        // отсутствующее». VL-362: извлечение вынесено из ветки `noop` — исход
+        // `partial` (ok:true + missing) тоже несёт `next`, а директива для
+        // него — `appliedNoopDirective` (сигнатура попадает в
+        // appliedSignatures). Раньше карта заполнялась только на noop, и
+        // директива повтора частично применённого `lesson_update` содержала
+        // лишь `applied_repeat: true` без `missing` (сессия
+        // agent-1794067677112: 4 дословных повтора без `content`).
+        {
           const ackNext = parsedAckNext(output);
           if (ackNext !== null) lastAckBySignature.set(signature, ackNext);
         }

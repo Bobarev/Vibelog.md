@@ -237,13 +237,25 @@ export function ackOk(
  * @param message — человекочитаемая строка результата
  * @param applied — фактически записанные поля (значения из сущности после записи)
  * @param skipped — переданные, но не применённые поля
- * @param extra — missing/hint (предупреждение, а не блокировка)
+ * @param extra — missing/hint/retryWith (предупреждение, а не блокировка)
  */
 export function ackOkDetailed(
   message: string,
   applied: Record<string, unknown> = {},
   skipped: SkippedField[] = [],
-  extra: { missing?: SkippedField[]; hint?: string } = {},
+  extra: {
+    missing?: SkippedField[];
+    hint?: string;
+    /**
+     * VL-362: готовый образец аргументов для повтора. Нужен, когда модель
+     * копирует ОБРАЗЕЦ вызова из промпта, а не текст требования: шаблон Close
+     * даёт `lesson_update {id, linkedTasks}` без `content`, и модель
+     * воспроизводит его буквально. Каркас тела в `retryWith` даёт правильный
+     * образец в момент ошибки (тот же приём, что сработал для `allowForeign`,
+     * VL-353).
+     */
+    retryWith?: Record<string, unknown>;
+  } = {},
 ): string {
   const missing = extra.missing ?? [];
   // VL-357: незаполненное обязательное по смыслу поле делает исход `partial`,
@@ -253,7 +265,11 @@ export function ackOkDetailed(
     message,
     applied,
     skipped,
-    next: { ...(missing.length > 0 ? { missing } : {}), ...(extra.hint ? { hint: extra.hint } : {}) },
+    next: {
+      ...(missing.length > 0 ? { missing } : {}),
+      ...(extra.hint ? { hint: extra.hint } : {}),
+      ...(extra.retryWith && Object.keys(extra.retryWith).length > 0 ? { retryWith: extra.retryWith } : {}),
+    },
   });
 }
 
@@ -309,12 +325,14 @@ export function ackRead(message: string, applied: Record<string, unknown> = {}):
  * @param applied — фактическое состояние полей (из задачи, без записи)
  * @param missing — обязательные по смыслу, но не заполненные поля
  * @param hint — следующий шаг для модели
+ * @param retryWith — VL-362: готовый образец аргументов для повтора
  */
 export function ackNoopDetailed(
   message: string,
   applied: Record<string, unknown> = {},
   missing: SkippedField[] = [],
   hint?: string,
+  retryWith?: Record<string, unknown>,
 ): string {
   // VL-326: hint есть ВСЕГДА. Без него модель читала noop как «ошибка
   // инструмента» и повторяла вызов дословно (инцидент VL-324: 12 повторов
@@ -329,6 +347,9 @@ export function ackNoopDetailed(
     next: {
       ...(missing.length > 0 ? { missing } : {}),
       hint: hint ?? NOOP_DEFAULT_HINT,
+      // VL-362: готовый образец аргументов — модель копирует образец вызова,
+      // а не текст требования (см. ackOkDetailed).
+      ...(retryWith && Object.keys(retryWith).length > 0 ? { retryWith } : {}),
     },
   });
 }

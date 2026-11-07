@@ -3002,3 +3002,86 @@ describe('VL-353 — директива loop detection несёт ГОТОВЫЙ
     assert.doesNotMatch(directive, /Повтори так/, 'готового вызова нет — retryWith не передан');
   });
 });
+
+describe('VL-362 — директива повтора несёт missing/retryWith на пути partial', () => {
+  /**
+   * Заглушка lesson_update: на уроке-скелете без `content` отдаёт `partial`
+   * (ok:true + missing + retryWith с каркасом тела) — ровно как реальный
+   * инструмент после шага 1 этой задачи.
+   */
+  function lessonSpec() {
+    const state = { calls: 0, withContent: 0 };
+    const spec = {
+      name: 'lesson_update',
+      description: 'write-заглушка урока-скелета',
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'string' }, linkedTasks: { type: 'array' }, content: { type: 'string' } },
+      },
+      handler: async (args) => {
+        state.calls++;
+        if (typeof args.content === 'string' && args.content.trim() !== '') {
+          state.withContent++;
+          return JSON.stringify({ ok: true, outcome: 'applied', message: 'тело записано' });
+        }
+        return JSON.stringify({
+          ok: true,
+          outcome: 'partial',
+          message: 'Lesson lesson-1 обновлён: linkedTasks (тело урока всё ещё не заполнено)',
+          applied: { linked_tasks: args.linkedTasks ?? [] },
+          missing: [{ field: 'content', reason: 'тело урока не заполнено (пустое или дефолтный скелет)' }],
+          hint: 'Заполни тело урока: замени плейсхолдеры в каркасе из retryWith.content.',
+          retryWith: { content: '## Проблема\n\n<что было не так>\n\n## Решение\n\n<что сделали>\n\n## Пример\n\n<конкретный пример>' },
+        });
+      },
+    };
+    return { spec, state };
+  }
+
+  it('AC4/AC5: регресс agent-1794067677112 — повтор partial-вызова даёт missing и retryWith', async () => {
+    const { spec, state } = lessonSpec();
+    const args = { id: 'lesson-1', linkedTasks: ['VL-362'] };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'lesson_update', arguments: args }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'lesson_update', arguments: args }] },
+      { text: 'Готово' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false, `ран не должен падать: ${res.result}`);
+    const directive = res.messages
+      .filter((m) => m.role === 'tool' && String(m.content).includes('applied_repeat'))
+      .map((m) => String(m.content))
+      .pop();
+    assert.ok(directive, 'директива повтора отправлена');
+    const parsed = JSON.parse(directive);
+    assert.equal(parsed.applied_repeat, true, 'маркер повтора сохранён');
+    assert.equal(parsed.missing[0].field, 'content', 'директива называет недостающее поле');
+    assert.match(String(parsed.retryWith?.content), /## Проблема/, 'директива несёт готовый каркас тела');
+    assert.equal(state.calls, 1, 'повтор не дошёл до handler — он уже применён');
+  });
+
+  it('AC6: регресс agent-1794064942811 — серия повторов без content → каждая директива с missing и retryWith', async () => {
+    const { spec } = lessonSpec();
+    const args = { id: 'lesson-1', linkedTasks: ['VL-362'] };
+    // Кап MAX_APPLIED_REPEATS_PER_RUN = 3 (VL-310) оставлен как есть: 4-й
+    // повтор по-прежнему честно завершает ран. Проверяем, что КАЖДАЯ
+    // директива серии несёт недостающее поле и готовый каркас — раньше они
+    // содержали только `applied_repeat: true`.
+    const script = [{ text: '', toolCalls: [{ id: 'c0', name: 'lesson_update', arguments: args }] }];
+    for (let i = 1; i <= 3; i++) {
+      script.push({ text: '', toolCalls: [{ id: `c${i}`, name: 'lesson_update', arguments: args }] });
+    }
+    script.push({ text: 'Готово' });
+    const { llm } = fakeLlm(script);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(res.is_error, false, `ран не должен падать: ${res.result}`);
+    const directives = res.messages
+      .filter((m) => m.role === 'tool' && String(m.content).includes('applied_repeat'))
+      .map((m) => JSON.parse(String(m.content)));
+    assert.equal(directives.length, 3, 'все повторы серии получили директиву');
+    for (const d of directives) {
+      assert.equal(d.missing[0].field, 'content', 'каждая директива называет content');
+      assert.match(String(d.retryWith?.content), /## Проблема/, 'каждая директива несёт каркас');
+    }
+  });
+});
