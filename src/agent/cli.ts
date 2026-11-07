@@ -49,7 +49,7 @@ import { addComment, addTaskTokenUsage, getTask } from '../core/store.js';
 import { getWorkflowForTask, getStatusAfterPhase } from '../core/workflow.js';
 import { hasUsageDelta, usageDelta } from '../core/analytics.js';
 import type { TokenUsage } from '../core/analytics.js';
-import { appendBilling, appendExperimentUsage, parseExperimentMarker, parseRunSource, EXPERIMENT_ENV, RUN_SOURCE_ENV } from '../core/billing.js';
+import { appendBilling, appendExperimentUsage, billingPath, parseExperimentMarker, parseRunSource, EXPERIMENT_ENV, RUN_SOURCE_ENV } from '../core/billing.js';
 import type { BillingSource } from '../core/billing.js';
 import type { TuiHandle } from './tui.js';
 
@@ -1067,17 +1067,12 @@ export async function main(argv: string[]): Promise<void> {
       } catch (err) {
         console.error(`Предупреждение: авто-отчёт фазы не записан — ${(err as Error).message}`);
       }
-      try {
-        if (isTaskCommitPhase(runPhase)) {
-          commitTaskFile(taskCwd, taskId, runPhase as string);
-        }
-      } catch (err) {
-        console.error(`Предупреждение: коммит файла задачи ${taskId} не выполнен — ${(err as Error).message}`);
-      }
       // 2) Billing — append-only источник правды (каждый ран = запись).
       // usage записи — ЗА РАН (loopResult.usage накапливает только ответы
       // этого запуска), а не кумулятив сессии: иначе resume-записи давали
-      // бы двойной счёт при суммировании журнала
+      // бы двойной счёт при суммировании журнала.
+      // VL-352: billing пишется ДО коммита файла задачи — иначе billing-файл
+      // оставался грязным после close (коммит шёл раньше записи, :1072 → :1093).
       try {
         const runUsage: TokenUsage = {
           input: loopResult.usage.input_tokens,
@@ -1115,6 +1110,17 @@ export async function main(argv: string[]): Promise<void> {
         });
       } catch (err) {
         console.error(`Предупреждение: billing задачи ${taskId} не дополнен — ${(err as Error).message}`);
+      }
+      // 2.5) VL-352: файл задачи коммитится ПОСЛЕ записи usage и billing —
+      // billing-файл уходит тем же коммитом (extraPaths), отдельного
+      // chore(billing)-коммита нет. Гейт по фазе: только close; git-ошибки
+      // глушит сам хелпер (риск R4).
+      try {
+        if (isTaskCommitPhase(runPhase)) {
+          commitTaskFile(taskCwd, taskId, runPhase as string, [billingPath(taskCwd, taskId)]);
+        }
+      } catch (err) {
+        console.error(`Предупреждение: коммит файла задачи ${taskId} не выполнен — ${(err as Error).message}`);
       }
     }
     // 3) Мета сессии — merge (lesson-40: taskId/phase resume-рана не затираются).

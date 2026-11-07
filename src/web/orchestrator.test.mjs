@@ -1382,6 +1382,63 @@ describe('orchestrator (VL-28)', () => {
     }
   });
 
+  it('startPhase close (qwen): billing уходит тем же коммитом, что и файл задачи (VL-352, AC4)', async () => {
+    const commitRoot = mkTestRoot('vibelog-orch-billing-');
+    const git = (args) => spawnSync('git', ['-C', commitRoot, ...args], { encoding: 'utf-8' });
+    git(['init', '-q']);
+    mkdirSync(join(commitRoot, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(commitRoot, 'backlog', 'config.yml'), 'project_name: Billing Close\n', 'utf-8');
+    createTaskFile(commitRoot, { id: 'VL-94', title: 'Задача billing в коммите' });
+    const taskFile = readdirSync(join(commitRoot, 'backlog', 'tasks')).find((f) => f.startsWith('VL-94') && f.endsWith('.md'));
+    const relPath = `backlog/tasks/${taskFile}`;
+    const billingRel = '.vibelog/billing/VL-94.json';
+    git(['add', '.']);
+    git(['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init']);
+    setStubEnv({
+      VIBELOG_QWEN_BIN: stubBin,
+      VL28_STUB_MARKER: join(commitRoot, 'marker-billing.txt'),
+      VL28_STUB_SLEEP: '0',
+      VL28_STUB_EXIT: '0',
+      VL28_STUB_RESULT: JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        duration_ms: 700,
+        num_turns: 1,
+        result: 'закрыто',
+        usage: { input_tokens: 5, output_tokens: 3, cache_read_input_tokens: 0, total_tokens: 8 },
+        session_id: 'agent-billing-352',
+      }),
+    });
+    try {
+      const res = startPhase(commitRoot, 'VL-94', 'close');
+      assert.equal(res.started, true, JSON.stringify(res));
+      const run = await waitDone('VL-94', 6000);
+      assert.equal(run.exitCode, 0);
+      // billing пишется и коммитится fire-and-forget в finish(): ждём чистоты
+      const deadline = Date.now() + 4000;
+      let status = 'x';
+      while (Date.now() < deadline) {
+        status = spawnSync('/usr/bin/git', ['-C', commitRoot, 'status', '--porcelain', '--', '.vibelog/billing/'], { encoding: 'utf-8' }).stdout.trim();
+        if (status === '') break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      assert.equal(status, '', 'billing закоммичен (AC4)');
+      const files = spawnSync(
+        '/usr/bin/git',
+        ['-C', commitRoot, '-c', 'core.quotePath=false', 'show', '--name-only', '--pretty=format:', 'HEAD'],
+        { encoding: 'utf-8' },
+      )
+        .stdout.split('\n')
+        .filter(Boolean)
+        .sort();
+      assert.deepEqual(files, [billingRel, relPath].sort(), 'в коммите файл задачи и billing');
+    } finally {
+      resetStubEnv();
+      rmSync(commitRoot, { recursive: true, force: true });
+    }
+  });
+
   it('startResume: сессия фазы close возобновляется в главном репо, не в worktree (VL-243/VL-112)', async () => {
     const closeResumeRoot = mkTestRoot('vibelog-orch-closeres-');
     const git = (args) => spawnSync('git', ['-C', closeResumeRoot, ...args], { encoding: 'utf-8' });
