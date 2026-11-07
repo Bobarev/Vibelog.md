@@ -55,10 +55,12 @@ import {
   createRepeatGuard,
   loopDetectionDirective,
   noopRepeatDirective,
+  parsedAckNext,
   parsedErrorText,
   repeatBlockDirective,
   repeatKey,
   toolRepeatKind,
+  type AckNext,
   type RepeatGuard,
   type RepeatStats,
 } from './repeat-tracker.js';
@@ -80,6 +82,7 @@ export {
   clipErrorText,
   loopDetectionDirective,
   noopRepeatDirective,
+  parsedAckNext,
   parsedErrorText,
   retryDirective,
 } from './repeat-tracker.js';
@@ -348,6 +351,57 @@ function isReportWritingTool(name: string): boolean {
  */
 const WORK_EVIDENCE_TOOLS = new Set(['edit', 'write_file', 'git_commit']);
 
+/**
+ * VL-361: shell-команды, которые МЕНЯЮТ состояние или проверяют результат.
+ *
+ * В фазе Close-worktree вся работа идёт через `run_shell_command`: merge,
+ * build, полный прогон тестов, уборка worktree. `git_commit` модель при этом
+ * не вызывает — merge делается shell-командой. Без этой ветки
+ * `runHasProgress()` возвращал false при полностью выполненной работе, и ран
+ * падал кодом 1 (сессия `agent-1794064942811`, Close VL-359).
+ *
+ * Наивно добавить `run_shell_command` в `WORK_EVIDENCE_TOOLS` нельзя: ответ
+ * shell — плоский текст, и упавшая команда выдала бы себя за работу (регресс
+ * VL-124). Поэтому класс команды проверяется по подстроке, а успех — по
+ * отсутствию маркеров провала (`shellCallIsWork`).
+ */
+const SHELL_WORK_PATTERNS: RegExp[] = [
+  /\bgit\s+(merge|commit|rebase|cherry-pick|worktree\s+remove|branch\s+-d)\b/,
+  /\bpnpm\s+(build|test)\b/,
+  /\bnpx\s+vitest\b/,
+  /\bnpm\s+(run\s+)?(build|test)\b/,
+];
+
+/**
+ * VL-361: маркеры провала shell-команды в её выводе.
+ *
+ * `run_shell_command` всегда печатает первой строкой `exit code: N` (см.
+ * `makeRunShellCommand`), поэтому ненулевой код ловится надёжно — это главный
+ * признак. Остальные маркеры страхуют случаи, когда код возврата потерян
+ * (обрезка вывода, вложенный процесс): `fatal:` от git, `ERR_*` от node,
+ * `N failed` от vitest, `error` в начале строки от tsc.
+ */
+const SHELL_FAILURE_MARKERS: RegExp[] = [
+  /^exit code: [1-9]/m,
+  /^fatal:/im,
+  /\bERR_[A-Z_]+\b/,
+  /\bcommand not found\b/i,
+  /\b\d+ failed\b/i,
+  /^error\b/im,
+];
+
+/**
+ * VL-361: shell-вызов считается работой, только если команда из класса
+ * «меняет состояние / проверяет результат» И завершилась успешно.
+ *
+ * @param command — строка команды из аргументов вызова
+ * @param output — текст tool-результата (плоский, не JSON)
+ */
+export function shellCallIsWork(command: string, output: string): boolean {
+  if (!SHELL_WORK_PATTERNS.some((re) => re.test(command))) return false;
+  return !SHELL_FAILURE_MARKERS.some((re) => re.test(output));
+}
+
 // VL-357: пороги повторов живут в ОДНОМ месте — `REPEAT_LIMITS`
 // (`src/agent/repeat-tracker.ts`). Раньше `loop.ts` держал свой набор
 // `MAX_*_REPEATS_PER_RUN`, `repeat-tracker.ts` — свои `REPEAT_*`, а веб-чат —
@@ -488,6 +542,11 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
     string,
     { text: string; fromHint: boolean; retryWith?: Record<string, unknown> }
   >();
+  // VL-361: последний «следующий шаг» из ответа инструмента по сигнатуре —
+  // `missing`/`hint`/`retryWith`. Директива повтора обязана назвать КОНКРЕТНОЕ
+  // недостающее поле, иначе модель повторяет вызов дословно (сессия
+  // agent-1794064942811: 4 повтора `lesson_update` без `content`).
+  const lastAckBySignature = new Map<string, AckNext>();
   // VL-323: серия подряд повторов вызова, вернувшего ackError. Порог фазового
   // прерывания — MAX_ERROR_REPEATS_PER_RUN (5), не 3: модели нужно время
   // применить подсказку из текста ошибки (инцидент Close VL-320).
@@ -765,6 +824,18 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       if (m.role !== 'assistant') continue;
       for (const tc of m.tool_calls ?? []) {
         if (!isValidToolCall(tc)) continue;
+        // VL-361: shell-вызов обрабатывается отдельно — его ответ плоский,
+        // поэтому `isFailureResponse` (JSON-ориентированный) его не ловит, а
+        // имя вызова само по себе ничего не доказывает: упавшая команда
+        // (`exit code 1`, `fatal:`) не должна выдавать себя за работу
+        // (регресс VL-124).
+        if (tc.name === 'run_shell_command') {
+          const content = responses.get(tc.id);
+          if (content === undefined) continue;
+          const command = String((tc.arguments as Record<string, unknown> | undefined)?.command ?? '');
+          if (shellCallIsWork(command, content)) return true;
+          continue;
+        }
         if (!WORK_EVIDENCE_TOOLS.has(tc.name)) continue;
         const content = responses.get(tc.id);
         if (content === undefined) continue; // вызов не дошёл до исполнения
@@ -1103,7 +1174,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           await pushMessage({
             role: 'tool',
             tool_call_id: call.id,
-            content: noopRepeatDirective(call.name),
+            content: noopRepeatDirective(call.name, lastAckBySignature.get(signature)),
           });
           console.error(`[vibelog-agent] повтор noop-вызова: ${call.name}`);
           return;
@@ -1123,7 +1194,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           await pushMessage({
             role: 'tool',
             tool_call_id: call.id,
-            content: appliedNoopDirective(call.name),
+            content: appliedNoopDirective(call.name, lastAckBySignature.get(signature)),
           });
           console.error(`[vibelog-agent] повтор применённого вызова: ${call.name}`);
           return;
@@ -1505,7 +1576,14 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           // который пишет отчёт/комментарий фазы.
           if (isReportWritingTool(call.name)) reportWritten = true;
         }
-        if (noop) noopSignatures.add(signature);
+        if (noop) {
+          noopSignatures.add(signature);
+          // VL-361: запоминаем «следующий шаг» из noop-ответа — директива
+          // повтора назовёт КОНКРЕТНОЕ недостающее поле (`missing`) и готовые
+          // аргументы (`retryWith`), а не описательное «добавь отсутствующее».
+          const ackNext = parsedAckNext(output);
+          if (ackNext !== null) lastAckBySignature.set(signature, ackNext);
+        }
         // VL-323: отказ (ackError) — запоминаем факт и ТЕКСТ ошибки. Директива
         // блокировки для этой сигнатуры возьмёт текст отсюда и назовёт готовое
         // исправление (инцидент Close VL-320: подсказка «передай
