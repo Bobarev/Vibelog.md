@@ -1,0 +1,104 @@
+/**
+ * VL-357 (шаг 3) — единый детектор повторов.
+ *
+ * До VL-357 пороги и директивы жили в трёх местах (loop.ts, repeat-tracker.ts,
+ * web/tool-dedup.ts) с разными значениями и разными словарями. Теперь источник
+ * один: `REPEAT_LIMITS` + `callSignature`/`repeatKey` здесь, остальные слои —
+ * потребители.
+ */
+
+import { describe, it } from 'vitest';
+import assert from 'node:assert/strict';
+
+import {
+  REPEAT_LIMITS,
+  MAX_APPLIED_REPEATS_PER_RUN,
+  MAX_ERROR_REPEATS_PER_RUN,
+  MAX_NOOP_REPEATS_PER_RUN,
+  NON_SEMANTIC_ARGS,
+  callSignature,
+  repeatKey,
+  loopDetectionDirective,
+  appliedNoopDirective,
+  noopRepeatDirective,
+  parsedErrorText,
+  clipErrorText,
+} from '../../dist/agent/repeat-tracker.js';
+
+describe('VL-357 — пороги повторов объявлены один раз', () => {
+  it('именованные константы согласованы с REPEAT_LIMITS', () => {
+    assert.equal(MAX_APPLIED_REPEATS_PER_RUN, REPEAT_LIMITS.applied);
+    assert.equal(MAX_NOOP_REPEATS_PER_RUN, REPEAT_LIMITS.noop);
+    assert.equal(MAX_ERROR_REPEATS_PER_RUN, REPEAT_LIMITS.error);
+    assert.equal(REPEAT_LIMITS.error, 5, 'порог отказа выше: модели нужно время применить подсказку');
+    assert.equal(REPEAT_LIMITS.applied, 3);
+    assert.equal(REPEAT_LIMITS.noop, 3);
+  });
+});
+
+describe('VL-357 — единая сигнатура вызова', () => {
+  it('служебные аргументы вырезаются: смена idempotencyKey не делает вызов новым', () => {
+    assert.deepEqual(NON_SEMANTIC_ARGS, ['idempotencyKey']);
+    const a = callSignature('backlog_update_task', { id: 'VL-1', idempotencyKey: 'k1' });
+    const b = callSignature('backlog_update_task', { id: 'VL-1', idempotencyKey: 'k2' });
+    assert.equal(a, b, 'сигнатуры совпадают — это тот же вызов');
+  });
+
+  it('порядок ключей не важен', () => {
+    assert.equal(
+      callSignature('x', { a: 1, b: 2 }),
+      callSignature('x', { b: 2, a: 1 }),
+    );
+  });
+
+  it('semantic-аргументы по-прежнему различают вызовы', () => {
+    assert.notEqual(callSignature('x', { a: 1 }), callSignature('x', { a: 2 }));
+  });
+
+  it('repeatKey тоже игнорирует idempotencyKey', () => {
+    assert.equal(
+      repeatKey('read_file', { path: 'src/a.ts', idempotencyKey: 'k1' }),
+      repeatKey('read_file', { path: 'src/a.ts', idempotencyKey: 'k2' }),
+    );
+    assert.equal(repeatKey('grep_search', { pattern: 'foo' }), 'grep_search|foo');
+  });
+});
+
+describe('VL-357 — директивы повторов: один словарь', () => {
+  it('loopDetectionDirective: маркер и следующий шаг на месте', () => {
+    const text = loopDetectionDirective('backlog_view_task', 3);
+    assert.match(text, /Loop detection/);
+    assert.match(text, /Следующий шаг/);
+  });
+
+  it('loopDetectionDirective с retryWith выдаёт готовый вызов', () => {
+    const text = loopDetectionDirective('git_commit', 3, 'чужой путь', false, { allowForeign: true }, { paths: ['a.ts'] });
+    assert.match(text, /Повтори так: git_commit /);
+    assert.match(text, /allowForeign/);
+    assert.ok(Buffer.byteLength(text, 'utf8') < 400, 'директива < 400 байт (инвариант VL-310)');
+  });
+
+  it('appliedNoopDirective и noopRepeatDirective — разные исходы, разные тексты', () => {
+    assert.match(appliedNoopDirective('lesson_update'), /уже применён/);
+    assert.match(noopRepeatDirective('backlog_update_task'), /Изменений нет/);
+  });
+
+  it('parsedErrorText читает retryWith и hint из контракта v2 (next)', () => {
+    const v2 = JSON.stringify({ outcome: 'rejected', ok: false, error: 'нет content', next: { hint: 'Добавь content', retryWith: { allowForeign: true } } });
+    const parsed = parsedErrorText(v2);
+    assert.equal(parsed.text, 'Добавь content', 'hint идёт первым');
+    assert.equal(parsed.fromHint, true);
+    assert.deepEqual(parsed.retryWith, { allowForeign: true });
+    // Старая форма (VL-353, поля в корне) тоже читается
+    const v1 = JSON.stringify({ ok: false, error: 'чужой путь', retryWith: { allowForeign: true } });
+    assert.deepEqual(parsedErrorText(v1).retryWith, { allowForeign: true });
+  });
+
+  it('clipErrorText сохраняет хвост длинного текста (готовая подсказка в конце)', () => {
+    const long = `${'а'.repeat(200)} передай allowForeign: true`;
+    const clipped = clipErrorText(long);
+    assert.ok(clipped.length <= 100, `длина ${clipped.length}`);
+    assert.match(clipped, /allowForeign/);
+    assert.equal(clipErrorText('короткий', false), 'короткий');
+  });
+});

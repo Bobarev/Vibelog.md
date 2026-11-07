@@ -592,6 +592,10 @@ describe('VL-353 — ackErrorDetailed несёт машиночитаемое и
   it('AC1: ackError остаётся обёрткой без деталей', async () => {
     const { ackError } = await import('../../dist/mcp/tool-result.js');
     const parsed = JSON.parse(ackError('ошибка'));
-    assert.deepEqual(Object.keys(parsed).sort(), ['error', 'ok']);
+    // VL-357: к контракту добавлено ровно одно поле — `outcome` (исход).
+    // Прочие детали (applied/skipped/missing/hint/retryWith) у ackError
+    // по-прежнему отсутствуют.
+    assert.deepEqual(Object.keys(parsed).sort(), ['error', 'ok', 'outcome']);
+    assert.equal(parsed.outcome, 'rejected');
   });
 });

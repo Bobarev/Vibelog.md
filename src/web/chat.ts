@@ -1598,9 +1598,11 @@ async function produce(
         continue;
       }
       const grantAllowed = grantGate.kind === 'granted';
-      const autoAllowed =
-        grantAllowed || (isWriteOperation(tc.name) && isToolAllowed(cwd, threadId, tc.name));
-      if (isWriteOperation(tc.name) && !autoAllowed) {
+      // VL-357: аргументы передаются в классификатор — mixed-инструмент
+      // (backlog_manage_*) читает при action:'list' и не требует Allow/Deny.
+      const writeOp = isWriteOperation(tc.name, tc.arguments as Record<string, unknown> | undefined);
+      const autoAllowed = grantAllowed || (writeOp && isToolAllowed(cwd, threadId, tc.name));
+      if (writeOp && !autoAllowed) {
         pauseOnToolCall(tc, cwd, threadId, queue, currentTurn());
         return; // состояние уже в jsonl; ждём resume с решением
       }
@@ -2079,9 +2081,9 @@ async function advanceToNextApproval(
       continue;
     }
     const grantAllowed = grantGate.kind === 'granted';
-    const autoAllowed =
-      grantAllowed || (isWriteOperation(tc.name) && isToolAllowed(cwd, threadId, tc.name));
-    if (isWriteOperation(tc.name) && !autoAllowed) return tc;
+    const writeOp = isWriteOperation(tc.name, tc.arguments as Record<string, unknown> | undefined);
+    const autoAllowed = grantAllowed || (writeOp && isToolAllowed(cwd, threadId, tc.name));
+    if (writeOp && !autoAllowed) return tc;
     queue.push({
       type: 'tool_start',
       id: tc.id,

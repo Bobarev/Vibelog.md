@@ -28,7 +28,7 @@
  * resume-пути после approval, и в advanceToNextApproval.
  */
 
-import { toolRepeatTarget } from '../agent/repeat-tracker.js';
+import { REPEAT_LIMITS, callSignature, toolRepeatTarget } from '../agent/repeat-tracker.js';
 import { loadSettings } from '../core/settings.js';
 import { isWriteOperation } from './tool-policy.js';
 import { isInteractiveTool } from '../core/tool-classify.js';
@@ -47,88 +47,14 @@ export const CHAT_MAX_TOOL_CALLS_DEFAULT = 16;
 export const CHAT_MAX_TOOL_CALLS_CEILING = 200;
 
 /**
- * Стабильная сериализация значения для ключа вызова.
- *
- * Ключи объектов сортируются рекурсивно — `{a:1,b:2}` и `{b:2,a:1}` дают
- * одинаковую подпись (порядок ключей в JSON модели не стабилен).
- * `undefined`/функции/символы отбрасываются как отсутствующие — иначе
- * `{path:'x'}` и `{path:'x',limit:undefined}` считались бы разными вызовами.
- * BigInt сериализуется строкой: JSON.stringify на нём бросает исключение.
+ * VL-357: ключ вызова и список служебных аргументов живут в ОДНОМ месте —
+ * `src/agent/repeat-tracker.ts` (`callSignature`, `NON_SEMANTIC_ARGS`).
+ * Раньше здесь была вторая реализация `stableSerialize`/`stripNonSemanticArgs`:
+ * правка в одной копии (VL-326 вырезал `idempotencyKey`) не доезжала до
+ * другой, и детекторы расходились в поведении. Реэкспорт сохраняет публичный
+ * API модуля (тесты и чат импортируют `callSignature`/\`NON_SEMANTIC_ARGS` отсюда).
  */
-function stableSerialize(value: unknown): string {
-  if (value === null) return 'null';
-  if (typeof value === 'bigint') return JSON.stringify(`${value.toString()}n`);
-  if (typeof value !== 'object') {
-    const encoded = JSON.stringify(value);
-    // undefined/функция/символ → undefined (ключ будет отброшен вызывающим)
-    return encoded === undefined ? 'null' : encoded;
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(v => stableSerialize(v)).join(',')}]`;
-  }
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj)
-    .filter(k => obj[k] !== undefined)
-    .sort();
-  return `{${keys.map(k => `${JSON.stringify(k)}:${stableSerialize(obj[k])}`).join(',')}}`;
-}
-
-/**
- * Служебные аргументы вызова, НЕ входящие в сигнатуру дедупликации (VL-326).
- *
- * `idempotencyKey` — маркер повтора, а не семантика вызова: он описывает «это
- * тот же самый вызов, что и раньше», а не «что именно делает вызов». Пока
- * ключ входил в сигнатуру, новый ключ на каждый повтор делал сигнатуры
- * разными, и guard возвращал `execute` вместо `duplicate` — дедупликация
- * обходилась сменой служебного поля (инцидент VL-324: модель 12 раз подряд
- * вызвала `backlog_update_task` с уже применёнными полями, каждый раз с новым
- * ключом).
- *
- * Список вынесен в одну константу: новое служебное поле добавляется здесь и
- * НЕ требует правок в `callSignature`/guard'е.
- */
-export const NON_SEMANTIC_ARGS: readonly string[] = ['idempotencyKey'];
-
-/**
- * Копия аргументов без служебных полей (входной объект модели не мутируется).
- *
- * Возвращает исходную ссылку, если служебных ключей нет — лишний объект на
- * каждый вызов не нужен. `undefined` пробрасывается как есть: `callSignature`
- * трактует его как пустой объект.
- */
-function stripNonSemanticArgs(
-  args: Record<string, unknown> | undefined,
-): Record<string, unknown> | undefined {
-  if (args === undefined) return undefined;
-  let hasNonSemantic = false;
-  for (const key of NON_SEMANTIC_ARGS) {
-    if (key in args) {
-      hasNonSemantic = true;
-      break;
-    }
-  }
-  if (!hasNonSemantic) return args;
-  const copy: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) {
-    if (NON_SEMANTIC_ARGS.includes(key)) continue;
-    copy[key] = value;
-  }
-  return copy;
-}
-
-/**
- * Ключ вызова: имя инструмента + стабильная сериализация аргументов.
- *
- * VL-326: служебные аргументы (`NON_SEMANTIC_ARGS`, напр. `idempotencyKey`)
- * вырезаются ДО сериализации — два вызова с одинаковыми содержательными
- * аргументами и разными ключами идемпотентности дают одинаковую сигнатуру.
- *
- * @param name — имя инструмента (MCP-реестр или локальный файловый)
- * @param args — аргументы вызова; undefined трактуется как пустой объект
- */
-export function callSignature(name: string, args: Record<string, unknown> | undefined): string {
-  return `${name}|${stableSerialize(stripNonSemanticArgs(args) ?? {})}`;
-}
+export { NON_SEMANTIC_ARGS, callSignature } from '../agent/repeat-tracker.js';
 
 /** Вердикт guard'а для конкретного вызова. */
 export type ToolCallVerdict =
@@ -150,14 +76,17 @@ export type ToolCallVerdict =
 /**
  * VL-326: сколько подряд идущих noop-вызовов допускается до блокировки.
  *
- * По образцу `MAX_NOOP_REPEATS_PER_RUN` (`src/agent/loop.ts`): 3 — модели
+ * VL-357: значение берётся из единого `REPEAT_LIMITS.noop`
+ * (`src/agent/repeat-tracker.ts`), а не объявляется здесь заново: раньше
+ * веб-чат и агентский цикл держали по своей константе, и порог расходился
+ * при правке одной из них. 3 — модели
  * хватает двух-трёх «изменений нет», чтобы понять «поля уже такие»; на
  * четвёртом ответ становится бесполезным шумом, и ход надо разворачивать
  * директивой, а не ждать лимита в 16 вызовов на ответ (лимит сбрасывается
  * `beginTurn()` на каждом ответе модели, поэтому вечный цикл ничто не
  * останавливало — инцидент VL-324).
  */
-export const MAX_NOOP_REPEATS_PER_TURN = 3;
+export const MAX_NOOP_REPEATS_PER_TURN = REPEAT_LIMITS.noop;
 
 /** Счётчики guard'а для диагностики (пишутся в `<threadId>.repeat.json`). */
 export interface ToolGuardStats {
@@ -293,7 +222,8 @@ export function createTurnToolGuard(options: TurnToolGuardOptions = {}): TurnToo
       // Write сначала поднимает epoch ресурса, потом фиксируется сигнатура:
       // повторное чтение после записи получит новый epoch и пройдёт как
       // новый вызов, а дословный повтор самой записи — нет.
-      if (resource !== null && isWriteOperation(name)) {
+      // VL-357: вид операции читается из декларации; для mixed нужны аргументы.
+      if (resource !== null && isWriteOperation(name, args)) {
         epochs.set(resource, epochOf(resource) + 1);
       }
       executed.set(callSignature(name, actual), epochOf(resource));

@@ -37,18 +37,49 @@ import { compactWireMessages } from './compact.js';
 // VL-351: в loop.ts больше не используется (страховка VL-306 удалена), но
 // классификатор остаётся нужен веб-слою и инвариант-тестам контракта ack.
 import {
+  MAX_APPLIED_REPEATS_PER_RUN,
+  MAX_BLOCKED_CALLS_PER_RUN,
+  MAX_ERROR_REPEATS_PER_RUN,
+  MAX_NOOP_REPEATS_PER_RUN,
+  NEXT_STEP_HINT,
   REPEAT_BLOCK_MAX_PER_RUN,
   REPEAT_READ_LIMIT_DEFAULT,
   REPEAT_SEARCH_LIMIT_DEFAULT,
   REPEAT_SHELL_LIMIT_DEFAULT,
+  REPEAT_WARN_MAX_PER_RUN,
   REPEAT_WRITE_LIMIT_DEFAULT,
   analyzeToolRepeats,
+  appliedNoopDirective,
   createRepeatGuard,
+  loopDetectionDirective,
+  noopRepeatDirective,
+  parsedErrorText,
   repeatBlockDirective,
   repeatKey,
   toolRepeatKind,
   type RepeatGuard,
   type RepeatStats,
+} from './repeat-tracker.js';
+
+/**
+ * VL-357: пороги повторов и тексты директив — единый источник в
+ * `src/agent/repeat-tracker.ts`. Реэкспорт сохраняет публичный API loop.ts
+ * (тесты и разборы сессий импортируют `MAX_ERROR_REPEATS_PER_RUN` отсюда).
+ */
+export {
+  MAX_APPLIED_REPEATS_PER_RUN,
+  MAX_BLOCKED_CALLS_PER_RUN,
+  MAX_ERROR_REPEATS_PER_RUN,
+  MAX_NOOP_REPEATS_PER_RUN,
+  NEXT_STEP_HINT,
+  REPEAT_LIMITS,
+  REPEAT_WARN_MAX_PER_RUN,
+  appliedNoopDirective,
+  clipErrorText,
+  loopDetectionDirective,
+  noopRepeatDirective,
+  parsedErrorText,
+  retryDirective,
 } from './repeat-tracker.js';
 import { buildRunProgress, type RunProgress, type RunProgressReason } from './run-progress.js';
 import { createIdleGuard } from './idle-guard.js';
@@ -305,38 +336,22 @@ function isReportWritingTool(name: string): boolean {
   return REPORT_WRITING_TOOLS.has(name);
 }
 
-// VL-253: жёсткий кап заблокированных вызовов за ран. Второй блок той же
-// сигнатуры — уже фазовый отказ (модель проигнорировала директиву), но
-// разные сигнатуры могли бы копиться до лимита tool-calls, раздувая контекст
-// (VL-250/VL-252: payload рос на бесполезных вызовах). Счётчик живёт в
-// памяти рана: мета хранит только сигнатуры для resume-защиты, кап — про
-// текущий ран (resume обнуляет, как и прочие счётчики).
-const MAX_BLOCKED_CALLS_PER_RUN = 5;
-// VL-304: кап повторов применённого вызова (MAX_APPLIED_REPEATS_PER_RUN)
-// удалён в VL-304 и ВОЗВРАЩЁН в VL-310 — уже с другим исходом. Раньше кап
-// сжигал 4 LLM-запроса и затем убивал фазу кодом 1, хотя работа была сделана
-// (сессия agent-1793631554185); VL-304 заменил кап терминальным «штатным»
-// выходом на первом повторе — но тогда ран обрывался на середине работы
-// (сессия agent-1793637056809, Code VL-124: 4 tool-calls, 5 LLM-запросов,
-// «ран завершён штатно» при недоработанной задаче). Теперь повтор уже
-// применённого вызова НЕ терминален: модели уходит директива «переходи к
-// отчёту», цикл продолжается, а кап ограничивает вечный круг и при
-// исчерпании даёт честный fail() (is_error:true → оркестратор откатит статус).
-const MAX_APPLIED_REPEATS_PER_RUN = 3;
-// VL-309: у noop-повтора штатного выхода тоже НЕТ (noop ≠ работа сделана) —
-// круг директив «изменений нет» ограничен отдельным капом. После исчерпания —
-// честный fail(): оркестратор откатит статус и запустит авто-resume, вместо
-// ложного «ран завершён штатно» (инцидент Close VL-307).
-const MAX_NOOP_REPEATS_PER_RUN = 3;
-// VL-323: серия дословных повторов вызова, вернувшего ackError (ok:false).
-// Это НЕ «модель крутится на уже сделанной работе» (VL-303/304/310) и не
-// «изменений нет» (VL-309): эффекта не было ни разу, работа не сделана, а
-// модель просто не поняла, что чинить. Порог 5 (а не 3) даёт ей время
-// применить подсказку из текста ошибки (инцидент Close VL-320: git_commit без
-// allowForeign → 3 отказа → fail на 4-м повторе, хотя исправление было в
-// тексте ошибки). Защита от вечного круга сохраняется: исчерпание серии —
-// честный fail() с текстом последней ошибки.
-export const MAX_ERROR_REPEATS_PER_RUN = 5;
+/**
+ * VL-357 (шаг 5): вызовы, чей УСПЕШНЫЙ результат — фактический след работы.
+ *
+ * Правка файла, запись файла, коммит. Только они превращают исчерпанный кап
+ * повторов из «работа не завершена → fail()» в «работа сделана → штатное
+ * завершение». Ответ инструмента проверяется отдельно (`runHasProgress`):
+ * имя + успешный ответ, а не одно имя.
+ */
+const WORK_EVIDENCE_TOOLS = new Set(['edit', 'write_file', 'git_commit']);
+
+// VL-357: пороги повторов живут в ОДНОМ месте — `REPEAT_LIMITS`
+// (`src/agent/repeat-tracker.ts`). Раньше `loop.ts` держал свой набор
+// `MAX_*_REPEATS_PER_RUN`, `repeat-tracker.ts` — свои `REPEAT_*`, а веб-чат —
+// `MAX_NOOP_REPEATS_PER_TURN`: инцидент попадал в тот детектор, что сработал
+// первым, и получал директиву из его словаря. Локальные константы оставлены
+// только как реэкспорт (их импортируют тесты).
 // Фантомные tool_calls (пустые name/id, VL-215): сколько ходов ПОДРЯД модель
 // может отдавать фантомы до fail(). 3 — по образцу loop detection VL-83:
 // фантомный ход тратит LLM-запрос, но единичный случай модель исправляет
@@ -346,10 +361,7 @@ const PHANTOM_CALL_LIMIT_DEFAULT = 3;
 // промежуточным текстом. Порог 4, а не 3 — снизить ложные срабатывания:
 // одинаковый короткий текст («Ок.») на паре ходов ещё не зацикливание.
 const INTENT_LOOP_REPEAT_DEFAULT = 4;
-// VL-229: кап предупреждений о повторах за ран. Одно предупреждение — строка
-// ≤250 символов; без капа зацикленный grep на длинном ране добавлял бы
-// десятки сообщений и сам раздувал контекст (риск 4 плана).
-const REPEAT_WARN_MAX_PER_RUN = 15;
+
 // Компакшн истории (VL-122, wire-усечение по doc-13 §4.1): хвост 50 сообщений —
 // tool-вывод ≤8KB (лимит VL-110, tools.ts) → ≤400KB ≈ ≤130K токенов ≈ 13% окна
 // MiMo-V2.5 (1M) — попадает в рекомендованный doc-13 диапазон хвоста 10–15%.
@@ -358,239 +370,7 @@ const REPEAT_WARN_MAX_PER_RUN = 15;
 const COMPACT_TAIL_DEFAULT = 50;
 const COMPACT_AT_TOKENS_DEFAULT = 850_000;
 
-/**
- * Подсказка следующего шага для директивы loop detection (VL-251).
- *
- * Сообщение о зацикливании раньше было констатацией («проверь, не зациклился
- * ли агент») и уходило ролью assistant — модель не понимала, что делать
- * вместо повтора. Теперь директива уходит tool-результатом (модель читает её
- * как ответ рантайма) и заканчивается конкретным действием.
- */
-const NEXT_STEP_HINT =
-  'Следующий шаг: смени аргументы или инструмент, прочитай актуальное состояние (backlog_view_task / git status / grep) либо заверши фазу финальным текстом.';
 
-/**
- * Текст директивы loop detection для tool-результата заблокированного вызова.
- *
- * Маркерная подстрока «Loop detection» сохранена намеренно (lesson-76):
- * по ней распознают событие существующие тесты и разборы сессий.
- *
- * VL-323: если предыдущий ответ по этой сигнатуре был отказом (`ok:false`,
- * ackError), директива обязана назвать ПРИЧИНУ отказа и готовое исправление —
- * иначе слабая модель читает общее «смени аргументы» как «попробуй ещё раз» и
- * повторяет дословно (инцидент Close VL-320: git_commit без allowForeign,
- * текст ошибки с подсказкой был в tool-результате, но директива его теряла).
- * Текст ошибки обрезается, чтобы директива осталась < 400 байт (инвариант
- * VL-310 на размер директив).
- *
- * @param name — имя повторённого инструмента
- * @param repeatLimit — порог повторов, при котором сработала блокировка
- * @param lastError — текст последнего отказа по этой сигнатуре (если был)
- * @param fromHint — текст взят из поля `hint` (VL-351): он короткий по
- *   построению, обрезка по голове+хвосту его только калечит
- * @param retryWith — VL-353: машиночитаемое исправление из отказа
- *   (`ackErrorDetailed.retryWith`). Если задано, директива выдаёт ГОТОВЫЙ
- *   вызов, а не описательное «исправь аргументы»
- * @param callArgs — VL-353: аргументы повторённого вызова (из `call.arguments`);
- *   вместе с `retryWith` дают полный JSON готового вызова
- */
-export function loopDetectionDirective(
-  name: string,
-  repeatLimit: number,
-  lastError?: string,
-  fromHint = false,
-  retryWith?: Record<string, unknown>,
-  callArgs?: Record<string, unknown>,
-): string {
-  // VL-353: готовый вызов приоритетнее текста ошибки. Причина: директива
-  // «исправь аргументы» требует от модели шага «прочитать текст → вывести
-  // аргумент → переписать вызов», и слабая модель его не делает (инцидент
-  // agent-1794050949211: 6 дословных повторов `git_commit` без
-  // `allowForeign`, подсказка была в тексте — не помогло).
-  if (retryWith !== undefined && Object.keys(retryWith).length > 0) {
-    return retryDirective(name, retryWith, callArgs);
-  }
-  const reason = lastError === undefined ? '' : clipErrorText(lastError, fromHint);
-  if (reason !== '') {
-    return (
-      `Loop detection: ${name} — предыдущий вызов отклонён: ${reason}. Повтор даст тот же отказ — исправь аргументы.`
-    );
-  }
-  return (
-    `Loop detection: инструмент ${name} вызван ${repeatLimit} раза подряд с одинаковыми аргументами — вызов НЕ выполнен и заблокирован. ` +
-    `Повтор с теми же аргументами бесполезен. ${NEXT_STEP_HINT}`
-  );
-}
-
-/**
- * Предел длины директивы в байтах (инвариант VL-310).
- *
- * Готовый JSON-вызов с кириллическими путями легко его превышает, поэтому
- * `retryDirective` перебирает варианты усечения, сохраняя `retryWith` —
- * именно он и есть смысл директивы.
- */
-const DIRECTIVE_MAX_BYTES = 400;
-
-/**
- * Собирает директиву с ГОТОВЫМ вызовом (VL-353).
- *
- * Модель получает строку, которую можно скопировать в следующий tool_call
- * без размышлений: имя инструмента + JSON аргументов повторённого вызова с
- * подставленным `retryWith`. Если JSON не влезает в лимит VL-310, `paths`
- * усекается до первого элемента с пометкой «остальные пути — те же»: смысл
- * директивы (`retryWith`) сохраняется всегда.
- *
- * @param name — имя инструмента
- * @param retryWith — что добавить/изменить в аргументах
- * @param callArgs — аргументы повторённого вызова (может отсутствовать)
- */
-function retryDirective(
-  name: string,
-  retryWith: Record<string, unknown>,
-  callArgs?: Record<string, unknown>,
-): string {
-  const head = `Loop detection: ${name} — предыдущий вызов отклонён. Повтори так: ${name} `;
-  const merged: Record<string, unknown> = { ...(callArgs ?? {}), ...retryWith };
-  const paths = merged.paths;
-  const samePathsNote = ' (остальные пути — те же)';
-  const candidates: string[] = [JSON.stringify(merged)];
-  if (Array.isArray(paths) && paths.length > 1) {
-    // Усечение по путям: первый путь + пометка. `retryWith` не трогаем.
-    candidates.push(JSON.stringify({ ...merged, paths: [paths[0]] }) + samePathsNote);
-  }
-  if (Array.isArray(paths)) {
-    candidates.push(JSON.stringify({ ...merged, paths: [] }) + samePathsNote);
-  }
-  for (const candidate of candidates) {
-    const text = head + candidate;
-    if (Buffer.byteLength(text, 'utf8') < DIRECTIVE_MAX_BYTES) return text;
-  }
-  // Последний рубеж: только фрагмент retryWith, обрезанный по правилу
-  // clipErrorText. Маркер «Loop detection» и поля исправления остаются.
-  return head + clipErrorText(JSON.stringify(retryWith), false);
-}
-
-/**
- * Максимальная длина текста ошибки внутри директивы (инвариант < 400 байт).
- *
- * 100 символов: кириллица в UTF-8 — 2 байта на символ, и директива с
- * максимальным текстом ошибки занимает ~366 байт (проверено тестом).
- */
-const ERROR_IN_DIRECTIVE_MAX_CHARS = 100;
-
-/** Сколько символов хвоста сохранить (готовая подсказка стоит в конце). */
-const ERROR_IN_DIRECTIVE_TAIL_CHARS = 35;
-
-/**
- * Извлекает текст отказа из JSON-ответа write-инструмента (VL-323).
- *
- * ackError кладёт причину в `error`, ackDenied — в `message`; для прочих
- * форм берём первое непустое из них. null — текста нет (директива останется
- * общей, как до VL-323).
- *
- * VL-351: `hint` идёт ПЕРВЫМ. Это короткое готовое действие («Добавь в вызов
- * `content`…»), добавленное VL-319/VL-349 именно для модели; `error` у
- * ackErrorDetailed бывает длинным и содержит примеры markdown, из которых
- * обрезка оставляла бессмысленный обрывок (сессия agent-1794045441657:
- * директива заканчивалась куском «## Пример»). `fromHint` сообщает вызывающему,
- * что текст короткий по построению и резать его не нужно.
- */
-function parsedErrorText(
-  output: string,
-): { text: string; fromHint: boolean; retryWith?: Record<string, unknown> } | null {
-  try {
-    const parsed = JSON.parse(output) as {
-      hint?: unknown;
-      error?: unknown;
-      message?: unknown;
-      retryWith?: unknown;
-    } | null;
-    if (!parsed || typeof parsed !== 'object') return null;
-    // VL-353: машиночитаемое исправление из отказа — приоритетнее текста:
-    // директива соберёт из него готовый вызов.
-    const retryWith =
-      parsed.retryWith !== null && typeof parsed.retryWith === 'object' && !Array.isArray(parsed.retryWith)
-        ? (parsed.retryWith as Record<string, unknown>)
-        : undefined;
-    for (const [value, fromHint] of [
-      [parsed.hint, true],
-      [parsed.error, false],
-      [parsed.message, false],
-    ] as const) {
-      if (typeof value === 'string' && value.trim() !== '') {
-        return retryWith === undefined ? { text: value, fromHint } : { text: value, fromHint, retryWith };
-      }
-    }
-    // Текст не найден, но исправление есть — директива всё равно соберёт
-    // готовый вызов (текст пустой).
-    if (retryWith !== undefined) return { text: '', fromHint: false, retryWith };
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Обрезает текст отказа для подстановки в директиву loop detection (VL-323).
- *
- * Сжимает пробелы. Длинный текст режется с сохранением ХВОСТА: готовая
- * подсказка («передай allowForeign: true») у ackError стоит в конце
- * сообщения, и простое усечение по голове её съедало — модель снова читала
- * бесполезный текст (риск R2 плана: директива обязана остаться < 400 байт,
- * инвариант VL-310).
- *
- * VL-351: текст из `hint` не режется вовсе — он короткий по построению
- * (готовая инструкция), а обрезка по голове+хвосту калечила его.
- */
-function clipErrorText(text: string, fromHint = false): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
-  if (fromHint || flat.length <= ERROR_IN_DIRECTIVE_MAX_CHARS) return flat;
-  const head = ERROR_IN_DIRECTIVE_MAX_CHARS - ERROR_IN_DIRECTIVE_TAIL_CHARS - 1;
-  return `${flat.slice(0, head)}…${flat.slice(-ERROR_IN_DIRECTIVE_TAIL_CHARS)}`;
-}
-
-/**
- * Текст директивы для повтора вызова, чей результат уже был ok/noop (VL-303).
- *
- * Отличие от `loopDetectionDirective`: вызов УЖЕ применён, поэтому фазу
- * прерывать нельзя — модели нужно лишь перейти к отчёту. Маркерная подстрока
- * «уже применён» используется тестами и разборами сессий.
- *
- * VL-304: директива уходит модели, но ран на ней НЕ продолжается — первый же
- * повтор завершает его штатно (`finishAppliedRepeat`), поэтому текст говорит
- * о завершении, а не о «следующем шаге».
- */
-export function appliedNoopDirective(name: string): string {
-  return (
-    `Вызов ${name} уже применён ранее — повтор с теми же аргументами НЕ выполнен, он ничего не изменит. ` +
-    'Изменения применены; переходи к следующему пункту фазы, а если работа сделана — к отчёту (backlog_finish_phase).'
-  );
-}
-
-/**
- * Текст директивы для повтора вызова, чей ответ был noop (VL-309, VL-319).
- *
- * Отличие от `appliedNoopDirective`: noop означает «изменений нет», а не
- * «работа сделана». Поэтому ран НЕ завершается — модели напоминают, что
- * повтор бесполезен, и направляют к следующему шагу фазы. Маркерная
- * подстрока «Изменений нет» используется тестами и разборами сессий.
- *
- * VL-319: прежний текст утверждал «вызов уже был выполнен и ничего не
- * изменил» — это НЕВЕРНЫЙ факт: вызов не исполнялся ни разу, первый же ответ
- * был noop. Модель читала «не выполнен» и повторяла дословно (сессия
- * agent-1793712738536: 4 повтора `lesson_update` без `content` → кап → fail →
- * авто-resume). Теперь текст говорит «НЕ исполнен» и прямо предлагает
- * прочитать состояние или СМЕНИТЬ аргумент (например, добавить отсутствующее
- * поле). Длина держится < 400 байт (инвариант VL-310 на размер директив).
- *
- * @param name — имя повторённого инструмента
- */
-export function noopRepeatDirective(name: string): string {
-  return (
-    `Изменений нет: вызов ${name} НЕ исполнен (поля уже такие). Повтор ничего не изменит. ` +
-    'Следующий шаг: прочитай состояние (lesson_view) или смени аргумент — добавь отсутствующее поле.'
-  );
-}
 
 /**
  * Текст прерывания фазы по простою (VL-274).
@@ -940,6 +720,88 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       ...(maxPayload !== undefined ? { payloadBytes: maxPayload } : {}),
     });
     return { ...base, progress };
+  };
+
+  /**
+   * VL-357 (шаг 5): есть ли у рана фактический след ВЫПОЛНЕННОЙ работы.
+   *
+   * Признаки взяты проверяемые, а не из самоотчёта модели: правка файла
+   * (`edit`/`write_file`), коммит (`git_commit`), записанный отчёт фазы.
+   * Именно они означают, что цель фазы достигнута и кап повторов — это
+   * «модель зациклилась на уже сделанном», а не «работа не сделана».
+   *
+   * Ответ инструмента в расчёт НЕ берётся: заглушка, вернувшая `ok:true`, это
+   * не работа (иначе регресс VL-124 — «ран завершён штатно» при недоработанной
+   * задаче).
+   */
+  const runHasProgress = (): boolean => {
+    if (reportWritten) return true;
+    // Карта tool_call_id → содержимое ответа: имя вызова само по себе ничего
+    // не доказывает (инцидент-ловушка: заглушка `git_commit`, ответившая
+    // отказом, выдавала бы себя за выполненный коммит).
+    const responses = new Map<string, string>();
+    for (const m of messages) {
+      if (m.role === 'tool' && m.tool_call_id !== undefined) {
+        responses.set(m.tool_call_id, String(m.content ?? ''));
+      }
+    }
+    /**
+     * Ответ означает «вызов НЕ удался»: JSON с `ok:false` (ackError/ackDenied/
+     * noop) либо текст-исключение. Плоский текст успешного локального
+     * инструмента («файл записан») сюда не попадает.
+     */
+    const isFailureResponse = (content: string): boolean => {
+      try {
+        const parsed = JSON.parse(content) as { ok?: unknown; outcome?: unknown } | null;
+        if (parsed === null || typeof parsed !== 'object') return false;
+        if (parsed.ok === false) return true;
+        return parsed.outcome === 'rejected' || parsed.outcome === 'noop';
+      } catch {
+        // Директива блокировки тоже лежит в tool-результате: вызов НЕ
+        // исполнялся, и считать его работой нельзя (иначе кап повторов
+        // «находит прогресс» ровно там, где его нет).
+        if (content.startsWith('Loop detection') || content.startsWith('Вызов ')) return true;
+        return /^Ошибка выполнения инструмента/.test(content);
+      }
+    };
+    for (const m of messages) {
+      if (m.role !== 'assistant') continue;
+      for (const tc of m.tool_calls ?? []) {
+        if (!isValidToolCall(tc)) continue;
+        if (!WORK_EVIDENCE_TOOLS.has(tc.name)) continue;
+        const content = responses.get(tc.id);
+        if (content === undefined) continue; // вызов не дошёл до исполнения
+        if (isFailureResponse(content)) continue;
+        return true;
+      }
+    }
+    return false;
+  };
+
+  /**
+   * VL-357 (шаг 5): исчерпан кап повторов — решаем по прогрессу.
+   *
+   * До VL-357 любое исчерпание капа (`MAX_APPLIED/NOOP/ERROR_REPEATS_PER_RUN`)
+   * убивало ран кодом 1, даже когда работа была сделана: merge прошёл, 3455
+   * тестов зелёные, а фаза падала на повторе `lesson_update` (регресс VL-349).
+   * Теперь при наличии следа работы ран завершается ШТАТНО с блоком прогресса
+   * (`buildRunProgress`), а `fail()` остаётся для недостигнутой цели.
+   */
+  const failOnRepeatCap = (errorText: string): LoopResult => {
+    if (!runHasProgress()) return fail(errorText);
+    idleGuard.dispose();
+    const progress = buildRunProgress({
+      messages,
+      reason: 'other',
+      durationMs: duration(),
+      ...(maxPayload !== undefined ? { payloadBytes: maxPayload } : {}),
+    });
+    const text =
+      `Кап повторов исчерпан: ${errorText}\n\nРабота в ране выполнена (правки/коммит/отчёт есть) — ` +
+      'ран завершён штатно, отчёт пишется по фактическому результату.\n\n' +
+      progress.text;
+    pushMessage({ role: 'assistant', content: text });
+    return { ...buildResult(text, false), progress };
   };
 
   for (;;) {
@@ -1378,16 +1240,18 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         // прерывается. Строгое < , а не <=: на 5-м обращении ещё даём шанс.
         if (errorRepeatCount <= MAX_ERROR_REPEATS_PER_RUN) return null;
         const detail = lastErrorBySignature.get(signature)?.text ?? '';
-        return fail(
-          `Loop detection: модель ${errorRepeatCount} раз подряд повторила вызов ${name} с одними и теми же аргументами, хотя он отклонялся с ошибкой${detail === '' ? '' : `: ${detail}`} — фаза прервана (работа не завершена). ${NEXT_STEP_HINT}`,
+        // VL-357: кап отказавшего вызова — тоже с проверкой прогресса: если
+        // работа рана уже сделана, падать из-за неисправимого повтора незачем.
+        return failOnRepeatCap(
+          `Loop detection: модель ${errorRepeatCount} раз подряд повторила вызов ${name} с одними и теми же аргументами, хотя он отклонялся с ошибкой${detail === '' ? '' : `: ${detail}`}.`,
         );
       };
 
       const appliedRepeatOutcome = (name: string): LoopResult | null => {
         if (reportWritten) return finishAppliedRepeat(name);
         if (appliedRepeatCount > MAX_APPLIED_REPEATS_PER_RUN) {
-          return fail(
-            `Модель ${appliedRepeatCount} раз подряд повторила уже применённый вызов ${name} — повтор не исполнялся, фаза прервана (работа не завершена). ${NEXT_STEP_HINT}`,
+          return failOnRepeatCap(
+            `Модель ${appliedRepeatCount} раз подряд повторила уже применённый вызов ${name} — повтор не исполнялся.`,
           );
         }
         return null;
@@ -1401,8 +1265,8 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       if (noopSignatures.has(signature)) {
         await blockAndPush();
         if (noopRepeatCount > MAX_NOOP_REPEATS_PER_RUN) {
-          return fail(
-            `Модель ${noopRepeatCount} раз повторила вызов ${call.name}, вернувший «изменений нет», — вызов не исполнялся, фаза прервана (работа не завершена). ${NEXT_STEP_HINT}`,
+          return failOnRepeatCap(
+            `Модель ${noopRepeatCount} раз повторила вызов ${call.name}, вернувший «изменений нет», — вызов не исполнялся.`,
           );
         }
         continue;

@@ -48,6 +48,89 @@ export interface SkippedField {
 /** Причина отказа подтверждения: явный отказ пользователя vs отсутствие подтверждения. */
 export type DenyReason = 'denied' | 'not_confirmed';
 
+/**
+ * Единый исход вызова инструмента (VL-357, tool outcome protocol v2).
+ *
+ * До VL-357 ответ инструмента был НАБОРОМ независимых флагов (`ok`, `noop`,
+ * `denied`, `read`, `error`, `missing`, `hint`, `retryWith`), которые
+ * комбинировались свободно. Отсюда два класса инцидентов одного корня:
+ * «применили часть, но ответ выглядит как отказ» (VL-355) и «создали
+ * сущность, но ответ выглядит как ошибка» (VL-356). Теперь исход ОДИН и
+ * объявляется инструментом, а совместимые флаги (`ok`/`noop`/`denied`/`read`)
+ * вычисляются из него при сериализации.
+ *
+ * - `applied`  — операция выполнена полностью;
+ * - `partial`  — запись состоялась, но часть обязательных по смыслу полей не
+ *   заполнена (`next.missing`) — не отказ;
+ * - `noop`     — запись ничего не изменила (все переданные значения уже были);
+ * - `rejected` — операция не выполнена: ошибка валидации либо отказ
+ *   подтверждения (`denied`/`reason` проставляются отдельно);
+ * - `read`     — чистое чтение внутри инструмента, эффекта не было;
+ * - `unknown`  — исход не определён (плоский текст, не-JSON ответ).
+ */
+export type ToolOutcome = 'applied' | 'partial' | 'noop' | 'rejected' | 'read' | 'unknown';
+
+/** Следующий шаг для модели — единое место (было разбросано по флагам). */
+export interface ToolNext {
+  /** Готовые аргументы, которые надо добавить/изменить в вызове (VL-353). */
+  retryWith?: Record<string, unknown>;
+  /** Обязательные по смыслу, но не заполненные поля (VL-319/VL-355). */
+  missing?: SkippedField[];
+  /** Текстовая подсказка следующего шага. */
+  hint?: string;
+}
+
+/** Внутреннее описание ack'а: исход + данные, флаги НЕ хранятся. */
+export interface ToolAckInput {
+  outcome: ToolOutcome;
+  message?: string;
+  applied?: Record<string, unknown>;
+  skipped?: SkippedField[];
+  next?: ToolNext;
+  /** Текст ошибки (исход `rejected` по причине ошибки валидации). */
+  error?: string;
+  /** Причина отказа: `noop` | `denied` | `not_confirmed`. */
+  reason?: string;
+  /** Явный признак отказа подтверждения — вычисляется из `reason` вызывающим. */
+  denied?: boolean;
+  /** Имя инструмента (в ответе отказа подтверждения). */
+  tool?: string;
+  /** Ответ восстановлен из кэша идемпотентности. */
+  idempotentReplay?: boolean;
+}
+
+/**
+ * Сериализует ack, ВЫЧИСЛЯЯ совместимые флаги из `outcome`.
+ *
+ * Флаги не хранятся в объекте (AC1): единственный источник правды — исход.
+ * Порядок ключей стабилен, чтобы диффы и разборы сессий читались одинаково.
+ * Тексты `message` не меняются (инвариант VL-262) — меняется только форма.
+ */
+export function serializeAck(ack: ToolAckInput): string {
+  const out: Record<string, unknown> = {};
+  const ok = ack.outcome === 'applied' || ack.outcome === 'partial' || ack.outcome === 'read';
+  out.ok = ok;
+  out.outcome = ack.outcome;
+  if (ack.outcome === 'noop') {
+    out.noop = true;
+    out.reason = ack.reason ?? 'noop';
+  }
+  if (ack.outcome === 'read') out.read = true;
+  if (ack.denied === true) out.denied = true;
+  if (ack.reason !== undefined && out.reason === undefined) out.reason = ack.reason;
+  if (ack.tool !== undefined) out.tool = ack.tool;
+  if (ack.error !== undefined) out.error = ack.error;
+  if (ack.message !== undefined) out.message = ack.message;
+  if (ack.applied !== undefined) out.applied = ack.applied;
+  if (ack.skipped !== undefined) out.skipped = ack.skipped;
+  const next = ack.next ?? {};
+  if (next.missing !== undefined && next.missing.length > 0) out.missing = next.missing;
+  if (next.hint !== undefined && next.hint !== '') out.hint = next.hint;
+  if (next.retryWith !== undefined && Object.keys(next.retryWith).length > 0) out.retryWith = next.retryWith;
+  if (ack.idempotentReplay === true) out.idempotentReplay = true;
+  return JSON.stringify(out, null, 2);
+}
+
 /** Снимок успешного применения write-вызова. */
 export interface WriteAck {
   ok: true;
@@ -113,14 +196,13 @@ export function ackOk(
   skipped: SkippedField[] = [],
   idempotentReplay = false,
 ): string {
-  const ack: WriteAck = {
-    ok: true,
+  return serializeAck({
+    outcome: 'applied',
     message,
     applied,
     skipped,
-    ...(idempotentReplay ? { idempotentReplay: true as const } : {}),
-  };
-  return JSON.stringify(ack, null, 2);
+    ...(idempotentReplay ? { idempotentReplay: true } : {}),
+  });
 }
 
 /**
@@ -147,15 +229,15 @@ export function ackOkDetailed(
   extra: { missing?: SkippedField[]; hint?: string } = {},
 ): string {
   const missing = extra.missing ?? [];
-  const ack: WriteAck = {
-    ok: true,
+  // VL-357: незаполненное обязательное по смыслу поле делает исход `partial`,
+  // а не `applied` — это и есть «запись состоялась, но не завершена».
+  return serializeAck({
+    outcome: missing.length > 0 ? 'partial' : 'applied',
     message,
     applied,
     skipped,
-    ...(missing.length > 0 ? { missing } : {}),
-    ...(extra.hint ? { hint: extra.hint } : {}),
-  };
-  return JSON.stringify(ack, null, 2);
+    next: { ...(missing.length > 0 ? { missing } : {}), ...(extra.hint ? { hint: extra.hint } : {}) },
+  });
 }
 
 /**
@@ -192,7 +274,7 @@ export function ackNoop(message: string, applied: Record<string, unknown> = {}):
  * @param applied — прочитанное состояние (снимок, не запись)
  */
 export function ackRead(message: string, applied: Record<string, unknown> = {}): string {
-  return JSON.stringify({ ok: true, read: true, message, applied, skipped: [] }, null, 2);
+  return serializeAck({ outcome: 'read', message, applied, skipped: [] });
 }
 
 /**
@@ -217,22 +299,21 @@ export function ackNoopDetailed(
   missing: SkippedField[] = [],
   hint?: string,
 ): string {
-  const ack: NoopAck = {
-    ok: false,
-    noop: true,
-    reason: 'noop',
+  // VL-326: hint есть ВСЕГДА. Без него модель читала noop как «ошибка
+  // инструмента» и повторяла вызов дословно (инцидент VL-324: 12 повторов
+  // `backlog_update_task` с уже применёнными полями). Универсальный текст
+  // называет главное: переданные поля уже такие, нужны ДРУГИЕ поля в этом
+  // же вызове. Вызывающий может передать свой, более конкретный hint.
+  return serializeAck({
+    outcome: 'noop',
     message,
     applied,
     skipped: [],
-    ...(missing.length > 0 ? { missing } : {}),
-    // VL-326: hint есть ВСЕГДА. Без него модель читала noop как «ошибка
-    // инструмента» и повторяла вызов дословно (инцидент VL-324: 12 повторов
-    // `backlog_update_task` с уже применёнными полями). Универсальный текст
-    // называет главное: переданные поля уже такие, нужны ДРУГИЕ поля в этом
-    // же вызове. Вызывающий может передать свой, более конкретный hint.
-    hint: hint ?? NOOP_DEFAULT_HINT,
-  };
-  return JSON.stringify(ack, null, 2);
+    next: {
+      ...(missing.length > 0 ? { missing } : {}),
+      hint: hint ?? NOOP_DEFAULT_HINT,
+    },
+  });
 }
 
 /**
@@ -259,8 +340,11 @@ export const NOOP_DEFAULT_HINT =
  */
 export function isNoopAck(text: string): boolean {
   try {
-    const parsed = JSON.parse(text) as { noop?: unknown } | null;
-    return parsed !== null && typeof parsed === 'object' && parsed.noop === true;
+    const parsed = JSON.parse(text) as { outcome?: unknown; noop?: unknown } | null;
+    if (parsed === null || typeof parsed !== 'object') return false;
+    // VL-357: исход — единственный источник правды; `noop` остаётся
+    // вычисляемым флагом для потребителей, читающих ответ по старинке.
+    return parsed.outcome === 'noop' || parsed.noop === true;
   } catch {
     return false; // не JSON — не write-ack
   }
@@ -382,20 +466,16 @@ export function ackDenied(
   const hint = denied
     ? 'Повтор без нового решения пользователя бессмыслен: спроси, что именно изменить.'
     : 'Это не отказ пользователя: вызов можно безопасно повторить с тем же idempotencyKey.';
-  return JSON.stringify(
-    {
-      ok: false,
-      denied: true,
-      reason,
-      ...(extra.tool ? { tool: extra.tool } : {}),
-      applied: {},
-      skipped: fields.map(field => ({ field, reason: 'не применено: нет подтверждения' })),
-      message,
-      hint,
-    },
-    null,
-    2,
-  );
+  return serializeAck({
+    outcome: 'rejected',
+    denied: true,
+    reason,
+    tool: extra.tool,
+    message,
+    applied: {},
+    skipped: fields.map(field => ({ field, reason: 'не применено: нет подтверждения' })),
+    next: { hint },
+  });
 }
 
 /**
@@ -407,7 +487,7 @@ export function ackDenied(
  * @param message — текст ошибки
  */
 export function ackError(message: string): string {
-  return JSON.stringify({ ok: false, error: message }, null, 2);
+  return serializeAck({ outcome: 'rejected', error: message });
 }
 
 /**
@@ -439,11 +519,12 @@ export function ackErrorDetailed(
   } = {},
 ): string {
   const missing = extra.missing ?? [];
-  return JSON.stringify(
-    {
-      ok: false,
-      error: message,
-      ...(extra.applied && Object.keys(extra.applied).length > 0 ? { applied: extra.applied } : {}),
+  // VL-357: единый исход — отказ с машинoчитаемым продолжением в next.
+  return serializeAck({
+    outcome: 'rejected',
+    error: message,
+    applied: extra.applied && Object.keys(extra.applied).length > 0 ? extra.applied : {},
+    next: {
       ...(missing.length > 0 ? { missing } : {}),
       ...(extra.hint ? { hint: extra.hint } : {}),
       // VL-353: аддитивное поле — только когда инструмент знает точное
@@ -451,9 +532,7 @@ export function ackErrorDetailed(
       // как «повтори как есть».
       ...(extra.retryWith && Object.keys(extra.retryWith).length > 0 ? { retryWith: extra.retryWith } : {}),
     },
-    null,
-    2,
-  );
+  });
 }
 
 /**
