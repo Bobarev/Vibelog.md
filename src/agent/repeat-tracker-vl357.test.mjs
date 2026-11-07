@@ -84,6 +84,19 @@ describe('VL-357 — директивы повторов: один словар�
     assert.match(noopRepeatDirective('backlog_update_task'), /Изменений нет/);
   });
 
+  // VL-368: директива называет конкретный следующий шаг фазы, а не общую фразу
+  it('VL-368: appliedNoopDirective для close называет фазу и следующий инструмент', () => {
+    const parsed = JSON.parse(appliedNoopDirective('lesson_update', undefined, 'close'));
+    assert.match(parsed.message, /close/, 'имя фазы в тексте');
+    assert.match(parsed.message, /backlog_finish_phase/, 'имя следующего инструмента');
+    assert.match(parsed.message, /backlog_manage_ac|backlog_manage_dod/, 'шаг отметки AC/DoD');
+    assert.equal(parsed.phase, 'close', 'фаза проброшена машиночитаемо');
+    // Без фазы — прежняя общая формулировка (обратная совместимость)
+    const plain = JSON.parse(appliedNoopDirective('lesson_update'));
+    assert.match(plain.message, /Переходи к следующему пункту фазы/);
+    assert.equal(plain.phase, undefined);
+  });
+
   it('VL-361: директивы цикла — валидный JSON с outcome noop и флагом причины', () => {
     for (const [text, flag] of [
       [noopRepeatDirective('lesson_update'), 'noop_repeat'],

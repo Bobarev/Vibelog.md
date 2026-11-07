@@ -270,6 +270,12 @@ export interface RunLoopOptions {
    */
   externalTools?: ToolSpec[];
   limits?: LoopLimits;
+  /**
+   * VL-368: фаза рана (close/code/plan/…). Нужна, чтобы отличить фазы с
+   * ОБЯЗАТЕЛЬНЫМ отчётом (`backlog_finish_phase`) от остальных: в них след
+   * работы (правка/коммит/shell) сам по себе не доказывает завершение фазы.
+   */
+  phase?: string;
   /** Стриминг финального/промежуточного текста (TUI/CLI). */
   onToken?: (token: string) => void;
   /** Хуки карточек tool calls (TUI): старт и завершение выполнения. */
@@ -340,6 +346,18 @@ const REPORT_WRITING_TOOLS = new Set([
 function isReportWritingTool(name: string): boolean {
   return REPORT_WRITING_TOOLS.has(name);
 }
+
+/**
+ * VL-368: фазы, в которых отчёт `backlog_finish_phase` ОБЯЗАТЕЛЕН.
+ *
+ * В Close работа идёт через shell/коммиты, и след работы сам по себе не
+ * означает, что фаза завершена: без отчёта статус не двигается, AC/DoD не
+ * отмечаются, а `finalizePhaseStatus`/авто-отчёт остаются единственными
+ * писателями статуса. Поэтому для этих фаз `runHasProgress()` требует
+ * `reportWritten`, иначе кап повторов даёт честный `fail()` (is_error:true →
+ * оркестратор откатит статус и запустит авто-resume).
+ */
+const REPORT_REQUIRED_PHASES = new Set(['close']);
 
 /**
  * VL-357 (шаг 5): вызовы, чей УСПЕШНЫЙ результат — фактический след работы.
@@ -557,6 +575,8 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // случае повтор уже применённого вызова завершает ран штатно: терять
   // нечего, отчёт на месте (guard по образцу src/agent/auto-report.ts).
   let reportWritten = false;
+  // VL-368: фаза рана требует отчёта (close) — см. REPORT_REQUIRED_PHASES.
+  const reportRequired = REPORT_REQUIRED_PHASES.has(options.phase ?? '');
   // Лимит guard'а зацикливания намерений (VL-119): N ходов подряд с одним
   // промежуточным текстом → fail штатным путём (контракт resume VL-103).
   const intentRepeatLimit = options.limits?.intentLoopRepeat ?? INTENT_LOOP_REPEAT_DEFAULT;
@@ -791,6 +811,12 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
    * задаче).
    */
   const runHasProgress = (): boolean => {
+    // VL-368: в фазах с обязательным отчётом след работы (правка/коммит/shell)
+    // НЕ доказывает завершение фазы — нужен записанный отчёт. Иначе Close с
+    // коммитом документации и капом повторов `lesson_update` завершался
+    // «штатно» (is_error:false) при неотмеченных AC/DoD: статус не откатывался,
+    // авто-resume не запускался, задача молча висела.
+    if (reportRequired && !reportWritten) return false;
     if (reportWritten) return true;
     // Карта tool_call_id → содержимое ответа: имя вызова само по себе ничего
     // не доказывает (инцидент-ловушка: заглушка `git_commit`, ответившая
@@ -856,7 +882,15 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
    * (`buildRunProgress`), а `fail()` остаётся для недостигнутой цели.
    */
   const failOnRepeatCap = (errorText: string): LoopResult => {
-    if (!runHasProgress()) return fail(errorText);
+    if (!runHasProgress()) {
+      // VL-368: в фазе с обязательным отчётом причина падения должна быть
+      // названа явно — иначе «работа вроде была» читается как ложный успех.
+      const suffix =
+        reportRequired && !reportWritten
+          ? '\nРабота в ране есть, но отчёт фазы (backlog_finish_phase) не записан — фаза не завершена.'
+          : '';
+      return fail(`${errorText}${suffix}`);
+    }
     idleGuard.dispose();
     const progress = buildRunProgress({
       messages,
@@ -1194,7 +1228,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           await pushMessage({
             role: 'tool',
             tool_call_id: call.id,
-            content: appliedNoopDirective(call.name, lastAckBySignature.get(signature)),
+            content: appliedNoopDirective(call.name, lastAckBySignature.get(signature), options.phase),
           });
           console.error(`[vibelog-agent] повтор применённого вызова: ${call.name}`);
           return;

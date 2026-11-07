@@ -24,7 +24,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { addComment, getTask, updateTaskFile } from './store.js';
-import { getStatusAfterPhase, getWorkflowForTask, SERVICE_PHASES } from './workflow.js';
+import { getStatusAfterPhase, getWorkflowForTask, SERVICE_PHASES, terminalStatusGate } from './workflow.js';
 import { taskIdPattern } from './config.js';
 
 /**
@@ -370,6 +370,32 @@ export function finalizePhaseStatus(
     if (!aborted && record.exitCode === 0 && record.result?.is_error !== true) {
       const workflow = getWorkflowForTask(cwd, task);
       const next = getStatusAfterPhase(workflow, entry.prevStatus, phaseName) ?? entry.prevStatus;
+      // VL-368: гейт терминальности — тот же, что в авто-отчёте
+      // (`terminalStatusGate`). Раньше правило VL-309 жило только в
+      // `writeAutoReportIfMissing`, и если авто-отчёт не записался (ран упал,
+      // отчёт уже был, служебная фаза), задача получала Done с висящими
+      // AC/DoD. Теперь статус остаётся дофазовым, а причина пишется в задачу.
+      const isChecked = (c: string | { checked?: boolean }): boolean =>
+        typeof c === 'string' ? false : c.checked === true;
+      const uncheckedAcNumbers = (task.acceptanceCriteria || [])
+        .map((c, i) => ({ n: i + 1, checked: isChecked(c) }))
+        .filter((x) => !x.checked)
+        .map((x) => x.n);
+      const uncheckedDodNumbers = (task.definitionOfDone || [])
+        .map((c, i) => ({ n: i + 1, checked: isChecked(c) }))
+        .filter((x) => !x.checked)
+        .map((x) => x.n);
+      const gate = terminalStatusGate(workflow, next, uncheckedAcNumbers, uncheckedDodNumbers, entry.prevStatus);
+      if (gate.blocked) {
+        updateTaskFile(cwd, taskKey, { status: entry.prevStatus });
+        addComment(cwd, taskKey, gate.reason ?? 'Статус не изменён: неотмеченные пункты AC/DoD.', '@agent');
+        console.log(
+          `[phase-transient] ${taskKey}: фаза ${phaseName} завершилась, но терминальный «${next}» заблокирован неотмеченными AC/DoD — статус остался ${entry.prevStatus}`
+        );
+        // Исход failed: для супервизора это «нет прогресса», а не «ok» —
+        // иначе задача молча висит в прежнем статусе без лечения.
+        return { ...base, outcome: 'failed' };
+      }
       updateTaskFile(cwd, taskKey, { status: next });
       console.log(
         `[phase-transient] ${taskKey}: фаза ${phaseName} завершилась — статус ${entry.prevStatus} → ${next}`

@@ -334,3 +334,50 @@ export function isTerminalStatus(workflow: Workflow, status: string): boolean {
   const isProduced = workflow.transitions.some((t) => t.produces_status === status);
   return isFinalMarker || isProduced || status === workflow.initial_status;
 }
+
+/** Итог гейта терминальности: блокировать смену статуса и почему. */
+export interface TerminalStatusGateResult {
+  /** true — терминальный статус при неотмеченных пунктах ставить нельзя. */
+  blocked: boolean;
+  /** Готовый текст причины (для отчёта/комментария) — только при blocked. */
+  reason?: string;
+}
+
+/**
+ * Гейт терминальности: можно ли ставить терминальный статус при неотмеченных
+ * пунктах AC/DoD (VL-309, вынесен в общую функцию в VL-368).
+ *
+ * Зачем одна функция: правило VL-248 («Done при невыполненном DoD — только
+ * через backlog_finish_phase с dodOverride/aborted») проверялось в ДВУХ местах
+ * по-разному. Авто-отчёт пост-рана (`src/agent/auto-report.ts`) гейт имел, а
+ * `finalizePhaseStatus` (`src/core/phase-transient.ts`) — нет: если авто-отчёт
+ * не записался (ран упал, отчёт уже был, служебная фаза), задача получала Done
+ * с висящими AC/DoD. Две копии правила неизбежно разъезжаются, поэтому текст
+ * причины собирается здесь, а вызывающие только применяют решение.
+ *
+ * @param workflow — workflow задачи (источник терминальности)
+ * @param targetStatus — статус, который собирались поставить
+ * @param uncheckedAc — номера неотмеченных AC (с 1)
+ * @param uncheckedDod — номера неотмеченных DoD (с 1)
+ * @param prevStatus — статус, в котором задача останется при блокировке
+ */
+export function terminalStatusGate(
+  workflow: Workflow,
+  targetStatus: string,
+  uncheckedAc: number[],
+  uncheckedDod: number[],
+  prevStatus: string
+): TerminalStatusGateResult {
+  const hasUnchecked = uncheckedAc.length > 0 || uncheckedDod.length > 0;
+  if (!hasUnchecked || !isTerminalStatus(workflow, targetStatus)) return { blocked: false };
+  const parts: string[] = [];
+  if (uncheckedDod.length > 0) parts.push(`DoD: ${uncheckedDod.map((n) => `#${n}`).join(', ')}`);
+  if (uncheckedAc.length > 0) parts.push(`AC: ${uncheckedAc.map((n) => `#${n}`).join(', ')}`);
+  return {
+    blocked: true,
+    reason:
+      `Статус не изменён: терминальный «${targetStatus}» при неотмеченных пунктах (${parts.join('; ')}) ` +
+      'возможен только через backlog_finish_phase с dodOverride или aborted (VL-248/VL-309). ' +
+      `Задача оставлена в «${prevStatus}».`,
+  };
+}

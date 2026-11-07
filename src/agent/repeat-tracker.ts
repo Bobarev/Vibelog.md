@@ -880,15 +880,22 @@ export function parsedAckNext(output: string): AckNext | null {
  * (`serializeAck`), и несёт `missing`/`hint`/`retryWith` последнего ответа —
  * плоского текста в директивах цикла не остаётся.
  */
-export function appliedNoopDirective(name: string, lastAck?: AckNext): string {
+export function appliedNoopDirective(name: string, lastAck?: AckNext, phase?: string): string {
+  // VL-368: общая фраза «переходи к следующему пункту» не говорит модели, ЧТО
+  // именно делать. В Close следующий шаг единственный: отметить AC/DoD и
+  // вызвать backlog_finish_phase — без этого фаза не завершается (статус не
+  // двигается, авто-resume не запускается).
+  const nextStep =
+    phase === 'close'
+      ? 'Следующий шаг фазы close: отметь AC/DoD (backlog_manage_ac/backlog_manage_dod) и вызови backlog_finish_phase.'
+      : 'Переходи к следующему пункту фазы, а если работа сделана — к отчёту.';
   return serializeAck({
     outcome: 'noop',
     reason: 'noop_repeat',
     message:
-      `Вызов ${name} уже применён ранее — повтор НЕ выполнен, он ничего не изменит. ` +
-      'Переходи к следующему пункту фазы, а если работа сделана — к отчёту.',
+      `Вызов ${name} уже применён ранее — повтор НЕ выполнен, он ничего не изменит. ` + nextStep,
     next: ackNextFields(lastAck),
-    extra: { applied_repeat: true },
+    extra: { applied_repeat: true, ...(phase ? { phase } : {}) },
   });
 }
 

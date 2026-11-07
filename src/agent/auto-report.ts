@@ -19,7 +19,8 @@
  */
 
 import { addComment, getTask, updateTaskFile } from '../core/store.js';
-import { getStatusAfterPhase, getWorkflowForTask, isTerminalStatus, SERVICE_PHASES } from '../core/workflow.js';
+import { getStatusAfterPhase, getWorkflowForTask, SERVICE_PHASES, terminalStatusGate } from '../core/workflow.js';
+import type { TerminalStatusGateResult } from '../core/workflow.js';
 import { getPhaseTransientStatus } from '../core/phase-transient.js';
 import { buildAutoReport, uncheckedItems } from '../mcp/auto-report.js';
 
@@ -104,12 +105,12 @@ export function writeAutoReportIfMissing(opts: AutoReportOptions): boolean {
       uncheckedDod: uncheckedItems(dodList),
     });
 
-    // VL-309: терминальный статус при неотмеченных пунктах DoD авто-отчёт НЕ
-    // ставит. Правило VL-248 («Done при невыполненном DoD требует явного
-    // dodOverride/aborted») живёт внутри backlog_finish_phase, а этот путь его
-    // обходил: Close VL-307 получил Done с неотмеченными AC5/DoD2, хотя
-    // документация не была написана. Статус остаётся прежним (откат делает
-    // finalizePhaseStatus/человек), причина перечисляется в отчёте.
+    // VL-309/VL-368: терминальный статус при неотмеченных пунктах AC/DoD
+    // авто-отчёт НЕ ставит. Правило VL-248 («Done при невыполненном DoD требует
+    // явного dodOverride/aborted») живёт внутри backlog_finish_phase, а этот
+    // путь его обходил: Close VL-307 получил Done с неотмеченными AC5/DoD2.
+    // VL-368: проверка вынесена в общую `terminalStatusGate` — тот же гейт
+    // применяет `finalizePhaseStatus`, иначе две копии правила разъезжаются.
     const uncheckedDodNumbers = dodList
       .map((c, i) => ({ n: i + 1, checked: isChecked(c) }))
       .filter((x) => !x.checked)
@@ -119,24 +120,17 @@ export function writeAutoReportIfMissing(opts: AutoReportOptions): boolean {
       .filter((x) => !x.checked)
       .map((x) => x.n);
     const targetStatus = nextStatus ?? task.status;
-    const terminalAtRisk =
-      nextStatus !== null
-      && isTerminalStatus(workflow, targetStatus)
-      && (uncheckedDodNumbers.length > 0 || uncheckedAcNumbers.length > 0);
+    // Гейт применяется только при валидном переходе (nextStatus !== null):
+    // без перехода статус и так не меняется, и лишняя строка в отчёте врала бы.
+    const gate: TerminalStatusGateResult =
+      nextStatus === null
+        ? { blocked: false }
+        : terminalStatusGate(workflow, targetStatus, uncheckedAcNumbers, uncheckedDodNumbers, prevStatus);
+    const terminalAtRisk = gate.blocked;
     let effectiveStatus = targetStatus;
     if (terminalAtRisk) {
       effectiveStatus = prevStatus;
-      const parts: string[] = [];
-      if (uncheckedDodNumbers.length > 0) {
-        parts.push(`DoD: ${uncheckedDodNumbers.map((n) => `#${n}`).join(', ')}`);
-      }
-      if (uncheckedAcNumbers.length > 0) {
-        parts.push(`AC: ${uncheckedAcNumbers.map((n) => `#${n}`).join(', ')}`);
-      }
-      report +=
-        `\nСтатус не изменён: терминальный «${targetStatus}» при неотмеченных пунктах (${parts.join('; ')}) ` +
-        'возможен только через backlog_finish_phase с dodOverride или aborted (VL-248/VL-309). ' +
-        `Задача оставлена в «${prevStatus}».`;
+      report += `\n${gate.reason ?? ''}`;
     }
 
     addComment(taskCwd, taskId, report, '@agent');

@@ -201,7 +201,7 @@ export interface SessionMeta {
    * числа из сводки упавшей фазы (VL-250/VL-252), и они попадали бы в
    * frontmatter как «успешный» usage.
    */
-  last_run?: { is_error?: boolean; finishedAt?: string };
+  last_run?: { is_error?: boolean; finishedAt?: string; result?: string };
   /**
    * VL-243: отметка «этот ран уже записан в billing» — {sessionId, finishedAt}
    * записи. CLI ставит её сразу после appendBilling; finish() оркестратора

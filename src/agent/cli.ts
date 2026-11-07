@@ -852,11 +852,27 @@ export async function main(argv: string[]): Promise<void> {
   } catch (err) {
     console.error(`Предупреждение: старт сессии ${sessionId} не записан в jsonl — ${(err as Error).message}`);
   }
+  // VL-368: фаза РАНА для loop (нужна до запуска — loop решает по ней,
+  // обязателен ли отчёт). Приоритет тот же, что в пост-ране (VL-259):
+  // явная phase → VIBELOG_RUN_PHASE → VIBELOG_PHASE_NAME (кроме 'prompt').
+  // Мета сессии здесь ещё не читается (она нужна только пост-рану), поэтому
+  // для close-фазы источник всегда явный — этого достаточно.
+  const loopRunPhase =
+    phase ??
+    process.env.VIBELOG_RUN_PHASE ??
+    (process.env.VIBELOG_PHASE_NAME && process.env.VIBELOG_PHASE_NAME !== 'prompt'
+      ? process.env.VIBELOG_PHASE_NAME
+      : undefined);
   const loopResult = await runLoop({
     llm,
     messages,
     tools,
     externalTools,
+    // VL-368: фаза рана — loop по ней решает, обязателен ли отчёт
+    // (REPORT_REQUIRED_PHASES: close). Мета сессии читается в пост-ране,
+    // поэтому здесь только явная фаза и env — для close этого достаточно
+    // (он всегда приходит явно или через VIBELOG_RUN_PHASE).
+    ...(loopRunPhase ? { phase: loopRunPhase } : {}),
     limits: {
       ...(opts.maxToolCalls !== undefined ? { maxToolCalls: opts.maxToolCalls } : {}),
       ...(opts.toolCallsPerSession !== undefined ? { maxToolCallsPerSession: opts.toolCallsPerSession } : {}),
@@ -1152,8 +1168,14 @@ export async function main(argv: string[]): Promise<void> {
             ...new Set([...(existing?.blocked_signatures ?? []), ...(loopResult.blocked_signatures ?? [])]),
           ].slice(-20),
           // VL-253: исход рана — finish_phase не доверяет явному tokenUsage
-          // после упавшей фазы (значения из сводки упавшего рана)
-          last_run: { is_error: loopResult.is_error, finishedAt: new Date().toISOString() },
+          // после упавшей фазы (значения из сводки упавшего рана).
+          // VL-368: текст результата — источник причины падения в ленте
+          // активности, когда run_progress не писался (fail через кап/лимит).
+          last_run: {
+            is_error: loopResult.is_error,
+            finishedAt: new Date().toISOString(),
+            result: String(loopResult.result ?? '').slice(0, 500),
+          },
         });
         // VL-259: история ранов меты — аддитивно (phase/taskId не трогаются,
         // lesson-40/VL-147). По ней разбор восстанавливает число ранов, фазу
