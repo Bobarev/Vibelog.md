@@ -451,8 +451,7 @@ const NOOP_NOT_APPLICABLE = {
   write_file: 'запись файла: сравнение содержимого вне домена backlog (отдельный инструмент)',
 };
 
-describe('VL-310 — инвариант «каждый write-инструмент умеет noop»', () => {
-  it('AC2: каждый noop-способный инструмент отвечает {ok:false, noop:true} на повторной идентичной записи', async () => {
+describe('VL-310 — инвариант «каждый write-инструмент умеет noop»', () => {  it('AC2: каждый noop-способный инструмент отвечает {ok:false, noop:true} на повторной идентичной записи', async () => {
     for (const [name, scenario] of Object.entries(NOOP_SCENARIOS)) {
       const ack = await scenario();
       assert.equal(ack.noop, true, `${name}: повтор с теми же аргументами обязан быть noop — ${JSON.stringify(ack).slice(0, 300)}`);
@@ -515,5 +514,108 @@ describe('VL-319 — noop-ответ называет незаполненное
     assert.equal(noop.noop, true, `ожидался noop: ${JSON.stringify(noop)}`);
     assert.deepEqual(Object.keys(noop.applied), ['verified_by'], 'applied — только переданные поля');
     assert.equal(typeof noop.hint, 'string', 'hint обязателен в noop-ответе');
+  });
+});
+
+/**
+ * VL-357 AC4: инвариант «валидация необязательного по смыслу поля не блокирует
+ * операцию».
+ *
+ * Класс VL-356: инструмент отвечал ЖЁСТКИМ отказом на отсутствие поля, без
+ * которого операция осмысленна (урок без тела). Модель не могла выполнить шаг,
+ * повторяла вызов дословно и падала по капу повторов. Правило протокола:
+ * отсутствие НЕОБЯЗАТЕЛЬНОГО по смыслу поля — исход `partial` + `next.missing`,
+ * сущность создаётся (со скелетом), модель получает следующий шаг.
+ *
+ * Тест обходит реестр `listTools()`, поэтому новый write-инструмент обязан
+ * попасть либо в таблицу сценариев, либо в список исключений с причиной —
+ * иначе сборка красная. Это и есть механическая защита от нового рецидива.
+ */
+const PARTIAL_SCENARIOS = {
+  // Тело — необязательно по смыслу: урок-скелет создаётся, тело дописывается
+  lesson_create: async () => handleToolCall('lesson_create', { title: 'Partial-урок' }, cwd),
+  document_create: async () => handleToolCall('document_create', { title: 'Partial-док' }, cwd),
+  reference_add: async () =>
+    handleToolCall('reference_add', { title: 'Partial-ref', type: 'url', url: 'https://example.org/p' }, cwd),
+};
+
+/**
+ * write-инструменты, у которых необязательного по смыслу поля нет (или оно
+ * не определено механически) — с причиной. Пустой список исключений был бы
+ * хуже: «пятый случай» проскочил бы молча.
+ */
+const PARTIAL_EXEMPT = {
+  backlog_create_task: 'title — единственное обязательное поле и оно действительно обязательное (задача без заголовка не существует)',
+  backlog_update_task: 'обновление применяет переданные поля; незаполненных «по смыслу» полей у задачи нет',
+  backlog_update_status: 'status обязателен: без него операция не имеет смысла',
+  backlog_add_comment: 'comment обязателен: пустой комментарий не является записью',
+  backlog_update_dependencies: 'add/remove обязательны по смыслу: без них менять нечего',
+  backlog_manage_ac: 'операции над списком: аргументы определяют действие, «необязательных по смыслу» полей нет',
+  backlog_manage_dod: 'операции над списком: аргументы определяют действие, «необязательных по смыслу» полей нет',
+  backlog_finish_phase: 'comment обязателен по контракту фазы (сервер собирает авто-отчёт при отсутствии)',
+  milestone_add: 'name обязателен: веха без имени не существует',
+  milestone_rename: 'from/to обязательны: переименование без цели невозможно',
+  milestone_remove: 'name обязателен',
+  milestone_archive: 'name обязателен',
+  document_update: 'обновление применяет переданные поля; тело документа отдельным полем необязательно',
+  reference_update: 'обновление применяет переданные поля',
+  reference_remove: 'id обязателен',
+  reference_link: 'referenceId/taskId обязательны: связь без одной из сторон не существует',
+  reference_sync: 'синхронизация не принимает необязательных по смыслу полей (режим — все источники)',
+  lesson_view: 'read-ветка',
+  lesson_update: 'обновление применяет переданные поля; VL-355 уже отдаёт partial при незаполненном теле',
+  lesson_link: 'lessonId/taskId обязательны',
+  lesson_supersede: 'oldId/newId обязательны',
+  lesson_audit: 'отчёт по умолчанию — read-семантика',
+  lesson_classify: 'отчёт по умолчанию — read-семантика',
+  write_file: 'локальный файловый инструмент: content обязателен по природе записи',
+  git_commit: 'paths/message обязательны: коммит без путей невозможен',
+  backlog_trigger_phase: 'прогон фаз: id обязателен',
+  backlog_auto_queue: 'очередь: action обязателен',
+  backlog_supervisor: 'прогон: action обязателен',
+};
+
+describe('VL-357 — отсутствие необязательного по смыслу поля даёт partial, а не rejected', () => {
+  it('AC4: сценарии возвращают outcome=partial с непустым next.missing', async () => {
+    for (const [name, scenario] of Object.entries(PARTIAL_SCENARIOS)) {
+      const out = await scenario();
+      let ack;
+      try {
+        ack = JSON.parse(out);
+      } catch {
+        assert.fail(`${name}: ответ не JSON — ${String(out).slice(0, 200)}`);
+      }
+      assert.equal(
+        ack.outcome,
+        'partial',
+        `${name}: отсутствие необязательного по смыслу поля — partial, а не отказ: ${String(out).slice(0, 300)}`,
+      );
+      assert.equal(ack.ok, true, `${name}: partial — не ошибка (ok:true, совместимость с ack-потребителями)`);
+      assert.ok(Array.isArray(ack.missing) && ack.missing.length > 0, `${name}: next.missing обязателен — ${String(out).slice(0, 300)}`);
+      assert.equal(typeof ack.missing[0].field, 'string', `${name}: missing называет поле`);
+      assert.equal(typeof ack.hint, 'string', `${name}: hint со следующим шагом`);
+    }
+  });
+
+  it('AC4: каждый write-инструмент реестра учтён — partial-сценарий либо документированное исключение', () => {
+    const missing = listTools()
+      .map(t => t.name)
+      .filter(name => isWriteOperation(name))
+      .filter(name => !(name in PARTIAL_SCENARIOS) && !(name in PARTIAL_EXEMPT));
+    assert.deepEqual(
+      missing,
+      [],
+      `write-инструменты без решения по необязательным полям: ${missing.join(', ')}. ` +
+        'Добавь сценарий в PARTIAL_SCENARIOS (ответ обязан быть outcome:partial + missing) ' +
+        'или строку с причиной в PARTIAL_EXEMPT.',
+    );
+  });
+
+  it('AC4: lesson_create без content создаётся со скелетом и не отказывает', async () => {
+    const ack = JSON.parse(await handleToolCall('lesson_create', { title: 'Скелет-инвариант' }, cwd));
+    assert.equal(ack.outcome, 'partial');
+    assert.equal(ack.missing[0].field, 'content');
+    const created = getLesson(cwd, ack.applied.id);
+    assert.ok(created, 'урок реально создан — отказ не блокирует операцию');
   });
 });

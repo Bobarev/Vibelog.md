@@ -26,6 +26,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
+import type { ToolKind } from '../core/tool-classify.js';
 import { searchProjectFiles, walkFiles } from './search-files.js';
 import type { ChatMessage } from './llm.js';
 import {
@@ -53,6 +54,16 @@ export interface ToolSpec {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /**
+   * VL-357: объявленный вид операции ('read' | 'write' | 'mixed').
+   *
+   * Живёт ТОЛЬКО в TS-описании: в MCP-схему инструмента (inputSchema) не
+   * попадает — лишнее поле смутило бы модель. Читается классификатором
+   * isWriteOperation через таблицу src/core/tool-kinds.ts; для внешних
+   * MCP-инструментов (VL-84) остаётся undefined — тогда действует fail-safe
+   * «неизвестное имя → write».
+   */
+  kind?: ToolKind;
   handler: (args: Record<string, unknown>, ctx?: ToolHandlerContext) => Promise<string>;
 }
 
@@ -670,6 +681,7 @@ function readTextFile(abs: string): { ok: true; content: string } | { ok: false;
 function makeReadFile(cwd: string): ToolSpec {
   return {
     name: 'read_file',
+    kind: 'read',
     description:
       'Читает текстовый файл проекта (offset — 0-based номер строки начала, limit — максимум строк). ' +
       'Диапазон можно задать прямо в path: "файл:171-340" — строки 171–340 (1-based, включительно), ' +
@@ -742,6 +754,7 @@ function makeReadFile(cwd: string): ToolSpec {
 function makeSessionOutline(cwd: string): ToolSpec {
   return {
     name: 'agent_session_outline',
+    kind: 'read',
     description:
       'Обзор JSONL-транскрипта сессии агента (.vibelog/agent-sessions/*.jsonl): по строке — ' +
       'индекс, роль, размер в байтах, число и имена tool_calls, маркер рана/фазы, первые 80 символов. ' +
@@ -831,6 +844,7 @@ export function parseJsonlWithBytes(
 function makeWriteFile(cwd: string): ToolSpec {
   return {
     name: 'write_file',
+    kind: 'write',
     description: 'Создаёт или перезаписывает файл внутри проекта (родительские директории создаются).',
     inputSchema: {
       type: 'object',
@@ -862,6 +876,7 @@ function makeWriteFile(cwd: string): ToolSpec {
 function makeEdit(cwd: string): ToolSpec {
   return {
     name: 'edit',
+    kind: 'write',
     description:
       'Заменяет old_string на new_string в файле. Без replace_all строка должна встречаться ровно один раз.',
     inputSchema: {
@@ -1289,6 +1304,7 @@ export function clampShellTimeout(
 function makeRunShellCommand(cwd: string): ToolSpec {
   return {
     name: 'run_shell_command',
+    kind: 'write',
     description:
       'Выполняет shell-команду через /bin/bash -lc. Аргументы — массив (без shell:true). Таймаут по умолчанию 120 секунд.',
     inputSchema: {
@@ -1415,6 +1431,7 @@ export function miniGlobToRegex(glob: string): RegExp {
 function makeGrepSearch(cwd: string): ToolSpec {
   return {
     name: 'grep_search',
+    kind: 'read',
     description:
       'Поиск по содержимому файлов проекта: regex-паттерн, формат file:line: text. Лимит 200 совпадений.',
     inputSchema: {
@@ -1491,6 +1508,7 @@ function makeGrepSearch(cwd: string): ToolSpec {
 function makeGlob(cwd: string): ToolSpec {
   return {
     name: 'glob',
+    kind: 'read',
     description: 'Поиск файлов по glob-паттерну (относительные пути проекта). Лимит 500.',
     inputSchema: {
       type: 'object',
@@ -1518,6 +1536,7 @@ function makeGlob(cwd: string): ToolSpec {
 function makeSearchFiles(cwd: string): ToolSpec {
   return {
     name: 'search_files',
+    kind: 'read',
     description:
       'Поиск по содержимому файлов проекта (read-only). Основной инструмент для вопросов ' +
       '«где используется X» и «где определён Y»: ОДИН вызов вместо серии read_file с offset/limit. ' +

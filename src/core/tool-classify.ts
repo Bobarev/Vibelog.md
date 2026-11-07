@@ -1,52 +1,44 @@
 /**
- * Классификация MCP-инструментов read/write по природе операции (VL-219, VL-306).
+ * Классификация инструментов read/write по ОБЪЯВЛЕННОМУ виду (VL-219, VL-306, VL-357).
  *
  * Модуль вынесен из `src/web/tool-policy.ts` в core, потому что классификатор
  * нужен ДВУМ слоям: веб-чату (approval-gate: write требует Allow/Deny) и
- * агентскому циклу (`src/agent/loop.ts`, VL-306: страховка `appliedSignatures`
- * для write-инструментов, чей ответ пришёл не-JSON). Импортировать веб-слой
- * из агентского цикла нельзя — `src/web/tool-policy.ts` тянет `listTools()`
+ * агентскому циклу (`src/agent/loop.ts`). Импортировать веб-слой из
+ * агентского цикла нельзя — `src/web/tool-policy.ts` тянет `listTools()`
  * из `src/mcp/tools.ts` и файловые хелперы агента; копия логики разъехалась бы
  * (lesson-37: общий модуль вместо копий). `src/web/tool-policy.ts` реэкспортирует
  * `isWriteOperation` — публичный API веб-слоя не изменился.
  *
- * Классификация — по СЕМАНТИКЕ ИМЕНИ, а не по жёсткому списку: write = есть
- * побочный эффект (изменяет файловую систему/данные backlog/settings).
- * Неизвестное имя → write (fail-safe: подтверждение лучше молчаливой записи).
+ * VL-357: классификация — по ДЕКЛАРАЦИИ (`src/core/tool-kinds.ts`), а не по
+ * токенам имени. Маркеры (`manage` → write) ошибались по построению: чтение
+ * внутри write-инструмента (`backlog_manage_dod {action:'list'}`) считалось
+ * записью, веб-чат требовал на него Allow/Deny, а цикл агента помечал повтор
+ * «уже применённой записью» (VL-351). Новый инструмент обязан объявить вид;
+ * `tool-classify.test.mjs` сверяет таблицу с реестром и падает, если строки нет.
  */
 
-/**
- * Маркеры write-операции в имени инструмента (природа операции: есть
- * побочный эффект). Проверяются по токенам имени (split по не-буквам),
- * поэтому `backlog_manage_ac` матчит `manage`, `reference_link` — `link`.
- */
-const WRITE_MARKERS = [
-  'create', 'update', 'add', 'remove', 'rename', 'archive',
-  'manage', 'finish', 'supersede', 'link', 'sync', 'cache',
-  'write', 'edit', 'delete', 'set', 'put', 'run', 'spawn',
-  'promote', 'reject', 'complete', 'append', 'mkdir',
-  // VL-311: git_commit — побочный эффект по природе (меняет историю репозитория;
-  // явный маркер вместо fail-safe «имя неизвестно → write»)
-  'commit',
-  // VL-268: запуск фаз/очереди/прогона — побочный эффект по природе
-  'trigger', 'start', 'stop', 'queue',
-] as const;
+import { toolKindOf } from './tool-kinds.js';
 
 /**
- * Маркеры read-операции в имени инструмента. Проверяются ПОСЛЕ write —
- * если в имени оба (теоретически), write приоритетнее (безопаснее).
+ * Вид операции, объявленный инструментом (VL-357).
+ *
+ * - `read` — без побочных эффектов;
+ * - `write` — изменяет состояние;
+ * - `mixed` — зависит от аргументов: часть действий читает, часть пишет
+ *   (`backlog_manage_*`); без аргументов трактуется как write (fail-safe).
  */
-const READ_MARKERS = [
-  'list', 'view', 'search', 'get', 'read', 'ready', 'glob', 'grep', 'help', 'map',
-  // VL-268: состояние запуска фазы — чистый read
-  'status',
-  // VL-279: lesson_audit — по умолчанию read-only (записи только при явных
-  // verified/needsReview); природа по умолчанию — чтение отчёта
-  'audit',
-  // VL-280: lesson_classify — тоже отчёт по умолчанию (kind пишется только
-  // при apply/confirmIds, задачи — только по createClusters)
-  'classify',
-] as const;
+export type ToolKind = 'read' | 'write' | 'mixed';
+
+/**
+ * Действия `mixed`-инструментов, которые НИЧЕГО не пишут (VL-357).
+ *
+ * Ключ — имя инструмента, значение — действия-чтения. Список общий для всех
+ * `manage_*`: `action: 'list'` — снимок чеклиста, эффекта нет.
+ */
+const MIXED_READ_ACTIONS: Readonly<Record<string, readonly string[]>> = {
+  backlog_manage_ac: ['list'],
+  backlog_manage_dod: ['list'],
+};
 
 /**
  * Интерактивные инструменты (VL-330): вызов НЕ исполняется сервером, а ставит
@@ -56,10 +48,27 @@ const READ_MARKERS = [
  * (значит, не write — иначе карточка вопроса попала бы под Allow/Deny и
  * allow-list «Always allow», что бессмысленно: вопрос нельзя разрешить
  * заранее), но и не read (сервер ничего не читает — он ждёт человека).
- * Без явной ветки fail-safe правило «неизвестное имя → write» отправило бы
- * `ask_user` в approval-gate.
  */
 const INTERACTIVE_TOOLS: ReadonlySet<string> = new Set(['ask_user']);
+
+/**
+ * Вид локальных файловых инструментов агента (VL-357).
+ *
+ * Они не входят в MCP-реестр (`listTools()`), поэтому не могут объявить вид
+ * там же и описаны отдельной таблицей. До VL-357 это делали маркеры имени
+ * (`read`/`write`/`edit`/`run`) — маркеры удалены, потому что ошибались на
+ * любом новом имени с посторонним токеном.
+ */
+const LOCAL_TOOL_KINDS: Readonly<Record<string, ToolKind>> = {
+  read_file: 'read',
+  write_file: 'write',
+  edit: 'write',
+  run_shell_command: 'write',
+  grep_search: 'read',
+  glob: 'read',
+  search_files: 'read',
+  agent_session_outline: 'read',
+};
 
 /**
  * Интерактивный ли инструмент: вызов = пауза хода, а не исполнение.
@@ -70,31 +79,43 @@ export function isInteractiveTool(name: string): boolean {
   return INTERACTIVE_TOOLS.has(name);
 }
 
-/** Токенизует имя инструмента: lowercase + split по не-буквенно-цифровым. */
-function tokenize(name: string): string[] {
-  return name.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+/**
+ * Объявленный вид инструмента.
+ *
+ * @param name — имя инструмента (MCP-реестр или локальный файловый)
+ * @returns вид либо `undefined` — имя не объявлено (внешний MCP-сервер,
+ *   новое имя до декларации)
+ */
+export function declaredToolKind(name: string): ToolKind | undefined {
+  return toolKindOf(name) ?? LOCAL_TOOL_KINDS[name];
 }
 
 /**
  * Классифицирует операцию: true — write (нужно подтверждение Allow/Deny),
- * false — read (исполняется сразу). Побочный эффект — свойство операции,
- * не аргументов. Фолбэк для неизвестных имён — write (fail-safe: защита от
- * молчаливой записи; новые MCP-инструменты подключаются без правки
- * инструкции чата — их классификация выводится из имени).
+ * false — read (исполняется сразу).
+ *
+ * VL-357: вид читается из декларации (`TOOL_KINDS`/`LOCAL_TOOL_KINDS`), а не
+ * выводится из токенов имени. `mixed` разрешается по аргументам: действие из
+ * `MIXED_READ_ACTIONS` — read, любое другое — write. Без аргументов
+ * `mixed`-инструмент считается write (fail-safe: подтверждение лучше
+ * молчаливой записи). Неизвестное имя → write (тот же fail-safe).
  *
  * @param name — имя инструмента (MCP-реестр или локальный файловый)
+ * @param args — аргументы вызова (нужны только `mixed`-инструментам)
  */
-export function isWriteOperation(name: string): boolean {
+export function isWriteOperation(name: string, args?: Record<string, unknown>): boolean {
   // VL-330: интерактивный инструмент (ask_user) — не write: пауза хода, а не
-  // побочный эффект. Проверяется ДО маркеров и до fail-safe.
+  // побочный эффект. Проверяется ДО декларации и до fail-safe.
   if (isInteractiveTool(name)) return false;
-  const tokens = tokenize(name);
-  // Локальные файловые инструменты агента — явная ветка (ясность + не
-  // зависит от порядка маркеров)
-  if (tokens.includes('write') || tokens.includes('edit') || tokens.includes('run')) return true;
-  if (tokens.includes('read') || tokens.includes('grep') || tokens.includes('glob')) return false;
-  if (tokens.some(t => WRITE_MARKERS.includes(t as (typeof WRITE_MARKERS)[number]))) return true;
-  if (tokens.some(t => READ_MARKERS.includes(t as (typeof READ_MARKERS)[number]))) return false;
+  const kind = declaredToolKind(name);
+  if (kind === 'read') return false;
+  if (kind === 'write') return true;
+  if (kind === 'mixed') {
+    const action = args?.action;
+    if (typeof action !== 'string') return true; // без аргументов — write
+    const readActions = MIXED_READ_ACTIONS[name] ?? [];
+    return !readActions.includes(action);
+  }
   // Неизвестное имя → write (fail-safe)
   return true;
 }

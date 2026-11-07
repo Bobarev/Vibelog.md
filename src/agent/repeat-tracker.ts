@@ -67,6 +67,61 @@ export const REPEAT_WRITE_BLOCK_DEFAULT = 8;
 export const REPEAT_BLOCK_MAX_PER_RUN = 5;
 
 /**
+ * VL-357: пороги повторов исходов вызова (applied / noop / error) за ран.
+ *
+ * До VL-357 эти пороги жили в `src/agent/loop.ts` (`MAX_*_REPEATS_PER_RUN`),
+ * а порог noop-серии веб-чата — своей константой в `src/web/tool-dedup.ts`.
+ * Три независимых детектора давали три разных словаря директив на один и тот
+ * же инцидент. Теперь порог объявлен ОДИН раз здесь.
+ */
+export const REPEAT_LIMITS = {
+  /** Порог предупреждения для поиска (grep/glob/search_files). */
+  search: REPEAT_SEARCH_LIMIT_DEFAULT,
+  /** Порог предупреждения для чтения файла. */
+  read: REPEAT_READ_LIMIT_DEFAULT,
+  /** Порог предупреждения для shell-скелета. */
+  shell: REPEAT_SHELL_LIMIT_DEFAULT,
+  /** Порог предупреждения для правки файла. */
+  write: REPEAT_WRITE_LIMIT_DEFAULT,
+  /** Порог блокировки правки файла. */
+  writeBlock: REPEAT_WRITE_BLOCK_DEFAULT,
+  /**
+   * VL-310: сколько раз за ран можно повторить УЖЕ ПРИМЕНЁННЫЙ вызов.
+   * Терминального выхода на первом повторе нет (VL-304 обрывал работу
+   * середины фазы): модели уходит директива «переходи к отчёту», а кап
+   * ограничивает вечный круг.
+   */
+  applied: 3,
+  /**
+   * VL-309: кап повторов noop-вызова («изменений нет»). Noop ≠ работа
+   * сделана, поэтому штатного выхода нет — только честный fail() после
+   * исчерпания (инцидент Close VL-307).
+   */
+  noop: 3,
+  /**
+   * VL-323: кап серии дословных повторов вызова, вернувшего отказ.
+   * 5, а не 3: модели нужно время применить подсказку из текста ошибки
+   * (инцидент Close VL-320).
+   */
+  error: 5,
+  /** VL-253: кап заблокированных вызовов за ран (директивы не должны раздувать контекст). */
+  blockedCalls: 5,
+  /** VL-229: кап предупреждений о повторах за ран. */
+  warnMax: 15,
+} as const;
+
+/** VL-310: кап повторов уже применённого вызова за ран. */
+export const MAX_APPLIED_REPEATS_PER_RUN = REPEAT_LIMITS.applied;
+/** VL-309: кап повторов noop-вызова за ран. */
+export const MAX_NOOP_REPEATS_PER_RUN = REPEAT_LIMITS.noop;
+/** VL-323: кап серии дословных повторов отказавшего вызова за ран. */
+export const MAX_ERROR_REPEATS_PER_RUN = REPEAT_LIMITS.error;
+/** VL-253: кап заблокированных вызовов за ран. */
+export const MAX_BLOCKED_CALLS_PER_RUN = REPEAT_LIMITS.blockedCalls;
+/** VL-229: кап предупреждений о повторах за ран. */
+export const REPEAT_WARN_MAX_PER_RUN = REPEAT_LIMITS.warnMax;
+
+/**
  * Категория повтора: от неё зависит, срабатывает ли guard и на каком пороге.
  * - search — grep_search/glob: повтор запроса тратит контекст без новой информации;
  * - read — read_file: повторное чтение того же файла (в т.ч. кусками);
@@ -204,13 +259,97 @@ export function toolRepeatKind(name: string): RepeatKind | null {
 }
 
 /**
+ * Служебные аргументы вызова, НЕ входящие в сигнатуру (VL-326, VL-357).
+ *
+ * `idempotencyKey` — маркер повтора, а не семантика вызова: он описывает «это
+ * тот же самый вызов, что и раньше», а не «что именно делает вызов». Пока
+ * ключ входил в сигнатуру, новый ключ на каждый повтор делал сигнатуры
+ * разными, и дедупликация обходилась сменой служебного поля (инцидент VL-324).
+ *
+ * VL-357: список ОДИН на оба детектора — `callSignature` (точный дубль) и
+ * `repeatKey` (грубый ключ) вырезают его одинаково, а не двумя реализациями.
+ */
+export const NON_SEMANTIC_ARGS: readonly string[] = ['idempotencyKey'];
+
+/** Копия аргументов без служебных полей (входной объект не мутируется). */
+function stripNonSemanticArgs(
+  args: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  // Аргументы приходят и строкой (веб-слой и супервизор сериализуют args):
+  // оператор `in` на строке бросает TypeError, и весь ход рушился с
+  // «Cannot use 'in' operator to search for 'idempotencyKey'».
+  if (args === undefined || args === null) return undefined;
+  if (typeof args !== 'object') return undefined;
+  let hasNonSemantic = false;
+  for (const key of NON_SEMANTIC_ARGS) {
+    if (key in args) {
+      hasNonSemantic = true;
+      break;
+    }
+  }
+  if (!hasNonSemantic) return args;
+  const copy: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (NON_SEMANTIC_ARGS.includes(key)) continue;
+    copy[key] = value;
+  }
+  return copy;
+}
+
+/**
+ * Стабильная сериализация значения для точной сигнатуры вызова (VL-255).
+ *
+ * Ключи объектов сортируются рекурсивно — `{a:1,b:2}` и `{b:2,a:1}` дают
+ * одинаковую подпись (порядок ключей в JSON модели не стабилен).
+ * `undefined`/функции/символы отбрасываются как отсутствующие. BigInt
+ * сериализуется строкой: JSON.stringify на нём бросает исключение.
+ */
+function stableSerialize(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'bigint') return JSON.stringify(`${value.toString()}n`);
+  if (typeof value !== 'object') {
+    const encoded = JSON.stringify(value);
+    return encoded === undefined ? 'null' : encoded;
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(v => stableSerialize(v)).join(',')}]`;
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj)
+    .filter(k => obj[k] !== undefined)
+    .sort();
+  return `{${keys.map(k => `${JSON.stringify(k)}:${stableSerialize(obj[k])}`).join(',')}}`;
+}
+
+/**
+ * Ключ вызова: имя инструмента + стабильная сериализация аргументов (VL-255).
+ *
+ * Точный ключ: ловит именно «дословный» повтор. Грубый `repeatKey` ниже
+ * схлопывает все чтения одного файла в один ключ (независимо от offset/limit)
+ * и годится для предупреждений, но не для блокировки исполнения.
+ *
+ * VL-357: единственная реализация на оба слоя (агентский цикл и веб-чат);
+ * служебные аргументы (`NON_SEMANTIC_ARGS`) вырезаются до сериализации.
+ */
+export function callSignature(name: string, args: Record<string, unknown> | undefined): string {
+  const stripped = stripNonSemanticArgs(args);
+  // Не-объектные аргументы сериализуются как есть: сигнатура должна различать
+  // вызовы, а не падать на чужом формате (строковый args веб-слоя).
+  const payload = stripped !== undefined ? stripped : args;
+  return `${name}|${stableSerialize(payload ?? {})}`;
+}
+
+/**
  * Ключ повтора в формате `<имя инструмента>|<объект>` — он же `path|pattern`
  * из AC1 (для файловых операций — `read_file|src/agent/loop.ts`).
+ *
+ * VL-357: служебные аргументы вырезаются так же, как в `callSignature`, —
+ * смена `idempotencyKey` не превращает повтор в «новый» вызов.
  *
  * @returns null, если инструмент не отслеживается либо аргумент отсутствует
  */
 export function repeatKey(name: string, args: Record<string, unknown>): string | null {
-  const target = toolRepeatTarget(name, args);
+  const target = toolRepeatTarget(name, stripNonSemanticArgs(args) ?? {});
   if (target === null) return null;
   return `${name}|${target}`;
 }
@@ -475,4 +614,205 @@ export function createRepeatGuard(options: RepeatGuardOptions = {}): RepeatGuard
       return key === null ? 0 : (counts.get(key) ?? 0);
     },
   };
+}
+
+/**
+ * Подсказка следующего шага для директивы loop detection (VL-251).
+ *
+ * Сообщение о зацикливании раньше было констатацией и уходило ролью
+ * assistant — модель не понимала, что делать вместо повтора. Теперь директива
+ * уходит tool-результатом и заканчивается конкретным действием.
+ */
+export const NEXT_STEP_HINT =
+  'Следующий шаг: смени аргументы или инструмент, прочитай актуальное состояние (backlog_view_task / git status / grep) либо заверши фазу финальным текстом.';
+
+/** Длина текста в UTF-8 байтах (без node:Buffer — модуль остаётся чистым). */
+function byteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/**
+ * Предел длины директивы в байтах (инвариант VL-310).
+ *
+ * Готовый JSON-вызов с кириллическими путями легко его превышает, поэтому
+ * `retryDirective` перебирает варианты усечения, сохраняя `retryWith` —
+ * именно он и есть смысл директивы.
+ */
+export const DIRECTIVE_MAX_BYTES = 400;
+
+/** Максимальная длина текста ошибки внутри директивы (инвариант < 400 байт). */
+const ERROR_IN_DIRECTIVE_MAX_CHARS = 100;
+
+/** Сколько символов хвоста сохранить (готовая подсказка стоит в конце). */
+const ERROR_IN_DIRECTIVE_TAIL_CHARS = 35;
+
+/**
+ * Обрезает текст отказа для подстановки в директиву loop detection (VL-323).
+ *
+ * Сжимает пробелы. Длинный текст режется с сохранением ХВОСТА: готовая
+ * подсказка («передай allowForeign: true») у ackError стоит в конце сообщения,
+ * и простое усечение по голове её съедало (риск R2 плана VL-323: директива
+ * обязана остаться < 400 байт, инвариант VL-310).
+ *
+ * VL-351: текст из `hint` не режется вовсе — он короткий по построению
+ * (готовая инструкция), а обрезка по голове+хвосту калечила его.
+ */
+export function clipErrorText(text: string, fromHint = false): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (fromHint || flat.length <= ERROR_IN_DIRECTIVE_MAX_CHARS) return flat;
+  const head = ERROR_IN_DIRECTIVE_MAX_CHARS - ERROR_IN_DIRECTIVE_TAIL_CHARS - 1;
+  return `${flat.slice(0, head)}…${flat.slice(-ERROR_IN_DIRECTIVE_TAIL_CHARS)}`;
+}
+
+/**
+ * Извлекает текст отказа из JSON-ответа write-инструмента (VL-323, VL-351).
+ *
+ * ackError кладёт причину в `error`, ackDenied — в `message`; для прочих форм
+ * берётся первое непустое из них. `hint` идёт ПЕРВЫМ: это короткое готовое
+ * действие для модели, а `error` у ackErrorDetailed бывает длинным и содержать
+ * примеры markdown, из которых обрезка оставляла бессмысленный обрывок.
+ * `fromHint` сообщает вызывающему, что текст короткий по построению.
+ *
+ * VL-357: тип исхода сведён к протоколу — `retryWith` читается из `next` (новая
+ * форма) и из корня (форма VL-353), чтобы старые ответы не теряли исправление.
+ */
+export function parsedErrorText(
+  output: string,
+): { text: string; fromHint: boolean; retryWith?: Record<string, unknown> } | null {
+  try {
+    const parsed = JSON.parse(output) as {
+      hint?: unknown;
+      error?: unknown;
+      message?: unknown;
+      retryWith?: unknown;
+      next?: { retryWith?: unknown; hint?: unknown };
+    } | null;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const rawRetry = parsed.next?.retryWith ?? parsed.retryWith;
+    const retryWith =
+      rawRetry !== null && typeof rawRetry === 'object' && !Array.isArray(rawRetry)
+        ? (rawRetry as Record<string, unknown>)
+        : undefined;
+    for (const [value, fromHint] of [
+      [parsed.next?.hint ?? parsed.hint, true],
+      [parsed.error, false],
+      [parsed.message, false],
+    ] as const) {
+      if (typeof value === 'string' && value.trim() !== '') {
+        return retryWith === undefined ? { text: value, fromHint } : { text: value, fromHint, retryWith };
+      }
+    }
+    if (retryWith !== undefined) return { text: '', fromHint: false, retryWith };
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Собирает директиву с ГОТОВЫМ вызовом (VL-353).
+ *
+ * Модель получает строку, которую можно скопировать в следующий tool_call без
+ * размышлений: имя инструмента + JSON аргументов повторённого вызова с
+ * подставленным `retryWith`. Если JSON не влезает в лимит VL-310, `paths`
+ * усекается до первого элемента с пометкой «остальные пути — те же»: смысл
+ * директивы (`retryWith`) сохраняется всегда.
+ */
+export function retryDirective(
+  name: string,
+  retryWith: Record<string, unknown>,
+  callArgs?: Record<string, unknown>,
+): string {
+  const head = `Loop detection: ${name} — предыдущий вызов отклонён. Повтори так: ${name} `;
+  const merged: Record<string, unknown> = { ...(callArgs ?? {}), ...retryWith };
+  const paths = merged.paths;
+  const samePathsNote = ' (остальные пути — те же)';
+  const candidates: string[] = [JSON.stringify(merged)];
+  if (Array.isArray(paths) && paths.length > 1) {
+    candidates.push(JSON.stringify({ ...merged, paths: [paths[0]] }) + samePathsNote);
+  }
+  if (Array.isArray(paths)) {
+    candidates.push(JSON.stringify({ ...merged, paths: [] }) + samePathsNote);
+  }
+  for (const candidate of candidates) {
+    const text = head + candidate;
+    if (byteLength(text) < DIRECTIVE_MAX_BYTES) return text;
+  }
+  return head + clipErrorText(JSON.stringify(retryWith), false);
+}
+
+/**
+ * Текст директивы loop detection для tool-результата заблокированного вызова.
+ *
+ * Маркерная подстрока «Loop detection» сохранена намеренно (lesson-76): по ней
+ * распознают событие существующие тесты и разборы сессий.
+ *
+ * VL-323: если предыдущий ответ по этой сигнатуре был отказом, директива
+ * обязана назвать ПРИЧИНУ отказа и готовое исправление — иначе слабая модель
+ * читает общее «смени аргументы» как «попробуй ещё раз» и повторяет дословно
+ * (инцидент Close VL-320). VL-353: если инструмент дал `retryWith`, директива
+ * выдаёт ГОТОВЫЙ вызов, а не описательное «исправь аргументы».
+ *
+ * @param name — имя повторённого инструмента
+ * @param repeatLimit — порог повторов, при котором сработала блокировка
+ * @param lastError — текст последнего отказа по этой сигнатуре (если был)
+ * @param fromHint — текст взят из поля `hint`: он короткий по построению
+ * @param retryWith — машиночитаемое исправление из отказа
+ * @param callArgs — аргументы повторённого вызова
+ */
+export function loopDetectionDirective(
+  name: string,
+  repeatLimit: number,
+  lastError?: string,
+  fromHint = false,
+  retryWith?: Record<string, unknown>,
+  callArgs?: Record<string, unknown>,
+): string {
+  if (retryWith !== undefined && Object.keys(retryWith).length > 0) {
+    return retryDirective(name, retryWith, callArgs);
+  }
+  const reason = lastError === undefined ? '' : clipErrorText(lastError, fromHint);
+  if (reason !== '') {
+    return (
+      `Loop detection: ${name} — предыдущий вызов отклонён: ${reason}. Повтор даст тот же отказ — исправь аргументы.`
+    );
+  }
+  return (
+    `Loop detection: инструмент ${name} вызван ${repeatLimit} раза подряд с одинаковыми аргументами — вызов НЕ выполнен и заблокирован. ` +
+    `Повтор с теми же аргументами бесполезен. ${NEXT_STEP_HINT}`
+  );
+}
+
+/**
+ * Текст директивы для повтора вызова, чей результат уже был ok/noop (VL-303).
+ *
+ * Отличие от `loopDetectionDirective`: вызов УЖЕ применён, поэтому фазу
+ * прерывать нельзя — модели нужно лишь перейти к отчёту. Маркерная подстрока
+ * «уже применён» используется тестами и разборами сессий.
+ */
+export function appliedNoopDirective(name: string): string {
+  return (
+    `Вызов ${name} уже применён ранее — повтор с теми же аргументами НЕ выполнен, он ничего не изменит. ` +
+    'Изменения применены; переходи к следующему пункту фазы, а если работа сделана — к отчёту (backlog_finish_phase).'
+  );
+}
+
+/**
+ * Текст директивы для повтора вызова, чей ответ был noop (VL-309, VL-319).
+ *
+ * Отличие от `appliedNoopDirective`: noop означает «изменений нет», а не
+ * «работа сделана». Поэтому ран НЕ завершается — модели напоминают, что повтор
+ * бесполезен, и направляют к следующему шагу. Маркерная подстрока «Изменений
+ * нет» используется тестами и разборами сессий.
+ *
+ * VL-319: прежний текст утверждал «вызов уже был выполнен» — это НЕВЕРНЫЙ факт:
+ * первый же ответ был noop, вызов не исполнялся. Модель читала «не выполнен» и
+ * повторяла дословно (сессия agent-1793712738536: 4 повтора `lesson_update`
+ * без `content` → кап → fail).
+ */
+export function noopRepeatDirective(name: string): string {
+  return (
+    `Изменений нет: вызов ${name} НЕ исполнен (поля уже такие). Повтор ничего не изменит. ` +
+    'Следующий шаг: прочитай состояние (lesson_view) или смени аргумент — добавь отсутствующее поле.'
+  );
 }

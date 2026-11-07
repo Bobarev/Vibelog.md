@@ -2352,6 +2352,22 @@ function toolDocumentCreate(args: ToolArgs, cwd: string): string {
   });
   // VL-351: JSON-ack — плоский текст write-инструмента цикл агента не может
   // классифицировать (не applied/noop/failed). Прежняя формулировка в message.
+  // VL-357: отсутствие `content` — не отказ, а `partial` + `missing`. Документ
+  // без тела создать можно (скелет), но модель обязана узнать, что он пуст:
+  // молчаливое «создан» уводило её к следующему шагу с незаполненной сущностью.
+  const contentRaw = args.content as string | undefined;
+  const bodyEmpty = contentRaw === undefined || String(contentRaw).trim() === '';
+  if (bodyEmpty) {
+    return ackOkDetailed(
+      `Документ ${doc.id} создан: ${doc.title} (тип: ${doc.type}) — тело не заполнено`,
+      { id: doc.id, title: doc.title, type: doc.type },
+      [],
+      {
+        missing: [{ field: 'content', reason: 'content не передан — тело документа пустое' }],
+        hint: `Заполни тело: document_update {"id": "${doc.id}", "content": "# …"}`,
+      },
+    );
+  }
   return ackOk(`Документ ${doc.id} создан: ${doc.title} (тип: ${doc.type})`, {
     id: doc.id,
     title: doc.title,
@@ -2488,6 +2504,22 @@ async function toolReferenceAdd(args: ToolArgs, cwd: string): Promise<string> {
   }
   const linksInfo = (ref.urls?.length || 0) > 0 ? `, ссылок: ${1 + (ref.urls?.length || 0)}` : '';
   // VL-351: JSON-ack (см. toolDocumentCreate).
+  // VL-357: не переданное описание — `partial` + missing, а не молчаливый
+  // успех: reference без описания остаётся «ссылкой без пояснения», и модель
+  // должна узнать это из ответа, а не из повторного чтения.
+  const descriptionRaw = args.description as string | undefined;
+  const descriptionEmpty = descriptionRaw === undefined || String(descriptionRaw).trim() === '';
+  if (descriptionEmpty) {
+    return ackOkDetailed(
+      `Reference ${ref.id} создан: ${ref.title} (${ref.type}${linksInfo}) — описание не заполнено${cloneMessage}${cacheMessage}`,
+      { id: ref.id, title: ref.title, type: ref.type },
+      [],
+      {
+        missing: [{ field: 'description', reason: 'description не передан — тело reference пустое' }],
+        hint: `Добавь описание: reference_update {"id": "${ref.id}", "description": "…"}`,
+      },
+    );
+  }
   return ackOk(`Reference ${ref.id} создан: ${ref.title} (${ref.type}${linksInfo})${cloneMessage}${cacheMessage}`, {
     id: ref.id,
     title: ref.title,
