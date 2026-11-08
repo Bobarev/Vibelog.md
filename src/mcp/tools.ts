@@ -1954,7 +1954,12 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
   const acList = (task.acceptanceCriteria || []) as ChecklistItem[];
   const dodList = (task.definitionOfDone || []) as ChecklistItem[];
   let reportText = explicitComment ?? buildAutoReport(task, {
-    status: typeof args.status === 'string' ? args.status : task.status,
+    // VL-372: `updates.status` выставляется только после успешной валидации и
+    // проверки перехода фазой, поэтому в отчёт попадает ПРИМЕНЁННЫЙ статус;
+    // отклонённый запрос виден пометкой `blockedTarget` (иначе отчёт утверждал
+    // бы статус, который не был записан — класс VL-369).
+    status: typeof updates.status === 'string' ? updates.status : task.status,
+    blockedTarget: updates.status === undefined && typeof args.status === 'string' ? args.status : undefined,
     acChecked: acList.filter((c) => c.checked).length,
     acTotal: acList.length,
     dodChecked: dodList.filter((c) => c.checked).length,

@@ -94,16 +94,6 @@ export function writeAutoReportIfMissing(opts: AutoReportOptions): boolean {
     const dodList = task.definitionOfDone || [];
     const isChecked = (c: string | { checked?: boolean }): boolean =>
       typeof c === 'string' ? false : c.checked === true;
-    let report = buildAutoReport(task, {
-      status: nextStatus ?? task.status,
-      acChecked: acList.filter(isChecked).length,
-      acTotal: acList.length,
-      dodChecked: dodList.filter(isChecked).length,
-      dodTotal: dodList.length,
-      files: task.modified_files || [],
-      uncheckedAc: uncheckedItems(acList),
-      uncheckedDod: uncheckedItems(dodList),
-    });
 
     // VL-309/VL-368: терминальный статус при неотмеченных пунктах AC/DoD
     // авто-отчёт НЕ ставит. Правило VL-248 («Done при невыполненном DoD требует
@@ -111,6 +101,12 @@ export function writeAutoReportIfMissing(opts: AutoReportOptions): boolean {
     // путь его обходил: Close VL-307 получил Done с неотмеченными AC5/DoD2.
     // VL-368: проверка вынесена в общую `terminalStatusGate` — тот же гейт
     // применяет `finalizePhaseStatus`, иначе две копии правила разъезжаются.
+    //
+    // VL-372: гейт считается ДО сборки отчёта — строке `Статус:` нужен
+    // ФАКТИЧЕСКИЙ статус. До этой правки в отчёт попадал целевой статус, а
+    // фактический был виден только в дописанной причине: один комментарий
+    // содержал и «Статус: Done», и «Задача оставлена в «Review»» (класс
+    // VL-369: ответ инструмента врёт о состоянии).
     const uncheckedDodNumbers = dodList
       .map((c, i) => ({ n: i + 1, checked: isChecked(c) }))
       .filter((x) => !x.checked)
@@ -127,11 +123,27 @@ export function writeAutoReportIfMissing(opts: AutoReportOptions): boolean {
         ? { blocked: false }
         : terminalStatusGate(workflow, targetStatus, uncheckedAcNumbers, uncheckedDodNumbers, prevStatus);
     const terminalAtRisk = gate.blocked;
-    let effectiveStatus = targetStatus;
-    if (terminalAtRisk) {
-      effectiveStatus = prevStatus;
-      report += `\n${gate.reason ?? ''}`;
-    }
+    // ДО VL-372 переменная была мёртвой (объявлялась и присваивалась, но не
+    // читалась — смена статуса шла по `!terminalAtRisk`). Теперь она —
+    // источник строки `Статус:` в отчёте и по-прежнему отражает то, что реально
+    // произойдёт с задачей.
+    const effectiveStatus = terminalAtRisk ? prevStatus : targetStatus;
+
+    let report = buildAutoReport(task, {
+      status: effectiveStatus,
+      blockedTarget: terminalAtRisk ? targetStatus : undefined,
+      acChecked: acList.filter(isChecked).length,
+      acTotal: acList.length,
+      dodChecked: dodList.filter(isChecked).length,
+      dodTotal: dodList.length,
+      files: task.modified_files || [],
+      uncheckedAc: uncheckedItems(acList),
+      uncheckedDod: uncheckedItems(dodList),
+    });
+    // Причина блокировки остаётся отдельной строкой: она несёт номера
+    // неотмеченных пунктов и указание на dodOverride/aborted, которых в строке
+    // статуса нет.
+    if (terminalAtRisk) report += `\n${gate.reason ?? ''}`;
 
     addComment(taskCwd, taskId, report, '@agent');
     // Статус двигаем только при валидном переходе и только если задача ещё
