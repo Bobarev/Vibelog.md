@@ -333,6 +333,7 @@ export function ackNoopDetailed(
   missing: SkippedField[] = [],
   hint?: string,
   retryWith?: Record<string, unknown>,
+  skipped: SkippedField[] = [],
 ): string {
   // VL-326: hint есть ВСЕГДА. Без него модель читала noop как «ошибка
   // инструмента» и повторяла вызов дословно (инцидент VL-324: 12 повторов
@@ -343,7 +344,10 @@ export function ackNoopDetailed(
     outcome: 'noop',
     message,
     applied,
-    skipped: [],
+    // VL-369: noop — тоже исход write-вызова, и переданные-но-не-записанные
+    // поля (неизвестное имя, null) обязаны быть видны и здесь: иначе «частичность
+    // без отказа» снова прячется в успешном на вид ответе.
+    skipped,
     next: {
       ...(missing.length > 0 ? { missing } : {}),
       hint: hint ?? NOOP_DEFAULT_HINT,

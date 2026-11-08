@@ -714,16 +714,18 @@ export function parsedErrorText(
       error?: unknown;
       message?: unknown;
       retryWith?: unknown;
-      next?: { retryWith?: unknown; hint?: unknown };
     } | null;
     if (!parsed || typeof parsed !== 'object') return null;
-    const rawRetry = parsed.next?.retryWith ?? parsed.retryWith;
+    // VL-369: форма ответа ПЛОСКАЯ — `serializeAck` разворачивает внутреннюю
+    // структуру `next` в корень JSON, вложенного `next` в выводе не бывает.
+    // Разбор `parsed.next?.x` был мёртвым кодом и создавал иллюзию двух форм.
+    const rawRetry = parsed.retryWith;
     const retryWith =
       rawRetry !== null && typeof rawRetry === 'object' && !Array.isArray(rawRetry)
         ? (rawRetry as Record<string, unknown>)
         : undefined;
     for (const [value, fromHint] of [
-      [parsed.next?.hint ?? parsed.hint, true],
+      [parsed.hint, true],
       [parsed.error, false],
       [parsed.message, false],
     ] as const) {
@@ -837,23 +839,25 @@ export interface AckNext {
  */
 export function parsedAckNext(output: string): AckNext | null {
   try {
+    // VL-369: форма ответа ПЛОСКАЯ (см. `serializeAck`: внутренняя структура
+    // `next` разворачивается в корень JSON). Разбор `parsed.next?.x` был
+    // мёртвым кодом; удалён, рабочий `parsed.x` сохранён.
     const parsed = JSON.parse(output) as {
       missing?: unknown;
       hint?: unknown;
       retryWith?: unknown;
-      next?: { missing?: unknown; hint?: unknown; retryWith?: unknown };
     } | null;
     if (!parsed || typeof parsed !== 'object') return null;
-    const rawMissing = parsed.next?.missing ?? parsed.missing;
+    const rawMissing = parsed.missing;
     const missing = Array.isArray(rawMissing)
       ? (rawMissing.filter(
           (m): m is { field: string; reason: string } =>
             m !== null && typeof m === 'object' && typeof (m as { field?: unknown }).field === 'string',
         ) as { field: string; reason: string }[])
       : undefined;
-    const rawHint = parsed.next?.hint ?? parsed.hint;
+    const rawHint = parsed.hint;
     const hint = typeof rawHint === 'string' && rawHint.trim() !== '' ? rawHint : undefined;
-    const rawRetry = parsed.next?.retryWith ?? parsed.retryWith;
+    const rawRetry = parsed.retryWith;
     const retryWith =
       rawRetry !== null && typeof rawRetry === 'object' && !Array.isArray(rawRetry)
         ? (rawRetry as Record<string, unknown>)

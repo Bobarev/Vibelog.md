@@ -89,8 +89,11 @@ describe('VL-153 — lesson_create / view / list / search / update', () => {
     await assert.rejects(handleToolCall('lesson_view', { id: 'lesson-999' }, testRoot), /не найден/);
   });
 
-  it('update: без полей → ошибка', async () => {
-    await assert.rejects(handleToolCall('lesson_update', { id: 'lesson-1' }, testRoot), /Не указаны поля/);
+  it('update: без полей → noop (VL-369)', async () => {
+    // VL-369: вызов без изменяющих аргументов — «менять нечего» (noop),
+    // а не испорченный аргумент. Незаполненное тело сообщается полем missing.
+    const ack = JSON.parse(await handleToolCall('lesson_update', { id: 'lesson-1' }, testRoot));
+    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
   });
 
   it('VL-356: create без content через MCP → ok:true со скелетом + missing/hint; файл создан', async () => {

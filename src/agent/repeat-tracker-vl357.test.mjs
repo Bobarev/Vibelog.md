@@ -132,18 +132,30 @@ describe('VL-357 — директивы повторов: один словар�
     assert.deepEqual(applied.missing, [{ field: 'content', reason: 'тело урока не заполнено' }]);
   });
 
-  it('VL-361: parsedAckNext читает next-форму и старую (поля в корне)', () => {
-    const v2 = JSON.stringify({ outcome: 'noop', next: { missing: [{ field: 'content', reason: 'r' }], hint: 'h' } });
-    assert.deepEqual(parsedAckNext(v2), { missing: [{ field: 'content', reason: 'r' }], hint: 'h' });
-    const v1 = JSON.stringify({ ok: false, missing: [{ field: 'content', reason: 'r' }], retryWith: { content: 'x' } });
-    assert.deepEqual(parsedAckNext(v1), { missing: [{ field: 'content', reason: 'r' }], retryWith: { content: 'x' } });
+  it('VL-369: parsedAckNext читает ПЛОСКУЮ форму (serializeAck разворачивает next в корень)', () => {
+    // Реальная форма ответа инструмента: поля в корне JSON.
+    const flat = JSON.stringify({
+      ok: false, outcome: 'noop',
+      missing: [{ field: 'content', reason: 'r' }], hint: 'h',
+      retryWith: { content: 'x' },
+    });
+    assert.deepEqual(parsedAckNext(flat), {
+      missing: [{ field: 'content', reason: 'r' }], hint: 'h', retryWith: { content: 'x' },
+    });
+    // Ответ без next-полей → null (директива не выдумывает следующий шаг)
+    assert.equal(parsedAckNext(JSON.stringify({ ok: true, outcome: 'applied' })), null);
     assert.equal(parsedAckNext('плоский текст'), null);
     assert.equal(parsedAckNext(JSON.stringify({ ok: true })), null);
   });
 
-  it('parsedErrorText читает retryWith и hint из контракта v2 (next)', () => {
-    const v2 = JSON.stringify({ outcome: 'rejected', ok: false, error: 'нет content', next: { hint: 'Добавь content', retryWith: { allowForeign: true } } });
-    const parsed = parsedErrorText(v2);
+  it('VL-369: вложенная форма next больше не разбирается (её не производит serializeAck)', () => {
+    const nested = JSON.stringify({ outcome: 'noop', next: { missing: [{ field: 'content', reason: 'r' }], hint: 'h' } });
+    assert.equal(parsedAckNext(nested), null, 'вложенного next в выводе нет — разбор удалён как мёртвый');
+  });
+
+  it('parsedErrorText читает retryWith и hint из плоской формы ответа', () => {
+    const flat = JSON.stringify({ outcome: 'rejected', ok: false, error: 'нет content', hint: 'Добавь content', retryWith: { allowForeign: true } });
+    const parsed = parsedErrorText(flat);
     assert.equal(parsed.text, 'Добавь content', 'hint идёт первым');
     assert.equal(parsed.fromHint, true);
     assert.deepEqual(parsed.retryWith, { allowForeign: true });

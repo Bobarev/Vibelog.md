@@ -209,11 +209,10 @@ describe('VL-164 — reference_update', () => {
     );
   });
 
-  it('без полей для обновления → ошибка', async () => {
-    await assert.rejects(
-      handleToolCall('reference_update', { id: 'ref-1' }, testRoot),
-      /Не указаны поля/,
-    );
+  it('без полей для обновления → noop (VL-369)', async () => {
+    // VL-369: «нечего менять» — noop по общей таблице исходов, а не отказ.
+    const ack = JSON.parse(await handleToolCall('reference_update', { id: 'ref-1' }, testRoot));
+    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
   });
 });
 
