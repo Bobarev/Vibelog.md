@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { createLesson, lessonToMarkdown, getLesson, listLessons } from '../../dist/core/lesson.js';
+import { clearPhaseEnv } from '../test-env.mjs';
 import {
   clusterWorkarounds, buildTechDebtDraft, appendRemediationSection,
   parseClassifyResponse, buildClassifyPrompt, selectLessonsForClassify,
@@ -39,7 +40,11 @@ const backlogDir = join(testRoot, 'backlog');
 const lessonsPath = join(backlogDir, 'lessons');
 const tasksPath = join(backlogDir, 'tasks');
 
+/** Фазовый env агентской сессии на время файла (VL-374, in-process handleToolCall). */
+let restorePhaseEnv;
+
 beforeAll(() => {
+  restorePhaseEnv = clearPhaseEnv();
   mkdirSync(lessonsPath, { recursive: true });
   mkdirSync(tasksPath, { recursive: true });
   mkdirSync(join(testRoot, 'src', 'core'), { recursive: true });
@@ -55,6 +60,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  restorePhaseEnv();
   rmSync(testRoot, { recursive: true, force: true });
 });
 

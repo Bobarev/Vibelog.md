@@ -14,7 +14,7 @@
  * (паттерн worktree.test.mjs / git.test.mjs).
  */
 
-import { describe, it, afterAll } from 'vitest';
+import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -30,12 +30,26 @@ import {
 import { createTaskFile } from '../../dist/core/store.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { handleToolCall } from '../../dist/mcp/tools.js';
+import { clearPhaseEnv, stripVibelogEnv } from '../test-env.mjs';
 
-// GIT_CONFIG_GLOBAL=/dev/null изолирует тесты от глобального git-конфига
-const ISO_ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+// GIT_CONFIG_GLOBAL=/dev/null изолирует тесты от глобального git-конфига.
+// VL-374: фазовый env снимается и здесь — ISO_ENV вычисляется на уровне
+// модуля (до хуков), поэтому stripVibelogEnv применяется к копии process.env.
+const ISO_ENV = stripVibelogEnv({
+  ...process.env,
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+});
+
+/** Фазовый env агентской сессии на время файла (VL-374, in-process handleToolCall). */
+let restorePhaseEnv;
+beforeAll(() => {
+  restorePhaseEnv = clearPhaseEnv();
+});
 
 const repos = [];
 afterAll(() => {
+  restorePhaseEnv();
   for (const r of repos) rmSync(r, { recursive: true, force: true });
 });
 

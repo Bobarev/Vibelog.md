@@ -8,7 +8,7 @@
  * - backlog_list_tasks: фильтр parentTaskId + parent_task_id в simplified-выводе
  */
 
-import { describe, it, beforeEach, afterEach } from 'vitest';
+import { describe, it, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -18,6 +18,17 @@ import { stringifyYaml } from '../../dist/core/yaml.js';
 import { handleToolCall } from '../../dist/mcp/tools.js';
 import { getTask } from '../../dist/core/store.js';
 import { taskToMarkdown, markdownToTask } from '../../dist/core/task.js';
+import { clearPhaseEnv } from '../test-env.mjs';
+
+/** Фазовый env агентской сессии на время файла (VL-374, in-process handleToolCall). */
+let restorePhaseEnv;
+
+beforeAll(() => {
+  restorePhaseEnv = clearPhaseEnv();
+});
+afterAll(() => {
+  restorePhaseEnv();
+});
 
 const testDir = mkdtempSync(join(tmpdir(), 'vibelog-mcp-parent-'));
 const backlogDir = join(testDir, 'backlog');

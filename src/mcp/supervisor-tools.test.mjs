@@ -24,6 +24,7 @@ import { stringifyYaml } from '../../dist/core/yaml.js';
 import { loadAutoQueue } from '../../dist/core/auto-queue.js';
 import { setSpawnEnvBaseForTests } from '../../dist/web/orchestrator.js';
 import { findActiveGrant } from '../../dist/web/supervisor-grant.js';
+import { clearPhaseEnv } from '../test-env.mjs';
 
 const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-supervisor-tools-'));
 const stubBin = join(testRoot, 'qwen-stub.cjs');
@@ -43,7 +44,11 @@ function parse(out) {
   }
 }
 
+/** Фазовый env агентской сессии на время файла (VL-374, in-process handleToolCall). */
+let restorePhaseEnv;
+
 beforeAll(() => {
+  restorePhaseEnv = clearPhaseEnv();
   mkdirSync(join(testRoot, 'backlog', 'tasks'), { recursive: true });
   writeFileSync(join(testRoot, 'backlog', 'config.yml'), stringifyYaml({
     project_name: 'Supervisor Tools Test',
@@ -68,6 +73,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  restorePhaseEnv();
   setSpawnEnvBaseForTests(null);
   rmSync(testRoot, { recursive: true, force: true });
 });

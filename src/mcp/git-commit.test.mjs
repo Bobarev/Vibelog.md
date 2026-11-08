@@ -30,15 +30,7 @@ import { join } from 'node:path';
 import { handleToolCall, listTools } from '../../dist/mcp/tools.js';
 import { commitFiles, foreignPaths, normalizeGitPath, unquoteGitPath } from '../../dist/mcp/git-commit.js';
 import { createTaskFile } from '../../dist/core/store.js';
-
-/** Ключи фазового env, которые снимаются на время теста (VL-286). */
-const PHASE_ENV_KEYS = [
-  'VIBELOG_CWD',
-  'VIBELOG_PHASE_TASK_ID',
-  'VIBELOG_PHASE_NAME',
-  'VIBELOG_RUN_PHASE',
-  'VIBELOG_RUN_STARTED_AT',
-];
+import { clearPhaseEnv } from '../test-env.mjs';
 
 /** git в тестовом каталоге. */
 function git(cwd, ...args) {
@@ -66,11 +58,9 @@ describe('VL-311 — git_commit: коммит явными путями с тр�
   let savedEnv;
 
   beforeEach(() => {
-    savedEnv = {};
-    for (const key of PHASE_ENV_KEYS) {
-      savedEnv[key] = process.env[key];
-      delete process.env[key];
-    }
+    // VL-374: общий хелпер вместо ручного списка ключей — снимает и
+    // VIBELOG_SESSION_ID, и любые новые VIBELOG_PHASE_*/VIBELOG_RUN_*.
+    savedEnv = clearPhaseEnv();
     root = mkdtempSync(join(tmpdir(), 'vibelog-gitcommit-'));
     execFileSync('/usr/bin/git', ['init', '-q'], { cwd: root });
     execFileSync('/usr/bin/git', ['config', 'user.email', 'test@example.com'], { cwd: root });
@@ -83,10 +73,7 @@ describe('VL-311 — git_commit: коммит явными путями с тр�
   });
 
   afterEach(() => {
-    for (const [key, value] of Object.entries(savedEnv)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+    savedEnv();
     rmSync(root, { recursive: true, force: true });
   });
 

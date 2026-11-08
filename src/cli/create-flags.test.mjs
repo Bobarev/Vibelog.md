@@ -20,7 +20,17 @@ import { stringifyYaml } from '../../dist/core/yaml.js';
 import { handleToolCall } from '../../dist/mcp/tools.js';
 import { createTaskFile, getTask } from '../../dist/core/store.js';
 
-import { testSpawnEnv } from '../test-env.mjs';
+import { testSpawnEnv, clearPhaseEnv } from '../test-env.mjs';
+
+/** Фазовый env агентской сессии на время файла (VL-374, in-process handleToolCall). */
+let restorePhaseEnv;
+
+beforeAll(() => {
+  restorePhaseEnv = clearPhaseEnv();
+});
+afterAll(() => {
+  restorePhaseEnv();
+});
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

@@ -22,12 +22,13 @@ import { createTaskFile, getTask } from '../../dist/core/store.js';
 import { writeDocument } from '../../dist/core/document.js';
 import { writeReference } from '../../dist/core/reference.js';
 import { createLessonFile, getLesson, lessonToMarkdown } from '../../dist/core/lesson.js';
+import { clearPhaseEnv, withCleanPhaseEnv } from '../test-env.mjs';
 
 const cwd = mkdtempSync(join(tmpdir(), 'vibelog-update-pipeline-'));
 const backlogDir = join(cwd, 'backlog');
 
 /**
- * Фазовый env агентской сессии на время ВСЕГО файла (VL-370, lesson-88/113/120).
+ * Фазовый env агентской сессии на время ВСЕГО файла (VL-370, VL-374).
  *
  * После VL-370 неполнота сущности зависит от фазы рана: `getCompletenessRules`
  * ← `resolveGuardPhase` ← `VIBELOG_RUN_PHASE`/`VIBELOG_PHASE_NAME`. Прогон
@@ -37,21 +38,14 @@ const backlogDir = join(cwd, 'backlog');
  * каждая фикстура, и ожидания `applied` падали. env чистится на уровне файла,
  * иначе блоки на верхнем уровне (VL-369) работают с унаследованным окружением.
  *
- * `testSpawnEnv` (VL-286) здесь не подходит: вызовы `handleToolCall` идут
- * in-process, а не спавном. Сохранённые значения возвращаются в afterAll.
+ * Механизм — общий хелпер `clearPhaseEnv()` (VL-374): `testSpawnEnv` (VL-286)
+ * здесь не подходит, вызовы `handleToolCall` идут in-process, а не спавном.
+ * Возвращённая функция восстановления вызывается в afterAll.
  */
-const savedPhaseEnv = {};
+let restorePhaseEnv;
 
 beforeAll(() => {
-  for (const key of Object.keys(process.env)) {
-    if (
-      key === 'VIBELOG_CWD' || key === 'VIBELOG_SESSION_ID' ||
-      key.startsWith('VIBELOG_PHASE_') || key.startsWith('VIBELOG_RUN_')
-    ) {
-      savedPhaseEnv[key] = process.env[key];
-      delete process.env[key];
-    }
-  }
+  restorePhaseEnv = clearPhaseEnv();
   mkdirSync(join(backlogDir, 'tasks'), { recursive: true });
   writeFileSync(join(backlogDir, 'config.yml'), stringifyYaml({
     project_name: 'UpdatePipeline Test',
@@ -65,9 +59,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  for (const [key, value] of Object.entries(savedPhaseEnv)) {
-    if (value !== undefined) process.env[key] = value;
-  }
+  restorePhaseEnv();
   rmSync(cwd, { recursive: true, force: true });
 });
 
@@ -350,5 +342,56 @@ describe('VL-369 AC6 — backlog_update_status в общем пайплайне'
     assert.equal(second.outcome, 'noop');
     assert.match(second.message, /Изменений нет/);
     assert.match(second.message, /Следующий шаг: .*backlog_finish_phase/);
+  });
+});
+
+// ── VL-374: изоляция фазового env на уровне файла ──────────────────────────
+
+describe('VL-374 — изоляция фазового env', () => {
+  it('AC4: env чист внутри it — хелпер применён на уровне файла, а не в локальном скоупе', () => {
+    assert.equal(process.env.VIBELOG_PHASE_NAME, undefined, 'VIBELOG_PHASE_NAME снят на уровне файла');
+    assert.equal(process.env.VIBELOG_RUN_PHASE, undefined, 'VIBELOG_RUN_PHASE снят на уровне файла');
+    assert.equal(process.env.VIBELOG_CWD, undefined, 'VIBELOG_CWD снят на уровне файла');
+  });
+
+  it('AC3: фикстура с неотмеченным DoD из config даёт applied (фаза неизвестна)', async () => {
+    // config.yml файла содержит definition_of_done: ['Тесты проходят'] →
+    // createTaskFile подставит неотмеченный пункт (src/core/store.ts:99-103).
+    const t = createTaskFile(cwd, { title: 'DoD из конфига', description: 'есть' });
+    assert.equal(getTask(cwd, t.id).definitionOfDone.length, 1, 'DoD подставлен из конфига');
+    assert.equal(getTask(cwd, t.id).definitionOfDone[0].checked, false, 'пункт не отмечен');
+    const ack = await call('backlog_update_task', { id: t.id, priority: 'High' });
+    assert.equal(ack.outcome, 'applied', JSON.stringify(ack));
+  });
+
+  it('AC3: та же фикстура внутри withCleanPhaseEnv даёт applied', async () => {
+    const ack = await withCleanPhaseEnv(async () => {
+      const t = createTaskFile(cwd, { title: 'DoD из конфига (обёртка)', description: 'есть' });
+      return call('backlog_update_task', { id: t.id, priority: 'Low' });
+    });
+    assert.equal(ack.outcome, 'applied', JSON.stringify(ack));
+  });
+
+  it('AC3 (негативный контроль): с фазой close та же фикстура даёт partial', async () => {
+    // Фаза выставляется ДО вызова и БЕЗ обёртки: withCleanPhaseEnv снимает env
+    // до fn, поэтому значение, выставленное внутри, действовало бы — здесь
+    // проверяется обратное утверждение: правило close реально влияет.
+    const saved = { name: process.env.VIBELOG_PHASE_NAME, run: process.env.VIBELOG_RUN_PHASE };
+    process.env.VIBELOG_PHASE_NAME = 'close';
+    process.env.VIBELOG_RUN_PHASE = 'close';
+    try {
+      const t = createTaskFile(cwd, { title: 'DoD из конфига (close)', description: 'есть' });
+      const ack = await call('backlog_update_task', { id: t.id, priority: 'Medium' });
+      assert.equal(ack.outcome, 'partial', JSON.stringify(ack));
+      assert.ok(
+        ack.missing.some((m) => m.field === 'definitionOfDone'),
+        `missing должен называть definitionOfDone: ${JSON.stringify(ack.missing)}`,
+      );
+    } finally {
+      if (saved.name === undefined) delete process.env.VIBELOG_PHASE_NAME;
+      else process.env.VIBELOG_PHASE_NAME = saved.name;
+      if (saved.run === undefined) delete process.env.VIBELOG_RUN_PHASE;
+      else process.env.VIBELOG_RUN_PHASE = saved.run;
+    }
   });
 });
