@@ -26,7 +26,32 @@ import { createLessonFile, getLesson, lessonToMarkdown } from '../../dist/core/l
 const cwd = mkdtempSync(join(tmpdir(), 'vibelog-update-pipeline-'));
 const backlogDir = join(cwd, 'backlog');
 
+/**
+ * Фазовый env агентской сессии на время ВСЕГО файла (VL-370, lesson-88/113/120).
+ *
+ * После VL-370 неполнота сущности зависит от фазы рана: `getCompletenessRules`
+ * ← `resolveGuardPhase` ← `VIBELOG_RUN_PHASE`/`VIBELOG_PHASE_NAME`. Прогон
+ * внутри фазы Close наследовал `VIBELOG_PHASE_NAME=close`, применялись правила
+ * `DEFAULT_COMPLETENESS.default.close` (AC + DoD), а `createTaskFile`
+ * подставляет `config.definition_of_done` НЕотмеченными — неполной становилась
+ * каждая фикстура, и ожидания `applied` падали. env чистится на уровне файла,
+ * иначе блоки на верхнем уровне (VL-369) работают с унаследованным окружением.
+ *
+ * `testSpawnEnv` (VL-286) здесь не подходит: вызовы `handleToolCall` идут
+ * in-process, а не спавном. Сохранённые значения возвращаются в afterAll.
+ */
+const savedPhaseEnv = {};
+
 beforeAll(() => {
+  for (const key of Object.keys(process.env)) {
+    if (
+      key === 'VIBELOG_CWD' || key === 'VIBELOG_SESSION_ID' ||
+      key.startsWith('VIBELOG_PHASE_') || key.startsWith('VIBELOG_RUN_')
+    ) {
+      savedPhaseEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  }
   mkdirSync(join(backlogDir, 'tasks'), { recursive: true });
   writeFileSync(join(backlogDir, 'config.yml'), stringifyYaml({
     project_name: 'UpdatePipeline Test',
@@ -40,6 +65,9 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  for (const [key, value] of Object.entries(savedPhaseEnv)) {
+    if (value !== undefined) process.env[key] = value;
+  }
   rmSync(cwd, { recursive: true, force: true });
 });
 
@@ -222,8 +250,6 @@ describe('VL-369 AC11 — append_notes не попадает в noop-сверк�
 describe('VL-370 — неполнота как данные (workflow × фаза)', () => {
   const wfCwd = mkdtempSync(join(tmpdir(), 'vibelog-completeness-mcp-'));
   const wfBacklog = join(wfCwd, 'backlog');
-  /** Сохранённые VIBELOG-переменные: фаза должна быть НЕИЗВЕСТНА (null). */
-  const savedEnv = {};
 
   beforeAll(() => {
     mkdirSync(join(wfBacklog, 'tasks'), { recursive: true });
@@ -261,17 +287,11 @@ describe('VL-370 — неполнота как данные (workflow × фаз�
         strict: { '*': { task: ['labels', 'priority'] } },
       },
     }, null, 2), 'utf-8');
-    // Фаза рана в агентской сессии подменила бы ожидаемый набор полей
-    for (const key of ['VIBELOG_RUN_PHASE', 'VIBELOG_PHASE_NAME', 'VIBELOG_SESSION_ID']) {
-      savedEnv[key] = process.env[key];
-      delete process.env[key];
-    }
+    // Фазовый env уже снят на уровне файла (см. beforeAll верхнего уровня) —
+    // вторая очистка здесь не нужна и маскировала бы такую же дыру у соседей.
   });
 
   afterAll(() => {
-    for (const [key, value] of Object.entries(savedEnv)) {
-      if (value !== undefined) process.env[key] = value;
-    }
     rmSync(wfCwd, { recursive: true, force: true });
   });
 
