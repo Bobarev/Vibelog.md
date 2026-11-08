@@ -1,16 +1,20 @@
 /**
- * Детальная страница reference (VL-174): просмотр + редактирование.
+ * Детальная страница reference (VL-174): просмотр + редактирование + sync.
  *
  * Роут #/reference/<id>. Просмотр: title, type, url, path, tags, body,
- * linked_tasks. Кнопка «Редактировать» → форма (title, tags через запятую,
- * url, body) → сохранение через PATCH /api/references/:id (только эти
- * поля — по AC; type/path/read-only). Все fetch — в try/catch с выводом
- * ошибки в state: консоль браузера без ошибок (lesson-16).
+ * linked_tasks, поля кэша (cached_at/source_hash, VL-358). Кнопка
+ * «Редактировать» → форма (title, tags через запятую, url, body) →
+ * сохранение через PATCH /api/references/:id (только эти поля — по AC;
+ * type/path/read-only). Кнопка «Синхронизировать» (VL-358) →
+ * POST /api/references/:id/sync: url/doc — обновление кэша, repo — клон;
+ * после успеха детали перечитываются, итог и ошибки — inline.
+ * Все fetch — в try/catch с выводом ошибки в state: консоль браузера
+ * без ошибок (lesson-16).
  */
 
 import * as React from "react";
 
-import { ArrowLeft, Pencil } from "lucide-react";
+import { ArrowLeft, Pencil, RefreshCw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +25,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   fetchReference,
   patchReference,
+  syncReference,
   type ReferenceDetailData,
 } from "./api";
 
@@ -56,6 +61,10 @@ export function ReferenceDetail({ id }: { id: string }) {
   const [form, setForm] = React.useState<FormState | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
+  // Состояние sync этого reference (VL-358): busy / итог / ошибка
+  const [syncing, setSyncing] = React.useState(false);
+  const [syncMessage, setSyncMessage] = React.useState<string | null>(null);
+  const [syncError, setSyncError] = React.useState<string | null>(null);
 
   // Загрузка при смене id (навигация из списка без перезагрузки).
   // Пустой id (момент между роутом 'reference' и парсингом хеша) — не ходим
@@ -71,6 +80,8 @@ export function ReferenceDetail({ id }: { id: string }) {
     setError(null);
     setEditing(false);
     setSaved(false);
+    setSyncMessage(null);
+    setSyncError(null);
     fetchReference(id)
       .then((data) => {
         if (!cancelled) setEntry(data);
@@ -82,6 +93,29 @@ export function ReferenceDetail({ id }: { id: string }) {
       cancelled = true;
     };
   }, [id]);
+
+  /**
+   * Sync одного reference (VL-358): url/doc — refresh кэша, repo — клон.
+   * После успеха детали перечитываются (свежие cached_at/source_hash),
+   * итог и ошибки — inline, без console (lesson-16).
+   */
+  const handleSync = async () => {
+    setSyncing(true);
+    setSyncMessage(null);
+    setSyncError(null);
+    try {
+      const result = await syncReference(id);
+      const message = result.cloned?.message ?? result.cache?.message ?? "Синхронизировано";
+      setSyncMessage(message);
+      // Перечитываем запись целиком: сервер уже обновил кэш-поля, но второй
+      // запрос гарантирует свежий body/path при внешних изменениях
+      setEntry(await fetchReference(id));
+    } catch (err) {
+      setSyncError((err as Error).message);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const handleSave = async () => {
     if (!form) return;
@@ -135,14 +169,23 @@ export function ReferenceDetail({ id }: { id: string }) {
           <Badge variant="secondary">{ref.type}</Badge>
         </div>
         {!editing && (
-          <Button variant="outline" onClick={() => { setForm(toForm(entry)); setEditing(true); setSaved(false); setError(null); }}>
-            <Pencil /> Редактировать
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" onClick={handleSync} disabled={syncing}>
+              <RefreshCw className={syncing ? "animate-spin" : undefined} />
+              {syncing ? "Синхронизация…" : "Синхронизировать"}
+            </Button>
+            <Button variant="outline" onClick={() => { setForm(toForm(entry)); setEditing(true); setSaved(false); setError(null); }}>
+              <Pencil /> Редактировать
+            </Button>
+          </div>
         )}
       </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       {saved && <p className="text-sm text-muted-foreground">Сохранено</p>}
+      {/* Итог/ошибка sync — inline, консоль браузера остаётся чистой (lesson-16) */}
+      {syncMessage && <p className="text-sm text-muted-foreground">{syncMessage}</p>}
+      {syncError && <p className="text-sm text-destructive">{syncError}</p>}
 
       {editing && form ? (
         <Card>
@@ -198,6 +241,10 @@ export function ReferenceDetail({ id }: { id: string }) {
                   </Badge>
                 ))}
               </dd>
+              <dt className="text-muted-foreground">Кэш обновлён</dt>
+              <dd className="break-all">{ref.cached_at ?? "—"}</dd>
+              <dt className="text-muted-foreground">Хеш источника</dt>
+              <dd className="break-all font-mono text-xs">{ref.source_hash ? ref.source_hash.slice(0, 12) : "—"}</dd>
               <dt className="text-muted-foreground">Задачи</dt>
               <dd className="flex flex-wrap gap-1.5">
                 {ref.linked_tasks.length === 0 && "—"}

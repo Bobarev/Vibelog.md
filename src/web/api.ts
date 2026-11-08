@@ -25,7 +25,7 @@
  * - GET  /api/references      — список references без тел (VL-174)
  * - GET  /api/references/:id  — детали reference (метаданные + тело)
  * - PATCH /api/references/:id — обновление title/tags/url/тела (VL-174)
- * - POST /api/references/sync — клонировать отсутствующие репо (VL-174)
+ *   (sync-эндпоинты references — см. references-sync-api.ts: async, сеть)
  * - GET  /api/documents      — список документов без тел (VL-181)
  * - POST /api/documents      — создать документ (VL-181)
  * - GET  /api/documents/:id  — детали документа (метаданные + body + path)
@@ -45,7 +45,6 @@ import {
   listReferences,
   getReference,
   updateReference,
-  syncReferenceRepos,
   REFERENCE_TYPES,
 } from '../core/reference.js';
 import type { UpdateReferenceInput } from '../core/reference.js';
@@ -510,13 +509,9 @@ export function handleApi(
       };
     }
 
-    // POST /api/references/sync — клонирование отсутствующих репо (VL-174).
-    // ВАЖНО: точное совпадение ДО regex ниже — иначе 'sync' матчится как id.
-    // syncReferenceRepos синхронный (spawnSync git clone) — долгое клонирование
-    // блокирует event loop; для локального инструмента это приемлемо (как CLI).
-    if (method === 'POST' && url === '/api/references/sync') {
-      return { status: 200, body: syncReferenceRepos(cwd) };
-    }
+    // POST /api/references/sync живёт в references-sync-api.ts (VL-358):
+    // обновление кэша ходит в сеть и требует async, а handleApi синхронный.
+    // Регистрация — server.ts отдельной веткой ДО общего вызова handleApi.
 
     // GET/PATCH /api/references/:id — детали и обновление reference (VL-174).
     const refMatch = url.match(/^\/api\/references\/([^/]+)$/);
