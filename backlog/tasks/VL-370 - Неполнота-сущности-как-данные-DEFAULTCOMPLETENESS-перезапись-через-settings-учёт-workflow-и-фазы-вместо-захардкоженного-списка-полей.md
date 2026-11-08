@@ -1,11 +1,11 @@
 ---
 id: VL-370
 title: 'Неполнота сущности как данные: DEFAULT_COMPLETENESS + перезапись через settings, учёт workflow и фазы вместо захардкоженного списка полей'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-08 01:46'
-updated_date: '2026-11-08 11:37'
+updated_date: '2026-11-08 12:01'
 due_date: ''
 labels: []
 dependencies:
@@ -19,23 +19,17 @@ parent_task_id: ''
 ordinal: 0
 documentation: []
 modified_files:
-  - src/core/workflow.ts
-  - src/core/workflow.test.mjs
-  - src/core/phase-transient.ts
-  - src/agent/auto-report.ts
-  - src/mcp/tools.ts
-  - src/mcp/update-pipeline.ts
   - src/mcp/update-pipeline.test.mjs
-  - src/mcp/write-ack.test.mjs
-lessons: []
+lessons:
+  - lesson-254
 token_usage:
-  input: 8548155
-  output: 74586
-  cache: 7544320
-  total: 8622741
-  requests: 108
-  duration_ms: 1268567
-  reasoning: 38824
+  input: 12365669
+  output: 90149
+  cache: 11026432
+  total: 12455818
+  requests: 154
+  duration_ms: 1757677
+  reasoning: 42782
   by_phase:
     plan:
       input: 958259
@@ -43,15 +37,15 @@ token_usage:
       cache: 769024
       requests: 17
     code:
-      input: 6676659
-      output: 43928
-      cache: 5993472
-      requests: 70
+      input: 8659724
+      output: 48044
+      cache: 7867392
+      requests: 84
     close:
-      input: 913237
-      output: 13672
-      cache: 781824
-      requests: 21
+      input: 2747686
+      output: 25119
+      cache: 2390016
+      requests: 53
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -135,7 +129,7 @@ completeness: {
 - [x] #4 Правило терминального статуса читается из одного источника: `finalizePhaseStatus` (`src/core/phase-transient.ts`) и `writeAutoReportIfMissing` (`src/agent/auto-report.ts`) используют общий расчёт неполноты, второй копии правила нет
 - [x] #5 Добавление нового workflow с другим набором обязательных полей — запись в `.vibelog/settings.json`, без правки кода инструментов; проверено тестом с кастомным workflow
 - [x] #6 `pnpm build && pnpm test` зелёный; действующий проект (без секции `workflows` в settings) не меняет поведения
-- [ ] #7 Документация обновлена: doc-6 (секция workflow — ключ `completeness`), doc-8 (расчёт missing), doc-10 §6, CHANGELOG.md
+- [x] #7 Документация обновлена: doc-6 (секция workflow — ключ `completeness`), doc-8 (расчёт missing), doc-10 §6, CHANGELOG.md
 - [x] #8 Неполнота считается от СОСТОЯНИЯ сущности с учётом workflow задачи и текущей фазы; эвристика `TASK_SUGGEST`/`isEmptyTaskField` (`src/mcp/tools.ts:1309-1345`) и жёсткий `taskSpec.completeness` удалены
 - [x] #9 Правило `'*'` в `DEFAULT_COMPLETENESS` содержит `task: ['description']`, поэтому задача без описания неполна и при неизвестной фазе (`phase === null`); контрактный тест `PARTIAL_SCENARIOS` (`write-ack-contract.test.mjs`) остаётся зелёным БЕЗ правок — сценарий `backlog_update_task` без env фазы даёт `partial` + `missing[0].field === 'description'`
 - [x] #10 Fallback на `default` НЕ протекает в объявленный кастомный workflow: если имя workflow есть в settings, но записи в `completeness` нет — набор правил пуст (проверено тестом на `investigation`-подобном workflow)
@@ -146,7 +140,7 @@ completeness: {
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -422,9 +416,74 @@ author: @agent
 created: 2026-11-08 11:37
 ---
 Фаза close прервана агентом (aborted): Фаза Close прервана: merge vb/vl-370 слит в master (bb0ba39, 1 коммит), сборка `pnpm build` прошла чисто, но полный `pnpm test` красный — 5 падений в `src/mcp/update-pipeline.test.mjs` (197 файлов passed, 1 failed; 3713 passed, 5 failed, 4 skipped).
-
 **Классификация (обязательная по протоколу Close):**
 1. Тот же набор на родительском коммите `HEAD^1` (01f84bf) — зелёный: `src/mcp/update-pipeline.test.mjs` 14/14 passed. Пре-существующего красного нет → это регрессия ветки VL-370.
 2. Параллельного — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-08 11:51
+---
+## Close упал: 5 падений в `update-pipeline.test.mjs` — тест зависит от фазы рана
+### Что произошло
+Close слил ветку (`bb0ba39`), `pnpm build` чистый, полный `pnpm test` красный — 5 падений. Повтор с очищенным фазовым env: 3718 passed, 0 failed. **Код верен, тест зависит от окружения.**
+### Точная механика
+`src/mcp/update-pipeline.test.mjs` вызывает `handleToolCall` **in-process**. После этой задачи неполнота задачи зависит от фазы (`getCompletenessRules` ← `resolveGuardPhase` ← `VIBELOG_PHASE_NAME`). Внутри агентской фазы Close наследуется `VIBELOG_PHASE_NAME=close`, применяются правила `DEFAULT_COMPLETENESS.default.close` (`acceptanceCriteria` + `definitionOfDone`).
+Усугубляет `src/core/store.ts:99-103`: `createTaskFile` подставляет дефолты `config.definition_of_done` как **неотмеченные**. В тестовом конфиге это `['Тесты проходят']` → каждая фикстура имеет неотмеченный DoD → в фазе `close` неполны ВСЕ задачи, а не только те, где тест явно оставил DoD неотмеченным.
+Падают ожидания `applied`: `:57`, `:75`, `:213`, плюс кейсы в блоках AC5/AC10, где `outcome` проверяется мягче и проходит.
+### Где дефект
+Env чистится **только** внутри `describe('VL-370 — неполнота как данные')` (стр. 264-268). Блоки VL-369 лежат на верхнем уровне файла и работают с унаследованным env. Частичная изоляция — причина падения.
+Это класс lesson-88/113/120. `src/test-env.mjs` (`testSpawnEnv`, VL-286) покрывает только **спавн** дочерних процессов, не in-process. Системная часть вынесена в **VL-374**.
+### Что сделать в этой задаче (Code)
+1. Перенести очистку фазового env с `beforeAll` внутри VL-370-describe на **уровень файла** (`beforeAll`/`afterAll` верхнего уровня), как сделано в `src/mcp/write-ack-contract.test.mjs:48-55` — это образец в проекте.
+2. Если VL-374 будет реализована раньше — взять хелпер из `src/test-env.mjs` вместо ручного `delete process.env[...]`.
+3. Проверить прогоном **внутри фазы close**: `VIBELOG_PHASE_NAME=close npx vitest run src/mcp/update-pipeline.test.mjs` и полный `pnpm test` с тем же env.
+### Замечание по процессу
+При проверке плана этой задачи (см. комментарий выше) я выписал риск «изменение ответов `backlog_update_task` в фазе plan» — и не распространил его на фазу `close` и на env-изоляцию тестов. Проверка плана была неполной: искал расхождения план↔код, но не влияние на существующий набор тестов при прогоне внутри разных фаз.
+### Состояние после падения
+Merge не откатывался (`bb0ba39` в master), worktree и ветка сохранены, DoD/статус/документация не тронуты. AC6 («`pnpm test` зелёный») формально не закрыт — закрывать только после зелёного прогона внутри фазы.
+---
+author: @agent
+created: 2026-11-08 11:55
+---
+Фаза 3 (Code, повтор после падения Close) выполнена. Коммит eb1a21e.
+## Причина падения (подтверждена)
+Не код, а тест, зависящий от окружения. `src/mcp/update-pipeline.test.mjs` зовёт `handleToolCall` **in-process**; после VL-370 неполнота зависит от фазы (`getCompletenessRules` ← `resolveGuardPhase` ← `VIBELOG_PHASE_NAME`). Внутри фазы Close наследовался `VIBELOG_PHASE_NAME=close` → применялись правила `DEFAULT_COMPLETENESS.default.close` (`acceptanceCriteria` + `definitionOfDone`), а `createTaskFile` (`src/core/store.ts:99-103`) подставляет `config.definition_of_done` НЕотмеченными — неполной становилась КАЖДАЯ фикстура. Env чистился только внутри `describe('VL-370 …')`, блоки VL-369 на верхнем уровне файла работали с унаследованным env. Класс lesson-88/113/120; `testSpawnEnv` (VL-286) не подходит — вызовы in-process, не спавн.
+## Изменено (1 файл)
+`src/mcp/update-pipeline.test.mjs`:
+- очистка фазового env перенесена в `beforeAll`/`afterAll` **верхнего уровня файла** (по образцу `src/mcp/write-ack-contract.test.mjs:48-55`): снимаются `VIBELOG_CWD`, `VIBELOG_SESSION_ID` и все ключи с префиксами `VIBELOG_PHASE_`/`VIBELOG_RUN_` (префиксы, а не перечисление — новые переменные оркестратора не потребуют правок), сохранённые значения возвращаются в `afterAll`;
+- дублирующая очистка внутри VL-370-describe удалена — локальная заплатка маскировала ту же дыру у соседних блоков (частичная изоляция и была причиной падения).
+- Код фазы (workflow.ts / tools.ts / update-pipeline.ts / auto-report.ts / phase-transient.ts) не менялся — правка была только в тесте.
+## Проверки
+- `VIBELOG_PHASE_NAME=close VIBELOG_RUN_PHASE=close npx vitest run src/mcp/update-pipeline.test.mjs src/mcp/write-ack.test.mjs src/mcp/write-ack-contract.test.mjs` → 3 файла, 81 passed, 0 failed (воспроизведение исходного падения устранено).
+- `VIBELOG_PHASE_NAME=close VIBELOG_RUN_PHASE=close pnpm test` → **198 файлов, 3718 passed, 4 skipped, 0 failed**. Полный прогон, исключений и `--skip` не было, прогон шёл ВНУТРИ фазы close — то есть именно в тех условиях, где Close упал.
+- `pnpm build` чистый (перед прогонами).
+## Что осталось
+- AC7 и DoD2 (документация: doc-6, doc-8, doc-10 §6, CHANGELOG) — не отмечены: правки документов в фазе Code запрещены, их пишет Close после слияния. Как и в прошлом раунде.
+- Системная часть проблемы (env-изоляция in-process тестов как общий механизм, не только для одного файла) вынесена в **VL-374**, как указано в комментарии предшествующей фазы; здесь сделан минимум по образцу проекта.
+- Merge `bb0ba39` в master не откатывался — эта правка дополняет его в ветке vb/vl-370 и требует повторного слияния/прогона.
+---
+author: @agent
+created: 2026-11-08 12:01
+---
+Фаза Close выполнена. Ветка vb/vl-370 слита в master (1 коммит: eb1a21e — фазовый env на уровне файла в update-pipeline.test.mjs), конфликтов не было; worktree удалён, ветка vb/vl-370 удалена.
+## Проверки после merge
+- `pnpm build` — чистый (diff затронул только `src/mcp/update-pipeline.test.mjs`, сборка не перезапускалась — одна на фазу).
+- Ранний точечный фильтр по `git diff --name-only HEAD^1..HEAD`: `npx vitest run src/mcp/update-pipeline.test.mjs` → 19 passed.
+- **Полный прогон**: `pnpm test` → зелёный, исключений и `--skip` не было. Повторных прогонов не делал.
+- Merge-интерференции не обнаружено: вся содержательная часть VL-370 пришла в master раньше (bb0ba39), слияние добавило только правку изоляции теста.
+## DoD
+1. Тесты проходят — полный `pnpm test` зелёный.
+2. Документация обновлена — коммит 78b6753:
+   - **doc-6** (секция workflow): новый пункт «Неполнота сущности — третий уровень той же схемы (VL-370)» — формат `completeness`, семантика чтения, мердж-правило «запись заменяет дефолт целиком», правило `'*'`, дефолты default/simple, JSON-пример.
+   - **doc-8**: пункт «`missing` — от состояния сущности с учётом workflow и фазы (VL-370)» переписан вместо прежней пометки «VL-370 расширит расчёт» — `DEFAULT_COMPLETENESS`, `loadCompleteness`/`getCompletenessRules`/`taskCompletenessMissing`/`terminalStatusGateForTask`, смысл полей, пустой чеклист = полно, источник фазы `resolveGuardPhase`, `document`/`reference` без правил.
+   - **doc-10 §6**: гейт терминальности и авто-отчёт читают один источник — `terminalStatusGateForTask`, копий расчёта больше нет, простой workflow и пустой чеклист оговорены, `terminalStatusGate` сохранён.
+   - **CHANGELOG.md**: запись VL-370 в `### Изменено (ломающие изменения)` рядом с VL-369 (изменение поведения `backlog_update_task` — ломающее, поэтому не в «Добавлено»).
+3. Нет регрессий — полный прогон зелёный, поведение действующего проекта (workflow `investigation` без записи в `completeness` → набор пуст) не изменилось.
+## AC7
+Документация обновлена — отмечен. Остальные AC были отмечены в предыдущих фазах; AC7 оставался неотмеченным именно потому, что правки документов в Code запрещены.
+## Lessons
+Зафиксирован **lesson-254** (kind: `workaround`, в коммите 73e54c4): в in-process MCP-тестах `testSpawnEnv()` неприменим — фазовый env снимать на уровне файла (`beforeAll`/`afterAll`, по префиксам `VIBELOG_PHASE_`/`VIBELOG_RUN_`). Урок привязан к задаче, системная часть вынесена в VL-374. Новый урок не дублирует lesson-88/113 — те покрывают только спавн.
+## Замечание по поведению (не блокер)
+Вызов `backlog_update_task` в этой фазе вернул `outcome: 'partial'` с `missing` по AC7/DoD2 — это новая логика VL-370 в действии: фаза Close, правила `default.close` требуют все пункты отмеченными, и они действительно были не отмечены до записи документации. После правки документов оба пункта отмечены в этом вызове.
 ---
 <!-- COMMENTS:END -->
