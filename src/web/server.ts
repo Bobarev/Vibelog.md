@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { handleApi } from './api.js';
 import { handleSetupCheckBot, handleSetupPing } from './setup-api.js';
 import { handleCatalogApi } from './catalog-api.js';
+import { handleReferencesSyncApi } from './references-sync-api.js';
 import { runChat, resetOrphanedChatRuns, streamChatRun } from './chat.js';
 import { cancelChatRun, getChatRun } from './chat-runs.js';
 import { getAssetsHtml } from './assets.js';
@@ -210,6 +211,32 @@ export function startWebServer(
         // VL-317: сверка цен (/api/pricing/*) живёт в том же async-обработчике
         if (url.startsWith('/api/catalog/') || url.startsWith('/api/pricing/')) {
           handleCatalogApi(method, url, parsed, cwd, queryString)
+            .then((result) => {
+              if (res.destroyed || res.writableEnded) return;
+              if (result === null) {
+                res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ error: 'Not found' }));
+                return;
+              }
+              res.writeHead(result.status, { 'Content-Type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify(result.body));
+            })
+            .catch((err) => {
+              if (res.destroyed || res.writableEnded) return;
+              res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify({ error: (err as Error)?.message ?? String(err) }));
+            });
+          return;
+        }
+
+        // Async-эндпоинты синхронизации references (VL-358): обновление
+        // markdown-кэша url/doc ходит в сеть, поэтому не может жить в
+        // синхронном handleApi. Ветка ДО общего вызова — иначе
+        // POST /api/references/sync получил бы 404 от handleApi.
+        const refSyncMatch =
+          url === '/api/references/sync' || /^\/api\/references\/[^/]+\/sync$/.test(url);
+        if (method === 'POST' && refSyncMatch) {
+          handleReferencesSyncApi(method, url, parsed, cwd)
             .then((result) => {
               if (res.destroyed || res.writableEnded) return;
               if (result === null) {

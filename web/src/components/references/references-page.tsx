@@ -3,9 +3,11 @@
  *
  * Роут #/references. Показывает для каждого reference: title (ссылка на
  * детальную страницу), type, url/path, tags, linked_tasks. Кнопка Sync
- * (POST /api/references/sync) клонирует отсутствующие репо и показывает
- * итог (cloned/skipped/failed) inline. Все fetch — в try/catch с выводом
- * ошибки в state: консоль браузера остаётся без ошибок (lesson-16).
+ * (POST /api/references/sync) клонирует отсутствующие репо И обновляет
+ * markdown-кэш url/doc-референсов (VL-358) — оба итога выводятся отдельными
+ * строками, ошибки кэша — с ref-id и текстом (destructive). Все fetch —
+ * в try/catch с выводом ошибки в state: консоль браузера остаётся без
+ * ошибок (lesson-16).
  */
 
 import * as React from "react";
@@ -22,22 +24,43 @@ import {
   type SyncResult,
 } from "./api";
 
-/** Форматирует итог sync одной строкой; failed — с текстами ошибок. */
-function formatSyncResult(result: SyncResult): string {
-  const parts = [
-    `клонировано: ${result.cloned.length}`,
+/** Итог sync в виде, готовом к рендеру: клоны, кэш и ошибки кэша отдельно. */
+interface SyncSummary {
+  repos: string;
+  cache: string;
+  cacheErrors: { id: string; error: string }[];
+}
+
+/** Форматирует итог sync: клоны и кэш — разными строками (VL-358, AC3). */
+function formatSyncResult(result: SyncResult): SyncSummary {
+  const repos = [
+    `Репозитории — клонировано: ${result.cloned.length}`,
     `пропущено: ${result.skipped.length}`,
     `ошибок: ${result.failed.length}`,
-  ];
-  const failedText = result.failed.map((f) => `${f.id}: ${f.error}`).join("; ");
-  return `Sync — ${parts.join(", ")}${failedText ? `. ${failedText}` : ""}`;
+  ].join(", ");
+  const reposFailed = result.failed.map((f) => `${f.id}: ${f.error}`).join("; ");
+
+  const cache = result.cache;
+  const cacheText = cache
+    ? [
+        `Кэш — обновлено: ${cache.updated.length}`,
+        `без изменений: ${cache.skipped.length}`,
+        `ошибок: ${cache.failed.length}`,
+      ].join(", ")
+    : "Кэш — нет данных";
+
+  return {
+    repos: reposFailed ? `${repos}. ${reposFailed}` : repos,
+    cache: cacheText,
+    cacheErrors: cache?.failed ?? [],
+  };
 }
 
 export function ReferencesPage() {
   const [entries, setEntries] = React.useState<ReferenceListItem[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [syncing, setSyncing] = React.useState(false);
-  const [syncMessage, setSyncMessage] = React.useState<string | null>(null);
+  const [syncMessage, setSyncMessage] = React.useState<SyncSummary | null>(null);
 
   /** Загрузка списка (повторно — после sync). */
   const load = React.useCallback(async () => {
@@ -80,14 +103,34 @@ export function ReferencesPage() {
             Внешние источники знаний (backlog/references/)
           </p>
         </div>
-        <Button onClick={handleSync} disabled={syncing} title="Клонировать отсутствующие репо">
+        <Button
+          onClick={handleSync}
+          disabled={syncing}
+          title="Клонировать отсутствующие репо и обновить кэш url/doc-референсов"
+        >
           <RefreshCw className={syncing ? "animate-spin" : undefined} />
           {syncing ? "Синхронизация…" : "Sync"}
         </Button>
       </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
-      {syncMessage && <p className="text-sm text-muted-foreground">{syncMessage}</p>}
+      {syncMessage && (
+        <div className="space-y-1 text-sm">
+          <p className="text-muted-foreground">{syncMessage.repos}</p>
+          <p
+            className={
+              syncMessage.cacheErrors.length > 0 ? "text-destructive" : "text-muted-foreground"
+            }
+          >
+            {syncMessage.cache}
+          </p>
+          {syncMessage.cacheErrors.map((failure) => (
+            <p key={failure.id} className="text-sm text-destructive">
+              {failure.id}: {failure.error}
+            </p>
+          ))}
+        </div>
+      )}
 
       {entries === null ? (
         !error && <p className="text-sm text-muted-foreground">Загрузка…</p>
