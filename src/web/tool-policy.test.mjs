@@ -101,9 +101,15 @@ describe('VL-219 — chatToolDefs', () => {
     // search_files — read-операция: без approval-гейта (VL-234)
     assert.equal(isWriteOperation('search_files'), false);
 
-    // Остальные MCP-инструменты присутствуют
+    // Остальные MCP-инструменты присутствуют, кроме условно-видимых:
+    // VL-375 — `upstream_report_bug` в cwd без секции upstream скрыт
+    // (fail-closed, тот же предикат, что в handleToolsList).
     for (const t of listTools()) {
       if (CHAT_DISALLOWED_TOOLS.includes(t.name)) continue;
+      if (t.name === 'upstream_report_bug') {
+        assert.ok(!names.includes(t.name), 'ненастроенный upstream_report_bug скрыт и в чате');
+        continue;
+      }
       assert.ok(names.includes(t.name), `${t.name} должен быть в инструментах чата`);
     }
 

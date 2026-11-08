@@ -81,7 +81,8 @@ import {
 import { SUPERVISOR_TOOL_DEFS, handleSupervisorTool } from './supervisor.js';
 import { commitFiles } from './git-commit.js';
 // VL-363: репорт бага в upstream через GitVerse Issues
-import { GitverseError, reportBug, tokenHint } from '../core/gitverse-issues.js';
+import { GitverseError, isUpstreamConfigured, reportBug, tokenHint } from '../core/gitverse-issues.js';
+import { UpstreamGitError } from '../core/upstream-git.js';
 
 // completeTaskFile импортирован для паритета с оригинальным модулем;
 // в текущей логике инструментов не вызывается (оставлено без изменений).
@@ -801,18 +802,21 @@ export function listTools(): ToolDefinition[] {
     {
       name: 'upstream_report_bug',
       description:
-        'Репорт бага в upstream-репозиторий через GitVerse Issues (VL-363). Дочерний проект ' +
-        '(ui/templates) не может завести задачу в родительском backlog — инструмент создаёт issue ' +
-        'и возвращает его номер как ack. Конфиг — секция upstream в .vibelog/settings.json ' +
-        '({repo: "owner/name", labels, type, project_id?, done_column?}), токен — GITVERSE_TOKEN в .env ' +
-        '(права: Запись на репозиторий). Тело issue собирается детерминированно из полей ' +
-        '(«Что произошло», «Воспроизведение», «Окружение», «Источник»). Метки создаются автоматически, ' +
-        'если их нет. Ответ — JSON-ack: {ok:true, applied:{number, url, labels}, message} либо ' +
-        '{ok:false, error, hint}.',
+        'Репорт бага в другой проект Vibelog. Транспорт выбирается секцией upstream в ' +
+        '.vibelog/settings.json: mode "git" (по умолчанию) — отчёт кладётся в общий репозиторий-инбокс ' +
+        '({inbox, prefix}; нужен target — префикс получателя), mode "api" — создаётся issue в GitVerse ' +
+        'Issues ({repo, labels, type}, токен GITVERSE_TOKEN в .env). Инструмент виден только при ' +
+        'настроенном upstream. Ответ — JSON-ack: {ok:true, applied:{…}, message} либо {ok:false, error, hint}.',
       inputSchema: {
         type: 'object',
         properties: {
-          title: { type: 'string', description: 'Заголовок issue (обязателен, непустой)' },
+          title: { type: 'string', description: 'Заголовок отчёта (обязателен, непустой)' },
+          target: {
+            type: 'string',
+            description:
+              'Получатель отчёта — префикс проекта (ui, tpl, vl). Обязателен для mode "git", ' +
+              'по нему получатель забирает входящие через «vibelog upstream pull»',
+          },
           body: { type: 'string', description: 'Что произошло: описание проблемы, шаги, ожидаемое поведение' },
           severity: { type: 'string', description: 'Важность: low|medium|high|critical (попадает в «Окружение»)' },
           area: { type: 'string', description: 'Область: cli|mcp|web|agent|install|… (попадает в «Окружение»)' },
@@ -820,7 +824,7 @@ export function listTools(): ToolDefinition[] {
           labels: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Дополнительные метки поверх upstream.labels (создаются при отсутствии)',
+            description: 'Дополнительные метки поверх upstream.labels (только для mode "api"; создаются при отсутствии)',
           },
         },
         required: ['title'],
@@ -3266,16 +3270,31 @@ async function toolLessonClassify(args: ToolArgs, cwd: string): Promise<string> 
  * ограничения размера tool-вывода (lesson-30).
  */
 /**
- * Репорт бага в upstream-репозиторий через GitVerse Issues (VL-363).
+ * Репорт бага в upstream-проект (VL-363, VL-375).
  *
- * Ответ — JSON-ack по контракту VL-306: успех `{ok:true, applied:{number,url,labels}, message}`,
- * ошибка `{ok:false, error, hint}`. Токен в ответ не попадает (маскируется в ядре).
+ * Ветвится по `upstream.mode`: `git` (по умолчанию) — отчёт в git-инбокс
+ * (`core/upstream-git.ts`), `api` — issue в GitVerse Issues.
+ *
+ * Ответ — JSON-ack по контракту VL-306. Для git-транспорта: успех
+ * `{ok:true, applied:{report_id, path, target, created}, message}`,
+ * идемпотентный повтор — `created:false` (отчёт уже был).
+ * Токен/пути ошибок в ответ не попадают вне текстов ядра.
  */
 async function toolUpstreamReportBug(args: ToolArgs, cwd: string): Promise<string> {
   const title = typeof args.title === 'string' ? args.title.trim() : '';
   if (title === '') {
-    return ackErrorDetailed('поле title обязательно: заголовок issue не может быть пустым', {
+    return ackErrorDetailed('поле title обязательно: заголовок отчёта не может быть пустым', {
       hint: 'передай title — короткое описание проблемы, например «install: файл компонента не копируется»',
+    });
+  }
+  // VL-375: инструмент скрыт из tools/list без валидной секции upstream, но
+  // устаревший кэш списка у клиента может всё ещё звать его напрямую. Тогда
+  // отвечаем actionable-ошибкой, а не «Неизвестный инструмент» (AC8).
+  if (!isUpstreamConfigured(cwd)) {
+    return ackErrorDetailed('upstream не настроен — репорт отправлять некуда', {
+      hint:
+        'добавь секцию upstream в .vibelog/settings.json: {"mode": "git", "inbox": ' +
+        '"git@gitverse.ru:owner/inbox.git", "prefix": "<префикс>"} либо {"mode": "api", "repo": "owner/name"}',
     });
   }
   const labels = Array.isArray(args.labels)
@@ -3288,9 +3307,21 @@ async function toolUpstreamReportBug(args: ToolArgs, cwd: string): Promise<strin
     ...(typeof args.severity === 'string' ? { severity: args.severity } : {}),
     ...(typeof args.area === 'string' ? { area: args.area } : {}),
     ...(typeof args.source_task === 'string' ? { sourceTask: args.source_task } : {}),
+    ...(typeof args.target === 'string' ? { target: args.target } : {}),
     ...(labels !== undefined ? { labels } : {}),
   })
     .then((result) => {
+      if (result.mode === 'git') {
+        const message = result.created
+          ? `Отчёт ${result.reportId.slice(0, 8)} записан в инбокс: ${result.path}`
+          : `Отчёт ${result.reportId.slice(0, 8)} уже был в инбоксе: ${result.path}`;
+        return ackOk(message, {
+          report_id: result.reportId,
+          path: result.path,
+          target: result.target,
+          created: result.created,
+        });
+      }
       const createdNote =
         result.createdLabels.length > 0 ? ` (созданы метки: ${result.createdLabels.join(', ')})` : '';
       return ackOk(
@@ -3299,6 +3330,9 @@ async function toolUpstreamReportBug(args: ToolArgs, cwd: string): Promise<strin
       );
     })
     .catch((err: unknown) => {
+      if (err instanceof UpstreamGitError) {
+        return ackErrorDetailed(err.message, { hint: err.kind === 'auth' ? 'проверь права на репозиторий-инбокс' : undefined });
+      }
       if (err instanceof GitverseError) {
         return ackErrorDetailed(err.message, { hint: err.kind === 'no_token' ? tokenHint() : undefined });
       }

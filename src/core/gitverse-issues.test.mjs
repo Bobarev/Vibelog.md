@@ -12,6 +12,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -26,6 +27,7 @@ import {
   buildIssueBody,
   createIssue,
   ensureLabels,
+  isUpstreamConfigured,
   listIssues,
   listLabels,
   maskToken,
@@ -463,7 +465,7 @@ describe('VL-363 — токен и маскирование', () => {
   });
 
   it('нет токена → no_token с подсказкой (код 4)', () => {
-    const dir = makeProject({ upstream: { repo: 'a/b' } });
+    const dir = makeProject({ upstream: { mode: 'api', repo: 'a/b' } });
     assert.throws(
       () => resolveUpstreamConfig(dir),
       (err) => {
@@ -480,7 +482,7 @@ describe('VL-363 — токен и маскирование', () => {
 
   it('token_env переопределяет имя переменной', () => {
     const dir = makeProject(
-      { upstream: { repo: 'a/b', token_env: 'MY_GITVERSE_TOKEN' } },
+      { upstream: { mode: 'api', repo: 'a/b', token_env: 'MY_GITVERSE_TOKEN' } },
       { env: 'MY_GITVERSE_TOKEN=custom\n' },
     );
     const resolved = resolveUpstreamConfig(dir);
@@ -507,12 +509,12 @@ describe('VL-363 — секция upstream', () => {
   });
 
   it('repo без «/» → config', () => {
-    const dir = makeProject({ upstream: { repo: 'nope' } }, { env: `${GITVERSE_TOKEN_ENV}=t\n` });
+    const dir = makeProject({ upstream: { mode: 'api', repo: 'nope' } }, { env: `${GITVERSE_TOKEN_ENV}=t\n` });
     assert.throws(() => resolveUpstreamConfig(dir), (err) => err.kind === 'config');
   });
 
   it('дефолтные метки — upstream + from-<prefix>', () => {
-    const dir = makeProject({ upstream: { repo: 'a/b' } }, { env: `${GITVERSE_TOKEN_ENV}=t\n` });
+    const dir = makeProject({ upstream: { mode: 'api', repo: 'a/b' } }, { env: `${GITVERSE_TOKEN_ENV}=t\n` });
     const resolved = resolveUpstreamConfig(dir);
     assert.deepEqual(resolved.labels, ['upstream', 'from-ui']);
     assert.equal(resolved.type, 'bug');
@@ -522,7 +524,7 @@ describe('VL-363 — секция upstream', () => {
 
   it('project_id/done_column читаются и валидируются', () => {
     const dir = makeProject(
-      { upstream: { repo: 'a/b', project_id: 42, done_column: 'Done' } },
+      { upstream: { mode: 'api', repo: 'a/b', project_id: 42, done_column: 'Done' } },
       { env: `${GITVERSE_TOKEN_ENV}=t\n` },
     );
     const resolved = resolveUpstreamConfig(dir);
@@ -530,7 +532,7 @@ describe('VL-363 — секция upstream', () => {
     assert.equal(resolved.doneColumn, 'Done');
 
     const bad = makeProject(
-      { upstream: { repo: 'a/b', project_id: 'x' } },
+      { upstream: { mode: 'api', repo: 'a/b', project_id: 'x' } },
       { env: `${GITVERSE_TOKEN_ENV}=t\n` },
     );
     assert.throws(() => resolveUpstreamConfig(bad), (err) => err.kind === 'config');
@@ -550,6 +552,98 @@ describe('VL-363 — секция upstream', () => {
     assert.deepEqual(settings.providers, { p: { base_url: 'u' } });
     assert.deepEqual(settings.components, { schemaVersion: 1 });
     assert.deepEqual(settings.upstream, { repo: 'a/b', labels: ['upstream'], type: 'bug' });
+  });
+});
+
+// ============================================================
+// VL-375 — discriminated union по mode и isUpstreamConfigured
+// ============================================================
+
+describe('VL-375 — режимы транспорта upstream', () => {
+  it('AC4: mode отсутствует → git, требует inbox', () => {
+    const dir = makeProject({ upstream: { prefix: 'ui' } });
+    assert.throws(
+      () => resolveUpstreamConfig(dir),
+      (err) => err.kind === 'config' && /upstream\.inbox/.test(err.message),
+    );
+    assert.equal(isUpstreamConfigured(dir), false);
+  });
+
+  it('AC4: mode git + inbox → {mode:git, inbox, prefix}', () => {
+    const dir = makeProject({ upstream: { mode: 'git', inbox: 'git@example.com:a/inbox.git', prefix: 'tpl' } });
+    const cfg = resolveUpstreamConfig(dir);
+    assert.equal(cfg.mode, 'git');
+    assert.equal(cfg.inbox, 'git@example.com:a/inbox.git');
+    assert.equal(cfg.prefix, 'tpl');
+    assert.equal(isUpstreamConfigured(dir), true);
+  });
+
+  it('AC4: mode git без prefix — дефолт из task_prefix проекта', () => {
+    const dir = makeProject({ upstream: { mode: 'git', inbox: 'x.git' } });
+    assert.equal(resolveUpstreamConfig(dir).prefix, 'ui');
+  });
+
+  it('AC4: невалидный mode → config с перечислением допустимых', () => {
+    const dir = makeProject({ upstream: { mode: 'smoke', inbox: 'x.git' } });
+    assert.throws(
+      () => resolveUpstreamConfig(dir),
+      (err) => err.kind === 'config' && /«git» или «api»/.test(err.message),
+    );
+    assert.equal(isUpstreamConfigured(dir), false);
+  });
+
+  it('AC4/AC8: mode api без repo → config, isUpstreamConfigured false', () => {
+    const dir = makeProject({ upstream: { mode: 'api', labels: ['upstream'] } });
+    assert.throws(() => resolveUpstreamConfig(dir), (err) => err.kind === 'config');
+    assert.equal(isUpstreamConfigured(dir), false);
+  });
+
+  it('AC8: isUpstreamConfigured fail-closed на битом JSON и отсутствии секции', () => {
+    const empty = makeProject({});
+    assert.equal(isUpstreamConfigured(empty), false);
+    const broken = makeProject(undefined);
+    mkdirSync(join(broken, '.vibelog'), { recursive: true });
+    writeFileSync(join(broken, '.vibelog', 'settings.json'), '{ битый', 'utf-8');
+    assert.equal(isUpstreamConfigured(broken), false);
+    assert.equal(isUpstreamConfigured(join(broken, 'нет-такого-каталога')), false);
+  });
+
+  it('AC6: reportBug в mode git пишет отчёт в инбокс и не ходит в API', async () => {
+    const dir = makeProject(undefined);
+    const remote = join(dir, 'inbox.git');
+    execFileSync('/usr/bin/git', ['init', '-q', '--bare', remote]);
+    const seed = join(dir, 'seed');
+    mkdirSync(seed, { recursive: true });
+    execFileSync('/usr/bin/git', ['init', '-q'], { cwd: seed });
+    execFileSync('/usr/bin/git', ['config', 'user.email', 't@e.com'], { cwd: seed });
+    execFileSync('/usr/bin/git', ['config', 'user.name', 'T'], { cwd: seed });
+    writeFileSync(join(seed, 'README.md'), '# Inbox\n', 'utf8');
+    execFileSync('/usr/bin/git', ['add', 'README.md'], { cwd: seed });
+    execFileSync('/usr/bin/git', ['commit', '-q', '-m', 'init'], { cwd: seed });
+    execFileSync('/usr/bin/git', ['remote', 'add', 'origin', remote], { cwd: seed });
+    execFileSync('/usr/bin/git', ['push', '-q', 'origin', 'HEAD:main'], { cwd: seed });
+    execFileSync('/usr/bin/git', ['--git-dir', remote, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
+    mkdirSync(join(dir, '.vibelog'), { recursive: true });
+    writeFileSync(
+      join(dir, '.vibelog', 'settings.json'),
+      JSON.stringify({ upstream: { mode: 'git', inbox: remote, prefix: 'ui' } }, null, 2),
+      'utf8',
+    );
+
+    const hitsBefore = hits;
+    const result = await reportBug(dir, { title: 'Отчёт', target: 'vl', sourceTask: 'UI-5' }, opts());
+    assert.equal(result.mode, 'git');
+    assert.equal(result.created, true);
+    assert.match(result.path, /^reports\/ui\//);
+    assert.equal(hits, hitsBefore, 'HTTP-запросов в mode git быть не должно');
+  });
+
+  it('AC4/AC5: mode git без target → config (получатель обязателен)', async () => {
+    const dir = makeProject({ upstream: { mode: 'git', inbox: 'x.git', prefix: 'ui' } });
+    await assert.rejects(
+      () => reportBug(dir, { title: 'Без адресата' }, opts()),
+      (err) => err instanceof GitverseError && err.kind === 'config' && err.code === 2,
+    );
   });
 });
 
@@ -624,7 +718,7 @@ describe('VL-363 — тело issue и reportBug', () => {
 
   it('reportBug: конфиг → метки → issue, ack с номером', async () => {
     const dir = makeProject(
-      { upstream: { repo: 'bobarev/Vibelog.md', labels: ['upstream', 'from-ui'], type: 'bug' } },
+      { upstream: { mode: 'api', repo: 'bobarev/Vibelog.md', labels: ['upstream', 'from-ui'], type: 'bug' } },
       { env: `${GITVERSE_TOKEN_ENV}=${TOKEN}\n` },
     );
     process.env[API_BASE_ENV] = base();

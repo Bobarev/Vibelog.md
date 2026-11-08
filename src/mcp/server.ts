@@ -18,6 +18,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { handleToolCall, listTools } from './tools.js';
+import { isUpstreamConfigured } from '../core/gitverse-issues.js';
 import { tmpFile } from '../core/tmp.js';
 import { isNoopAck } from './tool-result.js';
 import type { ToolArgs } from './tools.js';
@@ -131,7 +132,7 @@ export function startMcpServer(cwd: string): void {
           // Уведомление — ответ не нужен
           break;
         case 'tools/list':
-          handleToolsList(id, sendResponse);
+          handleToolsList(id, cwd, sendResponse);
           break;
         case 'tools/call':
           await handleToolsCall(id, params, cwd, sendResponse, sendError);
@@ -183,13 +184,22 @@ function handleInitialize(id: RpcId, params: Record<string, unknown> | undefined
 /**
  * Обрабатывает метод tools/list.
  *
- * Возвращает список доступных инструментов.
+ * VL-375: список фильтруется по состоянию проекта — `upstream_report_bug`
+ * виден только при валидной секции `upstream` (инструмент, который всё равно
+ * не сработает, клиент не должен даже видеть). `listTools()` остаётся без
+ * параметров: реестр описывает возможности системы (доктор, тесты паритета,
+ * валидация персон), а видимость — политика сервера.
  *
+ * @param id — id запроса
+ * @param cwd — рабочая директория проекта (для предиката видимости)
  * @param send — функция отправки ответа
  */
-function handleToolsList(id: RpcId, send: SendResponse): void {
+function handleToolsList(id: RpcId, cwd: string, send: SendResponse): void {
+  const tools = listTools().filter(
+    (tool) => tool.name !== 'upstream_report_bug' || isUpstreamConfigured(cwd),
+  );
   send(id, {
-    tools: listTools(),
+    tools,
   });
 }
 

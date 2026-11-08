@@ -78,6 +78,9 @@ export const VIBELOG_GITIGNORE_TEMPLATE = `# Git-политика .vibelog/
 # 1a. Рабочие деревья задач — вложенные git-репозитории
 worktrees/
 
+# 1b. Клон репозитория-инбокса баг-репортов (VL-375) — вложенный репозиторий
+upstream-inbox/
+
 # 2. Сам файл политики — в git
 !.gitignore
 

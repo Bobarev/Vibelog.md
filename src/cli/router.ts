@@ -297,37 +297,59 @@ vibelog create <name> --template <alias>/<repo>/<template> [флаги]
 зависимости/postCreate, 5 — отмена.`,
 
     upstream: `
-vibelog upstream report --title <t> [--body <b>|--body-file <f>] [--severity s] [--area a] [--source-task ID] [--label l] [--json]
+vibelog upstream <subcommand> [опции]
 
-Репорт бага в upstream-проект через GitVerse Issues (VL-363). Дочерний
-проект (ui/templates) не может завести задачу в родительском backlog —
-команда создаёт issue в репозитории из секции upstream и печатает его номер.
+Обмен баг-репортами между проектами Vibelog (VL-363, VL-375).
+Подкоманды: vibelog upstream report | pull | ack.
 
-Настройка (.vibelog/settings.json):
+Подкоманды:
+  report --title <t> [--target <p>] [--body <b>|--body-file <f>] [--severity s]
+         [--area a] [--source-task ID] [--label l] [--json]
+         — создать отчёт (mode git: файл в инбоксе; mode api: issue GitVerse)
+  pull [--json] [--no-fetch]
+         — входящие отчёты для своего префикса (status: open, target = свой префикс)
+  ack <report_id> --as <ID> [--json] [--no-fetch]
+         — подтвердить получение: status → accepted, accepted_as → ID задачи
+
+Настройка (.vibelog/settings.json) — discriminated union по mode:
+
+  mode "git" (по умолчанию) — общий репозиторий-инбокс:
   "upstream": {
-    "repo": "owner/name",          — репозиторий-получатель (обязателен)
-    "labels": ["upstream"],        — метки issue (по умолчанию upstream + from-<prefix>)
-    "type": "bug",                 — task|bug|story|epic (по умолчанию bug)
-    "token_env": "GITVERSE_TOKEN", — имя переменной с токеном (опционально)
-    "project_id": 42,              — id проекта GitVerse (для закрытия, следующая задача)
-    "done_column": "Done"          — колонка «Done» (для закрытия, следующая задача)
+    "mode": "git",
+    "inbox": "git@gitverse.ru:Vibelog-md/upstream-reports.git",  — обязателен
+    "prefix": "vl"                                              — каталог в reports/ (дефолт из task_prefix)
   }
 
-Токен: GITVERSE_TOKEN=<токен> в .env в корне проекта (файл не коммитится).
+  mode "api" — GitVerse Issues (нужен доступ к API «Задачи 2.0»):
+  "upstream": {
+    "mode": "api",
+    "repo": "owner/name",          — репозиторий-получатель (обязателен)
+    "labels": ["upstream"],        — метки issue (дефолт: upstream + from-<prefix>)
+    "type": "bug",                 — task|bug|story|epic
+    "token_env": "GITVERSE_TOKEN", — имя переменной с токеном
+    "project_id": 42, "done_column": "Done"
+  }
+
+Git-транспорт: клон инбокса живёт в .vibelog/upstream-inbox/ (в .gitignore),
+пишет и пушит сама команда; коммитятся только файлы отчёта (git add явным
+путём). Входящие сортируются по дате, ack меняет только status/accepted_as.
+
+Токен (mode api): GITVERSE_TOKEN=<токен> в .env в корне проекта.
 Создать: https://gitverse.ru/settings/tokens, права — Запись на репозиторий.
 
-Флаги:
-  --title <t>        — заголовок issue (обязателен)
+Флаги report:
+  --title <t>        — заголовок отчёта (обязателен)
+  --target <p>       — получатель: префикс проекта (ui, tpl, vl); обязателен для mode git
   --body <b>         — что произошло (описание проблемы)
   --body-file <f>    — то же из файла (--body приоритетнее)
   --severity <s>     — low|medium|high|critical
   --area <a>         — cli|mcp|web|agent|install|…
   --source-task <ID> — ID задачи проекта-источника
-  --label <l>        — дополнительная метка (можно повторять)
+  --label <l>        — дополнительная метка (только mode api; можно повторять)
   --json             — ack как есть (контракт VL-306)
 
 Коды выхода: 0 — успех, 1 — использование, 2 — конфиг не настроен,
-3 — сеть/данные, 4 — нет токена.`,
+3 — сеть/git/данные, 4 — нет токена.`,
 
     'qwen-debug': `
 vibelog qwen-debug

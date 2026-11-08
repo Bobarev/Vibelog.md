@@ -12,7 +12,8 @@
 import { describe, it, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -107,14 +108,14 @@ afterEach(() => {
 
 describe('VL-363 — vibelog upstream report', () => {
   it('без --title → код 1 (использование)', async () => {
-    const dir = makeProject({ upstream: { repo: 'a/b' } });
+    const dir = makeProject({ upstream: { mode: 'api', repo: 'a/b' } });
     const { code, out } = await runCli(dir, 'upstream', 'report');
     assert.equal(code, 1);
     assert.match(out, /--title/);
   });
 
   it('неизвестный флаг → код 1', async () => {
-    const dir = makeProject({ upstream: { repo: 'a/b' } });
+    const dir = makeProject({ upstream: { mode: 'api', repo: 'a/b' } });
     const { code, out } = await runCli(dir, 'upstream', 'report', '--title', 'x', '--nope', 'y');
     assert.equal(code, 1);
     assert.match(out, /неизвестный флаг/);
@@ -128,7 +129,7 @@ describe('VL-363 — vibelog upstream report', () => {
   });
 
   it('нет токена → код 4', async () => {
-    const dir = makeProject({ upstream: { repo: 'a/b' } });
+    const dir = makeProject({ upstream: { mode: 'api', repo: 'a/b' } });
     const { code, out } = await runCli(dir, 'upstream', 'report', '--title', 'Баг');
     assert.equal(code, 4);
     assert.match(out, /GITVERSE_TOKEN/);
@@ -136,7 +137,7 @@ describe('VL-363 — vibelog upstream report', () => {
 
   it('успешный репорт → код 0 и номер issue', async () => {
     const dir = makeProject(
-      { upstream: { repo: 'bobarev/Vibelog.md', labels: ['upstream'], type: 'bug' } },
+      { upstream: { mode: 'api', repo: 'bobarev/Vibelog.md', labels: ['upstream'], type: 'bug' } },
       'GITVERSE_TOKEN=gv_cli_token_abcdef\n',
     );
     handler = (req, res) => {
@@ -162,5 +163,112 @@ describe('VL-363 — vibelog upstream report', () => {
     assert.equal(code, 0);
     assert.match(out, /upstream report/);
     assert.match(out, /GITVERSE_TOKEN/);
+  });
+
+  it('VL-375 AC5: mode api без токена → код 4', async () => {
+    const dir = makeProject({ upstream: { mode: 'api', repo: 'a/b' } });
+    const { code, out } = await runCli(dir, 'upstream', 'report', '--title', 'Баг');
+    assert.equal(code, 4, out);
+    assert.match(out, /GITVERSE_TOKEN/);
+  });
+
+  it('VL-375 AC5: неизвестная подкоманда → код 1', async () => {
+    const dir = makeProject({});
+    const { code, out } = await runCli(dir, 'upstream', 'nope');
+    assert.equal(code, 1, out);
+    assert.match(out, /report, pull, ack/);
+  });
+
+  it('VL-375 AC5: pull без настроенного upstream → код 2', async () => {
+    const dir = makeProject({});
+    const { code, out } = await runCli(dir, 'upstream', 'pull');
+    assert.equal(code, 2, out);
+    assert.match(out, /settings\.json/);
+  });
+
+  it('VL-375 AC5: ack без --as → код 1', async () => {
+    const dir = makeProject({ upstream: { mode: 'git', inbox: 'nowhere.git' } });
+    const { code, out } = await runCli(dir, 'upstream', 'ack', 'abc');
+    assert.equal(code, 1, out);
+    assert.match(out, /--as/);
+  });
+});
+
+// ============================================================
+// VL-375 — git-транспорт через CLI (локальный bare-инбокс)
+// ============================================================
+
+/** Проект с git-инбоксом: bare-репозиторий + seed-коммит. */
+function makeGitProject() {
+  const dir = makeProject(undefined);
+  const remote = join(dir, 'inbox.git');
+  execFileSync('/usr/bin/git', ['init', '-q', '--bare', remote]);
+  const seed = join(dir, 'seed');
+  mkdirSync(seed, { recursive: true });
+  execFileSync('/usr/bin/git', ['init', '-q'], { cwd: seed });
+  execFileSync('/usr/bin/git', ['config', 'user.email', 't@e.com'], { cwd: seed });
+  execFileSync('/usr/bin/git', ['config', 'user.name', 'T'], { cwd: seed });
+  writeFileSync(join(seed, 'README.md'), '# Inbox\n', 'utf8');
+  execFileSync('/usr/bin/git', ['add', 'README.md'], { cwd: seed });
+  execFileSync('/usr/bin/git', ['commit', '-q', '-m', 'init'], { cwd: seed });
+  execFileSync('/usr/bin/git', ['remote', 'add', 'origin', remote], { cwd: seed });
+  execFileSync('/usr/bin/git', ['push', '-q', 'origin', 'HEAD:main'], { cwd: seed });
+  execFileSync('/usr/bin/git', ['--git-dir', remote, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
+
+  mkdirSync(join(dir, '.vibelog'), { recursive: true });
+  writeFileSync(
+    join(dir, '.vibelog', 'settings.json'),
+    JSON.stringify({ upstream: { mode: 'git', inbox: remote, prefix: 'ui' } }, null, 2),
+    'utf8',
+  );
+  return { dir, remote };
+}
+
+describe('VL-375 — vibelog upstream (git-транспорт)', () => {
+  it('AC5: report пишет отчёт, pull его видит, ack подтверждает', async () => {
+    const { dir } = makeGitProject();
+
+    const report = await runCli(
+      dir, 'upstream', 'report',
+      '--title', 'Кнопка не работает', '--target', 'vl', '--source-task', 'UI-7', '--body', 'описание', '--json',
+    );
+    assert.equal(report.code, 0, report.out);
+    const ack = JSON.parse(report.out.slice(report.out.indexOf('{')));
+    assert.equal(ack.ok, true);
+    assert.match(ack.applied.path, /^reports\/ui\//);
+    assert.equal(ack.applied.created, true);
+    const inboxFile = join(dir, '.vibelog', 'upstream-inbox', ack.applied.path);
+    assert.match(readFileSync(inboxFile, 'utf8'), /target: vl/);
+
+    // отчёт адресован vl, у проекта префикс ui — во входящих его быть не должно
+    const own = await runCli(dir, 'upstream', 'pull', '--json', '--no-fetch');
+    assert.equal(own.code, 0, own.out);
+    assert.equal(JSON.parse(own.out.slice(own.out.indexOf('{'))).applied.count, 0);
+
+    // адресуем себе — появляется во входящих
+    const self = await runCli(dir, 'upstream', 'report', '--title', 'Себе', '--target', 'ui', '--source-task', 'UI-8', '--json');
+    assert.equal(self.code, 0, self.out);
+    const pull = await runCli(dir, 'upstream', 'pull', '--json', '--no-fetch');
+    assert.equal(pull.code, 0, pull.out);
+    const incoming = JSON.parse(pull.out.slice(pull.out.indexOf('{')));
+    assert.equal(incoming.applied.count, 1);
+    const id = incoming.applied.reports[0].report_id;
+
+    const acked = await runCli(dir, 'upstream', 'ack', id, '--as', 'VL-999', '--json', '--no-fetch');
+    assert.equal(acked.code, 0, acked.out);
+    const ackOut = JSON.parse(acked.out.slice(acked.out.indexOf('{')));
+    assert.equal(ackOut.applied.status, 'accepted');
+    assert.equal(ackOut.applied.accepted_as, 'VL-999');
+
+    // после ack отчёт уходит из входящих (status !== open)
+    const after = await runCli(dir, 'upstream', 'pull', '--json', '--no-fetch');
+    assert.equal(JSON.parse(after.out.slice(after.out.indexOf('{'))).applied.count, 0);
+  });
+
+  it('AC5: report без --target в mode git → код 2 с подсказкой', async () => {
+    const { dir } = makeGitProject();
+    const { code, out } = await runCli(dir, 'upstream', 'report', '--title', 'Без адресата');
+    assert.equal(code, 2, out);
+    assert.match(out, /target/);
   });
 });
