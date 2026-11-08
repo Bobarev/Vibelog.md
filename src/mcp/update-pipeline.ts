@@ -167,7 +167,16 @@ export function runUpdate<E>(spec: EntitySpec<E>, args: UpdateArgs, cwd: string)
   }
 
   // 3. Сборка полей. Всё, что здесь бросает, — тоже испорченный аргумент.
-  const updates = spec.build(args, cwd, current);
+  const built = spec.build(args, cwd, current);
+  // VL-369 AC3: переданный null — не «сброс», а отсутствие значения. Он попадает
+  // в skipped и НЕ должен доходить до записи (иначе ядро получит null и упадёт:
+  // «Недопустимый статус lesson "null"»). Правило одно для всех сущностей —
+  // раньше это делал только backlog_update_task, и только для type.
+  const updates: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(built)) {
+    if (args[key] === null) continue;
+    updates[key] = value;
+  }
   const keys = Object.keys(updates);
 
   // 4. Переданные, но не записанные поля: неизвестные имена и null.
@@ -204,6 +213,7 @@ export function runUpdate<E>(spec: EntitySpec<E>, args: UpdateArgs, cwd: string)
       missing,
       hint,
       next.retryWith,
+      skipped,
     );
   }
 

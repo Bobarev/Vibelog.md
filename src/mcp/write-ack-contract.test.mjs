@@ -498,10 +498,12 @@ describe('VL-319 — noop-ответ называет незаполненное
     // Обнуляем тело: имитируем урок, созданный шаблоном Close без content
     const entry = getLesson(cwd, l.id);
     writeFileSync(entry.path, lessonToMarkdown(entry.lesson, ''), 'utf-8');
-    // VL-355: отказ — только когда применять нечего (кроме `id` ничего не передано)
+    // VL-369: неполнота — свойство сущности, а не ошибка вызова. Вызов без
+    // изменяющих полей на пустом теле — noop + missing, не отказ (4-я строка
+    // таблицы исходов). Отказ остался только для испорченного аргумента.
     const err = JSON.parse(await handleToolCall('lesson_update', { id: l.id }, cwd));
-    assert.equal(err.ok, false, `ожидалась ошибка: ${JSON.stringify(err)}`);
-    assert.ok(!err.noop, 'пустое тело без content — ошибка, а не noop');
+    assert.equal(err.noop, true, `ожидался noop: ${JSON.stringify(err)}`);
+    assert.equal(err.outcome, 'noop');
     assert.equal(err.missing[0].field, 'content', 'missing называет пропущенное поле');
     assert.equal(typeof err.hint, 'string', 'hint со следующим шагом');
     // VL-355: вызов с ДРУГИМ полем на пустом теле применяется и предупреждает
@@ -541,6 +543,12 @@ const PARTIAL_SCENARIOS = {
   document_create: async () => handleToolCall('document_create', { title: 'Partial-док' }, cwd),
   reference_add: async () =>
     handleToolCall('reference_add', { title: 'Partial-ref', type: 'url', url: 'https://example.org/p' }, cwd),
+  // VL-369: неполнота задачи считается ОТ СОСТОЯНИЯ (description пуст), поэтому
+  // обновление задачи без описания — partial с missing[0].field === 'description'.
+  backlog_update_task: async () => {
+    const t = createTaskFile(cwd, { title: 'Partial-задача VL-369' });
+    return handleToolCall('backlog_update_task', { id: t.id, priority: 'High' }, cwd);
+  },
 };
 
 /**
@@ -551,7 +559,6 @@ const PARTIAL_SCENARIOS = {
 const PARTIAL_EXEMPT = {
   backlog_create_task: 'title — единственное обязательное поле и оно действительно обязательное (задача без заголовка не существует)',
   upstream_report_bug: 'title обязателен: issue без заголовка не существует; body/severity/area/source_task — дополнение к телу, их отсутствие не делает репорт неполным',
-  backlog_update_task: 'обновление применяет переданные поля; незаполненных «по смыслу» полей у задачи нет',
   backlog_update_status: 'status обязателен: без него операция не имеет смысла',
   backlog_add_comment: 'comment обязателен: пустой комментарий не является записью',
   backlog_update_dependencies: 'add/remove обязательны по смыслу: без них менять нечего',

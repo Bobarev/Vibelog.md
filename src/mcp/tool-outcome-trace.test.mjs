@@ -49,7 +49,7 @@ const TRACE = {
   'VL-319': [
     ['src/agent/loop.test.mjs', 'VL-319 (AC7): регресс agent-1793712738536'],
     ['src/agent/loop.test.mjs', 'VL-319 (AC7): кап noop-повторов по-прежнему срабатывает на 4-й серии'],
-    ['src/mcp/write-ack.test.mjs', 'AC1: lesson_update без content на уроке с пустым телом → ok:false + error'],
+    ['src/mcp/write-ack.test.mjs', 'AC1: lesson_update без content на уроке с пустым телом → noop + missing (VL-369)'],
   ],
   'VL-323': [
     ['src/agent/loop.test.mjs', 'AC1/AC3: регресс agent-1793720932286'],
