@@ -13,8 +13,15 @@ import { join } from 'node:path';
 
 import {
   DEFAULT_WORKFLOW,
+  DEFAULT_COMPLETENESS,
   SERVICE_PHASES,
   loadWorkflows,
+  loadCompleteness,
+  getCompletenessRules,
+  getCompletenessFields,
+  taskCompletenessMissing,
+  terminalStatusGate,
+  terminalStatusGateForTask,
   getWorkflowName,
   getWorkflowForTask,
   getAvailablePhases,
@@ -388,5 +395,203 @@ describe('phaseStatusTransitionError (VL-245)', () => {
     };
     assert.equal(phaseStatusTransitionError(wf, 'To Do', 'investigate', 'Review'), null);
     assert.ok(phaseStatusTransitionError(wf, 'To Do', 'investigate', 'Done'));
+  });
+});
+
+// ── VL-370: неполнота сущности как данные (workflow × фаза × сущность) ──
+
+describe('DEFAULT_COMPLETENESS и loadCompleteness (VL-370)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibelog-completeness-'));
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Каталог проекта с заданным содержимым settings.json. */
+  function project(name, settings) {
+    const dir = join(root, name);
+    mkdirSync(join(dir, '.vibelog'), { recursive: true });
+    writeFileSync(settingsPath(dir), JSON.stringify(settings, null, 2), 'utf-8');
+    return dir;
+  }
+
+  it('дефолт: default требует plan → implementationPlan, close → AC/DoD, */task → description', () => {
+    assert.deepEqual(DEFAULT_COMPLETENESS.default.plan.task, ['implementationPlan']);
+    assert.deepEqual(DEFAULT_COMPLETENESS.default.close.task, ['acceptanceCriteria', 'definitionOfDone']);
+    // AC9: '*' несёт description — задача без описания неполна и при неизвестной фазе
+    assert.deepEqual(DEFAULT_COMPLETENESS.default['*'].task, ['description']);
+    assert.deepEqual(DEFAULT_COMPLETENESS.default['*'].lesson, ['content']);
+  });
+
+  it('нет ключа completeness → DEFAULT_COMPLETENESS', () => {
+    const dir = join(root, 'no-key');
+    mkdirSync(join(dir, '.vibelog'), { recursive: true });
+    writeFileSync(settingsPath(dir), JSON.stringify({ task_workflows: {} }), 'utf-8');
+    assert.deepEqual(loadCompleteness(dir), DEFAULT_COMPLETENESS);
+  });
+
+  it('битый JSON / отсутствующий файл → DEFAULT_COMPLETENESS', () => {
+    const broken = join(root, 'broken');
+    mkdirSync(join(broken, '.vibelog'), { recursive: true });
+    writeFileSync(settingsPath(broken), '{не json', 'utf-8');
+    assert.deepEqual(loadCompleteness(broken), DEFAULT_COMPLETENESS);
+    assert.deepEqual(loadCompleteness(join(root, 'nonexistent')), DEFAULT_COMPLETENESS);
+  });
+
+  it('валидная именованная запись перекрывает дефолт, битая выпадает', () => {
+    const dir = project('partial', {
+      completeness: {
+        custom: { do: { task: ['description', 'labels'] } },
+        broken: { do: 'нет-это-не-массив' },
+      },
+    });
+    const map = loadCompleteness(dir);
+    assert.deepEqual(map.custom, { do: { task: ['description', 'labels'] } });
+    assert.equal(map.broken, undefined, 'битая запись выпала');
+    assert.deepEqual(map.default, DEFAULT_COMPLETENESS.default, 'дефолт сохранён');
+  });
+
+  it('запись workflow заменяет дефолтную ЦЕЛИКОМ (не сливается по фазам)', () => {
+    const dir = project('replace', {
+      completeness: { default: { do: { task: ['labels'] } } },
+    });
+    const map = loadCompleteness(dir);
+    assert.deepEqual(map.default, { do: { task: ['labels'] } });
+  });
+});
+
+describe('getCompletenessRules и taskCompletenessMissing (VL-370)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibelog-completeness-rules-'));
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const simple = {
+    initial_status: 'To Do',
+    transitions: [
+      { status: 'To Do', phase: 'do', produces_status: 'Review' },
+      { status: 'Review', phase: 'close', produces_status: 'Done' },
+      { status: 'Done', phase: null, produces_status: null },
+    ],
+  };
+
+  const simpleDir = (() => {
+    const dir = join(root, 'simple');
+    mkdirSync(join(dir, '.vibelog'), { recursive: true });
+    writeFileSync(settingsPath(dir), JSON.stringify({
+      workflows: { simple },
+      task_workflows: { chore: 'simple' },
+    }, null, 2), 'utf-8');
+    return dir;
+  })();
+
+  /** Проект, где workflow объявлен, но в completeness не настроен (действующий проект). */
+  const declaredDir = (() => {
+    const dir = join(root, 'declared');
+    mkdirSync(join(dir, '.vibelog'), { recursive: true });
+    writeFileSync(settingsPath(dir), JSON.stringify({
+      workflows: {
+        investigation: {
+          initial_status: 'To Do',
+          transitions: [{ status: 'To Do', phase: 'investigate', produces_status: 'Review' }],
+        },
+      },
+      task_workflows: { investigation: 'investigation' },
+    }, null, 2), 'utf-8');
+    return dir;
+  })();
+
+  const customDir = (() => {
+    const dir = join(root, 'custom');
+    mkdirSync(join(dir, '.vibelog'), { recursive: true });
+    writeFileSync(settingsPath(dir), JSON.stringify({
+      workflows: {
+        strict: {
+          initial_status: 'To Do',
+          transitions: [{ status: 'To Do', phase: 'plan', produces_status: 'Planned' }],
+        },
+      },
+      task_workflows: { epic: 'strict' },
+      completeness: { strict: { plan: { task: ['labels', 'priority'] } } },
+    }, null, 2), 'utf-8');
+    return dir;
+  })();
+
+  const emptyDir = join(root, 'empty');
+  mkdirSync(join(emptyDir, '.vibelog'), { recursive: true });
+  writeFileSync(settingsPath(emptyDir), '{}', 'utf-8');
+
+  it('AC2: simple + do не требует AC и плана (только description)', () => {
+    const rules = getCompletenessRules(simpleDir, task('chore'), 'do');
+    assert.deepEqual(rules.task, ['description']);
+    assert.ok(!rules.task.includes('acceptanceCriteria'));
+    assert.ok(!rules.task.includes('implementationPlan'));
+  });
+
+  it('фаза null → правила только из "*" (AC9: description остаётся)', () => {
+    assert.deepEqual(getCompletenessRules(emptyDir, task('feature'), null).task, ['description']);
+  });
+
+  it('AC3: default — spec→description, plan→implementationPlan, close→AC/DoD', () => {
+    assert.deepEqual(getCompletenessRules(emptyDir, task('feature'), 'spec').task, ['description']);
+    assert.ok(getCompletenessRules(emptyDir, task('feature'), 'plan').task.includes('implementationPlan'));
+    const close = getCompletenessRules(emptyDir, task('feature'), 'close').task;
+    assert.ok(close.includes('acceptanceCriteria') && close.includes('definitionOfDone'));
+  });
+
+  it('AC10: объявленный-но-не-настроенный workflow → пустой набор (дефолт не протекает)', () => {
+    assert.deepEqual(getCompletenessRules(declaredDir, task('investigation'), 'investigate').task, []);
+  });
+
+  it('AC5: кастомный workflow из settings — правила без правки кода инструментов', () => {
+    assert.deepEqual(getCompletenessFields(customDir, 'strict', 'plan', 'task'), ['labels', 'priority']);
+  });
+
+  it('taskCompletenessMissing: пустое поле и неотмеченный чеклист дают numbers', () => {
+    const t = {
+      id: 'VL-1',
+      description: '',
+      acceptanceCriteria: [{ text: 'a', checked: true }, { text: 'b', checked: false }],
+      definitionOfDone: [{ text: 'd', checked: false }],
+    };
+    const missing = taskCompletenessMissing(t, ['description', 'acceptanceCriteria', 'definitionOfDone']);
+    assert.deepEqual(missing.map(m => m.field), ['description', 'acceptanceCriteria', 'definitionOfDone']);
+    assert.deepEqual(missing[1].numbers, [2]);
+    assert.deepEqual(missing[2].numbers, [1]);
+  });
+
+  it('AC11: пустой чеклист считается полным', () => {
+    const t = { id: 'VL-2', acceptanceCriteria: [], definitionOfDone: [] };
+    assert.deepEqual(taskCompletenessMissing(t, ['acceptanceCriteria', 'definitionOfDone']), []);
+  });
+
+  it('заполненная задача без правил неполноты — полная', () => {
+    const t = { id: 'VL-3', description: 'есть' };
+    assert.deepEqual(taskCompletenessMissing(t, []), []);
+    assert.deepEqual(taskCompletenessMissing(t, ['description']), []);
+  });
+
+  it('AC4: terminalStatusGateForTask — simple не блокирует Done при неотмеченных AC/DoD', () => {
+    const t = {
+      id: 'VL-4', type: 'chore', description: 'есть',
+      acceptanceCriteria: [{ text: 'a', checked: false }],
+      definitionOfDone: [{ text: 'd', checked: false }],
+    };
+    assert.equal(terminalStatusGateForTask(simpleDir, t, 'Done', 'close', 'Review').blocked, false);
+  });
+
+  it('AC4/AC12: default блокирует Done при неотмеченном DoD, текст — из terminalStatusGate', () => {
+    const t = {
+      id: 'VL-5', type: 'feature', description: 'есть',
+      acceptanceCriteria: [{ text: 'a', checked: true }],
+      definitionOfDone: [{ text: 'd', checked: false }],
+    };
+    const gate = terminalStatusGateForTask(emptyDir, t, 'Done', 'close', 'Review');
+    assert.equal(gate.blocked, true);
+    assert.match(gate.reason, /DoD: #1/);
+    // существующий экспорт сохранён и даёт тот же результат (AC12)
+    const direct = terminalStatusGate(DEFAULT_WORKFLOW, 'Done', [], [1], 'Review');
+    assert.equal(direct.reason, gate.reason);
   });
 });

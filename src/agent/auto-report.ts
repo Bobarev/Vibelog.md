@@ -19,7 +19,7 @@
  */
 
 import { addComment, getTask, updateTaskFile } from '../core/store.js';
-import { getStatusAfterPhase, getWorkflowForTask, SERVICE_PHASES, terminalStatusGate } from '../core/workflow.js';
+import { getStatusAfterPhase, getWorkflowForTask, SERVICE_PHASES, terminalStatusGateForTask } from '../core/workflow.js';
 import type { TerminalStatusGateResult } from '../core/workflow.js';
 import { getPhaseTransientStatus } from '../core/phase-transient.js';
 import { buildAutoReport, uncheckedItems } from '../mcp/auto-report.js';
@@ -92,36 +92,33 @@ export function writeAutoReportIfMissing(opts: AutoReportOptions): boolean {
 
     const acList = task.acceptanceCriteria || [];
     const dodList = task.definitionOfDone || [];
+    // Локальный предикат остаётся только для СТАТИСТИКИ отчёта (сколько
+    // отмечено из скольких); само правило блокировки считает
+    // `terminalStatusGateForTask` — второго экземпляра правила нет (VL-370).
     const isChecked = (c: string | { checked?: boolean }): boolean =>
       typeof c === 'string' ? false : c.checked === true;
 
-    // VL-309/VL-368: терминальный статус при неотмеченных пунктах AC/DoD
-    // авто-отчёт НЕ ставит. Правило VL-248 («Done при невыполненном DoD требует
-    // явного dodOverride/aborted») живёт внутри backlog_finish_phase, а этот
-    // путь его обходил: Close VL-307 получил Done с неотмеченными AC5/DoD2.
-    // VL-368: проверка вынесена в общую `terminalStatusGate` — тот же гейт
-    // применяет `finalizePhaseStatus`, иначе две копии правила разъезжаются.
+    // VL-309/VL-368/VL-370: терминальный статус при неполноте не ставится.
+    // Правило VL-248 («Done при невыполненном DoD требует явного
+    // dodOverride/aborted») живёт внутри backlog_finish_phase, а этот путь его
+    // обходил: Close VL-307 получил Done с неотмеченными AC5/DoD2.
+    // VL-370: расчёт неполноты — ОДИН источник (`terminalStatusGateForTask`:
+    // workflow задачи + фаза + состояние сущности). Локальная копия списка
+    // неотмеченных пунктов удалена — второй экземпляр правила неизбежно
+    // разъезжается с первым (lesson-250).
     //
     // VL-372: гейт считается ДО сборки отчёта — строке `Статус:` нужен
     // ФАКТИЧЕСКИЙ статус. До этой правки в отчёт попадал целевой статус, а
     // фактический был виден только в дописанной причине: один комментарий
     // содержал и «Статус: Done», и «Задача оставлена в «Review»» (класс
     // VL-369: ответ инструмента врёт о состоянии).
-    const uncheckedDodNumbers = dodList
-      .map((c, i) => ({ n: i + 1, checked: isChecked(c) }))
-      .filter((x) => !x.checked)
-      .map((x) => x.n);
-    const uncheckedAcNumbers = acList
-      .map((c, i) => ({ n: i + 1, checked: isChecked(c) }))
-      .filter((x) => !x.checked)
-      .map((x) => x.n);
     const targetStatus = nextStatus ?? task.status;
     // Гейт применяется только при валидном переходе (nextStatus !== null):
     // без перехода статус и так не меняется, и лишняя строка в отчёте врала бы.
     const gate: TerminalStatusGateResult =
       nextStatus === null
         ? { blocked: false }
-        : terminalStatusGate(workflow, targetStatus, uncheckedAcNumbers, uncheckedDodNumbers, prevStatus);
+        : terminalStatusGateForTask(cwd, task, targetStatus, phase, prevStatus);
     const terminalAtRisk = gate.blocked;
     // ДО VL-372 переменная была мёртвой (объявлялась и присваивалась, но не
     // читалась — смена статуса шла по `!terminalAtRisk`). Теперь она —
