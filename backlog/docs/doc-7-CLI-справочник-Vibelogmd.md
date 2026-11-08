@@ -683,6 +683,8 @@ vibelog doctor [--json]
 
 **Целостность ссылок задач (`task_integrity`, VL-342).** Проверка `ok = findings.length === 0`, `value = {total, count, findings}` — в `--json` попадают первые 20 находок (на 300+ задачах вывод не раздувается). В `requiredNames` не входит: битые ссылки — не блокирующая поломка окружения, иначе `doctor` был бы красным на легаси-ссылках. Подробности и полный список — `vibelog task check` (см. раздел `task`).
 
+**Конфигурация неполноты (`completeness_config`, VL-377).** Проверка `ok = warnings.length === 0`, `value = {count, warnings}` — в `--json` попадают первые 20 предупреждений (`{kind, path, message}`). Ищет опечатки в ключах секции `completeness` в `.vibelog/settings.json`, из-за которых правило неполноты **молча** не применяется: неизвестный workflow (`defualt`), неизвестная фаза (`clsoe`), неизвестная сущность (`tsak`), неизвестное поле (`acceptanceCriterias` — поле тогда считается незаполненным всегда), структурно битая запись (выпадает при чтении без следа), плюс ссылка `task_workflows` на необъявленный workflow. В `requiredNames` не входит — как `task_integrity`: опечатка в конфигурации не блокирующая поломка окружения, exit code не меняется, но в человекочитаемом выводе виден `✗`.
+
 Пример вывода:
 
 ```
@@ -704,6 +706,7 @@ Vibelog.md doctor
 ✓ env_ignored: игнорируется
 ✓ vibelog_root_ignored: в git
 ✓ task_integrity: {"total":335,"count":0,"findings":[]}
+✓ completeness_config: {"count":0,"warnings":[]}
 
 ⚠ Qwen Code: MCP-сервер мог быть закэширован. Перезапусти Qwen.
 ```
