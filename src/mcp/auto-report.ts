@@ -26,6 +26,14 @@ export interface AutoReportContext {
   /** Изменённые файлы (modified_files задачи или аргумент вызова). */
   files: string[];
   /**
+   * VL-372: целевой статус, если переход заблокирован (гейтом терминальности
+   * или проверкой перехода фазой). В отчёте `status` — ФАКТИЧЕСКИЙ статус
+   * задачи после рана; целевой показывается пометкой рядом с ним, иначе строка
+   * `Статус:` врёт о состоянии (в одном комментарии «Статус: Done» и «Задача
+   * оставлена в «Review»», класс VL-369/lesson-92). В норме отсутствует.
+   */
+  blockedTarget?: string;
+  /**
    * VL-304: неотмеченные пункты AC/DoD — по номерам и текстам. Автоматически
    * НЕ отмечаются (это было бы ложным заявлением о выполненной работе, дух
    * lesson-140/VL-248), но и «висеть молча» не должны: следующий ран или
@@ -67,9 +75,15 @@ export function buildAutoReport(task: Task, ctx: AutoReportContext): string {
     uncheckedLine('AC', ctx.uncheckedAc),
     uncheckedLine('DoD', ctx.uncheckedDod),
   ].filter((line): line is string => line !== null);
+  // VL-372: в строке статуса — фактический статус; целевой виден только
+  // пометкой, когда переход заблокирован (значение остаётся без ':' в
+  // суффиксе, чтобы разбор «Ключ: значение» в тестах не ломался).
+  const statusLine = ctx.blockedTarget && ctx.blockedTarget !== ctx.status
+    ? `Статус: ${ctx.status} (целевой был ${ctx.blockedTarget} — переход заблокирован)`
+    : `Статус: ${ctx.status}`;
   return [
     'Фаза: авто-отчёт (comment не передан моделью)',
-    `Статус: ${ctx.status}`,
+    statusLine,
     `AC отмечено: ${ctx.acChecked} из ${ctx.acTotal}`,
     `DoD отмечено: ${ctx.dodChecked} из ${ctx.dodTotal}`,
     ...unchecked,

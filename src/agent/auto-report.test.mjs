@@ -175,12 +175,15 @@ describe('VL-304 — авто-отчёт фазы без backlog_finish_phase', 
     assert.equal(task.status, 'Review', 'терминальный Done при неотмеченном DoD не ставится');
     const last = task.comments[task.comments.length - 1];
     assert.equal(last.author, '@agent');
-    // VL-371: `Статус:` в отчёте — ЦЕЛЕВОЙ статус (Done), фактический (Review)
-    // виден только в `gate.reason`. Это известный дефект отчёта: внутри одного
-    // комментария «Статус: Done» и «Статус не изменён… оставлена в Review»
-    // противоречат друг другу. Тест фиксирует текущее поведение; исправление —
-    // отдельной задачей (не входит в объём VL-371).
-    assert.equal(reportFields(last.text).get('Статус'), 'Done', 'поле Статус — целевой статус');
+    // VL-372: строка `Статус:` показывает ФАКТИЧЕСКИЙ статус после рана, а
+    // целевой (Done) — только пометкой. Проверяется согласованность отчёта с
+    // состоянием задачи, а не подстрока причины: до правки внутри одного
+    // комментария было и «Статус: Done», и «Задача оставлена в «Review»».
+    const statusField = reportFields(last.text).get('Статус') ?? '';
+    assert.ok(statusField.startsWith(task.status), `строка Статус начинается с фактического статуса: ${statusField}`);
+    assert.match(statusField, /целевой был Done/, 'целевой статус показан пометкой');
+    assert.doesNotMatch(last.text, /^Статус: Done$/m, 'нет строки, утверждающей Done');
+    assert.match(last.text, /Задача оставлена в «Review»/, 'причина блокировки сохранена');
     assert.ok(last.text.includes('backlog_finish_phase'), 'отчёт называет инструмент завершения фазы');
     assert.match(last.text, /#2/, 'назван индекс неотмеченного пункта DoD');
   });
@@ -207,6 +210,10 @@ describe('VL-304 — авто-отчёт фазы без backlog_finish_phase', 
     assert.equal(written, true);
     const task = getTask(cwd, t.id);
     assert.equal(task.status, 'Done', 'Review + close → Done, когда всё отмечено');
-    assert.doesNotMatch(task.comments[task.comments.length - 1].text, /Статус не изменён/);
+    const text = task.comments[task.comments.length - 1].text;
+    // VL-372 (AC3): нормальный случай не ухудшен — статус новый, без пометок.
+    assert.equal(reportFields(text).get('Статус'), 'Done', 'в норме — новый статус без пометок');
+    assert.doesNotMatch(text, /целевой был/);
+    assert.doesNotMatch(text, /Статус не изменён/);
   });
 });
