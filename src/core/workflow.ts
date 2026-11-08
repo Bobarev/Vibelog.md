@@ -831,8 +831,8 @@ export function taskCompletenessMissing(task: Task, fields: string[]): Completen
  *
  * Оба пути смены статуса (`writeAutoReportIfMissing` в агенте и
  * `finalizePhaseStatus` в ядре) зовут ЭТУ функцию — второй копии правила нет
- * (lesson-250). Внутри — существующий `terminalStatusGate`, поэтому текст
- * причины остаётся байт-в-байт прежним.
+ * (lesson-250). Внутри — приватная `terminalStatusGateCore` (VL-378), поэтому
+ * текст причины остаётся байт-в-байт прежним.
  *
  * Для простого workflow набор полей не содержит AC/DoD → блокировать нечего:
  * это следствие правила из данных, а не исключение из кода.
@@ -855,7 +855,9 @@ export function terminalStatusGateForTask(
   const missing = taskCompletenessMissing(task, rules.task);
   const numbers = (field: string): number[] =>
     missing.filter((m) => m.field === field).flatMap((m) => m.numbers ?? []);
-  return terminalStatusGate(
+  // VL-378: единственный публичный вход — эта функция; низкоуровневая сборка
+  // текста (`terminalStatusGateCore`) не экспортируется.
+  return terminalStatusGateCore(
     workflow,
     targetStatus,
     numbers('acceptanceCriteria'),
@@ -865,8 +867,8 @@ export function terminalStatusGateForTask(
 }
 
 /**
- * Гейт терминальности: можно ли ставить терминальный статус при неотмеченных
- * пунктах AC/DoD (VL-309, вынесен в общую функцию в VL-368).
+ * Низкоуровневая сборка решения и текста гейта терминальности (VL-309,
+ * вынесена в общую функцию в VL-368).
  *
  * Зачем одна функция: правило VL-248 («Done при невыполненном DoD — только
  * через backlog_finish_phase с dodOverride/aborted») проверялось в ДВУХ местах
@@ -876,13 +878,21 @@ export function terminalStatusGateForTask(
  * с висящими AC/DoD. Две копии правила неизбежно разъезжаются, поэтому текст
  * причины собирается здесь, а вызывающие только применяют решение.
  *
+ * VL-378: функция ВНУТРЕННЯЯ, без экспорта. Единственный публичный вход в
+ * правило терминальности — `terminalStatusGateForTask`, который сам считает
+ * неполноту из `CompletenessMap` с учётом workflow задачи и фазы. Прямой вызов
+ * низкоуровневой версии обошёл бы расчёт неполноты (правило
+ * `DEFAULT_COMPLETENESS.default.spec → description` и любое кастомное) и не
+ * учёл бы workflow («в simple у задачи нет AC/DoD — блокировать нечего») —
+ * ровно дефект VL-368/VL-370, где два пути считали неотмеченные пункты сами.
+ *
  * @param workflow — workflow задачи (источник терминальности)
  * @param targetStatus — статус, который собирались поставить
  * @param uncheckedAc — номера неотмеченных AC (с 1)
  * @param uncheckedDod — номера неотмеченных DoD (с 1)
  * @param prevStatus — статус, в котором задача останется при блокировке
  */
-export function terminalStatusGate(
+function terminalStatusGateCore(
   workflow: Workflow,
   targetStatus: string,
   uncheckedAc: number[],

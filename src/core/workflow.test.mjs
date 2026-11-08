@@ -24,7 +24,6 @@ import {
   KNOWN_TASK_FIELDS,
   KNOWN_LESSON_FIELDS,
   taskCompletenessMissing,
-  terminalStatusGate,
   terminalStatusGateForTask,
   getWorkflowName,
   getWorkflowForTask,
@@ -586,7 +585,7 @@ describe('getCompletenessRules и taskCompletenessMissing (VL-370)', () => {
     assert.equal(terminalStatusGateForTask(simpleDir, t, 'Done', 'close', 'Review').blocked, false);
   });
 
-  it('AC4/AC12: default блокирует Done при неотмеченном DoD, текст — из terminalStatusGate', () => {
+  it('AC4/AC12: default блокирует Done при неотмеченном DoD, текст — публичный (VL-378)', () => {
     const t = {
       id: 'VL-5', type: 'feature', description: 'есть',
       acceptanceCriteria: [{ text: 'a', checked: true }],
@@ -595,9 +594,14 @@ describe('getCompletenessRules и taskCompletenessMissing (VL-370)', () => {
     const gate = terminalStatusGateForTask(emptyDir, t, 'Done', 'close', 'Review');
     assert.equal(gate.blocked, true);
     assert.match(gate.reason, /DoD: #1/);
-    // существующий экспорт сохранён и даёт тот же результат (AC12)
-    const direct = terminalStatusGate(DEFAULT_WORKFLOW, 'Done', [], [1], 'Review');
-    assert.equal(direct.reason, gate.reason);
+    // VL-378: низкоуровневая сборка текста приватна, поэтому байт-в-байт
+    // проверяется текст, который отдаёт единственный публичный вход.
+    assert.equal(
+      gate.reason,
+      'Статус не изменён: терминальный «Done» при неотмеченных пунктах (DoD: #1) ' +
+        'возможен только через backlog_finish_phase с dodOverride или aborted (VL-248/VL-309). ' +
+        'Задача оставлена в «Review».',
+    );
   });
 });
 
