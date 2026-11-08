@@ -110,12 +110,17 @@ describe('VL-262 — атомарность обновления', () => {
     assert.equal(stored.priority, 'Low');
   });
 
-  it('только неизвестные поля → ошибка с перечнем допустимых, файл не тронут', async () => {
+  it('только неизвестные поля → noop со skipped, файл не тронут (VL-369)', async () => {
     const t = createTaskFile(cwd, { title: 'Только неизвестные' });
-    await assert.rejects(
-      handleToolCall('backlog_update_task', { id: t.id, definitionOfDone: ['x'], foo: 1 }, cwd),
-      /Неизвестные поля: .*definitionOfDone/,
+    // VL-369: неизвестное поле — не порча аргумента, а «передано, но не
+    // записано»: оно попадает в skipped, исход — noop (менять нечего).
+    const ack = JSON.parse(
+      await handleToolCall('backlog_update_task', { id: t.id, definitionOfDone: ['x'], foo: 1 }, cwd),
     );
+    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
+    const fields = ack.skipped.map((f) => f.field);
+    assert.ok(fields.includes('definitionOfDone'), `skipped называет definitionOfDone: ${JSON.stringify(fields)}`);
+    assert.ok(fields.includes('foo'), 'skipped называет неизвестное foo');
     assert.equal(getTask(cwd, t.id).title, 'Только неизвестные');
   });
 });
@@ -265,18 +270,18 @@ describe('VL-319 — пустое тело урока: ошибка вместо
     return l;
   }
 
-  it('AC1: lesson_update без content на уроке с пустым телом → ok:false + error (не noop)', async () => {
+  it('AC1: lesson_update без content на уроке с пустым телом → noop + missing (VL-369)', async () => {
     const l = createEmptyBodyLesson('Урок без тела');
-    // VL-355: отказ остаётся для вызова, который НИЧЕГО не меняет — только `id`
-    // (переданные поля, уже совпадающие с файлом, дают noop с `missing`).
+    // VL-369: неполнота — свойство СУЩНОСТИ, а не ошибка вызова. Таблица
+    // исходов: «не записали × сущность неполная» = noop + missing + retryWith.
+    // Раньше здесь стоял отказ — именно он давал серию отказов, упирающуюся
+    // в ограничитель повторов.
     const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id }, cwd));
-    assert.equal(ack.ok, false, `ожидалась ошибка: ${JSON.stringify(ack)}`);
-    assert.ok(!ack.noop, 'это НЕ noop — сигнатура не должна попадать в noopSignatures');
-    assert.match(String(ack.error), /пустое/);
-    assert.match(String(ack.error), /content/);
-    assert.match(String(ack.error), /Проблема/);
+    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
+    assert.equal(ack.outcome, 'noop');
     assert.equal(ack.missing[0].field, 'content', 'missing называет пропущенное поле');
     assert.equal(typeof ack.hint, 'string', 'hint со следующим шагом');
+    assert.match(String(ack.retryWith?.content), /## Проблема/, 'готовый каркас тела');
   });
 
   it('AC2: lesson_update с content:"" → ok:false, файл не перезаписан', async () => {
@@ -320,18 +325,17 @@ describe('VL-349 — тело-скелет урока: ошибка вместо
     // VL-355: отказ остаётся для вызова, который НИЧЕГО не меняет — только `id`.
     const args = { id: l.id };
     const first = JSON.parse(await handleToolCall('lesson_update', args, cwd));
-    assert.equal(first.ok, false, `ожидалась ошибка: ${JSON.stringify(first)}`);
-    assert.ok(!first.noop, 'это НЕ noop — сигнатура не должна попадать в noopSignatures');
+    // VL-369: "нечего менять + сущность неполная" — noop с missing, а не отказ.
+    assert.equal(first.noop, true, `ожидался noop: ${JSON.stringify(first)}`);
     assert.equal(first.missing[0].field, 'content', 'missing называет content');
     assert.equal(typeof first.hint, 'string', 'hint со следующим шагом');
-    assert.match(String(first.error), /content/);
     assert.equal(readFileSync(path, 'utf-8'), before, 'файл не перезаписан');
 
-    // Повтор той же сигнатуры ИСПОЛНЯЕТСЯ (а не глушится noop-директивой)
+    // Повтор той же сигнатуры тоже noop — но с missing и готовым вызовом
     const second = JSON.parse(await handleToolCall('lesson_update', args, cwd));
-    assert.equal(second.ok, false, `повтор тоже ошибка: ${JSON.stringify(second)}`);
-    assert.ok(!second.noop, 'повтор не превращается в noop');
+    assert.equal(second.noop, true, `повтор тоже noop: ${JSON.stringify(second)}`);
     assert.equal(second.missing[0].field, 'content');
+    assert.match(String(second.retryWith?.content), /## Проблема/, 'готовый каркас тела');
   });
 
   it('AC2: после передачи content урок-скелет дополняется', async () => {
@@ -401,16 +405,16 @@ describe('VL-355 — незаполненное тело урока: части�
     assert.equal(second.missing[0].field, 'content', 'noop тоже называет незаполненное тело');
   });
 
-  it('AC6: вызов без content и без других полей → ok:false с missing: content (не noop)', async () => {
+  it('AC6: вызов без content и без других полей → noop + missing: content (VL-369)', async () => {
     const l = createSkeletonLesson('Урок-отказ');
-    // VL-355: отказ — только когда применять нечего (кроме `id` ничего не
-    // передано). Переданные, но уже совпадающие поля дают noop с `missing`
-    // (AC5: повтор не должен превращаться в серию отказов).
+    // VL-369: «нечего менять» — noop по таблице исходов; незаполненное тело
+    // сообщается полем missing, а НЕ отказом. Отказ остался только для
+    // испорченного аргумента (например, явно пустой content).
     const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id }, cwd));
-    assert.equal(ack.ok, false, `ожидался отказ: ${JSON.stringify(ack)}`);
-    assert.ok(!ack.noop, 'это отказ, не noop');
+    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
     assert.equal(ack.missing[0].field, 'content');
     assert.equal(typeof ack.hint, 'string');
+    assert.match(String(ack.retryWith?.content), /## Проблема/);
   });
 
   it('AC1: после передачи content урок-скелет заполняется', async () => {

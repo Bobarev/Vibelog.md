@@ -30,7 +30,7 @@ import {
   writeDocument, listDocuments, getDocument,
   updateDocument, searchDocuments,
 } from '../core/document.js';
-import type { UpdateDocumentInput } from '../core/document.js';
+import type { UpdateDocumentInput, DocumentEntry } from '../core/document.js';
 import {
   listReferences, getReference, writeReference,
   updateReference, removeReference, searchReferences,
@@ -38,6 +38,7 @@ import {
   referenceUrls, REFERENCE_TYPES,
 } from '../core/reference.js';
 import type { UpdateReferenceInput } from '../core/reference.js';
+import type { Reference } from '../core/reference.js';
 import {
   cacheReference, refreshReferenceCache, readReferenceCache, syncReferenceCaches,
 } from '../core/reference-cache.js';
@@ -47,6 +48,7 @@ import {
   isLessonBodyUnfilled,
 } from '../core/lesson.js';
 import type { UpdateLessonInput } from '../core/lesson.js';
+import type { Lesson } from '../core/lesson.js';
 import {
   auditLessons, applyLessonAudit, formatLessonAuditMarkdown,
 } from '../core/lesson-audit.js';
@@ -61,6 +63,8 @@ import { getWorkflowForTask, phaseStatusTransitionError, isTerminalStatus } from
 import { buildProjectMap } from '../core/project-map.js';
 import { truncateToolOutput } from '../agent/tools.js';
 import { ackOk, ackOkDetailed, ackRead, ackNoop, ackNoopDetailed, ackError, ackErrorDetailed, unknownFields, sameValue, sameFieldsUpToDate, SET_FIELDS, BODY_FIELD } from './tool-result.js';
+import { runUpdate } from './update-pipeline.js';
+import type { EntitySpec, RejectDetail } from './update-pipeline.js';
 import { buildAutoReport, uncheckedItems } from './auto-report.js';
 import type { SkippedField } from './tool-result.js';
 import { withIdempotency } from './idempotency.js';
@@ -1304,61 +1308,39 @@ function toolViewTask(args: ToolArgs, cwd: string): string {
 }
 
 /**
- * Обновляет статус задачи.
+ * Обновляемые поля задачи, которые имеет смысл предлагать в noop-ответе.
+ *
+ * VL-369: раньше набор был захардкожен и фильтровался по «не передано в args»
+ * (`missingTaskFields`), из-за чего уже заполненное поле попадало в подсказку
+ * ложно. Теперь кандидат должен быть ПУСТ в сущности — подсказка считается от
+ * состояния (VL-370 заменит это на workflow-aware расчёт неполноты).
  */
-function toolUpdateStatus(args: ToolArgs, cwd: string): string {
-  const current = getTask(cwd, args.id as string);
-  // VL-310: noop-детекция — статус уже такой, файл не переписываем (симметрия
-  // с backlog_update_task). Раньше ответ был ackOk всегда: модель, повторяя
-  // `backlog_update_status {status:'In Progress'}`, не получала «изменений нет».
-  if (current && current.status === args.status) {
-    return ackNoop(
-      `Изменений нет: status задачи ${current.id} уже «${current.status}». ` +
-        'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.',
-      { status: current.status },
-    );
-  }
-  const task = updateTaskFile(cwd, args.id as string, { status: args.status as string });
-  return ackOk(`Статус задачи ${task.id} обновлён: ${task.status}`, { status: task.status });
+const TASK_SUGGEST: ReadonlyArray<{ arg: string; key: keyof Task }> = [
+  { arg: 'description', key: 'description' },
+  { arg: 'acceptanceCriteria', key: 'acceptanceCriteria' },
+  { arg: 'plan', key: 'implementationPlan' },
+  { arg: 'notes', key: 'implementationNotes' },
+  { arg: 'labels', key: 'labels' },
+  { arg: 'priority', key: 'priority' },
+];
+
+/** Поле задачи пусто (нет значения, пустая строка, пустой массив). */
+function isEmptyTaskField(task: Task, key: keyof Task): boolean {
+  const value = (task as unknown as Record<string, unknown>)[key];
+  if (value === undefined || value === null) return true;
+  if (typeof value === 'string') return value.trim() === '';
+  if (Array.isArray(value)) return value.length === 0;
+  return false;
 }
 
-// ============================================================
-// Новые инструменты v1.1
-// ============================================================
-
 /**
- * Универсальное обновление полей задачи.
+ * Сборка полей задачи из аргументов вызова (VL-369: вынесено из `toolUpdateTask`).
  *
- * Обновляет только переданные поля. updated_date обновляется всегда.
- * Поля plan/notes/append_notes/final_summary пишут в соответствующие секции тела.
+ * Все валидации (`parentTaskId`, `parseAcList`, `type`) выполняются здесь и
+ * бросают исключение ДО записи — пайплайн вызывает `build` до `write`.
  */
-/**
- * Поля задачи, которые модель НЕ передала в вызове (VL-326).
- *
- * Нужны тексту `hint` noop-ответа: перечень подсказывает, что можно передать
- * в этом же вызове вместо повторения уже применённых полей (инцидент VL-324:
- * модель 12 раз передавала только `priority`/`type`, не догадываясь, что
- * `description`/`acceptanceCriteria`/`plan` не пришли вовсе).
- *
- * Служебные имена (`id`, `idempotencyKey`, `append_notes` — дописывание, а не
- * поле) исключены: предлагать их бессмысленно.
- */
-function missingTaskFields(args: ToolArgs): string[] {
-  const suggested = ['description', 'acceptanceCriteria', 'plan', 'notes', 'labels', 'priority', 'status'];
-  return suggested.filter(field => args[field] === undefined);
-}
-
-function toolUpdateTask(args: ToolArgs, cwd: string): string {
-  // VL-183: валидация id на границе MCP-слоя. Схема требует id, но сервер её
-  // не проверяет: без id getTask/findTaskFilePath падают с TypeError
-  // «Cannot read properties of undefined (reading 'toLowerCase')» — модель
-  // видит невнятную ошибку вместо подсказки (инцидент VL-182).
-  const id = args.id;
-  if (typeof id !== 'string' || id.trim() === '') {
-    throw new Error('Не передан id задачи (параметр "id").');
-  }
-
-  const updates: Partial<Task> = {};
+function buildTaskUpdates(args: ToolArgs, cwd: string, current: Task): Record<string, unknown> {
+  const updates: Record<string, unknown> = {};
 
   // Frontmatter-поля
   if (args.title !== undefined) updates.title = args.title as string;
@@ -1402,84 +1384,120 @@ function toolUpdateTask(args: ToolArgs, cwd: string): string {
   if (args.notes !== undefined) updates.implementationNotes = args.notes as string;
   if (args.final_summary !== undefined) updates.finalSummary = args.final_summary as string;
 
-  // append_notes — дописывает в конец существующих заметок
+  // append_notes — дописывает в конец существующих заметок (нужно текущее состояние)
   if (args.append_notes !== undefined) {
-    const task = getTask(cwd, args.id as string);
-    if (!task) throw new Error(`Задача ${args.id} не найдена.`);
-    updates.implementationNotes = (task.implementationNotes || '') +
-      (task.implementationNotes ? '\n' : '') + (args.append_notes as string);
+    updates.implementationNotes = (current.implementationNotes || '') +
+      (current.implementationNotes ? '\n' : '') + (args.append_notes as string);
   }
 
-  if (Object.keys(updates).length === 0) {
-    // VL-262: пустой набор — либо ошибка (поля не переданы), либо все
-    // переданные ключи неизвестны. Разные подсказки: агенту нужно знать,
-    // что его ключи не распознаны (иначе он повторяет тот же вызов).
-    const skipped = unknownFields(args, UPDATE_TASK_FIELDS);
-    if (skipped.length > 0) {
-      throw new Error(
-        `Не указаны поля для обновления. Неизвестные поля: ${skipped.map(s => s.field).join(', ')}. ` +
-          `Допустимые: ${UPDATE_TASK_FIELDS.join(', ')}.`,
-      );
+  return updates;
+}
+
+/**
+ * Описание сущности «задача» для общего пайплайна (VL-369).
+ */
+const taskSpec: EntitySpec<Task> = {
+  name: 'Задача',
+  fields: UPDATE_TASK_FIELDS,
+  setFields: SET_FIELDS,
+  // дописывание заметок всегда меняет файл — noop-сверка для него отключена
+  nonIdempotent: ['append_notes'],
+  missingIdMessage: 'Не передан id задачи (параметр "id").',
+  notFoundMessage: id => `Задача ${id} не найдена.`,
+  build: buildTaskUpdates,
+  read: (cwd, id) => getTask(cwd, id) as Task | null,
+  write: (cwd, id, updates) => updateTaskFile(cwd, id, updates as Partial<Task>),
+  snapshot: entity => entity as unknown as Record<string, unknown>,
+  // Чеклист сворачиваем до длины: полный массив раздувает ответ без пользы для агента
+  applied: (entity, keys) => {
+    const result: Record<string, unknown> = {};
+    for (const key of keys) {
+      const value = (entity as unknown as Record<string, unknown>)[key];
+      result[key] = key === 'acceptanceCriteria' && Array.isArray(value) ? value.length : value;
     }
-    throw new Error('Не указаны поля для обновления.');
-  }
+    return result;
+  },
+  // VL-369/VL-370: неполнота считается от состояния — задача без описания неполна.
+  // Набор «что ещё можно передать» тоже берётся от состояния (пустые поля).
+  completeness: entity =>
+    isEmptyTaskField(entity, 'description')
+      ? [{ field: 'description', reason: 'описание задачи не заполнено' }]
+      : [],
+  next: () => ({
+    hint:
+      'Дополни описание задачи в этом же вызове: ' +
+      'backlog_update_task {"id": "…", "description": "…"} — поле необязательно, но без него задача неполна.',
+  }),
+  noopHint: (entity, keys, transferred) => {
+    const suggestions = TASK_SUGGEST
+      .filter(item => !transferred.includes(item.arg) && isEmptyTaskField(entity, item.key))
+      .map(item => item.arg);
+    return (
+      `Переданные поля (${keys.join(', ')}) уже такие. ` +
+      `Если нужны другие изменения, передай их в ЭТОМ ЖЕ вызове` +
+      (suggestions.length > 0 ? ` — например: ${suggestions.join(', ')}.` : '.')
+    );
+  },
+  message: (entity, keys, via) =>
+    via === 'noop'
+      ? 'Следующий шаг: backlog_finish_phase (или следующий шаг плана) — повтор этого вызова ничего не изменит.'
+      : `Задача ${entity.id} обновлена: ${keys.join(', ')}`,
+};
 
-  // VL-303: no-op вызов — все переданные значения уже есть в задаче. Раньше
-  // файл переписывался и ответ был «обновлена», модель не получала сигнала
-  // «работа сделана» и повторяла вызов до loop detection (инцидент VL-302:
-  // фаза падала, хотя title/type/priority/labels уже были записаны).
-  // append_notes исключён: дописывание всегда меняет файл.
-  if (args.append_notes === undefined) {
-    const current = getTask(cwd, args.id as string);
-    if (current) {
-      const currentRaw = current as unknown as Record<string, unknown>;
-      const unchanged = Object.keys(updates).every(key =>
-        sameValue(key, (updates as Record<string, unknown>)[key], currentRaw[key]),
-      );
-      if (unchanged) {
-        // applied — фактическое состояние (как в обычном пути), но без записи:
-        // updated_date и файл не трогаются (AC1).
-        const applied: Record<string, unknown> = {};
-        for (const key of Object.keys(updates)) {
-          const value = currentRaw[key];
-          applied[key] = Array.isArray(value) && key === 'acceptanceCriteria' ? value.length : value;
-        }
-        return ackNoopDetailed(
-          `Изменений нет: ${Object.keys(updates).join(', ')} уже имеют эти значения. ` +
-            'Следующий шаг: backlog_finish_phase (или следующий шаг плана) — повтор этого вызова ничего не изменит.',
-          applied,
-          [],
-          // VL-326: называем поля, которые модель НЕ передала, — иначе она
-          // повторяет вызов с теми же (уже применёнными) полями, меняя только
-          // idempotencyKey (инцидент VL-324: 12 повторов без description/AC/plan).
-          `Переданные поля (${Object.keys(updates).join(', ')}) уже такие. ` +
-            `Если нужны другие изменения, передай их в ЭТОМ ЖЕ вызове — например: ${missingTaskFields(args).join(', ')}.`,
-        );
-      }
+/**
+ * Обновляет статус задачи.
+ *
+ * VL-369: частный случай общего пайплайна (одно поле `status`); собственная
+ * noop-ветка удалена — «статус уже такой» стало обычным noop-исходом.
+ */
+const statusSpec: EntitySpec<Task> = {
+  name: 'Задача',
+  fields: ['id', 'status', 'idempotencyKey'],
+  setFields: [],
+  missingIdMessage: 'Не передан id задачи (параметр "id").',
+  notFoundMessage: id => `Задача ${id} не найдена.`,
+  build: args => {
+    // status — обязательный аргумент: без него операция не имеет смысла,
+    // это испорченный аргумент (rejected), а не «нечего менять» (noop).
+    if (typeof args.status !== 'string' || args.status.trim() === '') {
+      throw new Error('Не передан status задачи (параметр "status").');
     }
-  }
+    return { status: args.status as string };
+  },
+  read: (cwd, id) => getTask(cwd, id) as Task | null,
+  write: (cwd, id, updates) => updateTaskFile(cwd, id, updates as Partial<Task>),
+  snapshot: entity => entity as unknown as Record<string, unknown>,
+  applied: (entity, keys) => {
+    const result: Record<string, unknown> = {};
+    for (const key of keys) result[key] = (entity as unknown as Record<string, unknown>)[key];
+    return result;
+  },
+  message: (entity, keys, via) =>
+    via === 'noop'
+      ? 'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.'
+      : `Статус задачи ${entity.id} обновлён: ${entity.status}`,
+};
 
-  // VL-262: единственная запись — все валидации выше (parentTaskId, parseAcList)
-  // прошли до неё, поэтому «полуприменённого» состояния файла не бывает.
-  const task = updateTaskFile(cwd, args.id as string, updates);
+function toolUpdateStatus(args: ToolArgs, cwd: string): string {
+  return runUpdate(statusSpec, args, cwd);
+}
 
-  // applied — значения из задачи ПОСЛЕ записи (фактическое состояние файла,
-  // а не намерение вызова). Чеклист сворачиваем до длины: полный массив
-  // раздувает ответ без пользы для агента.
-  const applied: Record<string, unknown> = {};
-  for (const key of Object.keys(updates)) {
-    const value = (task as unknown as Record<string, unknown>)[key];
-    applied[key] = Array.isArray(value) && key === 'acceptanceCriteria' ? value.length : value;
-  }
-  // skipped: неизвестные ключи + переданный null (раньше type: null молча игнорировался)
-  const skipped: SkippedField[] = unknownFields(args, UPDATE_TASK_FIELDS);
-  for (const key of Object.keys(args)) {
-    if (args[key] === null && UPDATE_TASK_FIELDS.includes(key) && !skipped.some(s => s.field === key)) {
-      skipped.push({ field: key, reason: 'значение null не применяется: поле не изменено' });
-    }
-  }
+// ============================================================
+// Новые инструменты v1.1
+// ============================================================
 
-  return ackOk(`Задача ${task.id} обновлена: ${Object.keys(updates).join(', ')}`, applied, skipped);
+/**
+ * Универсальное обновление полей задачи.
+ *
+ * Обновляет только переданные поля. updated_date обновляется всегда.
+ * Поля plan/notes/append_notes/final_summary пишут в соответствующие секции тела.
+ *
+ * VL-369: вся логика ответа (сверка «уже так», skipped, applied, missing,
+ * тексты) вынесена в общий пайплайн `runUpdate`; здесь осталась декларация
+ * различий (`taskSpec`).
+ */
+function toolUpdateTask(args: ToolArgs, cwd: string): string {
+  return runUpdate(taskSpec, args, cwd);
 }
 
 /**
@@ -2416,61 +2434,70 @@ function toolDocumentCreate(args: ToolArgs, cwd: string): string {
  */
 const DOC_SET_FIELDS = ['tags'] as const;
 
-function toolDocumentUpdate(args: ToolArgs, cwd: string): string {
+/** Документ в терминах пайплайна: метаданные + тело (тело отдельно от frontmatter). */
+interface DocumentEntity {
+  document: DocumentEntry['document'];
+  body: string;
+  path: string;
+}
+
+function requireBacklogDirOrThrow(cwd: string): string {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) throw new Error('Backlog не найден.');
-  const updates: UpdateDocumentInput = {};
-  if (args.title !== undefined) updates.title = args.title as string;
-  if (args.content !== undefined) updates.content = args.content as string;
-  if (args.type !== undefined) updates.type = args.type as string;
-  if (args.tags !== undefined) updates.tags = args.tags as string[];
-  if (Object.keys(updates).length === 0) {
-    throw new Error('Не указаны поля для обновления (title, content, type, tags).');
-  }
-  const current = getDocument(backlogDir, args.id as string);
-  if (!current) throw new Error(`Документ ${args.id} не найден.`);
+  return backlogDir;
+}
 
-  // VL-310: noop-детекция (симметрия с backlog_update_task/lesson_update).
-  // Раньше toolDocumentUpdate отвечал ackOk ВСЕГДА, поэтому вызов
-  // `document_update {id, type:'guide'}`, где type уже был 'guide', выглядел
-  // как успешная запись: модель не получала сигнала «изменений нет» и
-  // повторяла его десятки раз, раздувая payload (сессия
-  // agent-1793637056809, Code VL-124 — 20+ вызовов, payload 267→394 КБ).
-  // Сравнение по фактическим значениям файла; тело (`content`) — через
-  // BODY_FIELD: в метаданных документа его нет, оно лежит в `entry.body`.
-  const currentRaw: Record<string, unknown> = {
-    ...(current.document as unknown as Record<string, unknown>),
-    [BODY_FIELD]: current.body,
-  };
-  // content сравнивается как тело документа: в аргументах поле называется
-  // content, в снимке — BODY_FIELD (см. sameValue/BODY_FIELD).
-  const comparable: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(updates)) {
-    comparable[key === 'content' ? BODY_FIELD : key] = value;
-  }
-  if (sameFieldsUpToDate(currentRaw, comparable, DOC_SET_FIELDS)) {
-    // applied — фактическое состояние (как в обычном пути), но без записи:
-    // файл и его mtime/updated-поля не трогаются (AC1).
-    const applied: Record<string, unknown> = { id: current.document.id };
-    for (const key of Object.keys(updates)) {
-      applied[key] = key === 'content' ? current.body.length : currentRaw[key];
+/**
+ * Описание сущности «документ» для общего пайплайна (VL-369).
+ */
+const documentSpec: EntitySpec<DocumentEntity> = {
+  name: 'Документ',
+  fields: ['id', 'title', 'content', 'type', 'tags', 'idempotencyKey'],
+  setFields: DOC_SET_FIELDS,
+  // В аргументах тело называется content, в снимке — BODY_FIELD (см. sameValue)
+  bodyArg: 'content',
+  missingIdMessage: 'Не передан id документа (параметр "id").',
+  notFoundMessage: id => `Документ ${id} не найден.`,
+  build: args => {
+    const updates: Record<string, unknown> = {};
+    if (args.title !== undefined) updates.title = args.title as string;
+    if (args.content !== undefined) updates.content = args.content as string;
+    if (args.type !== undefined) updates.type = args.type as string;
+    if (args.tags !== undefined) updates.tags = args.tags as string[];
+    return updates;
+  },
+  read: (cwd, id) => getDocument(requireBacklogDirOrThrow(cwd), id) as DocumentEntity | null,
+  write: (cwd, id, updates) =>
+    updateDocument(requireBacklogDirOrThrow(cwd), id, updates as UpdateDocumentInput) as DocumentEntity | null,
+  // VL-310: тело лежит не в метаданных, а в `entry.body` — сверяется под BODY_FIELD
+  snapshot: entity => ({
+    ...(entity.document as unknown as Record<string, unknown>),
+    [BODY_FIELD]: entity.body,
+  }),
+  // applied: id есть всегда, тело сворачиваем до длины (полный markdown раздувает ответ)
+  applied: (entity, keys) => {
+    const result: Record<string, unknown> = { id: entity.document.id };
+    for (const key of keys.filter(k => k !== 'id')) {
+      result[key] = key === 'content'
+        ? String(entity.body).length
+        : (entity.document as unknown as Record<string, unknown>)[key];
     }
-    return ackNoop(
-      `Изменений нет: ${Object.keys(updates).join(', ')} документа ${current.document.id} уже имеют эти значения. ` +
-        'Следующий шаг: переходи к следующему пункту фазы (правки/проверки) или к backlog_finish_phase — ' +
-        'повтор этого вызова ничего не изменит.',
-      applied,
-    );
-  }
+    return result;
+  },
+  // Тело документа необязательно по смыслу (см. PARTIAL_EXEMPT в контракт-тесте)
+  completeness: () => [],
+  message: (entity, keys, via) =>
+    via === 'noop'
+      ? 'Следующий шаг: переходи к следующему пункту фазы (правки/проверки) или к backlog_finish_phase — ' +
+        'повтор этого вызова ничего не изменит.'
+      : `Документ ${entity.document.id} обновлён: ${entity.document.title}`,
+};
 
-  const updated = updateDocument(backlogDir, args.id as string, updates);
-  if (!updated) throw new Error(`Документ ${args.id} не найден.`);
-  return ackOk(`Документ ${updated.document.id} обновлён: ${updated.document.title}`, {
-    id: updated.document.id,
-    title: updated.document.title,
-    type: updated.document.type,
-    tags: updated.document.tags,
-  });
+/**
+ * Обновление документа: поля и/или тело (VL-369 — общий пайплайн).
+ */
+function toolDocumentUpdate(args: ToolArgs, cwd: string): string {
+  return runUpdate(documentSpec, args, cwd);
 }
 
 function toolDocumentSearch(args: ToolArgs, cwd: string): string {
@@ -2592,80 +2619,105 @@ function toolReferenceRemove(args: ToolArgs, cwd: string): string {
   return ackOk(`Reference ${args.id} удалён (клон в data/ сохранён).`, { id: args.id });
 }
 
+/**
+ * Поля reference, сравниваемые как множества (VL-310): порядок тегов не значим.
+ */
+const REFERENCE_SET_FIELDS = ['tags', 'linked_tasks'] as const;
+
+/** Reference в терминах пайплайна: метаданные + тело (тело отдельно от frontmatter). */
+interface ReferenceEntity {
+  reference: Reference;
+  body: string;
+  path: string;
+}
+
+/**
+ * Поля, сверяемые не «как есть» (VL-310/VL-369):
+ * - description → тело записи (BODY_FIELD) — делает пайплайн по `bodyArg`;
+ * - url/urls → полный упорядоченный набор ссылок: после нормализации первый
+ *   url выкидывается из urls (normalizeExtraUrls), а порядок набора значим
+ *   (он же порядок секций склеенного кэша).
+ */
+function referenceComparable(
+  updates: Record<string, unknown>,
+  current: ReferenceEntity,
+  base: Record<string, unknown>,
+): Record<string, unknown> {
+  const comparable = { ...base };
+  delete comparable.url;
+  delete comparable.urls;
+  if (updates.url !== undefined || updates.urls !== undefined) {
+    const baseUrl = updates.url !== undefined ? String(updates.url) : current.reference.url;
+    const rest = updates.urls !== undefined
+      ? (updates.urls as unknown[])
+      : current.reference.urls;
+    const seen = new Set<string>();
+    const merged: string[] = [];
+    if (baseUrl) { merged.push(baseUrl); seen.add(baseUrl); }
+    for (const raw of rest || []) {
+      const value = String(raw ?? '').trim();
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      merged.push(value);
+    }
+    comparable.__urls = merged;
+  }
+  return comparable;
+}
+
+/**
+ * Описание сущности «reference» для общего пайплайна (VL-369).
+ */
+const referenceSpec: EntitySpec<ReferenceEntity> = {
+  name: 'Reference',
+  fields: ['id', 'tags', 'description', 'url', 'urls', 'idempotencyKey'],
+  setFields: REFERENCE_SET_FIELDS,
+  // MCP-параметр description → UpdateReferenceInput.content (VL-164)
+  bodyArg: 'description',
+  missingIdMessage: 'Не передан id reference (параметр "id").',
+  notFoundMessage: id => `Reference ${id} не найден.`,
+  build: args => {
+    const updates: Record<string, unknown> = {};
+    if (args.tags !== undefined) updates.tags = args.tags as string[];
+    if (args.description !== undefined) updates.content = args.description as string;
+    // VL-291: набор ссылок (полная замена переданных полей); urls: [] очищает
+    if (args.url !== undefined) updates.url = String(args.url);
+    if (args.urls !== undefined) updates.urls = (args.urls as unknown[]).map(u => String(u));
+    return updates;
+  },
+  read: (cwd, id) => getReference(cwd, id) as ReferenceEntity | null,
+  write: (cwd, id, updates) => updateReference(cwd, id, updates as UpdateReferenceInput) as ReferenceEntity | null,
+  snapshot: entity => ({
+    ...(entity.reference as unknown as Record<string, unknown>),
+    [BODY_FIELD]: entity.body,
+    __urls: referenceUrls(entity.reference),
+  }),
+  comparable: referenceComparable,
+  applied: (entity, keys) => {
+    const result: Record<string, unknown> = { id: entity.reference.id };
+    for (const key of keys.filter(k => k !== 'id')) {
+      if (key === 'description' || key === 'content') {
+        result[key] = String(entity.body).length;
+      } else if (key === 'urls') {
+        result[key] = referenceUrls(entity.reference);
+      } else {
+        result[key] = (entity.reference as unknown as Record<string, unknown>)[key];
+      }
+    }
+    return result;
+  },
+  // Тело reference необязательно по смыслу (см. PARTIAL_EXEMPT в контракт-тесте)
+  completeness: () => [],
+  message: (entity, keys, via) =>
+    via === 'noop'
+      ? 'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.'
+      : `Reference ${entity.reference.id} обновлён: ${keys.join(', ')}`,
+};
+
 // VL-164: обновление меты reference; MCP-параметр description → UpdateReferenceInput.content
+// VL-369: общий пайплайн, декларация различий — `referenceSpec`.
 function toolReferenceUpdate(args: ToolArgs, cwd: string): string {
-  const updates: UpdateReferenceInput = {};
-  if (args.tags !== undefined) updates.tags = args.tags as string[];
-  if (args.description !== undefined) updates.content = args.description as string;
-  // VL-291: набор ссылок (полная замена переданных полей); urls: [] очищает
-  if (args.url !== undefined) updates.url = String(args.url);
-  if (args.urls !== undefined) updates.urls = (args.urls as unknown[]).map(u => String(u));
-  if (Object.keys(updates).length === 0) {
-    throw new Error('Не указаны поля для обновления (tags, description, url, urls).');
-  }
-
-  // VL-310: noop-детекция (симметрия с backlog_update_task/lesson_update/
-  // document_update). Раньше ответ был ackOk всегда, и повтор
-  // `reference_update {id, tags:[...]}` с уже записанными тегами выглядел
-  // успехом — модель крутила вызов. Сравнение:
-  // - tags — как множество (порядок не значим);
-  // - description — против тела записи (BODY_FIELD);
-  // - url/urls — по полному упорядоченному списку ссылок (url — первая,
-  //   urls — дополнительные; порядок важен: он же порядок секций кэша).
-  const current = getReference(cwd, args.id as string);
-  if (current) {
-    const currentRaw: Record<string, unknown> = {
-      ...(current.reference as unknown as Record<string, unknown>),
-      [BODY_FIELD]: current.body,
-    };
-    // Поля, которые сверяются не «как есть»:
-    // - description → тело записи (BODY_FIELD);
-    // - url/urls → полный упорядоченный набор ссылок: после нормализации
-    //   первый url выкидывается из urls (normalizeExtraUrls), а порядок
-    //   набора значим (порядок секций склеенного кэша).
-    const comparable: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(updates)) {
-      if (key === 'url' || key === 'urls') continue;
-      comparable[key === 'content' ? BODY_FIELD : key] = value;
-    }
-    if (updates.url !== undefined || updates.urls !== undefined) {
-      const baseUrl = updates.url !== undefined ? updates.url : current.reference.url;
-      const rest = updates.urls !== undefined ? updates.urls : current.reference.urls;
-      const seen = new Set<string>();
-      const merged: string[] = [];
-      if (baseUrl) { merged.push(baseUrl); seen.add(baseUrl); }
-      for (const raw of rest || []) {
-        const value = String(raw ?? '').trim();
-        if (!value || seen.has(value)) continue;
-        seen.add(value);
-        merged.push(value);
-      }
-      comparable.__urls = merged;
-    }
-    const currentRawWithUrls = { ...currentRaw, __urls: referenceUrls(current.reference) };
-    const REFERENCE_SET_FIELDS = ['tags', 'linked_tasks'];
-    if (sameFieldsUpToDate(currentRawWithUrls, comparable, REFERENCE_SET_FIELDS)) {
-      const applied: Record<string, unknown> = { id: current.reference.id };
-      for (const key of Object.keys(updates)) {
-        applied[key] = key === 'content' ? current.body.length : currentRaw[key];
-      }
-      return ackNoop(
-        `Изменений нет: ${Object.keys(updates).join(', ')} reference ${current.reference.id} уже имеют эти значения. ` +
-          'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.',
-        applied,
-      );
-    }
-  }
-
-  const entry = updateReference(cwd, args.id as string, updates);
-  if (!entry) throw new Error(`Reference ${args.id} не найден.`);
-  // VL-306: JSON-ack; applied — значения из reference ПОСЛЕ записи.
-  return ackOk(`Reference ${entry.reference.id} обновлён: ${Object.keys(updates).join(', ')}`, {
-    id: entry.reference.id,
-    tags: entry.reference.tags,
-    url: entry.reference.url,
-    urls: entry.reference.urls,
-  });
+  return runUpdate(referenceSpec, args, cwd);
 }
 
 function toolReferenceLink(args: ToolArgs, cwd: string): string {
@@ -2815,167 +2867,120 @@ const LESSON_BODY_TEMPLATE =
 const LESSON_BODY_HINT =
   'Заполни тело урока: замени плейсхолдеры в каркасе из retryWith.content на фактические Проблему/Решение/Пример.';
 
-function toolLessonUpdate(args: ToolArgs, cwd: string): string {
-  const updates: UpdateLessonInput = {};
-  if (args.title !== undefined) updates.title = args.title as string;
-  if (args.status !== undefined) updates.status = args.status as string;
-  if (args.tags !== undefined) updates.tags = args.tags as string[];
-  if (args.sourceTasks !== undefined) updates.source_tasks = args.sourceTasks as string[];
-  if (args.linkedTasks !== undefined) updates.linked_tasks = args.linkedTasks as string[];
-  if (args.supersedes !== undefined) updates.supersedes = args.supersedes as string;
-  // VL-279: поля аудита (additive)
-  if (args.lastVerified !== undefined) updates.last_verified = args.lastVerified as string;
-  if (args.verifiedBy !== undefined) updates.verified_by = args.verifiedBy as string;
-  if (args.appliesTo !== undefined) updates.applies_to = args.appliesTo as string[];
-  if (args.kind !== undefined) updates.kind = (args.kind as string) || null;
-  if (args.content !== undefined) updates.content = args.content as string;
-  // VL-306: no-op детект для уроков (симметрия с backlog_update_task, VL-303).
-  // Раньше файл переписывался всегда, ответ был «обновлён: …», и модель не
-  // получала сигнала «работа сделана» — сессия agent-1793634687751 (Close
-  // VL-304) сделала 10 дословных повторов lesson_update и упала кодом 1.
-  // Сравнение — по фактическим значениям из файла; `content` — против тела.
-  const current = getLesson(cwd, args.id as string);
-  if (current) {
-    // VL-319 (расширено VL-349): урок с НЕЗАПОЛНЕННЫМ телом (пустое или
-    // дефолтный скелет LESSON_BODY_SKELETON) — не «изменений нет», а
-    // незавершённая сущность. Раньше такой вызов без `content` уходил в noop,
-    // модель читала «изменений нет» и повторяла дословно (сессия
-    // agent-1793712738536, Close VL-318: 4 повтора → кап → fail → авто-resume).
-    // VL-349: VL-319 проверял только `trim() === ''`, поэтому урок-скелет
-    // (созданный createLessonFile) проходил мимо: сессия agent-1794045441657
-    // сделала 4 дословных повтора → кап → fail. Теперь предикат
-    // isLessonBodyUnfilled. Это ackError: сигнатура НЕ попадает
-    // в noopSignatures (ok:false без noop:true → failed), поэтому повтор
-    // ИСПОЛНЯЕТСЯ заново и снова возвращает текст ошибки — модель видит, чего
-    // не хватает, а не «изменений нет».
-    //
-    // VL-355: проверка ПЕРЕСТАВЛЕНА после вычисления `unchanged` (ниже).
-    // Прежний порядок отсекал ЛЮБОЙ вызов на уроке-скелете: модель пришла
-    // привязать задачу (`linkedTasks`), а получила отказ «нет content» и
-    // 6 раз повторила вызов дословно → MAX_ERROR_REPEATS_PER_RUN → fail
-    // (сессия agent-1794053090709, Close VL-346 в тупике). Теперь отказ
-    // остаётся только для вызова, который НИЧЕГО не меняет.
-    // VL-319: явно переданное пустое тело — ошибка, файл не перезаписывается.
-    if (updates.content !== undefined && String(updates.content).trim() === '') {
-      return ackErrorDetailed(
-        `Пустое тело урока недопустимо: \`content\` пустой (или только пробелы). ` +
-          'Передай Проблему/Решение/Пример — файл урока не изменён.',
-        {
-          missing: [{ field: 'content', reason: 'передан пустой content — тело урока не может быть пустым' }],
-          hint: 'Передай непустой markdown: ## Проблема / ## Решение / ## Пример.',
-        },
-      );
-    }
-    const LESSON_SET_FIELDS = ['tags', 'source_tasks', 'linked_tasks', 'applies_to'];
-    const currentRaw = current.lesson as unknown as Record<string, unknown>;
-    const unchanged = Object.keys(updates).every(key =>
-      key === 'content'
-        ? updates.content === current.body
-        : sameValue(key, (updates as Record<string, unknown>)[key], currentRaw[key], LESSON_SET_FIELDS),
-    );
-    const bodyUnfilled = isLessonBodyUnfilled(current.body);
-    // VL-355: вызов БЕЗ полей вообще (только `id`) на уроке-скелете — отказ с
-    // `missing: content` (кейс VL-349 сохранён): применять нечего, а noop
-    // скрыл бы от модели, что тело не заполнено. Для урока с заполненным
-    // телом такой вызов — прежняя ошибка «не указаны поля».
-    if (Object.keys(updates).length === 0) {
-      if (bodyUnfilled) {
-        return ackErrorDetailed(
-          `Тело урока ${current.lesson.id} не заполнено (пустое или дефолтный скелет) — в вызове нет \`content\`. ` +
-            'Передай непустой markdown (Проблема / Решение / Пример): ' +
-            'lesson_update {"id": "...", "content": "## Проблема\\n\\n…\\n\\n## Решение\\n\\n…\\n\\n## Пример\\n\\n…"}.',
-          {
-            missing: [{ field: 'content', reason: 'тело урока не заполнено (пустое или дефолтный скелет)' }],
-            hint: 'Добавь в вызов `content` с непустым markdown (Проблема/Решение/Пример) — без него урок остаётся пустым.',
-          },
-        );
-      }
-      throw new Error('Не указаны поля для обновления.');
-    }
-    // VL-355: тело не заполнено, `content` не передан, НО есть другие
-    // изменения — применяем их и ПРЕДУПРЕЖДАЕМ (missing/hint), а не
-    // отказываем. Именно этот случай делает шаг 6.5 Close (привязка урока к
-    // задаче) выполнимым на накопленных уроках-скелетах.
-    if (bodyUnfilled && updates.content === undefined && !unchanged) {
-      const patched = updateLesson(cwd, args.id as string, updates);
-      if (!patched) throw new Error(`Lesson ${args.id} не найден.`);
-      const patchedRaw = patched.lesson as unknown as Record<string, unknown>;
-      const appliedNow: Record<string, unknown> = {};
-      for (const key of Object.keys(updates)) {
-        appliedNow[key] = key === 'content' ? patched.body.length : patchedRaw[key];
-      }
-      return ackOkDetailed(
-        `Lesson ${patched.lesson.id} обновлён: ${Object.keys(updates).join(', ')} ` +
-          '(тело урока всё ещё не заполнено)',
-        appliedNow,
-        [],
-        {
-          missing: [{ field: 'content', reason: 'тело урока не заполнено (пустое или дефолтный скелет)' }],
-          hint: LESSON_BODY_HINT,
-          // VL-362: готовый образец тела — модель копирует образец вызова, а
-          // не текст требования (см. LESSON_BODY_TEMPLATE).
-          retryWith: { content: LESSON_BODY_TEMPLATE },
-        },
-      );
-    }
-    // VL-355: ветка «тело не заполнено, content не передан, других изменений
-    // нет» больше НЕ отказ, а обычный noop с `missing: content` (ниже):
-    // повтор уже применённого вызова не должен превращаться в серию отказов
-    // (иначе MAX_ERROR_REPEATS_PER_RUN — ровно инцидент agent-1794053090709).
-    // Отказ остаётся только для вызова без полей вообще (см. выше).
-    if (unchanged) {
-      // applied — фактическое состояние (как в обычном пути), но без записи:
-      // updated_date и файл не трогаются.
-      const applied: Record<string, unknown> = {};
-      for (const key of Object.keys(updates)) {
-        applied[key] = key === 'content' ? current.body.length : currentRaw[key];
-      }
-      // VL-319/VL-349: noop обязан назвать, чего в вызове не хватает. Для
-      // урока обязательное по смыслу поле — тело: незаполненное тело (пустое
-      // ИЛИ дефолтный скелет) означает, что урок создан шаблоном без
-      // `content`, и дополнять его нечем. VL-349: проверка расширена на скелет
-      // — раньше `missing` оставался пустым, а hint звал «к следующему шагу».
-      const missing: SkippedField[] = [];
-      if (isLessonBodyUnfilled(current.body)) {
-        missing.push({
-          field: 'content',
-          reason: current.body.trim() === ''
-            ? 'тело урока пустое — не заполнено'
-            : 'тело урока — дефолтный скелет, не заполнено по смыслу',
-        });
-      }
-      return ackNoopDetailed(
-        `Изменений нет: ${Object.keys(updates).join(', ')} уже имеют эти значения. ` +
-          (missing.length > 0
-            ? 'ВНИМАНИЕ: тело урока не заполнено (пустое или дефолтный скелет) — передай непустой `content` (Проблема/Решение/Пример). '
-            : '') +
-          'Следующий шаг: backlog_finish_phase (или следующий шаг плана) — повтор этого вызова ничего не изменит.',
-        applied,
-        missing,
-        missing.length > 0
-          ? LESSON_BODY_HINT
-          : 'Переходи к следующему шагу фазы: повтор с теми же аргументами ничего не изменит.',
-        // VL-362: готовый образец тела и на повторе уже применённого вызова —
-        // именно этот путь давал 4 дословных повтора в agent-1794064942811.
-        missing.length > 0 ? { content: LESSON_BODY_TEMPLATE } : undefined,
-      );
-    }
-  }
-
-  const entry = updateLesson(cwd, args.id as string, updates);
-  if (!entry) throw new Error(`Lesson ${args.id} не найден.`);
-  // VL-306: JSON-ack; applied — значения из урока ПОСЛЕ записи (тело — длиной,
-  // чтобы не раздувать ответ).
-  const applied: Record<string, unknown> = {};
-  const entryRaw = entry.lesson as unknown as Record<string, unknown>;
-  for (const key of Object.keys(updates)) {
-    applied[key] = key === 'content' ? entry.body.length : entryRaw[key];
-  }
-  return ackOk(
-    `Lesson ${entry.lesson.id} обновлён: ${Object.keys(updates).join(', ')} (updated_date: ${entry.lesson.updated_date})`,
-    applied,
-  );
+/** Урок в терминах пайплайна: метаданные + тело (тело отдельно от frontmatter). */
+interface LessonEntity {
+  lesson: Lesson;
+  body: string;
+  path: string;
 }
+
+/**
+ * Описание сущности «урок» для общего пайплайна (VL-369).
+ *
+ * Здесь и только здесь остаётся специфика урока: тело обязательно по смыслу
+ * (пустое тело означало урок, созданный шаблоном без `content`). Раньше это
+ * было ЧЕТЫРЬМЯ ветками состояния в `toolLessonUpdate` (~160 строк), каждая
+ * компенсировала предыдущую: отказ → отказ блокирует привязку → создаём
+ * заглушку → заглушка не отличается от заполненной → предикат блокирует всё.
+ *
+ * Теперь специфика — один хук `beforeWrite` (проверка АРГУМЕНТА: явно пустое
+ * тело недопустимо) плюс `completeness` (свойство СУЩНОСТИ: тело не заполнено).
+ * Незаполненное тело никогда не даёт отказ — только `missing` + готовый вызов.
+ */
+const lessonSpec: EntitySpec<LessonEntity> = {
+  name: 'Lesson',
+  fields: [
+    'id', 'title', 'status', 'tags', 'sourceTasks', 'linkedTasks', 'supersedes',
+    'lastVerified', 'verifiedBy', 'appliesTo', 'kind', 'content', 'idempotencyKey',
+  ],
+  setFields: ['tags', 'source_tasks', 'linked_tasks', 'applies_to'],
+  bodyArg: 'content',
+  missingIdMessage: 'Не передан id урока (параметр "id").',
+  notFoundMessage: id => `Lesson ${id} не найден.`,
+  build: args => {
+    const updates: Record<string, unknown> = {};
+    if (args.title !== undefined) updates.title = args.title as string;
+    if (args.status !== undefined) updates.status = args.status as string;
+    if (args.tags !== undefined) updates.tags = args.tags as string[];
+    if (args.sourceTasks !== undefined) updates.source_tasks = args.sourceTasks as string[];
+    if (args.linkedTasks !== undefined) updates.linked_tasks = args.linkedTasks as string[];
+    if (args.supersedes !== undefined) updates.supersedes = args.supersedes as string;
+    // VL-279: поля аудита (additive)
+    if (args.lastVerified !== undefined) updates.last_verified = args.lastVerified as string;
+    if (args.verifiedBy !== undefined) updates.verified_by = args.verifiedBy as string;
+    if (args.appliesTo !== undefined) updates.applies_to = args.appliesTo as string[];
+    if (args.kind !== undefined) updates.kind = (args.kind as string) || null;
+    if (args.content !== undefined) updates.content = args.content as string;
+    return updates;
+  },
+  read: (cwd, id) => getLesson(cwd, id) as LessonEntity | null,
+  write: (cwd, id, updates) => updateLesson(cwd, id, updates as UpdateLessonInput) as LessonEntity | null,
+  snapshot: entity => ({
+    ...(entity.lesson as unknown as Record<string, unknown>),
+    [BODY_FIELD]: entity.body,
+  }),
+  // Тело сворачиваем до длины: полный markdown раздувает ответ без пользы
+  applied: (entity, keys) => {
+    const result: Record<string, unknown> = {};
+    for (const key of keys) {
+      result[key] = key === 'content'
+        ? String(entity.body).length
+        : (entity.lesson as unknown as Record<string, unknown>)[key];
+    }
+    return result;
+  },
+  // VL-319/VL-349: неполнота — свойство СУЩНОСТИ, а не вызова. Незаполненное
+  // тело (пустое ИЛИ дефолтный скелет) означает урок, созданный без `content`.
+  completeness: entity => {
+    if (!isLessonBodyUnfilled(entity.body)) return [];
+    return [{
+      field: 'content',
+      reason: entity.body.trim() === ''
+        ? 'тело урока пустое — не заполнено'
+        : 'тело урока — дефолтный скелет, не заполнено по смыслу',
+    }];
+  },
+  // VL-353/VL-362: не текст требования, а ГОТОВЫЙ образец тела — модель
+  // копирует образец вызова, а не формулировку "передай content".
+  next: () => ({ hint: LESSON_BODY_HINT, retryWith: { content: LESSON_BODY_TEMPLATE } }),
+  noopHint: (entity, keys) =>
+    isLessonBodyUnfilled(entity.body)
+      ? `Переданные поля (${keys.join(', ')}) уже такие. ВНИМАНИЕ: тело урока не заполнено (пустое или дефолтный скелет) — передай непустой content (Проблема/Решение/Пример).`
+      : 'Переходи к следующему шагу фазы: повтор с теми же аргументами ничего не изменит.',
+  message: (entity, keys, via) =>
+    via === 'noop'
+      ? 'Следующий шаг: backlog_finish_phase (или следующий шаг плана) — повтор этого вызова ничего не изменит.'
+      : via === 'partial'
+        ? `Lesson ${entity.lesson.id} обновлён: ${keys.join(', ')} (тело урока всё ещё не заполнено)`
+        : `Lesson ${entity.lesson.id} обновлён: ${keys.join(', ')} (updated_date: ${entity.lesson.updated_date})`,
+  // Единственный хук специфики: явно пустое тело — ИСПОРЧЕННЫЙ АРГУМЕНТ
+  // (VL-319), а не свойство состояния. Файл не перезаписывается.
+  beforeWrite: (_args, updates) => {
+    if (updates.content !== undefined && String(updates.content).trim() === '') {
+      return {
+        message:
+          'Пустое тело урока недопустимо: \`content\` пустой (или только пробелы). ' +
+          'Передай Проблему/Решение/Пример — файл урока не изменён.',
+        missing: [{ field: 'content', reason: 'передан пустой content — тело урока не может быть пустым' }],
+        hint: 'Передай непустой markdown: ## Проблема / ## Решение / ## Пример.',
+        retryWith: { content: LESSON_BODY_TEMPLATE },
+      };
+    }
+    return null;
+  },
+};
+
+/**
+ * Обновление урока (VL-369: общий пайплайн, специфика — в `lessonSpec`).
+ *
+ * Четыре ветки состояния удалены. Таблица исходов одна для всех сущностей:
+ * записали × полная → applied / partial / noop (+missing) / rejected (только
+ * испорченный аргумент). Незаполненное тело НИКОГДА не даёт отказ.
+ */
+function toolLessonUpdate(args: ToolArgs, cwd: string): string {
+  return runUpdate(lessonSpec, args, cwd);
+}
+
 
 function toolLessonSearch(args: ToolArgs, cwd: string): string {
   const entries = searchLessons(cwd, args.query as string);

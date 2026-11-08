@@ -129,9 +129,13 @@ describe('VL-11 — MCP document_*', () => {
     assert.equal(res[0].id, 'doc-2');
   });
 
-  it('Ошибки: view несуществующего, update без полей', async () => {
+  it('Ошибки: view несуществующего; update без полей → noop (VL-369)', async () => {
     await assert.rejects(handleToolCall('document_view', { id: 'doc-99' }, testDir), /не найден/);
-    await assert.rejects(handleToolCall('document_update', { id: 'doc-1' }, testDir), /Не указаны поля/);
+    // VL-369: вызов без изменяющих аргументов — не испорченный аргумент, а
+    // «менять нечего»: по таблице исходов это noop, а не отказ.
+    const ack = JSON.parse(await handleToolCall('document_update', { id: 'doc-1' }, testDir));
+    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
+    assert.equal(ack.reason, 'noop');
   });
 
   it('Round-trip: documentToMarkdown/markdownToDocument', () => {
