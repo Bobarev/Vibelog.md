@@ -23,9 +23,17 @@ import { statSync } from 'node:fs';
 import { writeDocument, getDocument } from '../../dist/core/document.js';
 import { writeReference } from '../../dist/core/reference.js';
 import { createLessonFile, getLesson, lessonToMarkdown, LESSON_BODY_SKELETON } from '../../dist/core/lesson.js';
+import { clearPhaseEnv } from '../test-env.mjs';
 
 const cwd = mkdtempSync(join(tmpdir(), 'vibelog-write-ack-'));
 const backlogDir = join(cwd, 'backlog');
+
+/**
+ * Фазовый env агентской сессии на время файла (VL-374): in-process вызовы
+ * `handleToolCall` иначе наследуют фазу рана, и расчёт неполноты (VL-370)
+ * подменяет ожидаемые applied/partial.
+ */
+let restorePhaseEnv;
 
 function writeConfig() {
   mkdirSync(join(backlogDir, 'tasks'), { recursive: true });
@@ -41,9 +49,11 @@ function writeConfig() {
   writeFileSync(join(backlogDir, 'config.yml'), stringifyYaml(config), 'utf-8');}
 
 beforeAll(() => {
+  restorePhaseEnv = clearPhaseEnv();
   writeConfig();
 });
 afterAll(() => {
+  restorePhaseEnv();
   rmSync(cwd, { recursive: true, force: true });
 });
 

@@ -15,11 +15,16 @@ import { tmpdir } from 'node:os';
 import { listTools, handleToolCall } from '../../dist/mcp/tools.js';
 import { createLessonFile, getLesson, LESSON_BODY_SKELETON } from '../../dist/core/lesson.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
+import { clearPhaseEnv } from '../test-env.mjs';
 
 const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-mcp-lesson-test-'));
 const backlogDir = join(testRoot, 'backlog');
 
+/** Фазовый env агентской сессии на время файла (VL-374, in-process handleToolCall). */
+let restorePhaseEnv;
+
 beforeAll(() => {
+  restorePhaseEnv = clearPhaseEnv();
   mkdirSync(join(backlogDir, 'tasks'), { recursive: true });
   writeFileSync(join(backlogDir, 'config.yml'), stringifyYaml({
     project_name: 'Test',
@@ -31,6 +36,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  restorePhaseEnv();
   rmSync(testRoot, { recursive: true, force: true });
 });
 

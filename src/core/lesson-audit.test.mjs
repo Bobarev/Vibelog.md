@@ -22,6 +22,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { clearPhaseEnv } from '../test-env.mjs';
 
 import {
   LESSON_STATUSES, normalizeLessonStatus, createLesson, lessonToMarkdown,
@@ -42,7 +43,11 @@ const completedPath = join(backlogDir, 'completed');
 /** «Сегодня» фиксируем: протухание не должно зависеть от даты прогона. */
 const NOW = Date.parse('2026-06-01T00:00:00Z');
 
+/** Фазовый env агентской сессии на время файла (VL-374, in-process handleToolCall). */
+let restorePhaseEnv;
+
 beforeAll(() => {
+  restorePhaseEnv = clearPhaseEnv();
   mkdirSync(tasksPath, { recursive: true });
   mkdirSync(completedPath, { recursive: true });
   mkdirSync(lessonsPath, { recursive: true });
@@ -68,6 +73,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  restorePhaseEnv();
   rmSync(testRoot, { recursive: true, force: true });
 });
 

@@ -36,22 +36,22 @@ import { createTaskFile } from '../../dist/core/store.js';
 import { writeDocument } from '../../dist/core/document.js';
 import { writeReference } from '../../dist/core/reference.js';
 import { createLessonFile, getLesson, lessonToMarkdown } from '../../dist/core/lesson.js';
+import { clearPhaseEnv } from '../test-env.mjs';
 
 const cwd = mkdtempSync(join(tmpdir(), 'vibelog-write-ack-contract-'));
 const backlogDir = join(cwd, 'backlog');
 
 /**
- * Фазовый env агентской сессии на время файла (VL-286): `VIBELOG_CWD` увёл бы
- * `git_commit` (VL-311) в главный репозиторий вместо mkdtemp-каталога.
- * Сохранённые значения возвращаются в afterAll.
+ * Фазовый env агентской сессии на время файла (VL-286, VL-374): `VIBELOG_CWD`
+ * увёл бы `git_commit` (VL-311) в главный репозиторий вместо mkdtemp-каталога,
+ * а `VIBELOG_PHASE_NAME`/`VIBELOG_RUN_PHASE` подменили бы фазу в расчёте
+ * неполноты (VL-370). Механизм — общий хелпер `clearPhaseEnv()`; возвращённая
+ * функция восстановления вызывается в afterAll.
  */
-const savedPhaseEnv = {};
+let restorePhaseEnv;
 
 beforeAll(() => {
-  for (const key of ['VIBELOG_CWD', 'VIBELOG_PHASE_TASK_ID', 'VIBELOG_PHASE_NAME', 'VIBELOG_RUN_PHASE', 'VIBELOG_RUN_STARTED_AT']) {
-    savedPhaseEnv[key] = process.env[key];
-    delete process.env[key];
-  }
+  restorePhaseEnv = clearPhaseEnv();
   mkdirSync(join(backlogDir, 'tasks'), { recursive: true });
   writeFileSync(join(backlogDir, 'config.yml'), stringifyYaml({
     project_name: 'WriteAck Contract Test',
@@ -69,10 +69,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  for (const [key, value] of Object.entries(savedPhaseEnv)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
+  restorePhaseEnv();
   rmSync(cwd, { recursive: true, force: true });
 });
 

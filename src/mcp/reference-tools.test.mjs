@@ -16,6 +16,7 @@ import { spawnSync } from 'node:child_process';
 
 import { listTools, handleToolCall } from '../../dist/mcp/tools.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
+import { clearPhaseEnv } from '../test-env.mjs';
 
 const testRoot = mkdtempSync(join(tmpdir(), 'vibelog-mcp-reference-test-'));
 const backlogDir = join(testRoot, 'backlog');
@@ -23,7 +24,11 @@ const backlogDir = join(testRoot, 'backlog');
 const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
 const remoteDir = join(testRoot, 'remote-src');
 
+/** Фазовый env агентской сессии на время файла (VL-374, in-process handleToolCall). */
+let restorePhaseEnv;
+
 beforeAll(() => {
+  restorePhaseEnv = clearPhaseEnv();
   mkdirSync(join(backlogDir, 'tasks'), { recursive: true });
   // Минимальный конфиг — нужен backlog_create_task (тесты reference_link)
   writeFileSync(join(backlogDir, 'config.yml'), stringifyYaml({
@@ -46,6 +51,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  restorePhaseEnv();
   rmSync(testRoot, { recursive: true, force: true });
 });
 

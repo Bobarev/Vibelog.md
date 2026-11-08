@@ -21,6 +21,7 @@ import { handleToolCall, listTools } from '../../dist/mcp/tools.js';
 import { TOOL_KINDS } from '../../dist/core/tool-kinds.js';
 import { isWriteOperation } from '../../dist/core/tool-classify.js';
 import { API_BASE_ENV, GITVERSE_TOKEN_ENV } from '../../dist/core/gitverse-issues.js';
+import { clearPhaseEnv } from '../test-env.mjs';
 
 const TOKEN = 'gv_mcp_token_abcdef123456';
 
@@ -29,6 +30,9 @@ let port = 0;
 let handler;
 let hits = 0;
 const tmpDirs = [];
+
+/** Фазовый env агентской сессии на время файла (VL-374, in-process handleToolCall). */
+let restorePhaseEnv;
 
 /** Временный проект с backlog/config.yml и (опционально) секцией upstream. */
 function makeProject(settings, env) {
@@ -49,6 +53,9 @@ function makeProject(settings, env) {
 }
 
 beforeAll(async () => {
+  // VL-374: фазовый env агентской сессии снимается на время файла —
+  // in-process handleToolCall иначе наследует фазу рана.
+  restorePhaseEnv = clearPhaseEnv();
   server = createServer((req, res) => {
     hits += 1;
     const chunks = [];
@@ -66,6 +73,7 @@ afterAll(async () => {
     server.closeAllConnections?.();
     server.close(() => resolve());
   });
+  restorePhaseEnv();
   for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true });
 });
 

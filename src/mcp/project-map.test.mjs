@@ -11,10 +11,15 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { listTools, handleToolCall } from '../../dist/mcp/tools.js';
+import { clearPhaseEnv } from '../test-env.mjs';
 
 let testRoot;
 
+/** Фазовый env агентской сессии на время файла (VL-374, in-process handleToolCall). */
+let restorePhaseEnv;
+
 beforeAll(() => {
+  restorePhaseEnv = clearPhaseEnv();
   testRoot = mkdtempSync(join(tmpdir(), 'vibelog-mcp-map-'));
   mkdirSync(join(testRoot, 'src', 'core'), { recursive: true });
   writeFileSync(
@@ -25,6 +30,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  restorePhaseEnv();
   rmSync(testRoot, { recursive: true, force: true });
 });
 

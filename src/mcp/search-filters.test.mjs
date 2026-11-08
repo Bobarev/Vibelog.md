@@ -18,6 +18,17 @@ import { stringifyYaml } from '../../dist/core/yaml.js';
 import { searchTasks } from '../../dist/core/search.js';
 import { handleToolCall } from '../../dist/mcp/tools.js';
 import { createTaskFile } from '../../dist/core/store.js';
+import { clearPhaseEnv } from '../test-env.mjs';
+
+/** Фазовый env агентской сессии на время файла (VL-374, in-process handleToolCall). */
+let restorePhaseEnv;
+
+beforeAll(() => {
+  restorePhaseEnv = clearPhaseEnv();
+});
+afterAll(() => {
+  restorePhaseEnv();
+});
 
 const testDir = mkdtempSync(join(tmpdir(), 'vibelog-mcp-search-'));
 const backlogDir = join(testDir, 'backlog');
