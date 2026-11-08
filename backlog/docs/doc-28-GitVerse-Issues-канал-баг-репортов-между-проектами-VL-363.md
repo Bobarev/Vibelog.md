@@ -13,7 +13,7 @@ tags:
 ---
 # GitVerse Issues: канал баг-репортов между проектами (VL-363)
 
-Документ описывает транспорт баг-репортов из дочерних проектов Vibelog (`Vibelog-md/ui`, `Vibelog-md/templates`) в родительский через Публичный API GitVerse. Реализовано в VL-363 (репорт); импорт и закрытие — следующая задача.
+Документ описывает транспорт баг-репортов из дочерних проектов Vibelog (`Vibelog-md/ui`, `Vibelog-md/templates`) в родительский. Основной транспорт — **git-инбокс** (общий репозиторий отчётов, раздел 9, VL-375); транспорт через Публичный API GitVerse (VL-363) сохранён и включается конфигом, но упирается в закрытый доступ к API «Задачи 2.0» (doc-29).
 
 ---
 
@@ -250,3 +250,134 @@ pnpm test src/core/gitverse-issues.test.mjs src/mcp/upstream-tool.test.mjs src/c
 - **Импорт:** `GET /repos/{o}/{r}/issues?labels=upstream&state=open&per_page=100` → дедуп по номеру в локальном журнале → создание задачи Vibelog.
 - **Ack:** `POST /repos/{o}/{r}/issues/{n}/comments` с номером созданной задачи — дочерний агент видит «принято как VL-N».
 - **Закрытие:** `PATCH /repos/{o}/{r}/issues/{n}` с `{project_id, project_status_id}` колонки «Done». Поле `state` для задачи **игнорируется** — состояние определяется колонкой проекта (ref-28).
+
+---
+
+## 9. Git-транспорт: общий репозиторий-инбокс (VL-375)
+
+### 9.1. Почему не Issues
+
+`GET /issues` и `POST /issues` отдают `403` при том, что `GET /repos/…` и `GET /labels` с тем же токеном дают `200` (у токена `permissions.push: true`, `role_name: admin`). Без токена тот же путь отвечает `401 UNAUTHORIZED` — аутентификация проходит, гейт стоит на фиче: это API уровня «Задачи 2.0» (`pull-and-issues_2`), доступ к которому аккаунту не выдан. Код VL-363 остаётся и включится при появлении доступа; разбор — doc-29.
+
+Отвергнутые альтернативы: «у себя + reference-клон» (не масштабируется на 20 проектов: 19 клонов, `reference sync` по всем, нет единой точки сборки) и любой issue-трекер (упирается в тот же закрытый доступ).
+
+### 9.2. Схема данных
+
+Общий репозиторий-инбокс — разделяемое состояние для mesh-топологии «многие ко многим» (до 20 проектов). Каталог верхнего уровня — префикс проекта-источника:
+
+```
+reports/
+  ui/2026-11-08-UI-12-git_commit-kirillica.md
+  tpl/2026-11-08-TPL-3-shablon-ne-sobiraetsya.md
+```
+
+Фронтматтер отчёта (порядок полей — `REPORT_FIELDS` в `src/core/upstream-git.ts`, источник истины формата):
+
+```yaml
+---
+report_id: <sha1(source_project + source_task + title)>   # дедуп
+source_project: Vibelog UI
+source_prefix: UI
+source_task: UI-12
+title: git_commit и кириллица в путях
+target: vl                  # КОМУ адресован — маршрутизация «многие ко многим»
+severity: high
+area: mcp
+created: 2026-11-08
+status: open                # open → accepted → done
+accepted_as: ""             # заполняет получатель: VL-367
+---
+<тело отчёта в markdown>
+```
+
+Поле `target` — ключевое: отчёт адресуется конкретному получателю, а не «в родителя». `ui` может писать `tpl`, `tpl` — в `ui`, оба — в `vl`. Сравнение терпимо к регистру и к вариантам записи префикса (`targetMatches`).
+
+Имя файла — `reports/<prefix>/<YYYY-MM-DD>-<source_task>-<slug>.md`, где `slug` — **строго латиница `[a-z0-9-]`**: кириллица транслитерируется, не-ASCII и пустой результат заменяются на `report` (не-ASCII имена ломали сравнение путей в git-инструментах, VL-360).
+
+`report_id` = sha1 от `source_project + source_task + title`: повторный `writeReport` с теми же данными не создаёт второй файл, а возвращает `{ created: false, path }`.
+
+### 9.3. Модель доступа — три независимых слоя
+
+В git нет прав на подкаталог, права даются на репозиторий целиком. Поэтому контроль строится тремя слоями:
+
+1. **Права репозитория:** Write — только своим проектам и их агентам; внешние — без Write, только fork + PR.
+2. **Branch protection на `main`:** прямой push запрещён всем, кроме бота-мейнтейнера; изменения — через PR.
+3. **CI-валидация путей:** workflow проверяет, что изменённые файлы принадлежат префиксу автора (`reports/<prefix>/**`), а в чужих файлах разрешено менять только `status`/`accepted_as` (ack). Не прошло — красный статус, merge блокируется.
+
+Третий слой — главный: он ловит типовые аварии агентов (`git add -A` с мусором, force-push, коммит чужих файлов), от которых внутри своего проекта защищает `git_commit` с явными путями. Workflow живёт в репозитории инбокса (вне этого репозитория).
+
+### 9.4. Архитектурное ограничение: пушит CLI, не агент
+
+Агент не может пушить в инбокс сам: `resolveInProject`, `ensureTaskWorktree`, `git_commit` ограничены корнем своего проекта. Поэтому:
+
+- клон инбокса живёт **внутри проекта-источника** — `.vibelog/upstream-inbox/` (в `.gitignore`, вложенный git-репозиторий);
+- пишет и пушит **CLI** `vibelog upstream report` (запускается процессом пользователя/оркестратора — файловые границы агента на него не действуют);
+- агент вызывает CLI через `run_shell_command` — одна команда, никаких обходов.
+
+`git add` в инбоксе — **только явным путём файла отчёта** (`assertExplicitPath` отсекает флаги, маски и `..`). Никогда `-A`, `.`, маски — тот же инвариант, что у `git_commit` (VL-311/VL-360).
+
+### 9.5. Конфиг: discriminated union по `mode`
+
+```json
+{
+  "upstream": {
+    "mode": "git",
+    "inbox": "git@gitverse.ru:Vibelog-md/upstream-reports.git",
+    "prefix": "vl"
+  }
+}
+```
+
+| Поле | Обязательно | Описание |
+|---|---|---|
+| `mode` | | `git` \| `api`. Отсутствует → `git` (основной транспорт) |
+| `inbox` | ✓ для `git` | URL/путь репозитория-инбокса |
+| `prefix` | | Префикс проекта-источника = каталог в `reports/`. По умолчанию — `task_prefix` из `backlog/config.yml` |
+| `repo` | ✓ для `api` | Репозиторий-получатель `owner/name` |
+| `labels`, `type`, `token_env` | | Только для `api` (см. 2.2) |
+
+`resolveUpstreamConfig` валидирует комбинацию и возвращает union; невалидная комбинация → ошибка с указанием, какого поля не хватает. Оба транспорта живут рядом: `upstream_report_bug` не удалён, а ветвится по `mode` (`git` → `src/core/upstream-git.ts`, `api` → `src/core/gitverse-issues.ts`). `TOOL_KINDS` не меняется (`write`).
+
+### 9.6. Условная видимость MCP-инструмента
+
+`handleToolsList(id, cwd, send)` в `src/mcp/server.ts` фильтрует `upstream_report_bug` по `isUpstreamConfigured(cwd)`: без валидной секции `upstream` инструмент **не попадает** в `tools/list`. `listTools()` остаётся без параметров — реестр описывает возможности системы (нужен доктору, тестам паритета, валидации персон), поэтому тесты паритета и счётчик реестра не затрагиваются. Веб-чат (`chatToolDefs` в `src/web/tool-policy.ts`) фильтрует тем же предикатом.
+
+`isUpstreamConfigured(cwd)` — fail-closed: `true` только при валидной секции (`git` + `inbox`, либо `api` + `repo`); ошибки чтения и невалидные данные → `false`. Прямой `tools/call` скрытого инструмента возвращает `ackError` с подсказкой про `.vibelog/settings.json`, а не «Неизвестный инструмент» — это закрывает устаревший кэш списка у клиента.
+
+### 9.7. CLI
+
+```
+vibelog upstream report --title <t> --target <префикс> [--body <b>|--body-file <f>] [--severity s] [--area a] [--source-task ID] [--json]
+vibelog upstream pull [--json] [--no-fetch]
+vibelog upstream ack <report_id> --as VL-N [--json] [--no-fetch]
+```
+
+- `report` ветвится по `mode`; `--target` — получатель (для `git` — префикс получателя, обязателен: без него код `2` с подсказкой).
+- `pull` — входящие отчёты для своего префикса (`target === prefix && status === 'open'`, сортировка по `created`); `--no-fetch` читает локальный клон без сети.
+- `ack <report_id> --as VL-N` — находит файл по `report_id` и меняет **только** `status: accepted` и `accepted_as`, остальное тело байт-в-байт; коммит одним явным путём.
+
+Коды выхода без изменений: `0` успех, `1` использование, `2` конфиг, `3` сеть/git, `4` нет токена/доступа.
+
+### 9.8. Устойчивость git-транспорта
+
+| Механизм | Поведение |
+|---|---|
+| Клон | `ensureInboxClone`: клон при отсутствии, `pull --rebase` при наличии |
+| Ошибки | `UpstreamGitError` с `kind`: `config` \| `network` \| `auth` \| `conflict` \| `git`; `code` совпадает по смыслу с `GitverseError.code` |
+| Конфликты | Разные файлы — конфликтов нет; один файл правят двое (источник + ack) → `pull --rebase`, при конфликте понятная ошибка «разреши вручную в `.vibelog/upstream-inbox/`» |
+| Идемпотентность | Повторный `writeReport` с тем же `report_id` → `{ created: false }` |
+| Внешние репортеры | fork + PR — путь ручной: PR-API GitVerse в том же закрытом разделе. Осознанное ограничение |
+
+### 9.9. Проверка
+
+```bash
+# локальный bare-репозиторий как инбокс
+git init --bare /tmp/inbox.git
+# в .vibelog/settings.json: {"upstream": {"mode": "git", "inbox": "/tmp/inbox.git", "prefix": "vl"}}
+
+vibelog upstream report --title "тест" --target ui --source-task VL-999   # файл + коммит + push
+vibelog upstream pull                                                     # отчёт виден
+vibelog upstream ack <report_id> --as VL-999                              # поля обновлены
+```
+
+Плюс: без секции `upstream` в `tools/list` инструмента нет. Тесты: `src/core/upstream-git.test.mjs`, `src/mcp/upstream-tool.test.mjs`, `src/cli/upstream.test.mjs`, `src/core/gitverse-issues.test.mjs`.
