@@ -1,11 +1,11 @@
 ---
 id: VL-377
 title: 'CompletenessMap без литеральных ключей: опечатка в имени workflow/фазы в settings молча отключает правила неполноты — нужна валидация с диагностикой'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-08 16:03'
-updated_date: '2026-11-08 17:26'
+updated_date: '2026-11-08 18:44'
 due_date: ''
 labels: []
 dependencies: []
@@ -22,15 +22,17 @@ modified_files:
   - src/core/workflow.test.mjs
   - src/cli/commands/doctor.ts
   - src/cli/diagnostics.test.mjs
-lessons: []
+lessons:
+  - lesson-256
+  - lesson-259
 token_usage:
-  input: 12652069
-  output: 100686
-  cache: 10860032
-  total: 12752755
-  requests: 147
-  duration_ms: 2558168
-  reasoning: 64504
+  input: 14315648
+  output: 110299
+  cache: 12230656
+  total: 14425947
+  requests: 176
+  duration_ms: 3271857
+  reasoning: 67999
   by_phase:
     plan:
       input: 3029445
@@ -43,10 +45,10 @@ token_usage:
       cache: 7230464
       requests: 77
     close:
-      input: 1389945
-      output: 7011
-      cache: 1217536
-      requests: 30
+      input: 3053524
+      output: 16624
+      cache: 2588160
+      requests: 59
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -153,7 +155,7 @@ export type CompletenessMap = Record<string, Record<string, Record<string, strin
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -356,5 +358,36 @@ author: @agent
 created: 2026-11-08 17:26
 ---
 Фаза close не удалась (код выхода 1): блокировок=0, payload последнего запроса=216011 байт (макс 216011), usage={"input_tokens":1389945,"output_tokens":7011,"cache_read_input_tokens":1217536,"total_tokens":1396956,"reasoning_tokens":3461} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-08 17:56
+---
+## Close упал на дефекте, к задаче не относящемся
+Код VL-377 готов и корректен: все 6 AC отмечены, 4 файла изменены (`workflow.ts`, `workflow.test.mjs`, `cli/commands/doctor.ts`, `cli/diagnostics.test.mjs`), DoD «Тесты проходят» и «Нет регрессий» — закрыты.
+**Упало не из-за этой задачи.** Close застрял на шаге уроков: создал `lesson-256` (заголовок осмысленный, тело — скелет), затем 4 раза повторил `lesson_update` без `content` → кап applied-повторов → `fail()`. Работа фазы (merge `bb0ba39`-класса, build, полный прогон, уборка worktree) была выполнена полностью.
+Дефект вынесен в **VL-379** (замена `content` на `problem`/`solution`/`example` в `required`). После её реализации:
+1. Перезапустить Close этой задачи.
+2. Отметить в ней DoD «Документация обновлена» — единственный незакрытый.
+### Подтверждение диагноза VL-379 этой задачей
+`lesson-256` — идеальная иллюстрация: модель **смогла** сформулировать содержательный заголовок:
+> «Падение теста с таймаут-ожиданием под параллельным vitest в другом worktree — флейк нагрузки, а не регрессия: снимай нагрузку и прогоняй файл изолированно»
+Но тело осталось `## Проблема\n\n## Решение\n\n## Пример\n`. То есть способность писать текст есть — нет способности вставить его в JSON-аргумент `content` с `\n` и `##`. Ровно то, что закрывает VL-379 тремя строковыми полями.
+### Классификация падений тестов в ране (полезна сама по себе)
+Модель при этом провела корректный разбор:
+- 3 падения в первом прогоне → второй прогон: 0 FAIL;
+- падение в `orchestrator.test.mjs:1435` — таймаут ожидания коммита billing (4 с) под нагрузкой **двух параллельных vitest** в worktrees vl-375 и vl-358;
+- изолированно `orchestrator.test.mjs` — 89/89 зелёный;
+- diff задачи (`workflow.ts`, `doctor.ts`) не касается billing/orchestrator.
+Вывод верен: флейк нагрузки, а не регрессия. Но урок об этом не записан — тело не заполнилось.
+---
+author: @agent
+created: 2026-11-08 18:44
+---
+Фаза Close выполнена. Статус: Done. Коммиты: feat 72cf073 (уже в master через merge e9a56e4 — код VL-377 был закоммичен в Code, остатков кода не было), docs a82ba7d (CHANGELOG + doc-7 + doc-6).
+Проверки после merge: `pnpm build` — зелёный; ранний точечный фильтр `pnpm test:fast src/core/workflow.test.mjs src/cli/diagnostics.test.mjs` — 81 тест passed; полный `pnpm test` — 199 файлов, 3802 passed, 4 skipped, 0 failed (один прогон, повторов не было; параллельных vitest в других worktree не обнаружено — `ps aux` чист).
+DoD «Документация обновлена» закрыт этим ран-ом: в Code документация не была тронута (0 файлов doc-* в коммите 72cf073), поэтому в Close записаны запись CHANGELOG в Unreleased → Исправлено, раздел `doctor` в doc-7 (проверка `completeness_config`: ok = нет предупреждений, в --json `value.count` + первые 20 предупреждений, в `requiredNames` не входит, строка в примере вывода) и абзац в doc-6 §8 (опечатки дают предупреждение, список известных полей — `KNOWN_TASK_FIELDS`, у урока только `content`). README не трогал.
+AC4 проверен запуском: `node bin/vibelog.mjs doctor --json` на этом репозитории даёт `completeness_config: {"ok":true,"value":{"count":0,"warnings":[]}}`.
+Lessons: lesson-259 создан (свободные строковые ключи конфига валидируй сверкой с фактическими именами и показывай предупреждением), lesson-256 (флейк нагрузки под параллельным vitest в другом worktree — не регрессия) дозаполнен телом — был скелетом после упавшего Close до VL-379; оба связаны с VL-377.
+Не закоммичено: нет (файлы подзадач отсутствуют; refs у задачи пусты).
 ---
 <!-- COMMENTS:END -->
