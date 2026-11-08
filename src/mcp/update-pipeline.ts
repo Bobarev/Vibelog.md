@@ -81,6 +81,14 @@ export interface EntitySpec<E> {
   /** Аргумент, который ложится в тело сущности (`content`, `description`). */
   bodyArg?: string;
   /**
+   * Удалённые аргументы: имя → причина, по которой оно больше не принимается
+   * (VL-379). Переданное такое поле попадает в `skipped` с ЭТОЙ причиной, а не
+   * с общей «неизвестное поле инструмента»: модель должна увидеть, что форма
+   * аргумента изменилась, и что вместо неё передавать. Без этого удалённое
+   * поле молча выглядело бы опечаткой.
+   */
+  removedFields?: Record<string, string>;
+  /**
    * Неидемпотентные операции: при их наличии noop-сверка отключается.
    * `append_notes` дописывает в конец — повтор ВСЕГДА меняет файл, поэтому
    * проверка «всё уже так» для него была бы ложью (см. `toolUpdateTask`).
@@ -283,7 +291,13 @@ function noopPrefix(keys: string[]): string {
  * значения — раньше молча игнорировался).
  */
 function collectSkipped<E>(spec: EntitySpec<E>, args: UpdateArgs): SkippedField[] {
-  const skipped = unknownFields(args, spec.fields);
+  // VL-379: у удалённых аргументов причина своя — она объясняет, каким полем
+  // заменить, а не сообщает «неизвестное поле».
+  const skipped = unknownFields(args, spec.fields).map(entry =>
+    spec.removedFields?.[entry.field] !== undefined
+      ? { field: entry.field, reason: spec.removedFields[entry.field] }
+      : entry,
+  );
   for (const key of Object.keys(args)) {
     if (args[key] === null && spec.fields.includes(key) && !skipped.some(s => s.field === key)) {
       skipped.push({ field: key, reason: 'значение null не применяется: поле не изменено' });

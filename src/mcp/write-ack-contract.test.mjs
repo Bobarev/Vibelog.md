@@ -274,7 +274,7 @@ const ACK_SCENARIOS = {
     const ref = writeReference(cwd, { title: 'Ack-ref 4', type: 'url', url: 'https://example.org/4' });
     return handleToolCall('reference_remove', { id: ref.id }, cwd);
   },
-  lesson_create: async () => handleToolCall('lesson_create', { title: 'Ack-урок', content: '## Проблема\n\nx\n' }, cwd),
+  lesson_create: async () => handleToolCall('lesson_create', { title: 'Ack-урок', problem: 'п', solution: 'р' }, cwd),
   lesson_update: async () => {
     const l = createLessonFile(cwd, { title: 'Ack-урок 2', tags: ['a'], content: '## Проблема\n\nx\n' });
     return handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd);
@@ -490,7 +490,7 @@ describe('VL-310 — инвариант «каждый write-инструмен�
  * должна узнать об этом из ответа, а не из повторного чтения.
  */
 describe('VL-319 — noop-ответ называет незаполненное обязательное поле', () => {
-  it('AC3: noop lesson_update на уроке с пустым телом содержит missing[0].field === "content" и hint', async () => {
+  it('AC3/VL-379: noop lesson_update на уроке с пустым телом содержит missing[0].field === "problem" и hint', async () => {
     const l = createLessonFile(cwd, { title: 'Урок-пустышка контракта', tags: ['a'] });
     // Обнуляем тело: имитируем урок, созданный шаблоном Close без content
     const entry = getLesson(cwd, l.id);
@@ -501,12 +501,12 @@ describe('VL-319 — noop-ответ называет незаполненное
     const err = JSON.parse(await handleToolCall('lesson_update', { id: l.id }, cwd));
     assert.equal(err.noop, true, `ожидался noop: ${JSON.stringify(err)}`);
     assert.equal(err.outcome, 'noop');
-    assert.equal(err.missing[0].field, 'content', 'missing называет пропущенное поле');
+    assert.equal(err.missing[0].field, 'problem', 'missing называет пропущенное поле');
     assert.equal(typeof err.hint, 'string', 'hint со следующим шагом');
     // VL-355: вызов с ДРУГИМ полем на пустом теле применяется и предупреждает
     const partial = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
     assert.equal(partial.ok, true, `частичное применение: ${JSON.stringify(partial)}`);
-    assert.equal(partial.missing[0].field, 'content', 'успех тоже называет незаполненное тело');
+    assert.equal(partial.missing[0].field, 'problem', 'успех тоже называет незаполненное тело');
     assert.equal(typeof partial.hint, 'string', 'hint обязателен и в успешном ответе');
     // Дополняем тело → повторный вызов даёт noop с missing (тело уже непустое,
     // но проверяем форму ответа: applied — только переданные поля)
@@ -535,8 +535,6 @@ describe('VL-319 — noop-ответ называет незаполненное
  * иначе сборка красная. Это и есть механическая защита от нового рецидива.
  */
 const PARTIAL_SCENARIOS = {
-  // Тело — необязательно по смыслу: урок-скелет создаётся, тело дописывается
-  lesson_create: async () => handleToolCall('lesson_create', { title: 'Partial-урок' }, cwd),
   document_create: async () => handleToolCall('document_create', { title: 'Partial-док' }, cwd),
   reference_add: async () =>
     handleToolCall('reference_add', { title: 'Partial-ref', type: 'url', url: 'https://example.org/p' }, cwd),
@@ -555,6 +553,10 @@ const PARTIAL_SCENARIOS = {
  */
 const PARTIAL_EXEMPT = {
   backlog_create_task: 'title — единственное обязательное поле и оно действительно обязательное (задача без заголовка не существует)',
+  // VL-379: у урока тело ОБЯЗАТЕЛЬНО по смыслу — problem/solution в required,
+  // сервер отказывает до записи (урок-скелет как класс исчез). Это уже не
+  // «необязательное поле», поэтому partial-сценария нет.
+  lesson_create: 'problem и solution обязательны: урок без тела — ровно тот дефект, который закрывал VL-379; отказ приходит ДО записи файла',
   upstream_report_bug: 'title обязателен: issue без заголовка не существует; body/severity/area/source_task — дополнение к телу, их отсутствие не делает репорт неполным',
   backlog_update_status: 'status обязателен: без него операция не имеет смысла',
   backlog_add_comment: 'comment обязателен: пустой комментарий не является записью',
@@ -620,11 +622,11 @@ describe('VL-357 — отсутствие необязательного по с
     );
   });
 
-  it('AC4: lesson_create без content создаётся со скелетом и не отказывает', async () => {
-    const ack = JSON.parse(await handleToolCall('lesson_create', { title: 'Скелет-инвариант' }, cwd));
-    assert.equal(ack.outcome, 'partial');
-    assert.equal(ack.missing[0].field, 'content');
-    const created = getLesson(cwd, ack.applied.id);
-    assert.ok(created, 'урок реально создан — отказ не блокирует операцию');
+  it('AC4/VL-379: lesson_create без problem/solution отклоняется ДО записи (скелет исчез как класс)', async () => {
+    const py = await handleToolCall('lesson_create', { title: 'Без тела' }, cwd);
+    const ack = JSON.parse(py);
+    assert.equal(ack.ok, false, `ожидался отказ: ${py}`);
+    assert.deepEqual(ack.missing.map(m => m.field), ['problem', 'solution']);
+    assert.match(String(ack.hint), /problem/);
   });
 });

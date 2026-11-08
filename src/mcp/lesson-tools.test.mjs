@@ -50,9 +50,10 @@ describe('VL-153 — регистрация lesson_* инструментов', 
 });
 
 describe('VL-153 — lesson_create / view / list / search / update', () => {
-  it('create: создаёт lesson, view — метаданные + тело', async () => {
+  it('create: создаёт lesson, view — метаданные + склеенное тело', async () => {
     const out = await handleToolCall('lesson_create', {
-      title: 'Тесты батчами', tags: ['tests'], sourceTasks: ['VL-1'], content: 'Проблема/Решение',
+      title: 'Тесты батчами', tags: ['tests'], sourceTasks: ['VL-1'],
+      problem: 'проблема', solution: 'решение',
     }, testRoot);
     assert.match(out, /Lesson lesson-1 создан/);
     const view = JSON.parse(await handleToolCall('lesson_view', { id: 'lesson-1' }, testRoot));
@@ -60,11 +61,12 @@ describe('VL-153 — lesson_create / view / list / search / update', () => {
     assert.equal(view.status, 'active');
     assert.deepEqual(view.tags, ['tests']);
     assert.deepEqual(view.source_tasks, ['VL-1']);
-    assert.equal(view.body, 'Проблема/Решение');
+    // VL-379: сервер склеивает тело из частей
+    assert.equal(view.body, '## Проблема\nпроблема\n\n## Решение\nрешение\n');
   });
 
   it('create: невалидный статус через update → ошибка', async () => {
-    await handleToolCall('lesson_create', { title: 'Второй', content: 'Тело второго урока' }, testRoot);
+    await handleToolCall('lesson_create', { title: 'Второй', problem: 'п', solution: 'р' }, testRoot);
     await assert.rejects(
       handleToolCall('lesson_update', { id: 'lesson-2', status: 'nope' }, testRoot),
       /Недопустимый статус lesson/
@@ -72,7 +74,7 @@ describe('VL-153 — lesson_create / view / list / search / update', () => {
   });
 
   it('list: фильтры status/tags', async () => {
-    await handleToolCall('lesson_create', { title: 'Про active', status: 'active', tags: ['a', 'b'], content: 'Тело' }, testRoot);
+    await handleToolCall('lesson_create', { title: 'Про active', status: 'active', tags: ['a', 'b'], problem: 'п', solution: 'р' }, testRoot);
     const all = JSON.parse(await handleToolCall('lesson_list', {}, testRoot));
     assert.ok(all.length >= 3);
     const actives = JSON.parse(await handleToolCall('lesson_list', { status: 'active' }, testRoot));
@@ -86,7 +88,7 @@ describe('VL-153 — lesson_create / view / list / search / update', () => {
     assert.ok(found.length >= 1);
   });
 
-  it('update: поля + content; несуществующий → ошибка', async () => {
+  it('update: поля + тело; несуществующий → ошибка', async () => {
     const out = await handleToolCall('lesson_update', { id: 'lesson-1', title: 'Тесты батчами (новое)', tags: ['tests', 'ci'] }, testRoot);
     assert.match(out, /обновлён/);
     const view = JSON.parse(await handleToolCall('lesson_view', { id: 'lesson-1' }, testRoot));
@@ -102,62 +104,103 @@ describe('VL-153 — lesson_create / view / list / search / update', () => {
     assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
   });
 
-  it('VL-356: create без content через MCP → ok:true со скелетом + missing/hint; файл создан', async () => {
+  // VL-379 (AC3): тело склеивается с заголовками; example опускается, если не передан.
+  it('VL-379: create с problem+solution+example → тело с тремя разделами', async () => {
+    const out = await handleToolCall('lesson_create', {
+      title: 'Урок со примером', problem: 'было так', solution: 'стало так', example: 'пример кода',
+    }, testRoot);
+    const ack = JSON.parse(out);
+    assert.equal(ack.ok, true, `create с частями — успех: ${out}`);
+    assert.equal(ack.missing, undefined, 'missing нет — тело заполнено');
+    const view = JSON.parse(await handleToolCall('lesson_view', { id: ack.applied.id }, testRoot));
+    assert.match(view.body, /## Проблема/, 'раздел Проблема');
+    assert.match(view.body, /было так/);
+    assert.match(view.body, /## Решение/, 'раздел Решение');
+    assert.match(view.body, /стало так/);
+    assert.match(view.body, /## Пример/, 'раздел Пример');
+    assert.match(view.body, /пример кода/);
+  });
+
+  it('VL-379: create без example → раздел «## Пример» опущен', async () => {
+    const ack = JSON.parse(await handleToolCall('lesson_create', {
+      title: 'Урок без примера', problem: 'было', solution: 'стало',
+    }, testRoot));
+    const view = JSON.parse(await handleToolCall('lesson_view', { id: ack.applied.id }, testRoot));
+    assert.match(view.body, /## Проблема/);
+    assert.match(view.body, /## Решение/);
+    assert.ok(!view.body.includes('## Пример'), `без example раздела нет: ${JSON.stringify(view.body)}`);
+  });
+
+  it('VL-379 (AC7): create без problem/solution → ok:false, файл НЕ создан', async () => {
+    // Регресс agent-1794146250210: урок-скелет был неустранимым дефектом.
+    // Теперь урок без тела создать нельзя — отказ до записи.
     const before = JSON.parse(await handleToolCall('lesson_list', {}, testRoot)).length;
     const out = await handleToolCall('lesson_create', { title: 'Урок без тела' }, testRoot);
     const ack = JSON.parse(out);
-    // VL-356: жёсткий отказ VL-349 замыкал петлю (урок не создан → привязать
-    // нечего → модель повторяла вызов до капа). Теперь урок создаётся со
-    // скелетом, а о незаполненном теле сообщают missing/hint.
-    assert.equal(ack.ok, true, `create без content — успех со скелетом: ${out}`);
-    assert.ok(!ack.noop, 'это не noop');
-    assert.equal(ack.missing[0].field, 'content', 'missing называет content');
+    assert.equal(ack.ok, false, `create без тела — отказ: ${out}`);
+    assert.match(String(ack.error), /problem/, 'отказ называет problem');
+    assert.deepEqual(ack.missing.map(m => m.field), ['problem', 'solution'], 'missing называет оба поля');
     assert.equal(typeof ack.hint, 'string', 'hint со следующим шагом');
-    assert.match(String(ack.message), /тело не заполнено \(скелет\)/, 'message явно говорит про скелет');
-    assert.equal(typeof ack.applied.id, 'string', 'applied.id — фактический id');
-    assert.equal(ack.applied.title, 'Урок без тела', 'applied.title — фактический заголовок');
-    assert.equal(ack.applied.status, 'active', 'applied.status — фактический статус');
-    assert.ok(ack.applied.content > 0, 'applied.content — длина тела-скелета');
-
+    assert.equal(ack.retryWith.problem, '<что было не так>', 'retryWith — три строки, без markdown');
+    assert.equal(ack.retryWith.solution, '<что сделали>');
     const after = JSON.parse(await handleToolCall('lesson_list', {}, testRoot)).length;
-    assert.equal(after, before + 1, 'файл урока реально создан');
+    assert.equal(after, before, 'файл урока не создан');
+  });
 
-    // Файл на диске: тело — скелет LESSON_BODY_SKELETON
-    const entry = getLesson(testRoot, ack.applied.id);
-    assert.ok(entry, 'файл урока существует');
-    assert.equal(entry.body.trim(), LESSON_BODY_SKELETON.trim(), 'тело — дефолтный скелет');
+  it('VL-379: create с пустым problem → отказ (пробелы не считаются телом)', async () => {
+    const out = await handleToolCall('lesson_create', { title: 'Урок с пустым problem', problem: '   ', solution: 'р' }, testRoot);
+    const ack = JSON.parse(out);
+    assert.equal(ack.ok, false, `ожидался отказ: ${out}`);
+    assert.deepEqual(ack.missing.map(m => m.field), ['problem']);
+  });
 
-    // Тупика нет: сразу после создания без content привязка к задаче работает
-    await handleToolCall('backlog_create_task', { title: 'Задача для скелета' }, testRoot);
-    const tasks = JSON.parse(await handleToolCall('backlog_list_tasks', {}, testRoot));
-    const taskId = tasks[0].id;
-    const linked = JSON.parse(await handleToolCall('lesson_link', { lessonId: ack.applied.id, taskId }, testRoot));
-    assert.equal(linked.ok, true, `привязка на уроке-скелете проходит: ${JSON.stringify(linked)}`);
-    const linkedView = JSON.parse(await handleToolCall('lesson_view', { id: ack.applied.id }, testRoot));
-    assert.deepEqual(linkedView.linked_tasks, [taskId], 'linked_tasks записан');
+  it('VL-379 (AC4): переданный content → skipped с причиной «поле удалено», урок создан по частям', async () => {
+    const ack = JSON.parse(await handleToolCall('lesson_create', {
+      title: 'Урок с лишним content', problem: 'п', solution: 'р', content: '## Проблема\n\nстарое\n',
+    }, testRoot));
+    assert.equal(ack.ok, true, `create проходит: ${JSON.stringify(ack)}`);
+    assert.equal(ack.skipped.length, 1, 'content попал в skipped');
+    assert.equal(ack.skipped[0].field, 'content');
+    assert.match(String(ack.skipped[0].reason), /поле удалено/, 'причина объясняет замену');
+    const view = JSON.parse(await handleToolCall('lesson_view', { id: ack.applied.id }, testRoot));
+    assert.ok(!view.body.includes('старое'), 'переданный content не записан');
+  });
 
-    // Повтор того же вызова создаёт ВТОРОЙ урок (create не идемпотентен —
-    // поведение зафиксировано, чтобы не удивляться), но не даёт серию отказов.
-    const second = JSON.parse(await handleToolCall('lesson_create', { title: 'Урок без тела' }, testRoot));
-    assert.equal(second.ok, true, `повтор тоже успех: ${JSON.stringify(second)}`);
-    assert.notEqual(second.applied.id, ack.applied.id, 'повтор создаёт второй урок (create не идемпотентен)');
+  it('VL-379: update с problem+solution → полная замена тела файла', async () => {
+    const created = JSON.parse(await handleToolCall('lesson_create', { title: 'Урок на замену', problem: 'старое', solution: 'старое решение' }, testRoot));
+    const ack = JSON.parse(await handleToolCall('lesson_update', {
+      id: created.applied.id, problem: 'новое', solution: 'новое решение', example: 'пример',
+    }, testRoot));
+    assert.equal(ack.ok, true, `update проходит: ${JSON.stringify(ack)}`);
+    const view = JSON.parse(await handleToolCall('lesson_view', { id: created.applied.id }, testRoot));
+    assert.match(view.body, /новое/);
+    assert.ok(!view.body.includes('старое'), 'тело заменено целиком');
+    assert.match(view.body, /## Пример/);
+  });
 
-    // CLI/ядро-путь без content по-прежнему подставляет скелет (VL-319)
+  it('VL-379: update {content} без частей → skipped + noop (поле удалено)', async () => {
+    const created = JSON.parse(await handleToolCall('lesson_create', { title: 'Урок с content в update', problem: 'п', solution: 'р' }, testRoot));
+    const ack = JSON.parse(await handleToolCall('lesson_update', {
+      id: created.applied.id, content: '## Проблема\n\nx\n',
+    }, testRoot));
+    assert.equal(ack.noop, true, `менять нечего — noop: ${JSON.stringify(ack)}`);
+    assert.equal(ack.skipped[0].field, 'content');
+    assert.match(String(ack.skipped[0].reason), /поле удалено/);
+  });
+
+  it('VL-379: update только example без problem/solution → отказ', async () => {
+    const created = JSON.parse(await handleToolCall('lesson_create', { title: 'Урок про example', problem: 'п', solution: 'р' }, testRoot));
+    const ack = JSON.parse(await handleToolCall('lesson_update', { id: created.applied.id, example: 'пример' }, testRoot));
+    assert.equal(ack.ok, false, `ожидался отказ: ${JSON.stringify(ack)}`);
+    assert.equal(ack.missing[0].field, 'problem');
+  });
+
+  it('VL-319: CLI/ядро-путь без content по-прежнему подставляет скелет', async () => {
+    // VL-379: скелет остался ТОЛЬКО у ядра/CLI (живой человек может сохранить черновик).
     const core = createLessonFile(testRoot, { title: 'Урок из CLI' });
     const coreEntry = getLesson(testRoot, core.id);
     assert.ok(coreEntry, 'ядро создало файл');
-    assert.match(coreEntry.body, /## Проблема/, 'скелет: раздел Проблема');
-    assert.match(coreEntry.body, /## Решение/, 'скелет: раздел Решение');
-    assert.match(coreEntry.body, /## Пример/, 'скелет: раздел Пример');
-  });
-
-  it('VL-356: create с content → ok:true без missing (регресс не задет)', async () => {
-    const out = await handleToolCall('lesson_create', { title: 'Урок с телом', content: '## Проблема\n\nбыло\n' }, testRoot);
-    const ack = JSON.parse(out);
-    assert.equal(ack.ok, true, `create с content — успех: ${out}`);
-    assert.equal(ack.missing, undefined, 'missing нет — тело заполнено');
-    assert.equal(ack.hint, undefined, 'hint нет');
-    assert.ok(!/скелет/.test(String(ack.message)), 'message не упоминает скелет');
+    assert.equal(coreEntry.body.trim(), LESSON_BODY_SKELETON.trim(), 'тело — скелет');
   });
 });
 
@@ -197,8 +240,8 @@ describe('VL-153 — lesson_link + backlog_update_task lessons', () => {
 
 describe('VL-153 — lesson_supersede', () => {
   it('oldId → superseded, newId → active с supersedes', async () => {
-    await handleToolCall('lesson_create', { title: 'Старый урок', status: 'active', content: 'Старое тело' }, testRoot);
-    await handleToolCall('lesson_create', { title: 'Новый урок', status: 'active', content: 'Новое тело' }, testRoot);
+    await handleToolCall('lesson_create', { title: 'Старый урок', status: 'active', problem: 'старое', solution: 'старое решение' }, testRoot);
+    await handleToolCall('lesson_create', { title: 'Новый урок', status: 'active', problem: 'новое', solution: 'новое решение' }, testRoot);
     const lessons = JSON.parse(await handleToolCall('lesson_list', {}, testRoot));
     const oldId = lessons.find(l => l.title === 'Старый урок').id;
     const newId = lessons.find(l => l.title === 'Новый урок').id;
