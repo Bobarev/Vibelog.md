@@ -115,6 +115,7 @@ describe('VL-348 — git-политика проекта', () => {
       '*',
       '!*/',
       'worktrees/',
+      'upstream-inbox/',
       '!.gitignore',
       '!config.json',
       '!installed.lock.json',

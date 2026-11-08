@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 import { agentSessionsDir } from '../../dist/agent/session.js';
+import { listTools } from '../../dist/mcp/tools.js';
 import { testSpawnEnv } from '../test-env.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -177,8 +178,13 @@ describe('MCP-сервер', () => {
     ]);
     const listResp = responses.find(r => r.id === 2);
     assert.ok(listResp);
-    assert.equal(listResp.result.tools.length, 46);
+    // VL-375: реестр целиком — listTools(); в проекте БЕЗ секции upstream
+    // инструмент upstream_report_bug скрыт (fail-closed) — на один меньше.
+    const all = listTools();
+    assert.equal(all.length, 46, 'полный реестр — 46 инструментов');
+    assert.equal(listResp.result.tools.length, all.length - 1);
     const names = listResp.result.tools.map(t => t.name);
+    assert.ok(!names.includes('upstream_report_bug'), 'ненастроенный upstream скрыт в tools/list');
     // Существующие
     assert.ok(names.includes('backlog_create_task'));
     assert.ok(names.includes('backlog_list_tasks'));
