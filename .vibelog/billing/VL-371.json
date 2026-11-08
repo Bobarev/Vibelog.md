@@ -115,6 +115,25 @@
       "model": "deepseek/deepseek-v4.1-flash",
       "agent": "vb",
       "source": "web"
+    },
+    {
+      "sessionId": "agent-1794093984958",
+      "phase": "close",
+      "startedAt": "2026-11-08T05:19:42.196Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-08T05:22:05.695Z",
+      "durationMs": 140552,
+      "usage": {
+        "input": 2390542,
+        "output": 14315,
+        "cache": 2110464,
+        "total": 2404857,
+        "requests": 25,
+        "reasoning": 7795
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "web"
     }
   ]
 }
