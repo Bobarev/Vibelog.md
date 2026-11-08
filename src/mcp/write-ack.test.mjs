@@ -570,9 +570,13 @@ describe('VL-326 — hint в noop-ответе update_task', () => {
     assert.equal(typeof ack.hint, 'string', 'hint обязателен в noop-ответе');
     assert.match(ack.hint, /уже такие/);
     assert.match(ack.hint, /в ЭТОМ ЖЕ вызове/);
-    // перечислены поля, которых в вызове не было
+    // VL-370: перечень берётся из правил неполноты workflow (DEFAULT_COMPLETENESS),
+    // а не из захардкоженного списка популярных полей. Фаза рана неизвестна →
+    // работают правила '*': задача неполна без description; AC/DoD в этой фазе
+    // не требуются, поэтому в подсказке их нет (прежнее ожидание
+    // `acceptanceCriteria` закрепляло именно удалённую эвристику).
     assert.match(ack.hint, /description/);
-    assert.match(ack.hint, /acceptanceCriteria/);
+    assert.ok(!ack.hint.includes('acceptanceCriteria'), 'AC не требуются вне фазы close');
   });
 
   it('AC5: переданные поля не предлагаются в hint', async () => {

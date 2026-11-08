@@ -60,6 +60,8 @@ import { join } from 'node:path';
 import { markPhaseAborted, getPhaseTransientStatus } from '../core/phase-transient.js';
 // VL-248: терминальность статуса считается по workflow задачи (без хардкода имён)
 import { getWorkflowForTask, phaseStatusTransitionError, isTerminalStatus } from '../core/workflow.js';
+import { getCompletenessFields, getCompletenessRules, taskCompletenessMissing } from '../core/workflow.js';
+import type { CompletenessField } from '../core/workflow.js';
 import { buildProjectMap } from '../core/project-map.js';
 import { truncateToolOutput } from '../agent/tools.js';
 import { ackOk, ackOkDetailed, ackRead, ackNoop, ackNoopDetailed, ackError, ackErrorDetailed, unknownFields, sameValue, sameFieldsUpToDate, SET_FIELDS, BODY_FIELD } from './tool-result.js';
@@ -1308,29 +1310,37 @@ function toolViewTask(args: ToolArgs, cwd: string): string {
 }
 
 /**
- * Обновляемые поля задачи, которые имеет смысл предлагать в noop-ответе.
+ * Имя поля сущности → имя аргумента write-инструмента (VL-370).
  *
- * VL-369: раньше набор был захардкожен и фильтровался по «не передано в args»
- * (`missingTaskFields`), из-за чего уже заполненное поле попадало в подсказку
- * ложно. Теперь кандидат должен быть ПУСТ в сущности — подсказка считается от
- * состояния (VL-370 заменит это на workflow-aware расчёт неполноты).
+ * Неполнота считается в именах ПОЛЕЙ задачи (`implementationPlan`), а модель
+ * передаёт АРГУМЕНТЫ (`plan`) — соответствие нужно, чтобы подсказка и готовый
+ * повторный вызов были исполнимыми.
  */
-const TASK_SUGGEST: ReadonlyArray<{ arg: string; key: keyof Task }> = [
-  { arg: 'description', key: 'description' },
-  { arg: 'acceptanceCriteria', key: 'acceptanceCriteria' },
-  { arg: 'plan', key: 'implementationPlan' },
-  { arg: 'notes', key: 'implementationNotes' },
-  { arg: 'labels', key: 'labels' },
-  { arg: 'priority', key: 'priority' },
-];
+const FIELD_TO_ARG: Record<string, string> = {
+  title: 'title',
+  description: 'description',
+  priority: 'priority',
+  labels: 'labels',
+  acceptanceCriteria: 'acceptanceCriteria',
+  definitionOfDone: 'definitionOfDone',
+  implementationPlan: 'plan',
+  implementationNotes: 'notes',
+};
 
-/** Поле задачи пусто (нет значения, пустая строка, пустой массив). */
-function isEmptyTaskField(task: Task, key: keyof Task): boolean {
-  const value = (task as unknown as Record<string, unknown>)[key];
-  if (value === undefined || value === null) return true;
-  if (typeof value === 'string') return value.trim() === '';
-  if (Array.isArray(value)) return value.length === 0;
-  return false;
+/** Поле сущности → имя аргумента инструмента (по умолчанию совпадает). */
+function fieldToArg(field: string): string {
+  return FIELD_TO_ARG[field] ?? field;
+}
+
+/**
+ * Неполнота задачи по правилам её workflow и текущей фазы (VL-370).
+ *
+ * Единая точка для инструмента и для noop-подсказки: набор полей приходит из
+ * DEFAULT_COMPLETENESS/`completeness` в settings, а не из списка популярных
+ * полей в коде инструмента.
+ */
+function taskMissing(entity: Task, cwd: string, phase: string | null): CompletenessField[] {
+  return taskCompletenessMissing(entity, getCompletenessRules(cwd, entity, phase).task);
 }
 
 /**
@@ -1395,6 +1405,12 @@ function buildTaskUpdates(args: ToolArgs, cwd: string, current: Task): Record<st
 
 /**
  * Описание сущности «задача» для общего пайплайна (VL-369).
+ *
+ * VL-370: неполнота — ДАННЫЕ (DEFAULT_COMPLETENESS + ключ `completeness` в
+ * settings), считается от СОСТОЯНИЯ с учётом workflow задачи и текущей фазы.
+ * Прежняя эвристика (`TASK_SUGGEST` + `isEmptyTaskField`, фильтр по «не
+ * передано в args») удалена: она врала в обе стороны — заполненное поле
+ * попадало в `missing` ложно, пустое не попадало вовсе.
  */
 const taskSpec: EntitySpec<Task> = {
   name: 'Задача',
@@ -1417,21 +1433,25 @@ const taskSpec: EntitySpec<Task> = {
     }
     return result;
   },
-  // VL-369/VL-370: неполнота считается от состояния — задача без описания неполна.
-  // Набор «что ещё можно передать» тоже берётся от состояния (пустые поля).
-  completeness: entity =>
-    isEmptyTaskField(entity, 'description')
-      ? [{ field: 'description', reason: 'описание задачи не заполнено' }]
-      : [],
-  next: () => ({
-    hint:
-      'Дополни описание задачи в этом же вызове: ' +
-      'backlog_update_task {"id": "…", "description": "…"} — поле необязательно, но без него задача неполна.',
-  }),
-  noopHint: (entity, keys, transferred) => {
-    const suggestions = TASK_SUGGEST
-      .filter(item => !transferred.includes(item.arg) && isEmptyTaskField(entity, item.key))
-      .map(item => item.arg);
+  // Фаза — только доверенный источник (env рана/мета сессии), args.phase не читается
+  resolvePhase: resolveGuardPhase,
+  completeness: (entity, ctx) => taskMissing(entity, ctx.cwd, ctx.phase),
+  next: (_entity, missing) => {
+    // Готовый образец вызова: имена ПОЛЕЙ задачи → имена АРГУМЕНТОВ инструмента
+    const fields = missing.map(m => fieldToArg(m.field));
+    return {
+      hint:
+        `Дополни задачу в этом же вызове — не хватает: ${missing.map(m => m.field).join(', ')}. ` +
+        'Поля необязательны, но без них сущность неполна.',
+      ...(fields.length > 0
+        ? { retryWith: Object.fromEntries(fields.map(f => [f, '…'])) }
+        : {}),
+    };
+  },
+  noopHint: (entity, keys, transferred, ctx) => {
+    const suggestions = taskMissing(entity, ctx.cwd, ctx.phase)
+      .map(m => fieldToArg(m.field))
+      .filter(arg => !transferred.includes(arg));
     return (
       `Переданные поля (${keys.join(', ')}) уже такие. ` +
       `Если нужны другие изменения, передай их в ЭТОМ ЖЕ вызове` +
@@ -2934,10 +2954,14 @@ const lessonSpec: EntitySpec<LessonEntity> = {
     }
     return result;
   },
-  // VL-319/VL-349: неполнота — свойство СУЩНОСТИ, а не вызова. Незаполненное
-  // тело (пустое ИЛИ дефолтный скелет) означает урок, созданный без `content`.
-  completeness: entity => {
-    if (!isLessonBodyUnfilled(entity.body)) return [];
+  // VL-319/VL-349/VL-370: неполнота — свойство СУЩНОСТИ, а набор полей приходит
+  // из данных (DEFAULT_COMPLETENESS / ключ `completeness`), а не из литерала
+  // инструмента. Незаполненное тело (пустое ИЛИ дефолтный скелет) — урок,
+  // созданный без `content`.
+  completeness: (entity, ctx) => {
+    // Урок не имеет типа задачи → его работой считается workflow `default`
+    const fields = getCompletenessFields(ctx.cwd, 'default', ctx.phase, 'lesson');
+    if (!fields.includes('content') || !isLessonBodyUnfilled(entity.body)) return [];
     return [{
       field: 'content',
       reason: entity.body.trim() === ''

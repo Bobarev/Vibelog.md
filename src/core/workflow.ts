@@ -27,6 +27,23 @@
  * (прежняя цепочка spec → plan → code → close + reject) — поведение до
  * VL-188 не меняется.
  *
+ * Третий уровень той же схемы «дефолт в коде + перезапись в settings» —
+ * НЕПОЛНОТА СУЩНОСТИ (VL-370): ключ `completeness` (workflow → фаза →
+ * сущность → поля). Дефолт — DEFAULT_COMPLETENESS, читается loadCompleteness
+ * с той же семантикой fallback. Формат:
+ *
+ *   "completeness": {
+ *     "default": {
+ *       "plan": { "task": ["implementationPlan"] },
+ *       "close": { "task": ["acceptanceCriteria", "definitionOfDone"] },
+ *       "*":   { "task": ["description"], "lesson": ["content"] }
+ *     }
+ *   }
+ *
+ * Зачем данные, а не список полей в инструменте: для простого workflow
+ * (фаза `do` вместо spec+plan) плана и критериев в задаче не бывает вовсе —
+ * расчёт неполноты обязан зависеть от workflow задачи и текущей фазы.
+ *
  * Модуль намеренно импортирует только settings.js (fs) — веб-клиент НЕ
  * импортирует его напрямую (Vite не потянет node:fs): фазы приходят в
  * ответах API (availablePhases/triggerPhase), логика считается на сервере.
@@ -55,6 +72,42 @@ export interface Workflow {
   /** Граф переходов; статус может иметь 0..N исходящих фаз (ветвление). */
   transitions: Transition[];
 }
+
+/**
+ * Карта неполноты: workflow → фаза → сущность → имена полей.
+ *
+ * Ключ фазы `'*'` — правило, действующее в ЛЮБОЙ фазе (уроку тело нужно
+ * всегда, задаче — описание). Наборы `'*'` и конкретной фазы объединяются.
+ */
+export type CompletenessMap = Record<string, Record<string, Record<string, string[]>>>;
+
+/**
+ * Неполнота сущности по умолчанию (VL-370).
+ *
+ * Семантика полей: `acceptanceCriteria`/`definitionOfDone` — «все пункты
+ * отмечены, пустой чеклист считается полным»; остальные — «значение непустое».
+ *
+ * - `'*'` содержит `task: ['description']` намеренно: задача без описания
+ *   неполна в ЛЮБОЙ фазе, поэтому ответ инструмента не зависит от того,
+ *   известна ли фаза (ручной вызов MCP, чужой клиент, тесты без env).
+ * - `simple` (фаза `do` вместо spec+plan) НЕ требует ни плана, ни критериев:
+ *   в этом workflow их не бывает (templates/phases/phase-do.md).
+ * - investigation/bugfix и прочие workflow, объявленные пользователем,
+ *   получают правила только из своей записи в settings; дефолт в них
+ *   не протекает (см. getCompletenessRules).
+ */
+export const DEFAULT_COMPLETENESS: CompletenessMap = {
+  default: {
+    spec: { task: ['description'] },
+    plan: { task: ['implementationPlan'] },
+    close: { task: ['acceptanceCriteria', 'definitionOfDone'] },
+    '*': { task: ['description'], lesson: ['content'] },
+  },
+  simple: {
+    do: { task: ['description'] },
+    '*': { task: ['description'], lesson: ['content'] },
+  },
+};
 
 /** Конфигурация workflow проекта (секции settings.json). */
 export interface WorkflowConfig {
@@ -176,6 +229,102 @@ export function getWorkflowForTask(cwd: string, task: Task): Workflow {
   const type = (task.type ?? '').toLowerCase();
   const name = config.task_workflows[type];
   return (name !== undefined ? config.workflows[name] : undefined) ?? config.workflows.default;
+}
+
+/**
+ * Проверяет, что запись неполноты валидна: фаза → сущность → массив строк.
+ *
+ * Нестрогая валидация по образцу isValidWorkflow: битая запись выпадает,
+ * остальные именованные записи остаются (AC1, семантика loadWorkflows).
+ */
+function isValidCompletenessEntry(value: unknown): value is Record<string, Record<string, string[]>> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.values(value as Record<string, unknown>).every((perEntity) => {
+    if (perEntity === null || typeof perEntity !== 'object' || Array.isArray(perEntity)) return false;
+    return Object.values(perEntity as Record<string, unknown>).every(
+      (fields) => Array.isArray(fields) && fields.every((f) => typeof f === 'string' && f !== ''),
+    );
+  });
+}
+
+/**
+ * Читает карту неполноты из .vibelog/settings.json (VL-370).
+ *
+ * Семантика — как у loadWorkflows: нет файла/ключа, битый JSON, невалидная
+ * запись → DEFAULT_COMPLETENESS; валидные именованные записи сохраняются.
+ *
+ * Запись workflow из settings ПОЛНОСТЬЮ заменяет одноимённую дефолтную, а не
+ * сливается по фазам: иначе добавление фазы в DEFAULT_COMPLETENESS молча
+ * ужесточало бы пользовательский workflow, который он настроил осознанно.
+ */
+export function loadCompleteness(cwd: string): CompletenessMap {
+  const settings = loadSettings(cwd);
+  const raw = settings.completeness;
+  const result: CompletenessMap = {};
+  for (const [name, value] of Object.entries(DEFAULT_COMPLETENESS)) {
+    result[name] = value;
+  }
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return result;
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (isValidCompletenessEntry(value)) result[name] = value;
+  }
+  return result;
+}
+
+/**
+ * Правила неполноты для workflow по имени и фазы (VL-370).
+ *
+ * Набор = запись фазы + запись `'*'` (объединение без дублей); фаза `null`
+ * (ручной вызов MCP, чужой клиент) → только `'*'`.
+ *
+ * Fallback на дефолт — ТОЛЬКО если workflow не объявлен в settings. Объявлен,
+ * но не настроен в `completeness` → набор пуст: дефолт не протекает в
+ * пользовательскую конфигурацию (иначе investigation-workflow действующего
+ * проекта внезапно потребовал бы `description`).
+ *
+ * @param workflowName — имя workflow задачи (`getWorkflowName`)
+ * @param entity — имя сущности (`task`, `lesson`)
+ * @returns имена полей; пустой массив → сущность считается полной
+ */
+export function getCompletenessFields(
+  cwd: string,
+  workflowName: string,
+  phase: string | null,
+  entity: string
+): string[] {
+  const map = loadCompleteness(cwd);
+  const declared = Object.keys(loadWorkflows(cwd).workflows);
+  const entry: Record<string, Record<string, string[]>> =
+    declared.includes(workflowName) && workflowName !== 'default'
+      ? (map[workflowName] ?? {})
+      : (map[workflowName] ?? map.default ?? {});
+  const fields: string[] = [];
+  const sources = phase !== null && phase !== '*' ? [entry[phase], entry['*']] : [entry['*']];
+  for (const source of sources) {
+    for (const field of source?.[entity] ?? []) {
+      if (!fields.includes(field)) fields.push(field);
+    }
+  }
+  return fields;
+}
+
+/**
+ * Правила неполноты для конкретной задачи и фазы (VL-370).
+ *
+ * Обёртка над `getCompletenessFields`: имя workflow берётся по типу задачи.
+ *
+ * @returns поля задачи и урока; пустые массивы → сущность считается полной
+ */
+export function getCompletenessRules(
+  cwd: string,
+  task: Task,
+  phase: string | null
+): { task: string[]; lesson: string[] } {
+  const name = getWorkflowName(cwd, task);
+  return {
+    task: getCompletenessFields(cwd, name, phase, 'task'),
+    lesson: getCompletenessFields(cwd, name, phase, 'lesson'),
+  };
 }
 
 /**
@@ -341,6 +490,127 @@ export interface TerminalStatusGateResult {
   blocked: boolean;
   /** Готовый текст причины (для отчёта/комментария) — только при blocked. */
   reason?: string;
+}
+
+/**
+ * Один недостающий пункт неполноты сущности (VL-370).
+ *
+ * `numbers` заполняется только для полей-чеклистов (AC/DoD): гейту
+ * терминальности нужны номера неотмеченных пунктов, и это единственное
+ * место, где код знает про эти два поля как про чеклисты.
+ */
+export interface CompletenessField {
+  /** Имя поля сущности (не аргумента вызова). */
+  field: string;
+  /** Человекочитаемая причина для ответа инструмента. */
+  reason: string;
+  /** Номера неотмеченных пунктов чеклиста (с 1) — только для AC/DoD. */
+  numbers?: number[];
+}
+
+/** Поля-чеклисты: неполнота означает «не все пункты отмечены». */
+const CHECKLIST_FIELDS: readonly string[] = ['acceptanceCriteria', 'definitionOfDone'];
+
+/** Значение поля пусто: нет значения, пустая строка/пробелы, пустой массив. */
+function isEmptyFieldValue(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value === 'string') return value.trim() === '';
+  if (Array.isArray(value)) return value.length === 0;
+  return false;
+}
+
+/** Пункт чеклиста отмечен (Backlog.md совместим: строка — не отмечен). */
+function isCheckedItem(item: string | { checked?: boolean }): boolean {
+  return typeof item === 'string' ? false : item.checked === true;
+}
+
+/** Человекочитаемые названия полей задачи для причины неполноты. */
+const FIELD_LABELS: Record<string, string> = {
+  description: 'описание задачи не заполнено',
+  implementationPlan: 'план реализации не заполнен',
+  acceptanceCriteria: 'не все критерии приёмки отмечены',
+  definitionOfDone: 'не все пункты DoD отмечены',
+  title: 'заголовок задачи пуст',
+  labels: 'метки не заданы',
+  priority: 'приоритет не задан',
+};
+
+/**
+ * Неполнота задачи ОТ СОСТОЯНИЯ по набору полей (VL-370).
+ *
+ * Единственный источник `missing` для инструмента и для гейта терминальности
+ * (AC4): раньше список полей угадывался по аргументам вызова, а правило
+ * «нельзя закрыть задачу с неотмеченными пунктами» существовало в двух копиях
+ * (`auto-report.ts` и `phase-transient.ts`) и расходилось.
+ *
+ * Пустой чеклист считается ПОЛНЫМ: отмечать нечего, требовать нечего.
+ *
+ * @param task — задача (состояние после записи)
+ * @param fields — имена полей из getCompletenessRules
+ * @returns недостающие поля с причинами; пустой массив — задача полная
+ */
+export function taskCompletenessMissing(task: Task, fields: string[]): CompletenessField[] {
+  const missing: CompletenessField[] = [];
+  const record = task as unknown as Record<string, unknown>;
+  for (const field of fields) {
+    if (CHECKLIST_FIELDS.includes(field)) {
+      const list = (record[field] as Array<string | { checked?: boolean }> | undefined) ?? [];
+      const numbers = list
+        .map((item, i) => ({ n: i + 1, checked: isCheckedItem(item) }))
+        .filter((x) => !x.checked)
+        .map((x) => x.n);
+      if (numbers.length > 0) {
+        missing.push({
+          field,
+          reason: `${FIELD_LABELS[field] ?? `поле ${field} не заполнено`} (${numbers.map((n) => `#${n}`).join(', ')})`,
+          numbers,
+        });
+      }
+      continue;
+    }
+    if (isEmptyFieldValue(record[field])) {
+      missing.push({ field, reason: FIELD_LABELS[field] ?? `поле ${field} не заполнено` });
+    }
+  }
+  return missing;
+}
+
+/**
+ * Гейт терминальности на общем расчёте неполноты (VL-370).
+ *
+ * Оба пути смены статуса (`writeAutoReportIfMissing` в агенте и
+ * `finalizePhaseStatus` в ядре) зовут ЭТУ функцию — второй копии правила нет
+ * (lesson-250). Внутри — существующий `terminalStatusGate`, поэтому текст
+ * причины остаётся байт-в-байт прежним.
+ *
+ * Для простого workflow набор полей не содержит AC/DoD → блокировать нечего:
+ * это следствие правила из данных, а не исключение из кода.
+ *
+ * @param cwd — каталог проекта (источник workflow и правил неполноты)
+ * @param task — задача
+ * @param targetStatus — статус, который собирались поставить
+ * @param phase — фаза, завершающаяся сейчас (null — неизвестна)
+ * @param prevStatus — статус, в котором задача останется при блокировке
+ */
+export function terminalStatusGateForTask(
+  cwd: string,
+  task: Task,
+  targetStatus: string,
+  phase: string | null,
+  prevStatus: string
+): TerminalStatusGateResult {
+  const workflow = getWorkflowForTask(cwd, task);
+  const rules = getCompletenessRules(cwd, task, phase);
+  const missing = taskCompletenessMissing(task, rules.task);
+  const numbers = (field: string): number[] =>
+    missing.filter((m) => m.field === field).flatMap((m) => m.numbers ?? []);
+  return terminalStatusGate(
+    workflow,
+    targetStatus,
+    numbers('acceptanceCriteria'),
+    numbers('definitionOfDone'),
+    prevStatus,
+  );
 }
 
 /**

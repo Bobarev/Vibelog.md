@@ -217,6 +217,106 @@ describe('VL-369 AC11 — append_notes не попадает в noop-сверк�
   });
 });
 
+// ── VL-370: неполнота зависит от workflow и фазы ───────────────────────────
+
+describe('VL-370 — неполнота как данные (workflow × фаза)', () => {
+  const wfCwd = mkdtempSync(join(tmpdir(), 'vibelog-completeness-mcp-'));
+  const wfBacklog = join(wfCwd, 'backlog');
+  /** Сохранённые VIBELOG-переменные: фаза должна быть НЕИЗВЕСТНА (null). */
+  const savedEnv = {};
+
+  beforeAll(() => {
+    mkdirSync(join(wfBacklog, 'tasks'), { recursive: true });
+    writeFileSync(join(wfBacklog, 'config.yml'), stringifyYaml({
+      project_name: 'Completeness Test',
+      task_prefix: 'cp',
+      default_status: 'To Do',
+      statuses: ['To Do', 'Review', 'Done'],
+      priorities: ['High', 'Medium', 'Low'],
+      types: ['bug', 'feature', 'chore', 'epic'],
+      definition_of_done: ['Тесты проходят'],
+    }), 'utf-8');
+    mkdirSync(join(wfCwd, '.vibelog'), { recursive: true });
+    writeFileSync(join(wfCwd, '.vibelog', 'settings.json'), JSON.stringify({
+      workflows: {
+        simple: {
+          initial_status: 'To Do',
+          transitions: [
+            { status: 'To Do', phase: 'do', produces_status: 'Review' },
+            { status: 'Review', phase: 'close', produces_status: 'Done' },
+            { status: 'Done', phase: null, produces_status: null },
+          ],
+        },
+        strict: {
+          initial_status: 'To Do',
+          transitions: [
+            { status: 'To Do', phase: 'plan', produces_status: 'Review' },
+            { status: 'Done', phase: null, produces_status: null },
+          ],
+        },
+      },
+      task_workflows: { chore: 'simple', epic: 'strict' },
+      completeness: {
+        // '*' — правила любой фазы: тест не зависит от фазы рана
+        strict: { '*': { task: ['labels', 'priority'] } },
+      },
+    }, null, 2), 'utf-8');
+    // Фаза рана в агентской сессии подменила бы ожидаемый набор полей
+    for (const key of ['VIBELOG_RUN_PHASE', 'VIBELOG_PHASE_NAME', 'VIBELOG_SESSION_ID']) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterAll(() => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value !== undefined) process.env[key] = value;
+    }
+    rmSync(wfCwd, { recursive: true, force: true });
+  });
+
+  /** Разбирает JSON-ack в каталоге wfCwd. */
+  async function callWf(name, args) {
+    return JSON.parse(await handleToolCall(name, args, wfCwd));
+  }
+
+  it('AC2: simple-workflow — задача без AC и плана полная (applied, missing нет)', async () => {
+    const t = createTaskFile(wfCwd, { title: 'Простая', description: 'есть', type: 'chore' });
+    const ack = await callWf('backlog_update_task', { id: t.id, priority: 'High' });
+    assert.equal(ack.outcome, 'applied', JSON.stringify(ack));
+    assert.equal(getTask(wfCwd, t.id).priority, 'High');
+  });
+
+  it('AC2: simple-workflow — задача БЕЗ описания неполна только по description', async () => {
+    const t = createTaskFile(wfCwd, { title: 'Без описания', type: 'chore' });
+    const ack = await callWf('backlog_update_task', { id: t.id, priority: 'Low' });
+    assert.equal(ack.outcome, 'partial', JSON.stringify(ack));
+    assert.deepEqual(ack.missing.map(m => m.field), ['description']);
+  });
+
+  it('AC5: кастомный workflow из settings — missing называет ЕГО поля', async () => {
+    const t = createTaskFile(wfCwd, { title: 'Строгая', description: 'есть', type: 'epic' });
+    const ack = await callWf('backlog_update_task', { id: t.id, description: 'обновлено' });
+    assert.equal(ack.outcome, 'partial', JSON.stringify(ack));
+    const fields = ack.missing.map(m => m.field).sort();
+    assert.deepEqual(fields, ['labels', 'priority']);
+  });
+
+  it('AC9: неизвестная фаза — description из "*" (поведение не зависит от фазы)', async () => {
+    const t = createTaskFile(wfCwd, { title: 'Дефолт без описания', type: 'feature' });
+    const ack = await callWf('backlog_update_task', { id: t.id, priority: 'Medium' });
+    assert.equal(ack.outcome, 'partial', JSON.stringify(ack));
+    assert.deepEqual(ack.missing.map(m => m.field), ['description']);
+  });
+
+  it('next: готовый повторный вызов использует имя АРГУМЕНТА (plan, не implementationPlan)', async () => {
+    const t = createTaskFile(wfCwd, { title: 'План', description: 'есть', type: 'feature' });
+    const ack = await callWf('backlog_update_task', { id: t.id, description: 'обновлено' });
+    // фаза неизвестна → требуется только description, он есть → applied
+    assert.equal(ack.outcome, 'applied', JSON.stringify(ack));
+  });
+});
+
 // ── AC6: backlog_update_status как частный случай ──────────────────────────
 
 describe('VL-369 AC6 — backlog_update_status в общем пайплайне', () => {

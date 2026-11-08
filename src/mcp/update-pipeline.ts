@@ -43,6 +43,20 @@ import type { SkippedField } from './tool-result.js';
 /** Аргументы вызова инструмента (произвольный JSON со stdio). */
 export type UpdateArgs = Record<string, unknown>;
 
+/**
+ * Контекст вызова, доступный расчёту неполноты (VL-370).
+ *
+ * `phase` — ТОЛЬКО доверенный источник (`resolvePhase` слота, в MCP это
+ * `resolveGuardPhase`: env рана → мета сессии). Аргумент `args.phase` модели
+ * не читается: иначе модель выписала бы себе «полную» сущность.
+ */
+export interface UpdateContext {
+  /** Каталог проекта — для чтения workflow и правил неполноты. */
+  cwd: string;
+  /** Текущая фаза рана; null — неизвестна (ручной вызов MCP). */
+  phase: string | null;
+}
+
 /** Следующий шаг, который инструмент прикладывает к ответу. */
 export interface UpdateNext {
   hint?: string;
@@ -95,12 +109,20 @@ export interface EntitySpec<E> {
   ): Record<string, unknown>;
   /** Что попадает в `applied`: значения ИЗ СУЩНОСТИ после записи. */
   applied(entity: E, keys: string[], via: 'applied' | 'partial' | 'noop'): Record<string, unknown>;
-  /** Чего не хватает в сущности (считается ОТ СОСТОЯНИЯ, а не от аргументов). */
-  completeness?(entity: E): SkippedField[];
+  /**
+   * Чего не хватает в сущности (считается ОТ СОСТОЯНИЯ, а не от аргументов).
+   * `ctx` добавлен в VL-370: неполнота зависит от workflow сущности и фазы.
+   */
+  completeness?(entity: E, ctx: UpdateContext): SkippedField[];
+  /**
+   * Фаза вызова для расчёта неполноты (VL-370). Только доверенный источник
+   * (env рана/мета сессии); по умолчанию — null (фаза неизвестна).
+   */
+  resolvePhase?(cwd: string): string | null;
   /** Следующий шаг при неполноте (hint + готовый образец аргументов). */
   next?(entity: E, missing: SkippedField[]): UpdateNext;
   /** Подсказка для noop-ответа («какие поля ещё можно передать»). */
-  noopHint?(entity: E, keys: string[], transferred: string[]): string;
+  noopHint?(entity: E, keys: string[], transferred: string[], ctx: UpdateContext): string;
   /** Человекочитаемая строка результата. */
   message(entity: E, keys: string[], via: 'applied' | 'partial' | 'noop'): string;
   /**
@@ -179,6 +201,9 @@ export function runUpdate<E>(spec: EntitySpec<E>, args: UpdateArgs, cwd: string)
   }
   const keys = Object.keys(updates);
 
+  // Контекст неполноты (VL-370): фаза — только доверенный источник
+  const ctx: UpdateContext = { cwd, phase: spec.resolvePhase?.(cwd) ?? null };
+
   // 4. Переданные, но не записанные поля: неизвестные имена и null.
   const skipped = collectSkipped(spec, args);
 
@@ -203,10 +228,10 @@ export function runUpdate<E>(spec: EntitySpec<E>, args: UpdateArgs, cwd: string)
 
   if (keys.length === 0 || unchanged) {
     // «Менять нечего» — noop, а не отказ: неполнота сообщается полем missing.
-    const missing = spec.completeness?.(current) ?? [];
+    const missing = spec.completeness?.(current, ctx) ?? [];
     const applied = spec.applied(current, keys, 'noop');
     const next = missing.length > 0 ? (spec.next?.(current, missing) ?? {}) : {};
-    const hint = spec.noopHint?.(current, keys, Object.keys(args)) ?? next.hint;
+    const hint = spec.noopHint?.(current, keys, Object.keys(args), ctx) ?? next.hint;
     return ackNoopDetailed(
       `${noopPrefix(keys)}${spec.message(current, keys, 'noop')}`,
       applied,
@@ -224,7 +249,7 @@ export function runUpdate<E>(spec: EntitySpec<E>, args: UpdateArgs, cwd: string)
   }
 
   // 8. Исход: записали × полная ли сущность ПОСЛЕ записи.
-  const missing = spec.completeness?.(written) ?? [];
+  const missing = spec.completeness?.(written, ctx) ?? [];
   const via = missing.length > 0 ? 'partial' : 'applied';
   const applied = spec.applied(written, keys, via);
   const message = spec.message(written, keys, via);
