@@ -1,0 +1,158 @@
+{
+  "taskId": "VL-372",
+  "sessions": [
+    {
+      "sessionId": "agent-1794115495075",
+      "phase": "plan",
+      "startedAt": "2026-11-08T05:24:53.758Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-08T05:26:26.848Z",
+      "durationMs": 89108,
+      "usage": {
+        "input": 624795,
+        "output": 8094,
+        "cache": 468992,
+        "total": 632889,
+        "requests": 13,
+        "reasoning": 4683
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794115495075",
+      "phase": "plan",
+      "startedAt": "2026-11-08T05:24:53.758Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-08T05:26:26.876Z",
+      "durationMs": 89108,
+      "usage": {
+        "input": 624795,
+        "output": 8094,
+        "cache": 468992,
+        "total": 632889,
+        "requests": 13,
+        "reasoning": 4683
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794115495075",
+      "phase": "code",
+      "sessionPhase": "plan",
+      "startedAt": "2026-11-08T05:59:41.972Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-08T06:02:59.758Z",
+      "durationMs": 194872,
+      "usage": {
+        "input": 1160360,
+        "output": 6152,
+        "cache": 1019392,
+        "total": 1166512,
+        "requests": 15,
+        "reasoning": 1317
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794118891346",
+      "phase": "close",
+      "startedAt": "2026-11-08T06:21:31.245Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-08T06:24:46.975Z",
+      "durationMs": 192953,
+      "usage": {
+        "input": 1429702,
+        "output": 5684,
+        "cache": 1281024,
+        "total": 1435386,
+        "requests": 28,
+        "reasoning": 1815
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794118891346",
+      "phase": "close",
+      "startedAt": "2026-11-08T06:21:31.245Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-08T06:24:47.119Z",
+      "durationMs": 192953,
+      "usage": {
+        "input": 1429702,
+        "output": 5684,
+        "cache": 1281024,
+        "total": 1435386,
+        "requests": 28,
+        "reasoning": 1815
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794118891346",
+      "phase": "close",
+      "startedAt": "2026-11-08T06:25:37.182Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-08T06:26:14.925Z",
+      "durationMs": 35115,
+      "usage": {
+        "input": 965051,
+        "output": 3192,
+        "cache": 887296,
+        "total": 968243,
+        "requests": 15,
+        "reasoning": 1585
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "web"
+    },
+    {
+      "sessionId": "agent-1794118891346",
+      "phase": "close",
+      "startedAt": "2026-11-08T06:26:48.019Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-08T06:27:03.888Z",
+      "durationMs": 13756,
+      "usage": {
+        "input": 341360,
+        "output": 934,
+        "cache": 328704,
+        "total": 342294,
+        "requests": 5,
+        "reasoning": 400
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "web"
+    },
+    {
+      "sessionId": "agent-1794118891346",
+      "phase": "close",
+      "startedAt": "2026-11-08T06:27:32.651Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-08T06:27:50.901Z",
+      "durationMs": 16122,
+      "usage": {
+        "input": 422420,
+        "output": 1378,
+        "cache": 411136,
+        "total": 423798,
+        "requests": 6,
+        "reasoning": 974
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "web"
+    }
+  ]
+}
