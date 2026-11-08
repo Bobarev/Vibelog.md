@@ -107,7 +107,10 @@ const CREATE_TASK_FIELDS: readonly string[] = [
 const UPDATE_TASK_FIELDS: readonly string[] = [
   'id', 'title', 'description', 'priority', 'assignee', 'labels', 'milestone', 'type',
   'parentTaskId', 'status', 'plan', 'notes', 'append_notes', 'final_summary',
-  'modifiedFiles', 'references', 'lessons', 'acceptanceCriteria', 'idempotencyKey',
+  // VL-376: modifiedFilesReplace — явный флаг полной замены modified_files
+  // (по умолчанию список НАКАПЛИВАЕТСЯ). Без него флаг попал бы в skipped
+  // как «неизвестное поле», и ответ утверждал бы, что он не применён.
+  'modifiedFiles', 'modifiedFilesReplace', 'references', 'lessons', 'acceptanceCriteria', 'idempotencyKey',
 ];
 
 /**
@@ -230,7 +233,8 @@ export function listTools(): ToolDefinition[] {
           append_notes: { type: 'string', description: 'Дописать в конец ## Implementation Notes' },
           final_summary: { type: 'string', description: 'Итоговое резюме (записывает в ## Final Summary)' },
           // VL-97: без записи modified_files close-шаг не мог собрать feat-коммит (инцидент VL-94)
-          modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Изменённые файлы (полная замена modified_files)' },
+          modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Изменённые файлы: НАКОПЛЕНИЕ с дедупликацией (существующие первыми, новые в конце) — повторный вызов не стирает историю; modifiedFilesReplace: true — полная замена (VL-376)' },
+          modifiedFilesReplace: { type: 'boolean', description: 'true — ПОЛНАЯ замена modified_files вместо накопления (исправление ошибочного пути, VL-376)' },
           // VL-152: поле references задачи (связь с reference_*); двусторонняя связь — через reference_link
           references: { type: 'array', items: { type: 'string' }, description: 'ID references задачи (полная замена references)' },
           // VL-153: поле lessons задачи (связь с lesson_*); двусторонняя связь — через lesson_link
@@ -464,7 +468,8 @@ export function listTools(): ToolDefinition[] {
           id: { type: 'string', description: 'ID задачи' },
           status: { type: 'string', description: 'Новый статус (валидируется по конфигу; невалидный — пропускается с ошибкой в сводке)' },
           comment: { type: 'string', description: 'Отчётный комментарий (author фиксирован @agent). Обязательное поле схемы; если всё равно не передан — сервер собирает отчёт автоматически (VL-253).' },
-          modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Изменённые файлы (полная замена modified_files)' },
+          modifiedFiles: { type: 'array', items: { type: 'string' }, description: 'Изменённые файлы: НАКОПЛЕНИЕ с дедупликацией (существующие первыми, новые в конце) — повторный вызов не стирает историю; modifiedFilesReplace: true — полная замена (VL-376)' },
+          modifiedFilesReplace: { type: 'boolean', description: 'true — ПОЛНАЯ замена modified_files вместо накопления (исправление ошибочного пути, VL-376)' },
           acChecks: { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] }, description: 'Индексы AC для отметки (с 1; батч-отметка, как в manage_ac)' },
           dodChecks: { type: 'array', items: { anyOf: [{ type: 'number' }, { type: 'string' }] }, description: 'Индексы DoD для отметки (с 1; батч-отметка, как в manage_dod)' },
           // VL-248: условно обязательное поле. В required его нет (иначе
@@ -1344,6 +1349,30 @@ function taskMissing(entity: Task, cwd: string, phase: string | null): Completen
 }
 
 /**
+ * Слияние `modified_files`: существующие первыми, новые в конце, без дублей (VL-376).
+ *
+ * Причина: поле работало как полная замена, и повторный ран фазы (авто-resume
+ * после падения, ручной перезапуск Code, повторный Close) затирал историю —
+ * в VL-370 из 8 файлов остался 1. Последствия не косметические: `git_commit`
+ * сверяет пути с этим списком и отклонял легитимные правки первого рана как
+ * «чужие», а `backlog_search {modifiedFiles}` переставал находить задачу по
+ * реально изменённым файлам.
+ *
+ * Пути обрезаются по пробелам, пустые отбрасываются (иначе мусорный путь
+ * уехал бы в сверку коммита). Дедупликация — по точному совпадению строк:
+ * синонимы путей (`./src/a.ts` и `src/a.ts`) сюда не сводятся.
+ */
+function mergeModifiedFiles(current: unknown, incoming: string[]): string[] {
+  const base = Array.isArray(current) ? current.map(String) : [];
+  const out: string[] = [];
+  for (const raw of [...base, ...incoming]) {
+    const filePath = String(raw).trim();
+    if (filePath !== '' && !out.includes(filePath)) out.push(filePath);
+  }
+  return out;
+}
+
+/**
  * Сборка полей задачи из аргументов вызова (VL-369: вынесено из `toolUpdateTask`).
  *
  * Все валидации (`parentTaskId`, `parseAcList`, `type`) выполняются здесь и
@@ -1375,7 +1404,14 @@ function buildTaskUpdates(args: ToolArgs, cwd: string, current: Task): Record<st
 
   // VL-97: прокидываем modified_files — поле есть в core (Task-input/сериализация),
   // но было недоступно ни в MCP, ни в CLI, поэтому всегда оставалось пустым
-  if (args.modifiedFiles !== undefined) updates.modified_files = args.modifiedFiles as string[];
+  // VL-376: по умолчанию НАКОПЛЕНИЕ с дедупликацией; полная замена — явным
+  // modifiedFilesReplace: true (исправление ошибочного пути).
+  if (args.modifiedFiles !== undefined) {
+    const files = args.modifiedFiles as string[];
+    updates.modified_files = args.modifiedFilesReplace === true
+      ? mergeModifiedFiles([], files)
+      : mergeModifiedFiles(current.modified_files, files);
+  }
 
   // VL-152: поле references (связь с reference_*); двусторонняя связь — reference_link
   if (args.references !== undefined) updates.references = args.references as string[];
@@ -1899,14 +1935,19 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
     }
   }
 
-  // modifiedFiles — полная замена modified_files (как в toolUpdateTask)
+  // modifiedFiles — накопление с дедупликацией (как в toolUpdateTask, VL-376):
+  // повторный ран фазы больше не стирает историю файлов
   if (args.modifiedFiles !== undefined) {
     if (!Array.isArray(args.modifiedFiles)) {
       errors.push('modifiedFiles — массив строк (например: ["src/a.ts"]).');
     } else {
       const files = args.modifiedFiles as string[];
-      updates.modified_files = files;
-      filesPart = `файлов: ${files.length}`;
+      updates.modified_files = args.modifiedFilesReplace === true
+        ? mergeModifiedFiles([], files)
+        : mergeModifiedFiles(task.modified_files, files);
+      // Сводка показывает ИТОГОВЫЙ размер: «файлов: 1» на задаче с 8 файлами
+      // при накоплении вводило бы в заблуждение
+      filesPart = `файлов: ${(updates.modified_files as string[]).length}`;
     }
   }
 
@@ -2002,7 +2043,9 @@ function toolFinishPhase(args: ToolArgs, cwd: string): string {
     acTotal: acList.length,
     dodChecked: dodList.filter((c) => c.checked).length,
     dodTotal: dodList.length,
-    files: Array.isArray(args.modifiedFiles) ? (args.modifiedFiles as string[]) : (task.modified_files || []),
+    // VL-376: отчёт называет ИТОГОВЫЙ набор файлов (после накопления) —
+    // иначе он снова ссылался бы на список, не соответствующий задаче
+    files: (updates.modified_files as string[] | undefined) ?? (task.modified_files || []),
     // VL-304: неотмеченные пункты перечисляются явно — они не «висят молча»
     uncheckedAc: uncheckedItems(acList),
     uncheckedDod: uncheckedItems(dodList),
