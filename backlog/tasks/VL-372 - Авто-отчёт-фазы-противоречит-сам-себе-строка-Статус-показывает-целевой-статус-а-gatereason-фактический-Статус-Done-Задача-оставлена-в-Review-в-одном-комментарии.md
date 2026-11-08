@@ -1,11 +1,11 @@
 ---
 id: VL-372
 title: 'Авто-отчёт фазы противоречит сам себе: строка «Статус:» показывает целевой статус, а gate.reason — фактический («Статус: Done» + «Задача оставлена в «Review»» в одном комментарии)'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-08 02:05'
-updated_date: '2026-11-08 09:27'
+updated_date: '2026-11-08 09:38'
 due_date: ''
 labels: []
 dependencies:
@@ -23,15 +23,16 @@ modified_files:
   - src/agent/auto-report.ts
   - src/mcp/tools.ts
   - src/agent/auto-report.test.mjs
-lessons: []
+lessons:
+  - lesson-252
 token_usage:
-  input: 6998185
-  output: 39212
-  cache: 6146560
-  total: 7037397
-  requests: 123
-  duration_ms: 541926
-  reasoning: 17272
+  input: 7732580
+  output: 42278
+  cache: 6807552
+  total: 7774858
+  requests: 133
+  duration_ms: 581064
+  reasoning: 18820
   by_phase:
     plan:
       input: 624795
@@ -44,10 +45,10 @@ token_usage:
       cache: 1488384
       requests: 28
     close:
-      input: 4588235
-      output: 16872
-      cache: 4189184
-      requests: 82
+      input: 5322630
+      output: 19938
+      cache: 4850176
+      requests: 92
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -133,13 +134,13 @@ DoD не отмечены (1): 2. Документация обновлена
 - [x] #3 Нормальный (незаблокированный) случай не ухудшен: при успешном переходе строка `Статус:` содержит новый статус без дополнительных пометок
 - [x] #4 Тест `auto-report.test.mjs` проверяет СОГЛАСОВАННОСТЬ отчёта: значение строки `Статус` совпадает с фактическим `task.status` после рана (а не только наличие подстроки «Статус не изменён»)
 - [x] #5 `pnpm build && pnpm test` зелёный; правка согласована с VL-371 (если та закрыта раньше — меняется ожидаемое значение в `reportFields`-проверке, если позже — входит в её таблицу соответствий)
-- [ ] #6 Документация обновлена: doc-10 §6 (формат авто-отчёта), CHANGELOG.md
+- [x] #6 Документация обновлена: doc-10 §6 (формат авто-отчёта), CHANGELOG.md
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -335,5 +336,20 @@ author: @agent
 created: 2026-11-08 09:24
 ---
 Фаза close не удалась (код выхода 1): блокировок=0, payload последнего запроса=260468 байт (макс 260468), usage={"input_tokens":1429702,"output_tokens":5684,"cache_read_input_tokens":1281024,"total_tokens":1435386,"reasoning_tokens":1815} — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-08 09:37
+---
+Фаза Close выполнена.
+Слияние: ветка vb/vl-372 слита в master коммитом merge (1 коммит ветки — 6b22534, четыре файла: src/mcp/auto-report.ts, src/agent/auto-report.ts, src/mcp/tools.ts, src/agent/auto-report.test.mjs), конфликтов не было. Worktree .vibelog/worktrees/vl-372 удалён (потребовался --force: единственный untracked-путь — симлинк backlog/references/data, данные не теряются), ветка vb/vl-372 удалена (was 6b22534).
+Проверки после merge:
+- `pnpm build` — успешно.
+- Ранний точечный фильтр по diff HEAD^1..HEAD: `npx vitest run src/agent/auto-report.test.mjs src/mcp/server.test.mjs` — 45 passed (2 файла), в т.ч. авто-отчёт MCP-пути с «Статус: In Progress» остался зелёным.
+- Полный прогон `pnpm test` — 197 файлов, 3683 passed | 4 skipped (3687). Прогон полный, без --exclude/--skip; повторных прогонов не было. Регрессий нет.
+Документация (AC6, DoD2) — в главном репо коммитом 65e4fd0 «docs: VL-372 — документация и CHANGELOG»:
+- CHANGELOG.md → [Unreleased] → «Исправлено»: пункт VL-372 (формат строки статуса, перенос гейта выше buildAutoReport, мёртвая переменная effectiveStatus, MCP-путь backlog_finish_phase, тесты).
+- backlog/docs/doc-10 §6, буллет про авто-отчёт VL-309: дописано, что строка `Статус:` показывает фактический статус, целевой — пометкой в скобках при блокировке; в MCP-пути в отчёт идёт применённый `updates.status`, а запрошенный `args.status` — в `blockedTarget`.
+DoD: 1 (тесты проходят) — выполнен, полный прогон зелёный. 2 (документация обновлена) — выполнен, CHANGELOG + doc-10. 3 (нет регрессий) — выполнен, полный прогон без новых падений.
+Уроки: создан lesson-252 (тема — неиспользуемая переменная-результат как признак расхождения текста ответа с фактом), связан с задачей; файл урока закоммичен (2080b74). Тело урока заполнить не удалось: инструмент lesson_update отклонял вызовы без непустого `content` (partial/missing: content), попытки не привели к записи тела — урок остался со скелетом. Не блокирует Close; при необходимости тело дописывается отдельно (`lesson_update` с полем `content`, каркас «Проблема/Решение/Пример»).
 ---
 <!-- COMMENTS:END -->
