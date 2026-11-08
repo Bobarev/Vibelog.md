@@ -545,6 +545,27 @@ Guard пустого финального ответа (VL-110, `src/agent/loop.
 
 **4. Контракт фазы Close.** `templates/phases/phase-close.md` и `phase-close-worktree.md` получили правила «Close не правит код» (любые `edit`/`write_file` по `src/`, `web/src/`, `templates/` запрещены; упавшая сборка/тесты → `aborted: true`, исправление — новой фазой Code) и «Сборка проекта — не более одного раза за фазу» (повторная сборка без правок кода бессмысленна). Маркеры матчит инвариант-тест `src/web/phase-prompt.test.mjs`.
 
+## 6.8. Изоляция фазового env в тестах: три формы (VL-286, VL-374)
+
+Тест, запущенный внутри агентской фазы, наследует env рана (`VIBELOG_PHASE_NAME`, `VIBELOG_RUN_PHASE`, `VIBELOG_CWD`, `VIBELOG_SESSION_ID`). Если код читает фазу (`resolveGuardPhase` → `getCompletenessRules`), ответ инструмента начинает зависеть от того, кто запустил тест: вне фазы зелено, в фазе — падения. Это класс lesson-88/113/120; VL-374 — четвёртый случай и первый для in-process вызовов.
+
+`src/test-env.mjs` даёт три формы изоляции, различающиеся **контрактом** (зафиксировано в JSDoc):
+
+| Функция | Мутирует `process.env` | Когда применять |
+|---|---|---|
+| `testSpawnEnv(extra?)` | нет (чистая, возвращает объект env) | тест спавнит дочерний CLI/MCP-процесс |
+| `stripVibelogEnv(env)` | мутирует **переданный** объект | env собран не через `testSpawnEnv` (например, module-level константа) |
+| `clearPhaseEnv()` | **да**, возвращает функцию восстановления | in-process вызовы `handleToolCall` |
+| `withCleanPhaseEnv(fn)` | да (снять → `fn` → восстановить, в т.ч. при исключении) | точечный кейс в одном `it` |
+
+Снимаемый набор — `VIBELOG_CWD`, `VIBELOG_SESSION_ID` и всё с префиксами `VIBELOG_PHASE_`/`VIBELOG_RUN_` (приватный предикат `phaseEnvKeys`, общий для `stripVibelogEnv` и `clearPhaseEnv`): новые переменные оркестратора не требуют правок тестов.
+
+**Применять на уровне ФАЙЛА** (`beforeAll`/`afterAll`), не внутри отдельного `describe`: частичная изоляция хуже полного отсутствия — она маскирует дыру у остальных блоков (именно так падал Close VL-370). Top-level `beforeAll` выполняется раньше `beforeAll` вложенных `describe`, поэтому верхнеуровневые блоки тоже закрыты. Если в файле уже есть top-level `beforeAll`/`afterAll` — встраивать в них, а не добавлять второй (порядок хуков).
+
+**Семантика порядка:** `withCleanPhaseEnv` снимает env ДО вызова `fn`, поэтому значение, выставленное внутри `fn`, действует. Доказать, что фаза **не влияет** — вызвать без выставления фазы (env чист) и ждать `applied`; доказать, что фаза **влияет** — вызвать **без** обёртки, предварительно выставив `VIBELOG_PHASE_NAME='close'`, и ждать `partial`. Оба варианта — в регресс-тесте `src/mcp/update-pipeline.test.mjs`.
+
+Исключения — файлы, которые фазу передают явно в env спавна: `src/mcp/server.test.mjs` (`handleToolCall` не импортирует) и `src/agent/cli.test.mjs` (env через `testSpawnEnv`, фаза в `extra`). Глобальный `setupFiles`-strip сознательно не делался: он меняет `process.env` для всех тестов сразу и может сломать те, что «случайно» опираются на env рана (`src/agent/external-mcp.test.mjs` ставит `VIBELOG_CWD`; `src/core/worktree-trigger.test.mjs` строит константу из `process.env` на уровне модуля).
+
 ## 7. Сравнение расхода токенов с qwen
 
 ### Как замерить
