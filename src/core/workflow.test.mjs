@@ -19,6 +19,10 @@ import {
   loadCompleteness,
   getCompletenessRules,
   getCompletenessFields,
+  validateCompleteness,
+  COMPLETENESS_ENTITIES,
+  KNOWN_TASK_FIELDS,
+  KNOWN_LESSON_FIELDS,
   taskCompletenessMissing,
   terminalStatusGate,
   terminalStatusGateForTask,
@@ -34,6 +38,7 @@ import {
 } from '../../dist/core/workflow.js';
 import { pickAutoPhase } from '../../dist/bot/auto-runner.js';
 import { settingsPath } from '../../dist/core/settings.js';
+import { createTask } from '../../dist/core/task.js';
 
 /** Минимальная задача для getWorkflowForTask/getWorkflowName (нужен type). */
 const task = (type) => ({ id: 'VL-1', type });
@@ -593,5 +598,167 @@ describe('getCompletenessRules и taskCompletenessMissing (VL-370)', () => {
     // существующий экспорт сохранён и даёт тот же результат (AC12)
     const direct = terminalStatusGate(DEFAULT_WORKFLOW, 'Done', [], [1], 'Review');
     assert.equal(direct.reason, gate.reason);
+  });
+});
+
+// ── VL-377: валидация ключей completeness (опечатка не должна молчать) ──
+
+describe('validateCompleteness (VL-377)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibelog-completeness-validate-'));
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Каталог проекта с заданным содержимым settings.json. */
+  function project(name, settings) {
+    const dir = join(root, name);
+    mkdirSync(join(dir, '.vibelog'), { recursive: true });
+    writeFileSync(settingsPath(dir), JSON.stringify(settings, null, 2), 'utf-8');
+    return dir;
+  }
+
+  it('опечатка в имени workflow → предупреждение kind=workflow (правило не применяется)', () => {
+    const dir = project('typo-workflow', {
+      completeness: { defualt: { close: { task: ['acceptanceCriteria'] } } },
+    });
+    const warnings = validateCompleteness(dir);
+    assert.equal(warnings.length, 1, JSON.stringify(warnings));
+    assert.equal(warnings[0].kind, 'workflow');
+    assert.equal(warnings[0].path, 'completeness.defualt');
+    assert.match(warnings[0].message, /defualt/);
+    assert.match(warnings[0].message, /default/, 'подсказка с ближайшим именем');
+
+    // Демонстрация исходного дефекта: запись лежит в карте, но не применяется.
+    assert.deepEqual(loadCompleteness(dir).defualt, { close: { task: ['acceptanceCriteria'] } });
+    const close = getCompletenessRules(dir, task('feature'), 'close').task;
+    assert.ok(close.includes('acceptanceCriteria'), 'сработал дефолт, а не опечатанная запись');
+  });
+
+  it('опечатка в имени фазы → предупреждение kind=phase', () => {
+    const dir = project('typo-phase', {
+      completeness: { default: { clsoe: { task: ['acceptanceCriteria'] } } },
+    });
+    const warnings = validateCompleteness(dir);
+    assert.equal(warnings.length, 1, JSON.stringify(warnings));
+    assert.equal(warnings[0].kind, 'phase');
+    assert.equal(warnings[0].path, 'completeness.default.clsoe');
+    assert.match(warnings[0].message, /clsoe/);
+    assert.match(warnings[0].message, /close/, 'подсказка с ближайшей фазой');
+  });
+
+  it('опечатка в имени сущности → предупреждение kind=entity', () => {
+    const dir = project('typo-entity', {
+      completeness: { default: { close: { tsak: ['acceptanceCriteria'] } } },
+    });
+    const warnings = validateCompleteness(dir);
+    assert.equal(warnings.length, 1, JSON.stringify(warnings));
+    assert.equal(warnings[0].kind, 'entity');
+    assert.equal(warnings[0].path, 'completeness.default.close.tsak');
+    assert.match(warnings[0].message, /tsak/);
+    assert.match(warnings[0].message, /task/, 'подсказка с допустимой сущностью');
+  });
+
+  it('опечатка в имени поля → предупреждение kind=field + поле даёт вечную неполноту', () => {
+    const dir = project('typo-field', {
+      completeness: { default: { close: { task: ['acceptanceCriterias'] } } },
+    });
+    const warnings = validateCompleteness(dir);
+    assert.equal(warnings.length, 1, JSON.stringify(warnings));
+    assert.equal(warnings[0].kind, 'field');
+    assert.equal(warnings[0].path, 'completeness.default.close.task[0]');
+    assert.match(warnings[0].message, /acceptanceCriterias/);
+
+    // Почему это дефект: неизвестное не-чеклист поле «пустое» всегда.
+    const full = {
+      id: 'VL-1', description: 'есть', acceptanceCriteria: [], definitionOfDone: [],
+    };
+    const missing = taskCompletenessMissing(full, ['acceptanceCriterias']);
+    assert.deepEqual(missing.map((m) => m.field), ['acceptanceCriterias']);
+  });
+
+  it('AC3: валидная конфигурация с КАСТОМНЫМ workflow предупреждений не даёт', () => {
+    const dir = project('valid-custom', {
+      workflows: {
+        investigation: {
+          initial_status: 'To Do',
+          transitions: [
+            { status: 'To Do', phase: 'investigate', produces_status: 'Review' },
+            { status: 'Review', phase: 'materialize', produces_status: 'Done' },
+            { status: 'Review', phase: 'reject', produces_status: 'Done' },
+            { status: 'Done', phase: null, produces_status: null },
+          ],
+        },
+      },
+      task_workflows: { investigation: 'investigation' },
+      completeness: {
+        investigation: {
+          investigate: { task: ['description'] },
+          materialize: { task: ['implementationPlan'] },
+          '*': { task: ['description'], lesson: ['content'] },
+        },
+        // simple не объявлен в workflows, но его запись легитимна (дефолт в коде)
+        simple: { do: { task: ['description'] }, '*': { task: ['description'] } },
+      },
+    });
+    assert.deepEqual(validateCompleteness(dir), []);
+  });
+
+  it('AC5: структурно битая запись даёт kind=structure, валидная рядом остаётся', () => {
+    const dir = project('broken-entry', {
+      workflows: {
+        custom: {
+          initial_status: 'To Do',
+          transitions: [{ status: 'To Do', phase: 'do', produces_status: 'Done' }],
+        },
+      },
+      completeness: {
+        custom: { do: { task: ['description'] } },
+        broken: { do: 'нет-это-не-массив' },
+      },
+    });
+    const warnings = validateCompleteness(dir);
+    assert.equal(warnings.length, 1, JSON.stringify(warnings));
+    assert.equal(warnings[0].kind, 'structure');
+    assert.equal(warnings[0].path, 'completeness.broken');
+    // частичная валидность не изменилась: валидная запись на месте, битая выпала
+    const map = loadCompleteness(dir);
+    assert.deepEqual(map.custom, { do: { task: ['description'] } });
+    assert.equal(map.broken, undefined);
+  });
+
+  it('task_workflows на необъявленный workflow → предупреждение kind=task_workflow', () => {
+    const dir = project('typo-task-workflow', {
+      task_workflows: { bug: 'nope' },
+    });
+    const warnings = validateCompleteness(dir);
+    assert.equal(warnings.length, 1, JSON.stringify(warnings));
+    assert.equal(warnings[0].kind, 'task_workflow');
+    assert.equal(warnings[0].path, 'task_workflows.bug');
+    assert.match(warnings[0].message, /nope/);
+  });
+
+  it('пустой/несуществующий каталог → предупреждений нет', () => {
+    assert.deepEqual(validateCompleteness(join(root, 'nonexistent')), []);
+    const empty = join(root, 'empty');
+    mkdirSync(join(empty, '.vibelog'), { recursive: true });
+    writeFileSync(settingsPath(empty), '{}', 'utf-8');
+    assert.deepEqual(validateCompleteness(empty), []);
+  });
+
+  it('дрейф-гард: KNOWN_TASK_FIELDS совпадает с ключами createTask, литералы сущностей/полей урока', () => {
+    const created = Object.keys(createTask({ id: 'VL-1', title: 't' }, {}));
+    for (const field of created) {
+      assert.ok(KNOWN_TASK_FIELDS.includes(field), `KNOWN_TASK_FIELDS потерял поле Task: ${field}`);
+    }
+    // `token_usage` — опциональное поле Task (VL-198): createTask пишет его
+    // только при наличии, поэтому в списке известных оно есть, а в объекте нет.
+    // Лишние имена — дефект: они разрешили бы требовать несуществующее поле.
+    const OPTIONAL_TASK_FIELDS = ['token_usage'];
+    const extra = KNOWN_TASK_FIELDS.filter((f) => !created.includes(f) && !OPTIONAL_TASK_FIELDS.includes(f));
+    assert.deepEqual(extra, [], `KNOWN_TASK_FIELDS содержит неизвестные поля: ${extra.join(', ')}`);
+
+    assert.deepEqual([...COMPLETENESS_ENTITIES], ['task', 'lesson']);
+    assert.deepEqual([...KNOWN_LESSON_FIELDS], ['content']);
   });
 });
