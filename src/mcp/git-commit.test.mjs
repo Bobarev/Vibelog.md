@@ -146,6 +146,28 @@ describe('VL-311 — git_commit: коммит явными путями с тр�
     assert.equal(body.split('\n').filter(l => l.includes('Co-authored-by: vibelog-agent')).length, 1);
   });
 
+  it('AC5 (VL-376): два рана накапливают файлы — пути первого рана не «чужие»', async () => {
+    // Сценарий VL-370: первый Code-ран изменил 3 файла, второй — 1 (правка теста).
+    // До VL-376 список затирался, и git_commit отклонял файлы первого рана.
+    const task = createTaskFile(root, { id: 'VL-703', title: 'Два рана', modified_files: [] });
+    for (const name of ['a.txt', 'b.txt', 'c.txt']) writeFileSync(join(root, name), `${name}\n`, 'utf-8');
+    git(root, 'add', 'a.txt', 'b.txt', 'c.txt');
+    git(root, 'commit', '-q', '-m', 'add files');
+
+    mkdirSync(join(root, 'backlog', 'tasks'), { recursive: true });
+    const first = await handleToolCall('backlog_finish_phase', {
+      id: task.id, comment: 'первый ран', modifiedFiles: ['a.txt', 'b.txt', 'c.txt'],
+    }, root);
+    assert.match(String(first), /файлов: 3/);
+    const second = await handleToolCall('backlog_finish_phase', {
+      id: task.id, comment: 'второй ран', modifiedFiles: ['c.txt'],
+    }, root);
+    assert.match(String(second), /файлов: 3/, 'второй ран не сократил список');
+
+    assert.deepEqual(foreignPaths(root, task.id, ['a.txt', 'b.txt', 'c.txt']), [],
+      'пути первого рана принадлежат задаче — allowForeign не нужен');
+  });
+
   it('AC4: чужой путь (вне modified_files) → отказ с перечислением, allowForeign → коммит', () => {
     const task = createTaskFile(root, { id: 'VL-700', title: 'Задача коммита', modified_files: ['a.txt'] });
     writeFileSync(join(root, 'b.txt'), 'foreign\n', 'utf-8');

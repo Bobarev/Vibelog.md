@@ -68,6 +68,15 @@ async function call(name, args) {
   return JSON.parse(await handleToolCall(name, args, cwd));
 }
 
+/**
+ * Сырой текст ответа — для инструментов вне JSON-контракта ack.
+ * `backlog_finish_phase` отвечает человекочитаемой сводкой («Статус: …; файлов: N»),
+ * а не JSON-снимком, поэтому `call` к нему не применим.
+ */
+async function callText(name, args) {
+  return handleToolCall(name, args, cwd);
+}
+
 // ── Таблица исходов ────────────────────────────────────────────────────────
 
 describe('VL-369 AC1/AC2 — таблица исходов «записали × сущность полная»', () => {
@@ -342,6 +351,86 @@ describe('VL-369 AC6 — backlog_update_status в общем пайплайне'
     assert.equal(second.outcome, 'noop');
     assert.match(second.message, /Изменений нет/);
     assert.match(second.message, /Следующий шаг: .*backlog_finish_phase/);
+  });
+});
+
+// ── VL-376: накопление modified_files ──────────────────────────────────────
+
+describe('VL-376 — modified_files накапливается, а не заменяется', () => {
+  it('AC1: повторный вызов добавляет файлы, порядок — существующие первыми', async () => {
+    const t = createTaskFile(cwd, { title: 'Накопление', description: 'x' });
+    const first = await call('backlog_update_task', { id: t.id, modifiedFiles: ['src/a.ts', 'src/b.ts', 'src/c.ts'] });
+    assert.equal(first.outcome, 'applied', JSON.stringify(first));
+    assert.deepEqual(getTask(cwd, t.id).modified_files, ['src/a.ts', 'src/b.ts', 'src/c.ts']);
+
+    // Сценарий VL-370: второй ран передаёт ОДИН файл, который уже был
+    const second = await call('backlog_update_task', { id: t.id, modifiedFiles: ['src/c.ts'] });
+    assert.equal(second.outcome, 'noop', `повтор того же набора — noop: ${JSON.stringify(second)}`);
+    assert.deepEqual(getTask(cwd, t.id).modified_files, ['src/a.ts', 'src/b.ts', 'src/c.ts']);
+
+    // Новый файл — добавляется в конец, история цела
+    const third = await call('backlog_update_task', { id: t.id, modifiedFiles: ['src/d.ts'] });
+    assert.equal(third.outcome, 'applied', JSON.stringify(third));
+    assert.deepEqual(getTask(cwd, t.id).modified_files, ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts']);
+  });
+
+  it('AC1: дедупликация — переданный набор сливается без повторов', async () => {
+    const t = createTaskFile(cwd, { title: 'Дедуп', description: 'x' });
+    await call('backlog_update_task', { id: t.id, modifiedFiles: ['src/a.ts'] });
+    await call('backlog_update_task', { id: t.id, modifiedFiles: ['src/b.ts', 'src/a.ts'] });
+    assert.deepEqual(getTask(cwd, t.id).modified_files, ['src/a.ts', 'src/b.ts']);
+  });
+
+  it('AC3: повтор с тем же набором — noop, а не ложная запись', async () => {
+    const t = createTaskFile(cwd, { title: 'Noop повтора', description: 'x' });
+    await call('backlog_update_task', { id: t.id, modifiedFiles: ['src/a.ts', 'src/b.ts'] });
+    const repeat = await call('backlog_update_task', { id: t.id, modifiedFiles: ['src/b.ts', 'src/a.ts'] });
+    assert.equal(repeat.outcome, 'noop', `другой порядок того же набора — тоже noop: ${JSON.stringify(repeat)}`);
+    assert.match(repeat.message, /Изменений нет/);
+  });
+
+  it('AC4: modifiedFilesReplace: true — полная замена (исправление ошибочного пути)', async () => {
+    const t = createTaskFile(cwd, { title: 'Замена по флагу', description: 'x' });
+    await call('backlog_update_task', { id: t.id, modifiedFiles: ['src/a.ts', 'src/opечатка.ts'] });
+    const replaced = await call('backlog_update_task', {
+      id: t.id, modifiedFiles: ['src/a.ts'], modifiedFilesReplace: true,
+    });
+    assert.equal(replaced.outcome, 'applied', JSON.stringify(replaced));
+    assert.deepEqual(getTask(cwd, t.id).modified_files, ['src/a.ts'], 'ошибочный путь убран');
+  });
+
+  it('AC4: флаг modifiedFilesReplace не попадает в skipped', async () => {
+    const t = createTaskFile(cwd, { title: 'Флаг известен', description: 'x' });
+    const ack = await call('backlog_update_task', {
+      id: t.id, modifiedFiles: ['src/a.ts'], modifiedFilesReplace: true,
+    });
+    const skipped = (ack.skipped || []).map((s) => s.field);
+    assert.ok(!skipped.includes('modifiedFilesReplace'), `флаг не должен быть skipped: ${JSON.stringify(ack.skipped)}`);
+  });
+
+  it('AC2: backlog_finish_phase накапливает файлы между вызовами', async () => {
+    const t = createTaskFile(cwd, { title: 'Фаза дважды', description: 'x' });
+    const first = await callText('backlog_finish_phase', {
+      id: t.id, comment: 'первый ран', modifiedFiles: ['src/a.ts', 'src/b.ts'],
+    });
+    assert.match(first, /файлов: 2/);
+    const second = await callText('backlog_finish_phase', {
+      id: t.id, comment: 'второй ран', modifiedFiles: ['src/b.ts'],
+    });
+    // Сводка называет ИТОГОВЫЙ размер, а не размер аргумента
+    assert.match(second, /файлов: 2/);
+    assert.deepEqual(getTask(cwd, t.id).modified_files, ['src/a.ts', 'src/b.ts']);
+  });
+
+  it('AC6: backlog_search{modifiedFiles} находит задачу по файлу первого рана', async () => {
+    const t = createTaskFile(cwd, { title: 'Поиск по файлам', description: 'x' });
+    await callText('backlog_finish_phase', { id: t.id, comment: 'ран', modifiedFiles: ['src/core/workflow.ts'] });
+    await callText('backlog_finish_phase', { id: t.id, comment: 'ран 2', modifiedFiles: ['src/mcp/update-pipeline.test.mjs'] });
+    const found = await call('backlog_search', { modifiedFiles: ['src/core/workflow.ts'] });
+    assert.ok(
+      found.tasks.some((x) => x.id === t.id),
+      `задача должна находиться по файлу первого рана: ${JSON.stringify(found.tasks.map((x) => x.id))}`,
+    );
   });
 });
 
