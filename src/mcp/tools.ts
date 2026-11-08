@@ -623,16 +623,18 @@ export function listTools(): ToolDefinition[] {
     },
     {
       name: 'lesson_create',
-      description: 'Создать lesson (урок из опыта задач). Императив, конкретика, 1 предложение в title.',
+      description: 'Создать lesson (урок из опыта задач). Императив, конкретика, 1 предложение в title. Тело передаётся тремя обычными строками: problem (обязателен), solution (обязателен), example (необязателен) — сервер сам склеит их в markdown с заголовками «## Проблема / ## Решение / ## Пример».',
       inputSchema: {
         type: 'object',
         properties: {
           title: { type: 'string', description: 'Заголовок-урок (императив, 1 предложение)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Метки (для подбора по tags в Plan)' },
           sourceTasks: { type: 'array', items: { type: 'string' }, description: 'Задачи-источники урока (VL-N)' },
-          content: { type: 'string', description: 'Markdown-тело (Проблема / Решение / Пример)' },
+          problem: { type: 'string', description: 'Что было не так — обычный текст, без markdown-разметки' },
+          solution: { type: 'string', description: 'Что сделали — обычный текст, без markdown-разметки' },
+          example: { type: 'string', description: 'Конкретный пример (необязателен)' },
         },
-        required: ['title'],
+        required: ['title', 'problem', 'solution'],
       },
     },
     {
@@ -648,7 +650,7 @@ export function listTools(): ToolDefinition[] {
     },
     {
       name: 'lesson_update',
-      description: 'Обновить lesson: поля и/или тело. updated_date обновляется автоматически.',
+      description: 'Обновить lesson: поля и/или тело. updated_date обновляется автоматически. Тело передаётся строками problem и solution (вместе — ПОЛНАЯ замена тела) плюс необязательный example; сервер склеивает их в markdown.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -659,7 +661,9 @@ export function listTools(): ToolDefinition[] {
           sourceTasks: { type: 'array', items: { type: 'string' }, description: 'Задачи-источники (полная замена)' },
           linkedTasks: { type: 'array', items: { type: 'string' }, description: 'Задачи, где применялся (полная замена)' },
           supersedes: { type: 'string', description: 'ID заменённого lesson (пустая строка — сброс)' },
-          content: { type: 'string', description: 'Тело (markdown, полная замена)' },
+          problem: { type: 'string', description: 'Проблема — обычный текст, без markdown-разметки (вместе с solution — полная замена тела)' },
+          solution: { type: 'string', description: 'Решение — обычный текст, без markdown-разметки' },
+          example: { type: 'string', description: 'Конкретный пример (необязателен)' },
           lastVerified: { type: 'string', description: 'Дата проверки актуальности YYYY-MM-DD (VL-279)' },
           verifiedBy: { type: 'string', enum: ['auto', 'agent', 'human'], description: 'Кто проверил актуальность (VL-279)' },
           appliesTo: { type: 'array', items: { type: 'string' }, description: 'Glob-пути/имена символов, проверяемые механически (VL-279)' },
@@ -2871,21 +2875,74 @@ function toolLessonList(args: ToolArgs, cwd: string): string {
   return JSON.stringify(entries.map(e => e.lesson), null, 2);
 }
 
+/**
+ * Склейка тела урока из трёх аргументов (VL-379).
+ *
+ * Почему: `content` — одна большая экранированная строка markdown (`\n`, `##`),
+ * и слабая модель физически не вставляет её в JSON: формулировала намерение и
+ * снова отправляла вызов без поля (сессия agent-1794146250210 — 4 дословных
+ * повтора `lesson_update` → кап → fail). Три обычные строки генерируются так
+ * же надёжно, как `title`/`description` у `backlog_create_task`.
+ *
+ * `example` необязателен: не у каждого урока есть пример, обязательность
+ * заставляла бы выдумывать. Раздел «## Пример» опускается, если он пуст.
+ */
+function lessonBodyFromParts(problem: string, solution: string, example?: string): string {
+  const parts = [
+    '## Проблема', String(problem).trim(), '',
+    '## Решение', String(solution).trim(), '',
+  ];
+  if (example !== undefined && String(example).trim() !== '') {
+    parts.push('## Пример', String(example).trim());
+  }
+  return parts.join('\n');
+}
+
+/** Причина попадания `content` в `skipped` (VL-379: поле удалено из схем). */
+const LESSON_CONTENT_REMOVED =
+  'поле удалено: передай problem и solution (markdown-тело сервер склеит сам)';
+
+/** Допустимые аргументы `lesson_create` (для `skipped`). */
+const LESSON_CREATE_FIELDS = [
+  'title', 'status', 'tags', 'sourceTasks', 'problem', 'solution', 'example', 'idempotencyKey',
+] as const;
+
 function toolLessonCreate(args: ToolArgs, cwd: string): string {
-  // VL-356: жёсткий отказ (VL-349) замыкал петлю — урок не создан, привязать
-  // нечего, модель повторяла вызов до капа (сессия agent-1794054631174: 6
-  // дословных повторов `lesson_create` без `content` → MAX_ERROR_REPEATS_PER_RUN
-  // → Close VL-355 в тупике). Теперь урок создаётся со скелетом
-  // (createLessonFile подставляет LESSON_BODY_SKELETON), а про незаполненное
-  // тело сообщают missing/hint. Контроль «склада пустышек» — finding
-  // empty_body в lesson_audit, а не блокировка создания.
-  const rawContent = args.content as string | undefined;
-  const bodyUnfilled = rawContent === undefined || String(rawContent).trim() === '';
+  // VL-379: тело передаётся частями (problem/solution/example) — markdown
+  // склеивает сервер. Урок без тела MCP-путём больше не создаётся: скелет
+  // (LESSON_BODY_SKELETON) остаётся только у CLI-пути
+  // (`vibelog lesson create` без `-d`), где сидит человек и может сохранить
+  // черновик. Отказ здесь обязателен, потому что inputSchema.required НЕ
+  // валидируется сервером (server.ts::handleToolsCall вызывает handleToolCall
+  // без проверки схемы) — required влияет только на генерацию моделью.
+  const problem = args.problem as string | undefined;
+  const solution = args.solution as string | undefined;
+  const missingParts: string[] = [];
+  if (problem === undefined || String(problem).trim() === '') missingParts.push('problem');
+  if (solution === undefined || String(solution).trim() === '') missingParts.push('solution');
+  const skipped = unknownFields(args, LESSON_CREATE_FIELDS).map(entry =>
+    entry.field === 'content' ? { field: entry.field, reason: LESSON_CONTENT_REMOVED } : entry,
+  );
+  if (missingParts.length > 0) {
+    return ackErrorDetailed(
+      `Lesson не создан: не передано тело урока (${missingParts.join(', ')}). ` +
+        'Тело передаётся обычными строками problem и solution (плюс необязательный example) — ' +
+        'markdown с заголовками «## Проблема / ## Решение / ## Пример» склеит сервер. Файл урока не создан.',
+      {
+        missing: missingParts.map(field => ({
+          field,
+          reason: 'обязательный аргумент тела урока не передан — урок без тела не создаётся',
+        })),
+        hint: 'Передай problem и solution обычным текстом (без markdown-разметки), example — если есть.',
+        retryWith: { ...LESSON_BODY_TEMPLATE },
+      },
+    );
+  }
   const lesson = createLessonFile(cwd, {
     title: args.title as string,
     tags: (args.tags as string[] | undefined) || [],
     source_tasks: (args.sourceTasks as string[] | undefined) || [],
-    content: rawContent,
+    content: lessonBodyFromParts(problem as string, solution as string, args.example as string | undefined),
   });
   // VL-319/VL-349: JSON-ack с длиной фактического тела (после записи).
   const entry = getLesson(cwd, lesson.id);
@@ -2895,18 +2952,7 @@ function toolLessonCreate(args: ToolArgs, cwd: string): string {
     status: lesson.status,
     content: entry ? entry.body.length : 0,
   };
-  if (bodyUnfilled) {
-    return ackOkDetailed(
-      `Lesson ${lesson.id} создан: ${lesson.title} (${lesson.status}) — тело не заполнено (скелет)`,
-      applied,
-      [],
-      {
-        missing: [{ field: 'content', reason: 'content не передан — тело урока осталось скелетом' }],
-        hint: 'Заполни тело: lesson_update {"id": "' + lesson.id + '", "content": "## Проблема\\n\\n…\\n\\n## Решение\\n\\n…\\n\\n## Пример\\n\\n…"}.',
-      },
-    );
-  }
-  return ackOk(`Lesson ${lesson.id} создан: ${lesson.title} (${lesson.status})`, applied);
+  return ackOk(`Lesson ${lesson.id} создан: ${lesson.title} (${lesson.status})`, applied, skipped);
 }
 
 function toolLessonView(args: ToolArgs, cwd: string): string {
@@ -2920,24 +2966,23 @@ function toolLessonView(args: ToolArgs, cwd: string): string {
 }
 
 /**
- * VL-362: каркас тела урока для `retryWith`.
+ * VL-379: каркас тела урока для `retryWith` — три обычные строки.
  *
- * Модель умеет писать markdown (в сессии agent-1794067677112 заголовок урока
- * сформулирован точно), но копирует ОБРАЗЕЦ вызова из промпта — а шаблон
- * Close даёт вызов без `content`. Текстовое требование «передай content» этот
- * паттерн не перебивает: модель дважды написала «сейчас передаю content» и не
- * передала. Готовый каркас в `retryWith` даёт правильный образец в момент
- * ошибки — тот же приём, что сработал для `allowForeign` (VL-353).
- *
- * Плейсхолдеры в угловых скобках: модель обычно их заменяет, а дословное
- * копирование каркаса всё равно даёт валидную структуру урока.
+ * Раньше здесь была одна строка с markdown (`## Проблема\n\n…`) — именно та
+ * форма, которую модель не может вставить в JSON. Теперь каркас повторяет
+ * форму аргументов: `{problem, solution, example}` с плейсхолдерами в угловых
+ * скобках (модель обычно их заменяет).
  */
-const LESSON_BODY_TEMPLATE =
-  '## Проблема\n\n<что было не так>\n\n## Решение\n\n<что сделали>\n\n## Пример\n\n<конкретный пример>';
+const LESSON_BODY_TEMPLATE = {
+  problem: '<что было не так>',
+  solution: '<что сделали>',
+  example: '<конкретный пример>',
+};
 
-/** VL-362: hint для `missing: content` — заменить плейсхолдеры, а не копировать каркас. */
+/** VL-379: hint при незаполненном теле — передать problem и solution. */
 const LESSON_BODY_HINT =
-  'Заполни тело урока: замени плейсхолдеры в каркасе из retryWith.content на фактические Проблему/Решение/Пример.';
+  'Заполни тело урока: передай problem (что было не так) и solution (что сделали) обычным текстом, ' +
+  'example — если есть. Замени плейсхолдеры из retryWith, не копируй их дословно.';
 
 /** Урок в терминах пайплайна: метаданные + тело (тело отдельно от frontmatter). */
 interface LessonEntity {
@@ -2961,12 +3006,20 @@ interface LessonEntity {
  */
 const lessonSpec: EntitySpec<LessonEntity> = {
   name: 'Lesson',
+  // VL-379: тело приходит ЧАСТЯМИ (problem/solution/example), а `content`
+  // удалён из схемы. Два способа передать одно и то же — та же «двойная форма»,
+  // что вычищалась в VL-369: модель выберет худший, как выбирала `content` все
+  // шесть предыдущих попыток.
   fields: [
     'id', 'title', 'status', 'tags', 'sourceTasks', 'linkedTasks', 'supersedes',
-    'lastVerified', 'verifiedBy', 'appliesTo', 'kind', 'content', 'idempotencyKey',
+    'lastVerified', 'verifiedBy', 'appliesTo', 'kind', 'problem', 'solution', 'example',
+    'idempotencyKey',
   ],
   setFields: ['tags', 'source_tasks', 'linked_tasks', 'applies_to'],
+  // В ядре тело по-прежнему называется `content` (UpdateLessonInput) — на этом
+  // держится noop-сверка тела (`comparableKey` → BODY_FIELD).
   bodyArg: 'content',
+  removedFields: { content: LESSON_CONTENT_REMOVED },
   missingIdMessage: 'Не передан id урока (параметр "id").',
   notFoundMessage: id => `Lesson ${id} не найден.`,
   build: args => {
@@ -2982,7 +3035,14 @@ const lessonSpec: EntitySpec<LessonEntity> = {
     if (args.verifiedBy !== undefined) updates.verified_by = args.verifiedBy as string;
     if (args.appliesTo !== undefined) updates.applies_to = args.appliesTo as string[];
     if (args.kind !== undefined) updates.kind = (args.kind as string) || null;
-    if (args.content !== undefined) updates.content = args.content as string;
+    // VL-379: markdown склеивает сервер — модель передаёт три обычные строки.
+    // Семантика прежнего `content` сохранена: problem+solution — ПОЛНАЯ замена
+    // тела; example дописывается третьим разделом, если непустой.
+    if (args.problem !== undefined && args.solution !== undefined) {
+      updates.content = lessonBodyFromParts(
+        args.problem as string, args.solution as string, args.example as string | undefined,
+      );
+    }
     return updates;
   },
   read: (cwd, id) => getLesson(cwd, id) as LessonEntity | null,
@@ -2991,37 +3051,41 @@ const lessonSpec: EntitySpec<LessonEntity> = {
     ...(entity.lesson as unknown as Record<string, unknown>),
     [BODY_FIELD]: entity.body,
   }),
-  // Тело сворачиваем до длины: полный markdown раздувает ответ без пользы
+  // Тело сворачиваем до длины: полный markdown раздувает ответ без пользы.
+  // VL-379: аргументы problem/solution/example в сущности не хранятся — они
+  // сворачиваются в то же `content` (длина фактического тела), один ключ.
   applied: (entity, keys) => {
     const result: Record<string, unknown> = {};
+    const bodyLength = String(entity.body).length;
     for (const key of keys) {
-      result[key] = key === 'content'
-        ? String(entity.body).length
+      result[key] = key === 'content' || key === 'problem' || key === 'solution' || key === 'example'
+        ? bodyLength
         : (entity.lesson as unknown as Record<string, unknown>)[key];
     }
     return result;
   },
-  // VL-319/VL-349/VL-370: неполнота — свойство СУЩНОСТИ, а набор полей приходит
-  // из данных (DEFAULT_COMPLETENESS / ключ `completeness`), а не из литерала
-  // инструмента. Незаполненное тело (пустое ИЛИ дефолтный скелет) — урок,
-  // созданный без `content`.
+  // VL-319/VL-349/VL-370/VL-379: неполнота — свойство СУЩНОСТИ, набор полей
+  // приходит из данных (DEFAULT_COMPLETENESS / ключ `completeness`). Новые
+  // уроки неполными быть не могут по конструкции (problem/solution обязательны
+  // в схеме и проверяются сервером), предикат нужен только для накопленных
+  // скелетов. Поле в `missing` — `problem`: именно его теперь передают.
   completeness: (entity, ctx) => {
     // Урок не имеет типа задачи → его работой считается workflow `default`
     const fields = getCompletenessFields(ctx.cwd, 'default', ctx.phase, 'lesson');
     if (!fields.includes('content') || !isLessonBodyUnfilled(entity.body)) return [];
     return [{
-      field: 'content',
+      field: 'problem',
       reason: entity.body.trim() === ''
-        ? 'тело урока пустое — не заполнено'
-        : 'тело урока — дефолтный скелет, не заполнено по смыслу',
+        ? 'тело урока пустое — передай problem и solution'
+        : 'тело урока — дефолтный скелет, не заполнено по смыслу — передай problem и solution',
     }];
   },
-  // VL-353/VL-362: не текст требования, а ГОТОВЫЙ образец тела — модель
-  // копирует образец вызова, а не формулировку "передай content".
-  next: () => ({ hint: LESSON_BODY_HINT, retryWith: { content: LESSON_BODY_TEMPLATE } }),
+  // VL-379: не текст требования, а ГОТОВЫЙ образец аргументов — форма та же,
+  // что у модели в схеме (три строки, без markdown и `\n`).
+  next: () => ({ hint: LESSON_BODY_HINT, retryWith: { ...LESSON_BODY_TEMPLATE } }),
   noopHint: (entity, keys) =>
     isLessonBodyUnfilled(entity.body)
-      ? `Переданные поля (${keys.join(', ')}) уже такие. ВНИМАНИЕ: тело урока не заполнено (пустое или дефолтный скелет) — передай непустой content (Проблема/Решение/Пример).`
+      ? `Переданные поля (${keys.join(', ')}) уже такие. ВНИМАНИЕ: тело урока не заполнено (пустое или дефолтный скелет) — передай problem (что было не так) и solution (что сделали).`
       : 'Переходи к следующему шагу фазы: повтор с теми же аргументами ничего не изменит.',
   message: (entity, keys, via) =>
     via === 'noop'
@@ -3029,17 +3093,41 @@ const lessonSpec: EntitySpec<LessonEntity> = {
       : via === 'partial'
         ? `Lesson ${entity.lesson.id} обновлён: ${keys.join(', ')} (тело урока всё ещё не заполнено)`
         : `Lesson ${entity.lesson.id} обновлён: ${keys.join(', ')} (updated_date: ${entity.lesson.updated_date})`,
-  // Единственный хук специфики: явно пустое тело — ИСПОРЧЕННЫЙ АРГУМЕНТ
-  // (VL-319), а не свойство состояния. Файл не перезаписывается.
-  beforeWrite: (_args, updates) => {
-    if (updates.content !== undefined && String(updates.content).trim() === '') {
+  // Единственный хук специфики: испорченный АРГУМЕНТ тела, а не свойство
+  // состояния (VL-319). Файл не перезаписывается. VL-379: проверяются части —
+  // problem и solution передаются вместе и непустыми; example без них смысла
+  // не имеет (тело не собирается).
+  beforeWrite: args => {
+    const hasProblem = args.problem !== undefined;
+    const hasSolution = args.solution !== undefined;
+    const hasExample = args.example !== undefined;
+    if (!hasProblem && !hasSolution) {
+      if (hasExample) {
+        return {
+          message:
+            'example без problem и solution не применяется: тело урока собирается из problem и solution. ' +
+            'Файл урока не изменён.',
+          missing: [{ field: 'problem', reason: 'example передан без problem/solution — тело не собрать' }],
+          hint: 'Передай problem (что было не так) и solution (что сделали) вместе с example.',
+          retryWith: { ...LESSON_BODY_TEMPLATE },
+        };
+      }
+      return null;
+    }
+    const emptyParts: string[] = [];
+    if (!hasProblem || String(args.problem).trim() === '') emptyParts.push('problem');
+    if (!hasSolution || String(args.solution).trim() === '') emptyParts.push('solution');
+    if (emptyParts.length > 0) {
       return {
         message:
-          'Пустое тело урока недопустимо: \`content\` пустой (или только пробелы). ' +
-          'Передай Проблему/Решение/Пример — файл урока не изменён.',
-        missing: [{ field: 'content', reason: 'передан пустой content — тело урока не может быть пустым' }],
-        hint: 'Передай непустой markdown: ## Проблема / ## Решение / ## Пример.',
-        retryWith: { content: LESSON_BODY_TEMPLATE },
+          `Пустое или неполное тело урока недопустимо: не передано ${emptyParts.join(', ')}. ` +
+          'Передай problem и solution обычным текстом — файл урока не изменён.',
+        missing: emptyParts.map(field => ({
+          field,
+          reason: 'тело урока заменяется целиком — нужны и problem, и solution',
+        })),
+        hint: 'Передай problem (что было не так) и solution (что сделали); example — если есть.',
+        retryWith: { ...LESSON_BODY_TEMPLATE },
       };
     }
     return null;

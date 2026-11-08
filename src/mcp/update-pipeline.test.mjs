@@ -113,11 +113,12 @@ describe('VL-369 AC1/AC2 — таблица исходов «записали ×
   });
 
   it('испорченный аргумент → rejected (единственное место отказа)', async () => {
-    const l = createLessonFile(cwd, { title: 'Урок для пустого content' });
-    const ack = await call('lesson_update', { id: l.id, content: '   ' });
+    const l = createLessonFile(cwd, { title: 'Урок для пустого тела' });
+    // VL-379: тело передаётся частями — «пустое тело» это пустой problem/solution
+    const ack = await call('lesson_update', { id: l.id, problem: '   ', solution: 'р' });
     assert.equal(ack.outcome, 'rejected', JSON.stringify(ack));
-    assert.match(String(ack.error), /Пустое тело урока/);
-    assert.match(String(ack.retryWith?.content), /## Проблема/, 'готовый образец в отказе');
+    assert.match(String(ack.error), /Пустое или неполное тело урока/);
+    assert.equal(ack.retryWith.problem, '<что было не так>', 'готовый образец в отказе');
   });
 });
 
@@ -134,7 +135,7 @@ describe('VL-369 AC3 — skipped заполняется у всех четырё
     assert.ok(fields.includes('priority'), 'переданный null — тоже skipped');
   });
 
-  it('lesson_update: неизвестное поле и null попадают в skipped', async () => {
+  it('lesson_update: неизвестное поле, удалённый content и null попадают в skipped', async () => {
     const l = createLessonFile(cwd, { title: 'Skipped урок', content: '## Проблема\n\nx\n' });
     const ack = await call('lesson_update', {
       id: l.id, content: '## Проблема\n\nx\n', чужоеПоле: true, status: null,
@@ -142,6 +143,10 @@ describe('VL-369 AC3 — skipped заполняется у всех четырё
     const fields = ack.skipped.map(s => s.field);
     assert.ok(fields.includes('чужоеПоле'), `skipped: ${JSON.stringify(ack.skipped)}`);
     assert.ok(fields.includes('status'), 'null — тоже skipped');
+    // VL-379: `content` удалён из схемы — причина своя, не «неизвестное поле»
+    const removed = ack.skipped.find(s => s.field === 'content');
+    assert.ok(removed, 'удалённый content в skipped');
+    assert.match(String(removed.reason), /поле удалено/, 'причина объясняет замену');
   });
 
   it('document_update: неизвестное поле и null попадают в skipped', async () => {
@@ -194,10 +199,11 @@ describe('VL-369 AC5 — неполная сущность НИКОГДА не �
     assert.deepEqual(getLesson(cwd, l.id).lesson.linked_tasks, [t.id], 'linked_tasks в файле');
   });
 
-  it('rejected — только порча аргумента: пустой content, несуществующий id, неверный тип AC', async () => {
+  it('rejected — только порча аргумента: пустой problem, несуществующий id, неверный тип AC', async () => {
     const l = createLessonFile(cwd, { title: 'Урок порчи', content: '## Проблема\n\nx\n' });
-    // Явно пустое тело — JSON-отказ с готовым образцом (хук beforeWrite)
-    assert.equal((await call('lesson_update', { id: l.id, content: '' })).outcome, 'rejected');
+    // Явно пустая часть тела — JSON-отказ с готовым образцом (хук beforeWrite).
+    // VL-379: тело передаётся частями, поэтому «пустое тело» = пустой problem.
+    assert.equal((await call('lesson_update', { id: l.id, problem: '', solution: 'x' })).outcome, 'rejected');
     // Несуществующий id и неверный тип AC — исключение на границе инструмента
     // (так же, как до VL-369: это порча аргумента, а не свойство сущности)
     await assert.rejects(handleToolCall('backlog_update_task', { id: 'VL-999999', priority: 'High' }, cwd), /не найдена/);

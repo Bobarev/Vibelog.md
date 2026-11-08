@@ -1177,33 +1177,55 @@ describe('VL-254 — бюджет времени и запрет node -e-обх�
 // Шаблоны Close/Code вызывали `lesson_create` без `content`, и
 // `createLessonFile` писал пустое тело — рождались уроки-пустышки (lesson-191),
 // которые потом не поддавались дополнению через `lesson_update` (noop →
-// повтор → кап → fail → авто-resume, сессия agent-1793712738536). Инвариант:
-// каждый `lesson_create` в шаблонах фаз обязан передавать `content`.
+// повтор → кап → fail → авто-resume, сессия agent-1793712738536).
+//
+// VL-379: форма аргумента изменилась — тело передаётся тремя обычными строками
+// (problem/solution/example), `content` удалён из схем обоих инструментов.
+// Инвариант теперь: каждый `lesson_create` в шаблонах фаз передаёт problem и
+// solution, и НИ ОДИН шаблон не передаёт уроку `content` (иначе Close начнёт
+// присылать несуществующее поле и урок останется без тела).
 
-describe('VL-319 — lesson_create в шаблонах фаз передаёт content', () => {
+describe('VL-379 — lesson_create в шаблонах фаз передаёт problem/solution', () => {
   const phaseFiles = readdirSync(templatesDir).filter(f => f.endsWith('.md'));
 
-  it('AC6: каждый lesson_create в templates/phases/*.md содержит content', () => {
+  it('AC5: каждый lesson_create в templates/phases/*.md содержит problem и solution', () => {
     const offenders = [];
     for (const file of phaseFiles) {
       const text = readFileSync(join(templatesDir, file), 'utf-8');
       // Аргументы вызова — от «lesson_create {» до закрывающей «}» в той же строке
       for (const m of text.matchAll(/lesson_create\s*\{([^\n]*)\}/g)) {
-        if (!m[1].includes('"content"')) offenders.push(`${file}: ${m[0].slice(0, 120)}`);
+        const args = m[1];
+        if (!args.includes('"problem"') || !args.includes('"solution"')) {
+          offenders.push(`${file}: ${m[0].slice(0, 120)}`);
+        }
       }
     }
-    assert.deepEqual(offenders, [], `lesson_create без content: ${offenders.join(' | ')}`);
+    assert.deepEqual(offenders, [], `lesson_create без problem/solution: ${offenders.join(' | ')}`);
   });
 
-  it('AC6: Close-шаблоны (обычный и worktree) передают content в lesson_create', () => {
+  it('AC5: Close-шаблоны (обычный и worktree) передают problem и solution', () => {
     for (const file of ['phase-close.md', 'phase-close-worktree.md']) {
       const text = readFileSync(join(templatesDir, file), 'utf-8');
       const calls = [...text.matchAll(/lesson_create\s*\{([^\n]*)\}/g)];
       assert.ok(calls.length > 0, `${file}: вызов lesson_create присутствует`);
       for (const call of calls) {
-        assert.ok(call[1].includes('"content"'), `${file}: lesson_create обязан передавать content`);
+        assert.ok(call[1].includes('"problem"'), `${file}: lesson_create обязан передавать problem`);
+        assert.ok(call[1].includes('"solution"'), `${file}: lesson_create обязан передавать solution`);
       }
     }
+  });
+
+  it('AC5: ни один шаблон не передаёт уроку удалённый аргумент content', () => {
+    // Сторож формы аргумента: `content` остаётся только у document_create
+    // (phase-investigate.md) — это документ, а не урок.
+    const offenders = [];
+    for (const file of phaseFiles) {
+      const text = readFileSync(join(templatesDir, file), 'utf-8');
+      for (const m of text.matchAll(/(lesson_create|lesson_update)\s*\{([^\n]*)\}/g)) {
+        if (m[2].includes('"content"')) offenders.push(`${file}: ${m[0].slice(0, 120)}`);
+      }
+    }
+    assert.deepEqual(offenders, [], `шаблон передаёт уроку content: ${offenders.join(' | ')}`);
   });
 });
 
@@ -1362,19 +1384,23 @@ describe('VL-318 — git_commit документации в close-шаблона
   });
 });
 
-describe('VL-364 — шаг уроков close-worktree: образец lesson_update с content', () => {
+describe('VL-364/VL-379 — шаг уроков close-worktree: образец lesson_update с problem/solution', () => {
   const text = readFileSync(join(templatesDir, 'phase-close-worktree.md'), 'utf-8');
 
-  it('образец lesson_update содержит content', () => {
+  it('образец lesson_update содержит problem и solution (без content)', () => {
     const calls = [...text.matchAll(/lesson_update\s*\{([^\n]*)\}/g)];
     assert.ok(calls.length > 0, 'вызов lesson_update присутствует');
-    assert.ok(calls.some((c) => c[1].includes('"content"')), 'образец обязан нести content');
+    assert.ok(
+      calls.some((c) => c[1].includes('"problem"') && c[1].includes('"solution"')),
+      'образец обязан нести problem и solution',
+    );
+    assert.ok(!calls.some((c) => c[1].includes('"content"')), 'content в образце запрещён (VL-379)');
   });
 
-  it('рядом с образцом — правило про missing: content', () => {
+  it('рядом с образцом — правило про missing: problem', () => {
     const idx = text.indexOf('lesson_update {');
     assert.ok(idx !== -1, 'образец lesson_update найден');
-    assert.match(text.slice(idx, idx + 1200), /missing/, 'нет правила про missing: content');
+    assert.match(text.slice(idx, idx + 1200), /missing/, 'нет правила про missing');
   });
 
   it('нумерация без дробных шагов', () => {
