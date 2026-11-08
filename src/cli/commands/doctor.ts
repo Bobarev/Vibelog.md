@@ -19,6 +19,7 @@ import { loadConfig } from '../../core/config.js';
 import { listTasks } from '../../core/store.js';
 import { markdownToTask } from '../../core/task.js';
 import { checkTaskIntegrity } from '../../core/integrity.js';
+import { validateCompleteness } from '../../core/workflow.js';
 import type { FlagValues } from '../args.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -97,6 +98,10 @@ export async function runDoctor(
   // 12. Корневой `.gitignore` при существующем `.env` (VL-348): без него
   // секреты уезжают в git первым же `git add -A`.
   checks.push(checkRootGitignore(cwd));
+
+  // 13. Согласованность ключей `completeness` с объявленными workflow/фазами
+  // (VL-377): опечатка в имени молча отключала гейт неполноты.
+  checks.push(checkCompletenessConfig(cwd));
 
   // Предупреждение про кэш MCP
   warnings.push('Qwen Code: MCP-сервер мог быть закэширован. Если Qwen не видит новые инструменты — перезапусти Qwen.');
@@ -663,6 +668,40 @@ function checkTaskIntegrityReport(cwd: string): CheckResult {
 }
 
 /**
+ * Проверка 13: ключи `completeness` в `.vibelog/settings.json` (VL-377).
+ *
+ * `ok = warnings.length === 0`. В `requiredNames` проверка НЕ входит (как
+ * `task_integrity`): опечатка в конфигурации — не поломка окружения, и
+ * красный exit code `doctor` на легаси-настройках был бы шумом. При этом
+ * human-вывод показывает `✗` + hint: молчаливое отключение гейта неполноты
+ * (задача закрывается без проверки AC/DoD) хуже видимого крестика.
+ *
+ * @param cwd — каталог проекта
+ */
+function checkCompletenessConfig(cwd: string): CheckResult {
+  try {
+    const warnings = validateCompleteness(cwd);
+    const ok = warnings.length === 0;
+    return {
+      name: 'completeness_config',
+      ok,
+      value: { count: warnings.length, warnings: warnings.slice(0, 20) },
+      hint: ok
+        ? undefined
+        : 'Ключи completeness в .vibelog/settings.json не совпадают с объявленными workflow/фазами/полями — ' +
+          'правило неполноты молча не применяется. Исправьте имена или удалите запись.',
+    };
+  } catch (err) {
+    return {
+      name: 'completeness_config',
+      ok: false,
+      value: null,
+      hint: (err as Error).message,
+    };
+  }
+}
+
+/**
  * Печатает результаты в человекочитаемом виде.
  */
 function printHuman(checks: CheckResult[], warnings: string[]): void {
@@ -682,7 +721,12 @@ function printHuman(checks: CheckResult[], warnings: string[]): void {
         line += 'ok';
       }
     } else {
-      line += String(check.value ?? 'ошибка');
+      // Объект в value печатаем как JSON: у проверок с диагностикой
+      // (task_integrity, completeness_config) value — структура, и
+      // String(object) давала бесполезное «[object Object]» (VL-377).
+      line += typeof check.value === 'object' && check.value !== null
+        ? JSON.stringify(check.value)
+        : String(check.value ?? 'ошибка');
       if (check.hint) {
         console.log(line);
         console.log(`  ${colorize(check.hint, 'yellow')}`);

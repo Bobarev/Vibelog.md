@@ -352,6 +352,36 @@ describe('Диагностика — git-политика .vibelog/ (VL-340)', (
     const check = json.checks.find(c => c.name === 'root_gitignore_exists');
     assert.equal(check.ok, true, 'секретов нет — правило не требуется');
   });
+
+  // VL-377: предупреждения о несогласованной секции completeness
+  it('VL-377: валидная конфигурация → completeness_config ok, count 0', () => {
+    const dir = makeFixture({ git: true, gitignore: true });
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    const check = json.checks.find(c => c.name === 'completeness_config');
+    assert.ok(check, 'проверка completeness_config присутствует');
+    assert.equal(check.ok, true);
+    assert.equal(check.value.count, 0);
+  });
+
+  it('VL-377: опечатка в имени workflow → completeness_config не ok, но doctor остаётся ok', () => {
+    const dir = makeFixture({ git: true, gitignore: true });
+    // backlog обязателен для doctor (иначе json.ok=false по backlog_dir) — создаём
+    runCli(['init', 'Completeness', '--prefix', 'cpl'], { cwd: dir });
+    writeFileSync(join(dir, '.vibelog', 'settings.json'), JSON.stringify({
+      completeness: { defualt: { close: { task: ['acceptanceCriteria'] } } },
+    }, null, 2), 'utf-8');
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    const check = json.checks.find(c => c.name === 'completeness_config');
+    assert.ok(check, 'проверка completeness_config присутствует');
+    assert.equal(check.ok, false, 'опечатка должна быть видна');
+    assert.equal(check.value.count, 1);
+    assert.equal(check.value.warnings[0].kind, 'workflow');
+    assert.ok(check.hint, 'есть подсказка');
+    // проверка не входит в requiredNames — exit code не меняется из-за конфигурации
+    assert.equal(json.ok, true);
+  });
 });
 
 describe('Диагностика — незакоммиченные billing/settings (VL-352)', () => {

@@ -109,6 +109,257 @@ export const DEFAULT_COMPLETENESS: CompletenessMap = {
   },
 };
 
+/**
+ * Сущности, для которых `completeness` реально применяется (VL-377).
+ *
+ * Литеральный набор вместо `string` во втором уровне `CompletenessMap`:
+ * имена сущностей НЕ настраиваются, поэтому опечатка (`tsak`) — всегда
+ * дефект конфигурации, и `validateCompleteness` обязана её показать.
+ */
+export const COMPLETENESS_ENTITIES: readonly string[] = ['task', 'lesson'];
+
+/**
+ * Известные поля `Task`, которые понимает `taskCompletenessMissing` (VL-377).
+ *
+ * Список — контракт «что можно требовать», а не «что есть в типе»: TS-типы в
+ * рантайме не существуют, поэтому набор продублирован явно. Дрейф ловится
+ * тестом (`workflow.test.mjs`: `KNOWN_TASK_FIELDS` ⊇ ключи `createTask(...)`,
+ * без лишних имён) — иначе новое поле `Task` давало бы ложное предупреждение
+ * «поля нет в Task».
+ *
+ * Почему это важно: для незнакомого не-чеклист поля `taskCompletenessMissing`
+ * делает `isEmptyFieldValue(record[field])` → `undefined` → поле попадает в
+ * `missing` ВСЕГДА (обратный эффект опечатки — вечная неполнота).
+ */
+export const KNOWN_TASK_FIELDS: readonly string[] = [
+  // frontmatter
+  'id', 'title', 'status', 'priority', 'assignee', 'reporter', 'created_date', 'updated_date',
+  'due_date', 'labels', 'dependencies', 'milestone', 'type', 'project', 'parent_task_id',
+  'ordinal', 'references', 'documentation', 'modified_files', 'lessons', 'token_usage',
+  // тело (секции)
+  'description', 'acceptanceCriteria', 'definitionOfDone', 'implementationPlan',
+  'implementationNotes', 'finalSummary', 'comments',
+];
+
+/**
+ * Поля урока, которые реально проверяются (VL-377).
+ *
+ * Единственное проверяемое поле урока — тело (`content`): метаданные урока
+ * (title/tags/…) в расчёте неполноты не участвуют (`src/mcp/tools.ts`,
+ * `lessonSpec.completeness`), поэтому прочие имена для `lesson` инертны.
+ */
+export const KNOWN_LESSON_FIELDS: readonly string[] = ['content'];
+
+/**
+ * Предупреждение валидации секции `completeness` (VL-377).
+ *
+ * Опечатка в настраиваемом имени молча отключала правило неполноты: гейт
+ * «нельзя закрыть задачу с неотмеченными пунктами» переставал работать без
+ * единого следа в логе/ответе инструмента. Предупреждение — единственный
+ * наблюдаемый путь для такого дефекта конфигурации.
+ */
+export interface CompletenessWarning {
+  /** Что не так: структура записи, имя workflow/фазы/сущности/поля, ссылка task_workflows. */
+  kind: 'structure' | 'workflow' | 'phase' | 'entity' | 'field' | 'task_workflow';
+  /** Путь в конфигурации: `completeness.defualt.close.task[0]`, `task_workflows.bugg`. */
+  path: string;
+  /** Готовый текст для пользователя: что не так и почему правило не применится. */
+  message: string;
+}
+
+/**
+ * Расстояние Левенштейна — для подсказки «возможно, имелось в виду …».
+ *
+ * Локальная копия вместо импорта из `src/mcp/tools.ts`: core не должен
+ * зависеть от слоя MCP (модуль намеренно импортирует только settings.js).
+ * Имена короткие, оптимизации не нужны.
+ */
+function levenshtein(a: string, b: string): number {
+  const prev: number[] = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i += 1) {
+    let diag = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const tmp = prev[j];
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diag = tmp;
+    }
+  }
+  return prev[b.length];
+}
+
+/**
+ * Ближайшее известное имя для опечатки (порог — как у подсказок `_warning`
+ * в `update_task`: не больше max(2, len/3) либо вхождение подстроки).
+ *
+ * @returns имя-кандидат либо null, если ничего похожего нет
+ */
+function nearestName(input: string, known: readonly string[]): string | null {
+  const lower = input.toLowerCase();
+  let best: string | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of known) {
+    const c = candidate.toLowerCase();
+    const distance = c.includes(lower) || lower.includes(c) ? 0 : levenshtein(lower, c);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = candidate;
+    }
+  }
+  const threshold = Math.max(2, Math.floor(input.length / 3));
+  return best !== null && bestDistance <= threshold ? best : null;
+}
+
+/**
+ * Валидирует секцию `completeness` (и ссылки `task_workflows`) в settings (VL-377).
+ *
+ * Читает СЫРОЙ settings, а не `loadCompleteness`: структурно битая запись в
+ * карту не попадает и иначе исчезла бы бесследно — а пропуск записи и есть
+ * часть дефекта («конфигурация молча не действует»).
+ *
+ * Проверяемые уровни (AC1 задачи VL-377):
+ * - имя workflow — против `loadWorkflows(cwd).workflows` ∪ ключей
+ *   `DEFAULT_COMPLETENESS` (`simple` объявлен не в каждом проекте, но его
+ *   дефолтная запись легитимна);
+ * - имя фазы — против `transitions[].phase` ЭТОГО workflow (+ `'*'`, плюс
+ *   `SERVICE_PHASES`). Для workflow без объявления в `workflows` (например
+ *   `simple`) фазы не проверяются: переходов нет, предупреждать не о чем;
+ * - имя сущности — `COMPLETENESS_ENTITIES` (`task`/`lesson`);
+ * - имя поля — `KNOWN_TASK_FIELDS` / `KNOWN_LESSON_FIELDS`;
+ * - `task_workflows`: значение обязано быть объявленным workflow (иначе
+ *   задача молча получит `default`).
+ *
+ * Ничего не отбрасывает и не переписывает: `loadCompleteness` продолжает
+ * работать по принципу частичной валидности (битая запись выпадает, валидные
+ * остаются) — предупреждения лишь делают причину видимой.
+ *
+ * @param cwd — каталог проекта (.vibelog/settings.json)
+ * @returns список предупреждений; пустой массив — конфигурация согласована
+ */
+export function validateCompleteness(cwd: string): CompletenessWarning[] {
+  const settings = loadSettings(cwd);
+  const config = loadWorkflows(cwd);
+  const declared = Object.keys(config.workflows);
+  const warnings: CompletenessWarning[] = [];
+
+  // ── task_workflows: ссылка на необъявленный workflow ──
+  const rawTaskMap = settings.task_workflows;
+  if (rawTaskMap !== null && typeof rawTaskMap === 'object' && !Array.isArray(rawTaskMap)) {
+    for (const [type, value] of Object.entries(rawTaskMap as Record<string, unknown>)) {
+      if (typeof value !== 'string' || value === '') continue;
+      if (declared.includes(value)) continue;
+      const hint = nearestName(value, declared);
+      warnings.push({
+        kind: 'task_workflow',
+        path: `task_workflows.${type}`,
+        message:
+          `тип задачи «${type}» ссылается на необъявленный workflow «${value}»` +
+          (hint !== null ? ` (возможно, имелось в виду «${hint}»)` : '') +
+          ` — задача получит правила workflow «default»`,
+      });
+    }
+  }
+
+  const raw = settings.completeness;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return warnings;
+
+  const knownWorkflows = [...declared];
+  for (const name of Object.keys(DEFAULT_COMPLETENESS)) {
+    if (!knownWorkflows.includes(name)) knownWorkflows.push(name);
+  }
+
+  for (const [workflowName, entry] of Object.entries(raw as Record<string, unknown>)) {
+    const workflowPath = `completeness.${workflowName}`;
+
+    // 1. Структура записи (фаза → сущность → массив строк).
+    if (!isValidCompletenessEntry(entry)) {
+      warnings.push({
+        kind: 'structure',
+        path: workflowPath,
+        message:
+          `запись «${workflowName}» не соответствует формату «фаза → сущность → массив строк» ` +
+          'и пропускается при чтении (правила workflow не применяются)',
+      });
+      continue; // дальше проверять нечего — данные не той формы
+    }
+
+    // 2. Имя workflow.
+    if (!knownWorkflows.includes(workflowName)) {
+      const hint = nearestName(workflowName, knownWorkflows);
+      warnings.push({
+        kind: 'workflow',
+        path: workflowPath,
+        message:
+          `workflow «${workflowName}» не объявлен (объявлены: ${knownWorkflows.join(', ')})` +
+          (hint !== null ? ` — возможно, имелось в виду «${hint}»` : '') +
+          '; запись не применяется, задача получит правила workflow «default»',
+      });
+      // Фазы/сущности/поля такой записи тоже не применяются — о них сообщать
+      // отдельно смысла нет: корень проблемы уже назван.
+      continue;
+    }
+
+    // 3. Фазы — только для workflow, чьи переходы известны.
+    const workflow = config.workflows[workflowName];
+    let knownPhases: string[] | null = null;
+    if (workflow !== undefined) {
+      knownPhases = ['*', ...SERVICE_PHASES];
+      for (const t of workflow.transitions) {
+        if (t.phase !== null && !knownPhases.includes(t.phase)) knownPhases.push(t.phase);
+      }
+    }
+
+    for (const [phase, perEntity] of Object.entries(entry as Record<string, Record<string, string[]>>)) {
+      const phasePath = `${workflowPath}.${phase}`;
+      if (knownPhases !== null && !knownPhases.includes(phase)) {
+        const hint = nearestName(phase, knownPhases);
+        warnings.push({
+          kind: 'phase',
+          path: phasePath,
+          message:
+            `фазы «${phase}» нет в workflow «${workflowName}» (есть: ${knownPhases.join(', ')})` +
+            (hint !== null ? ` — возможно, имелось в виду «${hint}»` : '') +
+            '; правило этой фазы не применится',
+        });
+      }
+
+      for (const [entity, fields] of Object.entries(perEntity ?? {})) {
+        const entityPath = `${phasePath}.${entity}`;
+        if (!COMPLETENESS_ENTITIES.includes(entity)) {
+          const hint = nearestName(entity, COMPLETENESS_ENTITIES);
+          warnings.push({
+            kind: 'entity',
+            path: entityPath,
+            message:
+              `сущность «${entity}» не поддерживается (допустимы: ${COMPLETENESS_ENTITIES.join(', ')})` +
+              (hint !== null ? ` — возможно, имелось в виду «${hint}»` : '') +
+              '; набор полей не применится, сущность будет считаться полной',
+          });
+          continue;
+        }
+
+        const knownFields = entity === 'lesson' ? KNOWN_LESSON_FIELDS : KNOWN_TASK_FIELDS;
+        for (let i = 0; i < (fields ?? []).length; i += 1) {
+          const field = fields[i];
+          if (knownFields.includes(field)) continue;
+          const hint = nearestName(field, knownFields);
+          warnings.push({
+            kind: 'field',
+            path: `${entityPath}[${i}]`,
+            message:
+              (entity === 'lesson'
+                ? `для урока проверяется только ${KNOWN_LESSON_FIELDS.join(', ')} — поле «${field}» не применяется`
+                : `поля «${field}» нет в Task — оно всегда будет считаться незаполненным`) +
+              (hint !== null ? ` (возможно, имелось в виду «${hint}»)`: ''),
+          });
+        }
+      }
+    }
+  }
+
+  return warnings;
+}
+
 /** Конфигурация workflow проекта (секции settings.json). */
 export interface WorkflowConfig {
   /** Имя → workflow; отсутствует 'default' → подставляется DEFAULT_WORKFLOW. */
