@@ -27,6 +27,8 @@ import { fetch as undiciFetch } from 'undici';
 import { loadConfig } from './config.js';
 import { loadSettings, saveSettingsPatch } from './settings.js';
 import { readEnvFile } from './setup-secrets.js';
+import { resolveGitUpstreamConfig, reportId, sourceProjectName, writeReport } from './upstream-git.js';
+import type { UpstreamGitConfig } from './upstream-git.js';
 
 /** База API GitVerse по умолчанию (не `gitverse.ru` — именно `api.`). */
 export const DEFAULT_API_BASE = 'https://api.gitverse.ru';
@@ -125,6 +127,8 @@ export class GitverseError extends Error {
 
 /** Разрешённая конфигурация upstream (секция `upstream` + токен). */
 export interface UpstreamConfig {
+  /** Транспорт: GitVerse Issues (для `git` — см. `UpstreamGitConfig`). */
+  mode?: 'api';
   /** `owner/name` как в настройках. */
   repo: string;
   owner: string;
@@ -269,22 +273,76 @@ export function tokenHint(envName: string = GITVERSE_TOKEN_ENV): string {
 export function configHint(): string {
   return (
     'добавь в .vibelog/settings.json секцию upstream: ' +
-    '{"repo": "owner/name", "labels": ["upstream"], "type": "bug"}'
+    '{"mode": "git", "inbox": "git@gitverse.ru:owner/inbox.git", "prefix": "vl"} ' +
+    'либо {"mode": "api", "repo": "owner/name", "labels": ["upstream"], "type": "bug"}'
   );
+}
+
+/** Режим транспорта: `git` (по умолчанию, VL-375) или `api` (GitVerse Issues, VL-363). */
+export type UpstreamMode = 'git' | 'api';
+
+/** Разрешённая конфигурация любого транспорта (discriminated union по `mode`). */
+export type UpstreamTransportConfig = UpstreamGitConfig | UpstreamConfig;
+
+/**
+ * Читает режим транспорта из секции `upstream`.
+ *
+ * Поле `mode` отсутствует → `git`: основной транспорт (API «Задачи 2.0»
+ * закрыт, см. doc-28). Невалидное значение → `config`.
+ */
+function upstreamMode(raw: Record<string, unknown>): UpstreamMode {
+  const mode = typeof raw.mode === 'string' ? raw.mode.trim().toLowerCase() : '';
+  if (mode === '') return 'git';
+  if (mode !== 'git' && mode !== 'api') {
+    throw new GitverseError(
+      `поле upstream.mode: ожидалось «git» или «api», получено ${JSON.stringify(raw.mode)} — ${configHint()}`,
+      'config',
+    );
+  }
+  return mode;
+}
+
+/**
+ * Настроен ли upstream: `true` только при валидной секции (fail-closed).
+ *
+ * Нужен условной видимости MCP-инструмента `upstream_report_bug`: если
+ * инструмент всё равно не сработает (нет `inbox`/`repo`), клиент не должен
+ * даже видеть его существование. Любая ошибка чтения настроек → `false`.
+ */
+export function isUpstreamConfigured(cwd: string): boolean {
+  try {
+    const raw = loadSettings(cwd).upstream;
+    if (!isPlainObject(raw)) return false;
+    if (upstreamMode(raw) === 'git') {
+      return typeof raw.inbox === 'string' && raw.inbox.trim() !== '';
+    }
+    const repo = typeof raw.repo === 'string' ? raw.repo.trim() : '';
+    const parts = repo.split('/');
+    return parts.length === 2 && parts[0].trim() !== '' && parts[1].trim() !== '';
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Разрешает и валидирует конфигурацию upstream (AC5).
  *
+ * Discriminated union по `mode` (VL-375):
+ * - `git` (по умолчанию) — требует `inbox`, `prefix` опционален (дефолт из
+ *   `task_prefix`);
+ * - `api` — требует `repo` + токен, читаются `labels`/`type`/`token_env`.
+ *
  * Ошибки: нет секции → `kind:'config'` с подсказкой; нет токена →
  * `kind:'no_token'` с подсказкой. `token_env` переопределяет имя переменной
  * (нестандартный случай: отдельный токен на другой репозиторий).
  */
-export function resolveUpstreamConfig(cwd: string, opts: RequestOptions = {}): UpstreamConfig {
+export function resolveUpstreamConfig(cwd: string, opts: RequestOptions = {}): UpstreamTransportConfig {
   const raw = loadSettings(cwd).upstream;
   if (!isPlainObject(raw)) {
     throw new GitverseError(`секция upstream не настроена — ${configHint()}`, 'config');
   }
+  // VL-375: основным транспортом стал git-инбокс — ветвление по mode
+  if (upstreamMode(raw) === 'git') return resolveGitUpstreamConfig(cwd, raw);
 
   const repo = typeof raw.repo === 'string' ? raw.repo.trim() : '';
   const parts = repo.split('/');
@@ -349,6 +407,7 @@ export function resolveUpstreamConfig(cwd: string, opts: RequestOptions = {}): U
   }
 
   return {
+    mode: 'api',
     repo,
     owner,
     name,
@@ -978,9 +1037,11 @@ export interface ReportBugInput {
   version?: string;
   /** Имя проекта-источника для секции «Источник». */
   project?: string;
+  /** Получатель отчёта: для git-транспорта — префикс проекта-получателя (VL-375). */
+  target?: string;
 }
 
-/** Результат репорта. */
+/** Результат репорта через GitVerse Issues (mode: api). */
 export interface ReportBugResult {
   number: number;
   url: string;
@@ -989,22 +1050,71 @@ export interface ReportBugResult {
   createdLabels: string[];
 }
 
+/** Результат репорта через git-инбокс (mode: git). */
+export interface ReportGitResult {
+  /** false — отчёт с таким report_id уже был (идемпотентность). */
+  created: boolean;
+  /** Путь отчёта в инбоксе (`reports/<prefix>/<файл>.md`). */
+  path: string;
+  /** Детерминированный id отчёта (sha1) — ack получателя. */
+  reportId: string;
+  /** Получатель отчёта. */
+  target: string;
+}
+
+/** Единый результат репорта: транспорт виден по `mode` (VL-375). */
+export type ReportResult =
+  | ({ mode: 'api' } & ReportBugResult)
+  | ({ mode: 'git' } & ReportGitResult);
+
 /**
- * Полный путь репорта: конфиг → метки → issue (AC6/AC8).
+ * Полный путь репорта: конфиг → транспорт (AC6/AC8).
  *
  * Один код на MCP-инструмент и CLI — иначе два пути разойдутся в деталях
- * (какие метки, какое тело, какой ack), и «через CLI работает, через MCP нет»
- * станет обычным делом.
+ * (какие поля, какой ack), и «через CLI работает, через MCP нет» станет
+ * обычным делом.
+ *
+ * VL-375: ветвится по `upstream.mode` — `git` (по умолчанию) пишет отчёт в
+ * общий репозиторий-инбокс, `api` создаёт issue в GitVerse Issues.
  */
 export async function reportBug(
   cwd: string,
   input: ReportBugInput,
   opts: RequestOptions = {},
-): Promise<ReportBugResult> {
+): Promise<ReportResult> {
   const cfg = resolveUpstreamConfig(cwd, opts);
   const title = (input.title ?? '').trim();
   if (title === '') {
     throw new GitverseError('поле title обязательно: заголовок issue не может быть пустым', 'bad_request');
+  }
+
+  if (cfg.mode === 'git') {
+    const target = (input.target ?? '').trim();
+    if (target === '') {
+      throw new GitverseError(
+        'поле target обязательно для git-транспорта: укажи получателя отчёта (например --target vl)',
+        'config',
+      );
+    }
+    const result = writeReport(cwd, cfg, {
+      source_task: (input.sourceTask ?? '').trim(),
+      title,
+      target,
+      ...(input.body !== undefined ? { body: input.body } : {}),
+      ...(input.severity !== undefined ? { severity: input.severity } : {}),
+      ...(input.area !== undefined ? { area: input.area } : {}),
+    });
+    return {
+      mode: 'git',
+      created: result.created,
+      path: result.path,
+      reportId: reportId({
+        source_project: sourceProjectName(cwd, cfg.prefix),
+        source_task: (input.sourceTask ?? '').trim(),
+        title,
+      }),
+      target,
+    };
   }
 
   const labels: string[] = [...cfg.labels];
@@ -1034,6 +1144,7 @@ export async function reportBug(
   );
 
   return {
+    mode: 'api',
     number: issue.number,
     url: issue.html_url,
     labels,

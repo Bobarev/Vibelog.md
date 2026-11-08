@@ -463,7 +463,7 @@ describe('VL-363 — токен и маскирование', () => {
   });
 
   it('нет токена → no_token с подсказкой (код 4)', () => {
-    const dir = makeProject({ upstream: { repo: 'a/b' } });
+    const dir = makeProject({ upstream: { mode: 'api', repo: 'a/b' } });
     assert.throws(
       () => resolveUpstreamConfig(dir),
       (err) => {
@@ -480,7 +480,7 @@ describe('VL-363 — токен и маскирование', () => {
 
   it('token_env переопределяет имя переменной', () => {
     const dir = makeProject(
-      { upstream: { repo: 'a/b', token_env: 'MY_GITVERSE_TOKEN' } },
+      { upstream: { mode: 'api', repo: 'a/b', token_env: 'MY_GITVERSE_TOKEN' } },
       { env: 'MY_GITVERSE_TOKEN=custom\n' },
     );
     const resolved = resolveUpstreamConfig(dir);
@@ -507,12 +507,12 @@ describe('VL-363 — секция upstream', () => {
   });
 
   it('repo без «/» → config', () => {
-    const dir = makeProject({ upstream: { repo: 'nope' } }, { env: `${GITVERSE_TOKEN_ENV}=t\n` });
+    const dir = makeProject({ upstream: { mode: 'api', repo: 'nope' } }, { env: `${GITVERSE_TOKEN_ENV}=t\n` });
     assert.throws(() => resolveUpstreamConfig(dir), (err) => err.kind === 'config');
   });
 
   it('дефолтные метки — upstream + from-<prefix>', () => {
-    const dir = makeProject({ upstream: { repo: 'a/b' } }, { env: `${GITVERSE_TOKEN_ENV}=t\n` });
+    const dir = makeProject({ upstream: { mode: 'api', repo: 'a/b' } }, { env: `${GITVERSE_TOKEN_ENV}=t\n` });
     const resolved = resolveUpstreamConfig(dir);
     assert.deepEqual(resolved.labels, ['upstream', 'from-ui']);
     assert.equal(resolved.type, 'bug');
@@ -522,7 +522,7 @@ describe('VL-363 — секция upstream', () => {
 
   it('project_id/done_column читаются и валидируются', () => {
     const dir = makeProject(
-      { upstream: { repo: 'a/b', project_id: 42, done_column: 'Done' } },
+      { upstream: { mode: 'api', repo: 'a/b', project_id: 42, done_column: 'Done' } },
       { env: `${GITVERSE_TOKEN_ENV}=t\n` },
     );
     const resolved = resolveUpstreamConfig(dir);
@@ -530,7 +530,7 @@ describe('VL-363 — секция upstream', () => {
     assert.equal(resolved.doneColumn, 'Done');
 
     const bad = makeProject(
-      { upstream: { repo: 'a/b', project_id: 'x' } },
+      { upstream: { mode: 'api', repo: 'a/b', project_id: 'x' } },
       { env: `${GITVERSE_TOKEN_ENV}=t\n` },
     );
     assert.throws(() => resolveUpstreamConfig(bad), (err) => err.kind === 'config');
@@ -624,7 +624,7 @@ describe('VL-363 — тело issue и reportBug', () => {
 
   it('reportBug: конфиг → метки → issue, ack с номером', async () => {
     const dir = makeProject(
-      { upstream: { repo: 'bobarev/Vibelog.md', labels: ['upstream', 'from-ui'], type: 'bug' } },
+      { upstream: { mode: 'api', repo: 'bobarev/Vibelog.md', labels: ['upstream', 'from-ui'], type: 'bug' } },
       { env: `${GITVERSE_TOKEN_ENV}=${TOKEN}\n` },
     );
     process.env[API_BASE_ENV] = base();

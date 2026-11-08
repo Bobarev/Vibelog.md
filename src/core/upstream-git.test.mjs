@@ -1,0 +1,310 @@
+/**
+ * Тесты git-транспорта баг-репортов (VL-375).
+ *
+ * Проверяется поведение из AC:
+ *   1. создание отчёта + коммит + push в локальный bare-репозиторий;
+ *   2. идемпотентность по `report_id` (второй writeReport не создаёт файл);
+ *   3. `listIncoming` фильтрует по `target` и `status: open`;
+ *   4. `ackReport` меняет ТОЛЬКО `status`/`accepted_as` (остальное байт-в-байт);
+ *   5. `ensureInboxClone` создаёт клон / обновляет существующий;
+ *   6. `git add` берёт только файл отчёта (мусор в рабочем дереве не попадает);
+ *   7. чистые функции: slugify (кириллица → латиница), parse/serialize round-trip,
+ *      паритет с образцом отчёта (источник истины формата — код).
+ *
+ * Фикстура — локальный bare-репозиторий рядом с проектом (приём git-commit.test.mjs):
+ * сеть не нужна, push идёт в файловый путь. Каталог — mkdtempSync (VL-241).
+ */
+
+import { describe, it, beforeEach, afterEach } from 'vitest';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  INBOX_DIR,
+  UpstreamGitError,
+  ackReport,
+  ensureInboxClone,
+  listIncoming,
+  parseReport,
+  replaceAckFields,
+  reportId,
+  reportRelPath,
+  serializeReport,
+  slugify,
+  targetMatches,
+  writeReport,
+} from '../../dist/core/upstream-git.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/** git в каталоге (без шелла, пути аргументами). */
+function git(cwd, ...args) {
+  return execFileSync('/usr/bin/git', args, { cwd, encoding: 'utf8' }).trim();
+}
+
+/** Создаёт bare-инбокс с начальным коммитом и пустой проект-источник. */
+function makeFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'vibelog-upstream-git-'));
+  const remote = join(root, 'inbox.git');
+  const seed = join(root, 'seed');
+  const project = join(root, 'project');
+
+  execFileSync('/usr/bin/git', ['init', '-q', '--bare', remote]);
+  mkdirSync(seed, { recursive: true });
+  execFileSync('/usr/bin/git', ['init', '-q'], { cwd: seed });
+  git(seed, 'config', 'user.email', 'test@example.com');
+  git(seed, 'config', 'user.name', 'Test');
+  writeFileSync(join(seed, 'README.md'), '# Inbox\n', 'utf8');
+  git(seed, 'add', 'README.md');
+  git(seed, 'commit', '-q', '-m', 'init');
+  git(seed, 'remote', 'add', 'origin', remote);
+  git(seed, 'push', '-q', 'origin', 'HEAD:main');
+  execFileSync('/usr/bin/git', ['--git-dir', remote, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
+
+  mkdirSync(join(project, 'backlog'), { recursive: true });
+  writeFileSync(
+    join(project, 'backlog', 'config.yml'),
+    'project_name: Vibelog UI\ntask_prefix: ui\ndefault_status: To Do\nstatuses:\n  - To Do\n  - Done\n',
+    'utf8',
+  );
+  return { root, remote, project, cfg: { mode: 'git', inbox: remote, prefix: 'ui' } };
+}
+
+describe('VL-375 — чистые функции формата отчёта', () => {
+  it('AC2: slugify даёт только [a-z0-9-], кириллица транслитерируется', () => {
+    assert.equal(slugify('git_commit падает на кириллице'), 'git-commit-padaet-na-kirillitse');
+    assert.match(slugify('Шаблон не собирается'), /^[a-z0-9-]+$/);
+    assert.match(slugify('!!! ???'), /^[a-z0-9-]+$/);
+    assert.equal(slugify(''), 'report');
+    // длина ограничена: длинные заголовки не ломают имя файла
+    assert.ok(slugify('a'.repeat(200)).length <= 60);
+  });
+
+  it('AC2: reportId — sha1 от source_project+source_task+title', () => {
+    const a = reportId({ source_project: 'Vibelog UI', source_task: 'UI-12', title: 'Баг' });
+    const b = reportId({ source_project: 'Vibelog UI', source_task: 'UI-12', title: 'Баг' });
+    const c = reportId({ source_project: 'Vibelog UI', source_task: 'UI-13', title: 'Баг' });
+    assert.equal(a, b, 'одни и те же данные → один id');
+    assert.notEqual(a, c, 'разные задачи → разные id');
+    assert.match(a, /^[0-9a-f]{40}$/);
+  });
+
+  it('AC1: serializeReport → parseReport round-trip без потерь', () => {
+    const report = {
+      report_id: 'a'.repeat(40),
+      source_project: 'Vibelog UI',
+      source_prefix: 'ui',
+      source_task: 'UI-12',
+      title: 'git_commit падает на кириллице',
+      target: 'vl',
+      severity: 'high',
+      area: 'mcp',
+      created: '2026-11-08',
+      status: 'open',
+      accepted_as: '',
+      body: '## Что произошло\n\nПодробности\n',
+    };
+    const parsed = parseReport(serializeReport(report));
+    assert.deepEqual(parsed, { ...report, body: '## Что произошло\n\nПодробности' });
+  });
+
+  it('AC1: reportRelPath — дата + task + slug, каталог = префикс', () => {
+    const path = reportRelPath({
+      report_id: 'x',
+      source_project: 'Vibelog UI',
+      source_prefix: 'ui',
+      source_task: 'UI-12',
+      title: 'Кнопка не работает',
+      target: 'vl',
+      severity: '',
+      area: '',
+      created: '2026-11-08',
+      status: 'open',
+      accepted_as: '',
+      body: '',
+    });
+    assert.equal(path, 'reports/ui/2026-11-08-UI-12-knopka-ne-rabotaet.md');
+    assert.match(path, /^reports\/ui\/[A-Za-z0-9._/-]+$/);
+  });
+
+  it('AC10: образец отчёта парсится без потери полей (паритет с кодом)', () => {
+    const sample = readFileSync(join(__dirname, 'fixtures', 'reports', 'vl', '2026-11-08-VL-375-example.md'), 'utf8');
+    const parsed = parseReport(sample);
+    for (const field of [
+      'report_id', 'source_project', 'source_prefix', 'source_task', 'title',
+      'target', 'severity', 'area', 'created', 'status', 'accepted_as',
+    ]) {
+      assert.ok(field in parsed, `поле ${field} не распарсилось`);
+      assert.notEqual(parsed[field], undefined, `поле ${field} пусто`);
+    }
+    assert.equal(parsed.source_prefix, 'ui');
+    assert.equal(parsed.target, 'vl');
+    assert.equal(parsed.status, 'open');
+    assert.equal(parsed.accepted_as, '');
+    assert.match(parsed.body, /## Что произошло/);
+    // round-trip сериализации даёт тот же фронтматтер по полям
+    assert.deepEqual(parseReport(serializeReport(parsed)), parsed);
+  });
+
+  it('targetMatches: префикс, имя проекта и регистр', () => {
+    assert.equal(targetMatches('vl', 'vl'), true);
+    assert.equal(targetMatches('VL', 'vl'), true);
+    assert.equal(targetMatches('Vibelog UI', 'ui'), true);
+    assert.equal(targetMatches('templates', 'ui'), false);
+    assert.equal(targetMatches('', 'ui'), false);
+  });
+
+  it('replaceAckFields меняет только две строки', () => {
+    const text = serializeReport({
+      report_id: 'b'.repeat(40),
+      source_project: 'Vibelog UI',
+      source_prefix: 'ui',
+      source_task: 'UI-12',
+      title: 'Баг',
+      target: 'vl',
+      severity: 'high',
+      area: 'mcp',
+      created: '2026-11-08',
+      status: 'open',
+      accepted_as: '',
+      body: 'тело',
+    });
+    const updated = replaceAckFields(text, 'VL-367');
+    const before = text.split('\n');
+    const after = updated.split('\n');
+    assert.equal(before.length, after.length, 'число строк не меняется');
+    const changed = before.map((line, i) => (line === after[i] ? null : i)).filter((i) => i !== null);
+    assert.equal(changed.length, 2, `изменено строк: ${changed.length}`);
+    assert.equal(after[changed[0]] === 'status: accepted' || after[changed[1]] === 'status: accepted', true);
+    assert.equal(after[changed[0]] === 'accepted_as: VL-367' || after[changed[1]] === 'accepted_as: VL-367', true);
+    assert.equal(parseReport(updated).status, 'accepted');
+    assert.equal(parseReport(updated).accepted_as, 'VL-367');
+  });
+});
+
+describe('VL-375 — git-транспорт на локальном инбоксе', () => {
+  let fx;
+
+  beforeEach(() => {
+    fx = makeFixture();
+  });
+
+  afterEach(() => {
+    rmSync(fx.root, { recursive: true, force: true });
+  });
+
+  it('AC1/AC9: ensureInboxClone создаёт клон, повторно — обновляет', () => {
+    const first = ensureInboxClone(fx.project, fx.cfg);
+    assert.equal(first.created, true);
+    assert.ok(readFileSync(join(first.path, 'README.md'), 'utf8').includes('Inbox'));
+    assert.ok(first.path.endsWith(INBOX_DIR), 'клон внутри проекта-источника');
+
+    const second = ensureInboxClone(fx.project, fx.cfg);
+    assert.equal(second.created, false, 'второй вызов — только pull --rebase');
+  });
+
+  it('AC1/AC3: writeReport пишет файл, коммитит и пушит только его', () => {
+    const result = writeReport(fx.project, fx.cfg, {
+      source_task: 'UI-12',
+      title: 'Кнопка не работает',
+      target: 'vl',
+      body: 'при клике ничего',
+      severity: 'high',
+      area: 'web',
+      created: '2026-11-08',
+    });
+    assert.equal(result.created, true);
+    assert.equal(result.path, 'reports/ui/2026-11-08-UI-12-knopka-ne-rabotaet.md');
+
+    const inbox = join(fx.project, INBOX_DIR);
+    // мусор в рабочем дереве клона не должен попасть в коммит (git add явным путём)
+    writeFileSync(join(inbox, 'junk.txt'), 'мусор\n', 'utf8');
+
+    const committed = git(inbox, 'show', '--name-only', '--pretty=format:', 'HEAD')
+      .split('\n')
+      .filter(Boolean);
+    assert.deepEqual(committed, [result.path], 'в коммите ровно один файл отчёта');
+
+    // push дошёл до bare-репозитория
+    const remoteFiles = git(fx.remote, 'ls-tree', '-r', '--name-only', 'HEAD').split('\n');
+    assert.ok(remoteFiles.includes(result.path), `файл не отправлен в инбокс: ${remoteFiles.join(', ')}`);
+
+    const parsed = parseReport(readFileSync(join(inbox, result.path), 'utf8'));
+    assert.equal(parsed.source_prefix, 'ui');
+    assert.equal(parsed.source_project, 'Vibelog UI');
+    assert.equal(parsed.status, 'open');
+    assert.equal(parsed.accepted_as, '');
+  });
+
+  it('AC2: повторный writeReport идемпотентен по report_id', () => {
+    const input = { source_task: 'UI-12', title: 'Кнопка не работает', target: 'vl' };
+    const first = writeReport(fx.project, fx.cfg, { ...input, created: '2026-11-08' });
+    assert.equal(first.created, true);
+    const commitsBefore = Number(git(join(fx.project, INBOX_DIR), 'rev-list', '--count', 'HEAD'));
+
+    const second = writeReport(fx.project, fx.cfg, { ...input, created: '2026-11-09' });
+    assert.equal(second.created, false, 'второй отчёт не создаётся');
+    assert.equal(second.path, first.path, 'путь существующего отчёта');
+    const commitsAfter = Number(git(join(fx.project, INBOX_DIR), 'rev-list', '--count', 'HEAD'));
+    assert.equal(commitsAfter, commitsBefore, 'нового коммита нет');
+  });
+
+  it('AC1: listIncoming фильтрует по target и status: open', () => {
+    writeReport(fx.project, fx.cfg, { source_task: 'UI-1', title: 'Для vl', target: 'vl', created: '2026-11-08' });
+    writeReport(fx.project, fx.cfg, { source_task: 'UI-2', title: 'Для tpl', target: 'tpl', created: '2026-11-09' });
+    const incoming = listIncoming(fx.project, 'vl');
+    assert.equal(incoming.length, 1);
+    assert.equal(incoming[0].source_task, 'UI-1');
+
+    // после ack отчёт уходит из входящих
+    ackReport(fx.project, incoming[0].report_id, 'VL-999');
+    assert.deepEqual(listIncoming(fx.project, 'vl'), []);
+  });
+
+  it('AC1/AC9: ackReport меняет только status/accepted_as (тело байт-в-байт)', () => {
+    const written = writeReport(fx.project, fx.cfg, {
+      source_task: 'UI-3',
+      title: 'Шаблон не собирается',
+      target: 'vl',
+      body: '## Что произошло\n\nсборка падает',
+      severity: 'high',
+      area: 'install',
+      created: '2026-11-08',
+    });
+    const abs = join(fx.project, INBOX_DIR, written.path);
+    const before = readFileSync(abs, 'utf8');
+    const id = parseReport(before).report_id;
+
+    const res = ackReport(fx.project, id, 'VL-367');
+    assert.equal(res.report.accepted_as, 'VL-367');
+    assert.equal(res.report.status, 'accepted');
+
+    const after = readFileSync(abs, 'utf8');
+    const pick = (text) => text.split('\n').filter((line) => !/^(status|accepted_as):/.test(line));
+    assert.deepEqual(pick(after), pick(before), 'остальное тело изменилось');
+    assert.match(serializeReport(parseReport(after)), /status: accepted/);
+
+    // ack ушёл в инбокс
+    const remoteText = git(fx.remote, 'show', `HEAD:${written.path}`);
+    assert.match(remoteText, /accepted_as: VL-367/);
+  });
+
+  it('AC1: ackReport по неизвестному id → понятная ошибка', () => {
+    ensureInboxClone(fx.project, fx.cfg);
+    assert.throws(
+      () => ackReport(fx.project, 'deadbeef', 'VL-1'),
+      (err) => err instanceof UpstreamGitError && /не найден/.test(err.message),
+    );
+  });
+
+  it('AC1: ensureInboxClone с битым адресом → UpstreamGitError kind network/auth', () => {
+    assert.throws(
+      () => ensureInboxClone(fx.project, { ...fx.cfg, inbox: join(fx.root, 'nope.git') }),
+      (err) => err instanceof UpstreamGitError && ['network', 'auth'].includes(err.kind),
+    );
+  });
+});
