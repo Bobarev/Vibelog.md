@@ -5,7 +5,7 @@ status: Review
 assignee: []
 reporter: ''
 created_date: '2026-11-09 10:57'
-updated_date: '2026-11-09 12:05'
+updated_date: '2026-11-09 12:20'
 due_date: ''
 labels:
   - gitverse
@@ -36,13 +36,13 @@ modified_files:
 lessons:
   - lesson-263
 token_usage:
-  input: 14497764
-  output: 121056
-  cache: 13148672
-  total: 14618820
-  requests: 170
-  duration_ms: 71642
-  reasoning: 33345
+  input: 15596721
+  output: 134200
+  cache: 14120448
+  total: 15730921
+  requests: 197
+  duration_ms: 566688
+  reasoning: 43076
   by_phase:
     code:
       input: 14321618
@@ -50,10 +50,10 @@ token_usage:
       cache: 13020672
       requests: 165
     close:
-      input: 176146
-      output: 898
-      cache: 128000
-      requests: 5
+      input: 1275103
+      output: 14042
+      cache: 1099776
+      requests: 32
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -250,7 +250,20 @@ author: @agent
 created: 2026-11-09 12:05
 ---
 Фаза close прервана агентом (aborted): Фаза Close прервана: конфликт слияния vb/vl-382 → master в файле src/core/registry-fetch.ts (UU). Merge НЕ отменён (git merge --abort не делался), разрешение конфликтов в src/ запрещено регламентом фазы Close — правки кода в Close не вносятся.
-
 Что нужно сделать, чтобы повторить Close: в главном репозитории вручную разрешить конфликт UU в src/core/registry-fetch.ts (слить реализации VL-380 и VL-382: анонимный raw-транспорт без Authorization + Contents API с Bearer/Accept для случая наличия токен — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-09 12:20
+---
+Фаза Close прервана: merge vb/vl-382 → master слит (коммит d7454d1), сборка `pnpm build` прошла, точечный прогон затронутых файлов зелёный (registry-fetch/install/install-registry-deps — 100 тестов), но полный `npx vitest run` падает: `src/core/install-progress.test.mjs > VL-381: vb install — прогресс > --verbose не печатает сам токен, только источник` (1 failed | 202 passed файлов; 3882 passed | 2 failed тестов в первом прогоне, второй прогон — стабильно тот же 1 провал).
+Причина — интеграционная регрессия двух соседних задач, правка требует изменения кода/тестов (в фазе Close запрещена):
+- фикстура `src/core/install-progress.test.mjs` (пришла из VL-381, коммит 06e1649) обслуживает только raw-маршрут `.../raw/branch/{path}` (см. `marker = '/raw/branch/'` в `createServer`, строка ~121) и подменяет только `VIBELOG_REGISTRY_BASE_URL`;
+- после VL-382 при наличии `GITVERSE_TOKEN` (тест пишет его в `.env`) выбор транспорта уходит на Contents API `https://api.gitverse.ru/repos/{owner}/{repo}/contents/...`, которого в фикстуре нет → 401 `Authorization is required` → CLI завершается кодом 3 вместо ожидаемого 0.
+Что нужно сделать, чтобы повторить Close (новая фаза Code, затем Close):
+1. Доучить фикстуру `install-progress.test.mjs` маршруту Contents API (`/repos/{owner}/{repo}/contents/{path}`, ответ `{type:'file',encoding:'base64',content:<base64>}`) и передавать `VIBELOG_GITVERSE_API_BASE` рядом с существующей подменой `VIBELOG_REGISTRY_BASE_URL` (см. `runCli`, строка ~206);
+2. Проверить остальные тесты VL-381/DL-382 на согласованность (в частности `--verbose`-тест ожидает `токен: нет` в анонимном режиме — оставить);
+3. `pnpm build && pnpm test` — полный зелёный прогон;
+4. Запустить Фазу Close заново.
+Состояние: master содержит merge-коммит d7454d1 (ветка vb/vl-382 слита, 1 коммит 5e8a925); worktree `.vibelog/worktrees/vl-382` ещё на месте (удаление и `git branch -d` не выполнялись, т.к. фаза прервана); конфликт слияния разрешён вручную пользователем в `src/core/registry-fetch.ts` (маркеров не осталось). DoD и статус не трогал: тесты не проходят, документация и CHANGELOG не обновлялись.
 ---
 <!-- COMMENTS:END -->
