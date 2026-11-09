@@ -303,7 +303,7 @@ vibelog browser
 
 - Задачи и документы правь через CLI/MCP Vibelog, а не вручную.
 - Перед завершением задачи отметь AC и DoD: \`vibelog task edit <id> --check-ac 1\`.
-- Подробные инструкции для агента: \`vibelog instructions\`.
+- Полный справочник возможностей: \`vibelog capabilities\`; краткие азы — \`vibelog instructions\`.
 `;
 }
 

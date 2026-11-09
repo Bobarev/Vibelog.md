@@ -24,6 +24,8 @@ import { runTask } from './commands/task.js';
 import { runBoard } from './commands/board.js';
 import { runSearch } from './commands/search.js';
 import { runMap } from './commands/map.js';
+// VL-394: справочник возможностей, собранный из реестров кода
+import { runCapabilities } from './commands/capabilities.js';
 import { runInstructions } from './commands/instructions.js';
 import { runMcp } from './commands/mcp.js';
 import { runBrowser } from './commands/browser.js';
@@ -101,6 +103,9 @@ export async function route(args: string[]): Promise<void> {
     case 'map':
       // VL-235: первый аргумент запроса попадает в subcommand (как у search)
       return runMap([subcommand, ...positional].filter(Boolean), flags, cwd);
+    // VL-394: полный справочник возможностей (workflow, фазы, MCP, CLI, ключи)
+    case 'capabilities':
+      return runCapabilities([subcommand, ...positional].filter(Boolean), flags, cwd);
     case 'instructions':
       return runInstructions(positional, flags, cwd);
     case 'mcp':
@@ -180,6 +185,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('qwen-debug', colors.cyan)}                  Дебаг-прогон qwen (ping, stream-json)
   ${colorize('search', colors.cyan)} "query" [--status ...]      Поиск задач с фильтрами
   ${colorize('map', colors.cyan)} [query] [--dir src] [--limit N]  Карта проекта: модули + назначение + экспорты
+  ${colorize('capabilities', colors.cyan)} [--json]                 Справочник возможностей: workflow, фазы, MCP, CLI, ключи конфигов
   ${colorize('instructions', colors.cyan)} [topic]               Инструкции для агентов
   ${colorize('mcp', colors.cyan)} start                        MCP-сервер (JSON-RPC)
   ${colorize('milestone', colors.cyan)} add|list|rename|...      Управление вехами
@@ -408,11 +414,26 @@ vibelog map [query] [--dir PATH] [--limit N] [--no-exports] [--json]
 
 Пример: vibelog map htmlToMarkdown`,
 
+    capabilities: `
+vibelog capabilities [--json]
+
+Справочник возможностей Vibelog (VL-394), собранный из кода: действующий
+workflow (статусы и фазы), task_workflows и completeness, фазы с назначением
+и способом переопределения шаблона, MCP-инструменты, CLI-команды, ключи
+backlog/config.yml и читаемые ключи .vibelog/settings.json, правила доступа
+(read — сразу, write — с подтверждением) и контракт ответа write-инструментов.
+
+  --json — машиночитаемая форма ({schemaVersion, kind:'capabilities', data})
+           без обрезки описаний
+
+Команда не требует backlog/: справочник работает и в пустом каталоге.`,
+
     instructions: `
 vibelog instructions [topic]
 
 Выводит инструкции для AI-агентов.
-Темы: overview, task-creation, task-execution, task-finalization`,
+Темы: overview, task-creation, task-execution, task-finalization
+Полный справочник возможностей: vibelog capabilities`,
 
     doctor: `
 vibelog doctor [--json]
