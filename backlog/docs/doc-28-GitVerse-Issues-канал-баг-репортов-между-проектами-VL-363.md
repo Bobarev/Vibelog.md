@@ -284,8 +284,9 @@ target: vl                  # КОМУ адресован — маршрутиз
 severity: high
 area: mcp
 created: 2026-11-08
-status: open                # open → accepted → done
+status: open                # open → accepted | rejected → done
 accepted_as: ""             # заполняет получатель: VL-367
+rejected_reason: ""         # заполняет получатель при reject: причина отказа
 ---
 <тело отчёта в markdown>
 ```
@@ -387,3 +388,32 @@ vibelog upstream ack <report_id> --as VL-999                              # по
 ```
 
 Плюс: без секции `upstream` в `tools/list` инструмента нет. Тесты: `src/core/upstream-git.test.mjs`, `src/mcp/upstream-tool.test.mjs`, `src/cli/upstream.test.mjs`, `src/core/gitverse-issues.test.mjs`.
+
+### 9.10. Приём отчётов через MCP (VL-391)
+
+Отправка (`upstream_report_bug`) — только половина канала. Приём отчёта раньше был ручным: прочитать markdown, создать задачу, связать через `ack`. Агент в чате CLI не вызывает, поэтому добавлены два MCP-инструмента, симметричных отправке.
+
+**`upstream_list_reports`** (read) — входящие отчёты для своего префикса:
+- без параметров — список `open`-отчётов (`report_id`, `source_project`, `source_task`, `title`, `target`, `severity`, `area`, `created`, `status`);
+- `report_id` (полный или первые 8 символов) — полное тело одного отчёта;
+- `include_resolved: true` — добавляет в список `accepted`/`rejected` (по умолчанию только `open`).
+
+**`upstream_ack_report`** (write) — принять или отклонить:
+- `action: accept` требует `task_id` — **задача в ЭТОМ проекте**, проверяется через `getTask(cwd, task_id)` **до записи**: несуществующая → `outcome: 'rejected'` с подсказкой «создай задачу через `backlog_create_task` и передай её ID», файл отчёта не меняется. Это закрывает класс дефекта VL-388 (CLI `--as` писал вслепую) для MCP-пути;
+- `action: reject` требует `reason` — причина попадает в отчёт (`rejected_reason`), комментарий в задачу не пишется.
+
+При `accept` инструмент делает три действия: (1) пишет `status: accepted` + `accepted_as: <task_id>` в отчёт, (2) добавляет комментарий в задачу `<task_id>` со ссылкой на отчёт (`report_id`, `source_project`, `source_task`, путь к файлу), (3) commit + push в инбокс. Ответ — JSON-ack по контракту VL-357 (`outcome`, `applied`, `message`).
+
+**Четыре статуса отчёта:** `open | accepted | rejected | done` (`REPORT_STATUSES`). `rejected_reason` добавлен в `REPORT_FIELDS` **последним** — старые отчёты без поля парсятся как `''`, при следующей записи поле появляется.
+
+**`replaceAckFields`** пишет три поля (`status`, `accepted_as`, `rejected_reason`) и остаётся **построчной правкой**: остальное тело файла байт-в-байт. Взаимоисключение: отчёт не может быть одновременно принят и отклонён — при `accept` строка `rejected_reason` очищается, при `reject` очищается `accepted_as`. Единственное исключение из правила «только построчная правка»: отсутствующее поле `rejected_reason` в старом отчёте **дописывается** перед закрывающим `---` (иначе reject на старых отчётах невозможен). CI-whitelist инбокса расширяется синхронно до `status|accepted_as|rejected_reason` (правка в репозитории `Vibelog-md/upstream-reports`, отдельный коммит) — иначе дописывание блока ack не пройдёт валидацию.
+
+**Автосоздания задач нет — принципиально.** Решение принимает человек в диалоге: отчёт не превращается в задачу сам. Сценарий: «пользователь открывает чат → `upstream_list_reports` → обсуждает с ассистентом, какие принять, а какие отклонить → ассистент создаёт задачу через `backlog_create_task` → `upstream_ack_report` со `task_id` или `reason`». Это то же разделение ответственности, что у `backlog_create_task` (агент создаёт по просьбе) и `git_commit` (явные пути).
+
+**Видимость и роли.** Оба инструмента скрыты без валидной секции `upstream` — тот же предикат `isUpstreamConfigured(cwd)` в трёх местах: `handleToolsList` (`src/mcp/server.ts`), `chatToolDefs` (`src/web/tool-policy.ts`), и прямой `tools/call` без секции даёт actionable `ackError` про `.vibelog/settings.json`. `TOOL_KINDS`: `upstream_list_reports` → `read`, `upstream_ack_report` → `write`. Роли «Помощник» и «Архитектор» получают все три инструмента: роль с заданным `allow_tools` — имена добавлены в список, роль без списка — доступ есть автоматически.
+
+**`mode: api`** — входящих отчётов нет по определению (API-режим это отправка в чужой трекер). Оба инструмента явно возвращают `ackError` «список входящих доступен только в mode: git», а не падают с невнятной ошибкой.
+
+**Идемпотентность accept:** повторный accept того же отчёта с тем же `task_id` даёт `noop` (значения уже такие); с другим `task_id` — перезаписывает связь (перепривязка к другой задаче легитимна).
+
+Тесты: `src/core/upstream-git.test.mjs` (accept/reject/взаимоисключение/`listIncoming` с `include_resolved`), `src/mcp/upstream-tool.test.mjs` (видимость при трёх состояниях конфига, accept с несуществующей и существующей задачей, reject без причины, `list_reports` с телом, `mode: api`).
