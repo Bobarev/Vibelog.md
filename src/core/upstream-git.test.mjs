@@ -29,6 +29,7 @@ import {
   ackReport,
   ensureInboxClone,
   listIncoming,
+  normalizeAcceptedAs,
   parseReport,
   replaceAckFields,
   reportId,
@@ -299,6 +300,145 @@ describe('VL-375 — git-транспорт на локальном инбокс
       () => ackReport(fx.project, 'deadbeef', 'VL-1'),
       (err) => err instanceof UpstreamGitError && /не найден/.test(err.message),
     );
+  });
+
+  // --- VL-388: поиск по префиксу report_id и валидация --as ---
+
+  /** Кладёт отчёт прямо в клон инбокса (без коммита) — фикстура поиска по id. */
+  function writeRawReport(report) {
+    const inbox = ensureInboxClone(fx.project, fx.cfg).path;
+    const rel = `reports/vl/${report.created}-${report.source_task}-${report.report_id.slice(0, 6)}.md`;
+    mkdirSync(join(inbox, 'reports', 'vl'), { recursive: true });
+    writeFileSync(join(inbox, rel), serializeReport(report), 'utf-8');
+    return rel;
+  }
+
+  /** Отчёт-фикстура с заданным report_id. */
+  function rawReport(report_id, source_task, title) {
+    return {
+      report_id,
+      source_project: 'Vibelog UI',
+      source_prefix: 'ui',
+      source_task,
+      title,
+      target: 'vl',
+      severity: 'medium',
+      area: 'cli',
+      created: '2026-11-08',
+      status: 'open',
+      accepted_as: '',
+      body: 'тело',
+    };
+  }
+
+  it('VL-388 AC1: ack принимает 8-символьный префикс report_id (как его печатает pull)', () => {
+    const written = writeReport(fx.project, fx.cfg, {
+      source_task: 'UI-5', title: 'Отчёт для префикса', target: 'vl', created: '2026-11-08',
+    });
+    const fullId = parseReport(readFileSync(join(fx.project, INBOX_DIR, written.path), 'utf8')).report_id;
+    const res = ackReport(fx.project, fullId.slice(0, 8), 'VL-388');
+    assert.equal(res.report.accepted_as, 'VL-388');
+    assert.equal(res.report.status, 'accepted');
+    assert.equal(res.report.report_id, fullId, 'подтверждён именно этот отчёт');
+  });
+
+  it('VL-388 AC3: ack по полному id работает как раньше', () => {
+    const written = writeReport(fx.project, fx.cfg, {
+      source_task: 'UI-6', title: 'Полный id', target: 'vl', created: '2026-11-08',
+    });
+    const fullId = parseReport(readFileSync(join(fx.project, INBOX_DIR, written.path), 'utf8')).report_id;
+    const res = ackReport(fx.project, fullId, 'VL-388');
+    assert.equal(res.report.accepted_as, 'VL-388');
+  });
+
+  it('VL-388 AC1: префикс регистронезависим (hex в верхнем регистре)', () => {
+    const written = writeReport(fx.project, fx.cfg, {
+      source_task: 'UI-7', title: 'Регистр id', target: 'vl', created: '2026-11-08',
+    });
+    const fullId = parseReport(readFileSync(join(fx.project, INBOX_DIR, written.path), 'utf8')).report_id;
+    const upper = fullId.slice(0, 8).toUpperCase();
+    if (upper !== fullId.slice(0, 8)) {
+      const res = ackReport(fx.project, upper, 'VL-388');
+      assert.equal(res.report.accepted_as, 'VL-388');
+    }
+  });
+
+  it('VL-388 AC1: несуществующий префикс → «не найден»', () => {
+    ensureInboxClone(fx.project, fx.cfg);
+    assert.throws(
+      () => ackReport(fx.project, 'deadbeef', 'VL-388'),
+      (err) => err instanceof UpstreamGitError && /не найден/.test(err.message) && err.code === 2,
+    );
+  });
+
+  it('VL-388 AC2: неоднозначный префикс → ошибка со списком кандидатов, код 2', () => {
+    const firstId = `abcd${'1'.repeat(36)}`;
+    const secondId = `abcd${'2'.repeat(36)}`;
+    writeRawReport(rawReport(firstId, 'UI-11', 'Первый'));
+    writeRawReport(rawReport(secondId, 'UI-12', 'Второй'));
+    assert.throws(
+      () => ackReport(fx.project, 'abcd', 'VL-388'),
+      (err) =>
+        err instanceof UpstreamGitError &&
+        err.code === 2 &&
+        /совпал с 2 отчётами/.test(err.message) &&
+        err.message.includes(firstId) &&
+        err.message.includes(secondId) &&
+        err.message.includes('UI-11') &&
+        err.message.includes('UI-12'),
+    );
+  });
+
+  it('VL-388 AC2: префикс короче 4 символов → ошибка с минимумом длины, код 2', () => {
+    const id = `abc${'3'.repeat(37)}`;
+    writeRawReport(rawReport(id, 'UI-13', 'Короткий префикс'));
+    assert.throws(
+      () => ackReport(fx.project, 'abc', 'VL-388'),
+      (err) => err instanceof UpstreamGitError && /слишком короткий/.test(err.message) && err.code === 2,
+    );
+  });
+
+  it('VL-388 AC4: writeReport идемпотентен точно по report_id, префикс не склеивает отчёты', () => {
+    const shared = `ffff${'0'.repeat(36)}`;
+    writeRawReport(rawReport(shared, 'UI-21', 'Общий префикс'));
+    // новый отчёт с тем же началом id не должен считаться «уже есть»
+    const result = writeReport(fx.project, fx.cfg, {
+      source_task: 'UI-22', title: 'Другой отчёт', target: 'vl', created: '2026-11-08',
+    });
+    assert.equal(result.created, true, 'writeReport не склеил отчёт по префиксу');
+    // повторное создание того же отчёта — по-прежнему идемпотентно
+    const again = writeReport(fx.project, fx.cfg, {
+      source_task: 'UI-22', title: 'Другой отчёт', target: 'vl', created: '2026-11-09',
+    });
+    assert.equal(again.created, false);
+    assert.equal(again.path, result.path);
+  });
+
+  it('VL-388 AC5: формат --as валидируется и нормализуется', () => {
+    assert.equal(normalizeAcceptedAs('VL-388'), 'VL-388');
+    assert.equal(normalizeAcceptedAs('vl-388'), 'VL-388', 'префикс нормализуется в верхний регистр');
+    assert.equal(normalizeAcceptedAs('  UI-444  '), 'UI-444', 'чужой префикс допустим');
+    for (const bad of ['VL_388', 'VL388', 'vl 388', 'что угодно', '-388', 'VL-', '']) {
+      assert.throws(
+        () => normalizeAcceptedAs(bad),
+        (err) => err instanceof UpstreamGitError && err.code === 1,
+        `значение «${bad}» должно быть отвергнуто`,
+      );
+    }
+    assert.throws(() => normalizeAcceptedAs(''), /--as/);
+  });
+
+  it('VL-388 AC1: ackReport отвергает неверный формат --as до записи файла', () => {
+    const written = writeReport(fx.project, fx.cfg, {
+      source_task: 'UI-31', title: 'Неверный --as', target: 'vl', created: '2026-11-08',
+    });
+    const abs = join(fx.project, INBOX_DIR, written.path);
+    const before = readFileSync(abs, 'utf8');
+    assert.throws(
+      () => ackReport(fx.project, parseReport(before).report_id, 'VL_388'),
+      (err) => err instanceof UpstreamGitError && err.code === 1,
+    );
+    assert.equal(readFileSync(abs, 'utf8'), before, 'файл не изменён при неверном --as');
   });
 
   it('AC1: ensureInboxClone с битым адресом → UpstreamGitError kind network/auth', () => {

@@ -271,4 +271,60 @@ describe('VL-375 — vibelog upstream (git-транспорт)', () => {
     assert.equal(code, 2, out);
     assert.match(out, /target/);
   });
+
+  /** Пишет отчёт «себе» и возвращает его полный report_id. */
+  async function reportToSelf(dir, title) {
+    const res = await runCli(
+      dir, 'upstream', 'report', '--title', title, '--target', 'ui', '--source-task', 'UI-9', '--json',
+    );
+    assert.equal(res.code, 0, res.out);
+    const pull = await runCli(dir, 'upstream', 'pull', '--json', '--no-fetch');
+    assert.equal(pull.code, 0, pull.out);
+    const reports = JSON.parse(pull.out.slice(pull.out.indexOf('{'))).applied.reports;
+    return reports.find((r) => r.title === title).report_id;
+  }
+
+  it('VL-388 AC1: ack принимает 8 символов report_id, которые печатает pull', async () => {
+    const { dir } = makeGitProject();
+    const fullId = await reportToSelf(dir, 'Префикс из pull');
+    const shortId = fullId.slice(0, 8);
+    const acked = await runCli(dir, 'upstream', 'ack', shortId, '--as', 'VL-388', '--json', '--no-fetch');
+    assert.equal(acked.code, 0, acked.out);
+    const ackOut = JSON.parse(acked.out.slice(acked.out.indexOf('{')));
+    assert.equal(ackOut.applied.status, 'accepted');
+    assert.equal(ackOut.applied.accepted_as, 'VL-388');
+  });
+
+  it('VL-388 AC5: неверный формат --as → код 1 с примером корректного значения', async () => {
+    const { dir } = makeGitProject();
+    const fullId = await reportToSelf(dir, 'Неверный --as');
+    const bad = await runCli(dir, 'upstream', 'ack', fullId, '--as', 'VL_388', '--no-fetch');
+    assert.equal(bad.code, 1, bad.out);
+    assert.match(bad.out, /VL-367/);
+  });
+
+  it('VL-388 AC5: пустой --as → код 1', async () => {
+    const { dir } = makeGitProject();
+    const fullId = await reportToSelf(dir, 'Пустой --as');
+    const empty = await runCli(dir, 'upstream', 'ack', fullId, '--as', '', '--no-fetch');
+    assert.equal(empty.code, 1, empty.out);
+    assert.match(empty.out, /--as/);
+  });
+
+  it('VL-388 AC6: чужой префикс в --as допустим (backlog получателя недоступен)', async () => {
+    const { dir } = makeGitProject();
+    const fullId = await reportToSelf(dir, 'Чужой префикс');
+    const acked = await runCli(dir, 'upstream', 'ack', fullId, '--as', 'UI-444', '--json', '--no-fetch');
+    assert.equal(acked.code, 0, acked.out);
+    assert.equal(JSON.parse(acked.out.slice(acked.out.indexOf('{'))).applied.accepted_as, 'UI-444');
+  });
+
+  it('VL-388 AC7: подсказка pull говорит, что годится префикс', async () => {
+    const { dir } = makeGitProject();
+    await reportToSelf(dir, 'Подсказка pull');
+    const pull = await runCli(dir, 'upstream', 'pull', '--no-fetch');
+    assert.equal(pull.code, 0, pull.out);
+    assert.match(pull.out, /--as <PREFIX-N>/);
+    assert.match(pull.out, /первые 8 символов/);
+  });
 });
