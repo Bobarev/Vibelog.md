@@ -10,6 +10,7 @@ tags:
   - pagination
   - errors
   - upstream
+  - rate-limit
 created_date: 2026-11-07
 linked_tasks:
   - VL-363
