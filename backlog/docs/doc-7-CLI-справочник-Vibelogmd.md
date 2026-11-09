@@ -291,6 +291,20 @@ vibelog map [query] [--dir D] [--limit N] [--no-exports] [--json]
 
 ---
 
+## capabilities
+
+```
+vibelog capabilities [--json]
+```
+
+Справочник возможностей Vibelog (VL-394): статусы и фазы дефолтного workflow, `task_workflows` и `completeness`, фазы с назначением из `templates/phases/*.md` и путём переопределения (`.vibelog/prompts/phases/`), служебные фазы, MCP-инструменты, CLI-команды, ключи `backlog/config.yml` (из `defaultConfig()`) и читаемые ключи `.vibelog/settings.json`, правила доступа read/write и контракт write-ответа `{ok, applied, skipped}`, подсказка «что делать дальше».
+
+Данные собираются из реестров кода (`DEFAULT_WORKFLOW`, `listTools()`, `defaultConfig()`, `CLI_COMMANDS`), а не из литералов — поэтому справочник не устаревает. Команда не требует проекта: работает в пустом каталоге и при битом/отсутствующем `settings.json` (падает в дефолты).
+
+`--json` — `{schemaVersion:1, kind:"capabilities", data}` с полными описаниями (без флага — компактный markdown ≈10 КБ: MCP-инструменты перечислены именами, полные описания — в `--json`).
+
+---
+
 ## browser
 
 ```

@@ -30,6 +30,8 @@ tags:
 
 Смотрите также: [Руководство пользователя](user-guide.md) · [CLI-справочник](cli-reference.md)
 
+Полный актуальный перечень инструментов с описаниями — `vibelog capabilities --json` (секция `data.mcpTools`), генерируется из `listTools()` и не устаревает; `vibelog capabilities` без флага печатает компактный markdown (VL-394).
+
 ---
 
 ## Задачи
