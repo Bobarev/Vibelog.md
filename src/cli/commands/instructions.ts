@@ -68,6 +68,10 @@ DoD: \`- [ ] #1 Текст\` внутри \`<!-- DOD:BEGIN -->...<!-- DOD:END --
 2. Начать работу: \`vibelog task edit <id> -s "In Progress"\`
 3. Отмечать AC: \`vibelog task edit <id> --check-ac <номер>\`
 4. Завершить: \`vibelog task complete <id>\`
+
+## Полный справочник
+Статусы и фазы, MCP-инструменты, ключи конфигов и правила доступа —
+\`vibelog capabilities\` (машиночитаемо: \`vibelog capabilities --json\`).
 `,
 
   'task-creation': `# Создание задач в Vibelog.md
