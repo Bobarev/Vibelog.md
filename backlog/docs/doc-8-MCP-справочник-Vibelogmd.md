@@ -10,7 +10,7 @@ tags:
 ---
 # MCP-справочник Vibelog.md
 
-45 инструментов MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
+49 инструментов MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
 Автоматическое подключение: `vibelog init` пишет `mcpServers` в `.qwen/settings.json`
 (ручная настройка — в [MCP-SETUP.md](../MCP-SETUP.md)).
 
@@ -411,7 +411,22 @@ HTTP-эндпоинты карточки: `POST /api/chat/supervisor/grant-draft
 | Параметр | Тип | Required | Описание |
 |---|---|---|---|
 | `id` | string | ✓ | |
-| `title`, `content`, `type`, `tags` | | | Только переданные поля |
+| `title`, `type`, `tags` | | | Метаданные — только переданные поля, тело не трогают |
+| `content` | string | | **ПОЛНАЯ замена тела.** Для точечной правки — `document_edit` |
+| `full_replace` | boolean | | Явное согласие на полную замену тела, даже если `content` существенно короче текущего |
+
+**Guard от молчаливой потери тела (VL-399).** Если передан `content` и он короче текущего тела более чем на 40% (`DOC_SHRINK_RATIO = 0.6`, `src/mcp/document-edit.ts`) и при этом не содержит начала текущего текста (первая непустая строка, проба 60 символов), вызов **отклоняется без записи** с текстом «content — ПОЛНАЯ замена тела… начало текущего текста не сохранено», `hint` («точечная правка — `document_edit`; осознанная замена — `full_replace: true`») и `retryWith` с готовой формой исправления. `content: ''` при непустом теле — тот же отказ. В `applied` при переписанном теле приходят `bodyLengthBefore`, `bodyLengthAfter` и `truncated: true` — потеря объёма видна в ответе инструмента, а не только в git.
+
+### document_edit — точечная правка тела (VL-399)
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `id` | string | ✓ | ID документа |
+| `old_string` | string | ✓ | Точный текст для поиска в теле |
+| `new_string` | string | ✓ | Текст замены |
+| `replace_all` | boolean | | Заменить все вхождения (по умолчанию `false` — требуется ровно одно) |
+
+Семантика — как у файлового `edit`: без `replace_all` `old_string` обязан встречаться **ровно один раз**, иначе отказ без записи. 0 совпадений → «old_string не найден в теле документа … Проверь точный текст: `document_view`» (в `hint` — в том числе «возможно, документ восстановлен из git и текст в нём другой»); >1 → отказ с числом совпадений и `retryWith {replace_all: true}`. Неоднозначный отказ файл не трогает (возврат до записи). Замена — `split/join`, а не `String.replace`: `$1`, `$&`, `{{taskPlan}}` в `new_string` вставляются буквально. `old_string === new_string` → noop (`{ok:false, noop:true, reason:'noop'}`) без перезаписи файла. Успех: `applied {id, replaced, bodyLengthBefore, bodyLengthAfter, truncated}`; заголовок/тип/теги не меняются — они остаются за `document_update`. Пустой `old_string` → отказ (иначе `split('')` развалил бы тело на символы). Идемпотентность — обычный `idempotencyKey`.
 
 ### document_search
 
