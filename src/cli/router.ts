@@ -107,7 +107,9 @@ export async function route(args: string[]): Promise<void> {
     case 'capabilities':
       return runCapabilities([subcommand, ...positional].filter(Boolean), flags, cwd);
     case 'instructions':
-      return runInstructions(positional, flags, cwd);
+      // VL-396: первый позиционный аргумент парсер кладёт в subcommand —
+      // без склейки тема из CLI не доходила до команды (всегда overview)
+      return runInstructions([subcommand, ...positional].filter(Boolean), flags, cwd);
     case 'mcp':
       return runMcp(subcommand, positional, flags, cwd);
     case 'browser':
@@ -186,7 +188,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('search', colors.cyan)} "query" [--status ...]      Поиск задач с фильтрами
   ${colorize('map', colors.cyan)} [query] [--dir src] [--limit N]  Карта проекта: модули + назначение + экспорты
   ${colorize('capabilities', colors.cyan)} [--json]                 Справочник возможностей: workflow, фазы, MCP, CLI, ключи конфигов
-  ${colorize('instructions', colors.cyan)} [topic]               Инструкции для агентов
+  ${colorize('instructions', colors.cyan)} [topic]               Инструкции для агентов: overview|workflow|mcp|settings|task-*
   ${colorize('mcp', colors.cyan)} start                        MCP-сервер (JSON-RPC)
   ${colorize('milestone', colors.cyan)} add|list|rename|...      Управление вехами
   ${colorize('doc', colors.cyan)} create|list|...          Документы (spec/guide)
@@ -432,7 +434,14 @@ backlog/config.yml и читаемые ключи .vibelog/settings.json, пра
 vibelog instructions [topic]
 
 Выводит инструкции для AI-агентов.
-Темы: overview, task-creation, task-execution, task-finalization
+Темы: overview, workflow, mcp, settings, task-creation, task-execution, task-finalization
+  overview          — обзор: что такое Vibelog, фазовый workflow, куда смотреть дальше
+  workflow          — фазы и статусы, ветки reject и fix-цикл, workflows/task_workflows/completeness
+  mcp               — MCP-инструменты по группам и правила их применения
+  settings          — ключи .vibelog/settings.json и backlog/config.yml, git-политика
+  task-creation     — создание задач через CLI
+  task-execution    — выполнение задач через CLI
+  task-finalization — завершение задач через CLI
 Полный справочник возможностей: vibelog capabilities`,
 
     doctor: `
