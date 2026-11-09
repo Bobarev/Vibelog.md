@@ -32,6 +32,7 @@ import { resolveInProject, truncateToolOutput, formatDirListing, formatFileSlice
 import { searchProjectFiles } from '../agent/search-files.js';
 import { listTools } from '../mcp/tools.js';
 import { isUpstreamConfigured } from '../core/gitverse-issues.js';
+import { UPSTREAM_TOOLS } from '../mcp/server.js';
 import { ASK_USER_TOOL, MAX_OPTIONS, MIN_OPTIONS } from './chat-question.js';
 
 /** Локальный инструмент чата: ToolDef + handler (ToolDef из llm.ts без handler — wire-описание). */
@@ -303,9 +304,9 @@ export function makeAskUserTool(): ToolDef {
 export function chatToolDefs(cwd: string): (ToolDef | ChatLocalTool)[] {
   const defs: (ToolDef | ChatLocalTool)[] = listTools()
     .filter(t => !CHAT_DISALLOWED_TOOLS.includes(t.name))
-    // VL-375: ненастроенный upstream_report_bug в чате так же бессмысленен,
-    // как и в MCP-сервере — тот же предикат, что в handleToolsList.
-    .filter(t => t.name !== 'upstream_report_bug' || isUpstreamConfigured(cwd))
+    // VL-375/VL-391: ненастроенный upstream в чате так же бессмысленен,
+    // как и в MCP-сервере — тот же предикат и тот же список, что в handleToolsList.
+    .filter(t => !UPSTREAM_TOOLS.includes(t.name) || isUpstreamConfigured(cwd))
     .map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
   defs.push(makeReadFileTool(cwd), makeWriteFileTool(cwd), makeEditTool(cwd), makeSearchFilesTool(cwd));
   // VL-330: интерактивный вопрос — только в веб-чате (в headless его нет)

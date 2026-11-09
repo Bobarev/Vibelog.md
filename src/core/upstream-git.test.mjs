@@ -107,6 +107,7 @@ describe('VL-375 — чистые функции формата отчёта', (
       created: '2026-11-08',
       status: 'open',
       accepted_as: '',
+      rejected_reason: '',
       body: '## Что произошло\n\nПодробности\n',
     };
     const parsed = parseReport(serializeReport(report));
@@ -137,7 +138,7 @@ describe('VL-375 — чистые функции формата отчёта', (
     const parsed = parseReport(sample);
     for (const field of [
       'report_id', 'source_project', 'source_prefix', 'source_task', 'title',
-      'target', 'severity', 'area', 'created', 'status', 'accepted_as',
+      'target', 'severity', 'area', 'created', 'status', 'accepted_as', 'rejected_reason',
     ]) {
       assert.ok(field in parsed, `поле ${field} не распарсилось`);
       assert.notEqual(parsed[field], undefined, `поле ${field} пусто`);
@@ -146,6 +147,7 @@ describe('VL-375 — чистые функции формата отчёта', (
     assert.equal(parsed.target, 'vl');
     assert.equal(parsed.status, 'open');
     assert.equal(parsed.accepted_as, '');
+    assert.equal(parsed.rejected_reason, '');
     assert.match(parsed.body, /## Что произошло/);
     // round-trip сериализации даёт тот же фронтматтер по полям
     assert.deepEqual(parseReport(serializeReport(parsed)), parsed);
@@ -172,9 +174,10 @@ describe('VL-375 — чистые функции формата отчёта', (
       created: '2026-11-08',
       status: 'open',
       accepted_as: '',
+      rejected_reason: '',
       body: 'тело',
     });
-    const updated = replaceAckFields(text, 'VL-367');
+    const updated = replaceAckFields(text, { status: 'accepted', acceptedAs: 'VL-367' });
     const before = text.split('\n');
     const after = updated.split('\n');
     assert.equal(before.length, after.length, 'число строк не меняется');
@@ -285,7 +288,7 @@ describe('VL-375 — git-транспорт на локальном инбокс
     assert.equal(res.report.status, 'accepted');
 
     const after = readFileSync(abs, 'utf8');
-    const pick = (text) => text.split('\n').filter((line) => !/^(status|accepted_as):/.test(line));
+    const pick = (text) => text.split('\n').filter((line) => !/^(status|accepted_as|rejected_reason):/.test(line));
     assert.deepEqual(pick(after), pick(before), 'остальное тело изменилось');
     assert.match(serializeReport(parseReport(after)), /status: accepted/);
 
@@ -445,6 +448,129 @@ describe('VL-375 — git-транспорт на локальном инбокс
     assert.throws(
       () => ensureInboxClone(fx.project, { ...fx.cfg, inbox: join(fx.root, 'nope.git') }),
       (err) => err instanceof UpstreamGitError && ['network', 'auth'].includes(err.kind),
+    );
+  });
+});
+
+// ============================================================
+// VL-391 — приём отчёта: accept/reject, rejected_reason, includeResolved
+// ============================================================
+
+describe('VL-391 — accept/reject и список решённых отчётов', () => {
+  let fx;
+
+  beforeEach(() => {
+    fx = makeFixture();
+  });
+
+  afterEach(() => {
+    rmSync(fx.root, { recursive: true, force: true });
+  });
+
+  /** Создаёт отчёт об ошибке в инбоксе и возвращает его id и путь. */
+  function seed(task = 'UI-41', title = 'Отчёт для приёма') {
+    const written = writeReport(fx.project, fx.cfg, {
+      source_task: task,
+      title,
+      target: 'vl',
+      body: '## Что произошло\n\nсломано',
+      severity: 'high',
+      area: 'cli',
+      created: '2026-11-08',
+    });
+    const abs = join(fx.project, INBOX_DIR, written.path);
+    return { abs, id: parseReport(readFileSync(abs, 'utf8')).report_id, path: written.path, task };
+  }
+
+  it('AC11/AC5: accept пишет status+accepted_as и чистит rejected_reason', () => {
+    const { abs, id } = seed();
+    const res = ackReport(fx.project, id, { action: 'accept', taskId: 'VL-391' });
+    assert.equal(res.report.status, 'accepted');
+    assert.equal(res.report.accepted_as, 'VL-391');
+    assert.equal(res.report.rejected_reason, '');
+
+    const text = readFileSync(abs, 'utf8');
+    assert.match(text, /^status: accepted$/m);
+    assert.match(text, /^accepted_as: VL-391$/m);
+    assert.match(text, /^rejected_reason: ""$/m);
+  });
+
+  it('AC11/AC6: reject пишет rejected_reason и чистит accepted_as', () => {
+    const { abs, id } = seed();
+    const res = ackReport(fx.project, id, { action: 'reject', reason: 'не воспроизводится на master' });
+    assert.equal(res.report.status, 'rejected');
+    assert.equal(res.report.rejected_reason, 'не воспроизводится на master');
+    assert.equal(res.report.accepted_as, '');
+
+    const text = readFileSync(abs, 'utf8');
+    assert.match(text, /^status: rejected$/m);
+    assert.match(text, /^accepted_as: ""$/m);
+    assert.match(text, /^rejected_reason: не воспроизводится на master$/m);
+  });
+
+  it('AC6: accept после reject очищает rejected_reason (взаимоисключение)', () => {
+    const { abs, id } = seed('UI-42', 'Сначала отклонили');
+    ackReport(fx.project, id, { action: 'reject', reason: 'нужны шаги' });
+    assert.match(readFileSync(abs, 'utf8'), /status: rejected/);
+
+    const res = ackReport(fx.project, id, { action: 'accept', taskId: 'VL-392' });
+    assert.equal(res.report.status, 'accepted');
+    assert.equal(res.report.accepted_as, 'VL-392');
+    assert.equal(res.report.rejected_reason, '', 'причина отказа вычищена');
+    assert.doesNotMatch(readFileSync(abs, 'utf8'), /нужны шаги/);
+  });
+
+  it('AC6: reject на старом отчёте без rejected_reason дописывает поле в конец фронтматтера', () => {
+    const inbox = ensureInboxClone(fx.project, fx.cfg).path;
+    const id = `abc${'4'.repeat(37)}`;
+    const legacy = [
+      '---',
+      `report_id: ${id}`,
+      'source_project: Vibelog UI',
+      'source_prefix: ui',
+      'source_task: UI-43',
+      'title: Старый формат',
+      'target: vl',
+      'severity: medium',
+      'area: cli',
+      'created: 2026-11-08',
+      'status: open',
+      'accepted_as: ""',
+      '---',
+      '',
+      'тело',
+      '',
+    ].join('\n');
+    const rel = 'reports/ui/2026-11-08-UI-43-staryi-format.md';
+    mkdirSync(join(inbox, 'reports', 'ui'), { recursive: true });
+    writeFileSync(join(inbox, rel), legacy, 'utf-8');
+
+    const res = ackReport(fx.project, id, { action: 'reject', reason: 'устарело' });
+    assert.equal(res.report.status, 'rejected');
+    assert.equal(res.report.rejected_reason, 'устарело');
+
+    const text = readFileSync(join(inbox, rel), 'utf8');
+    const lines = text.split('\n');
+    const yamlEnd = lines.findIndex((line, i) => i > 0 && line === '---');
+    assert.equal(lines[yamlEnd - 1], 'rejected_reason: устарело', 'поле дописано последним во фронтматтере');
+    assert.equal(lines[yamlEnd + 1], '', 'тело не сместилось относительно закрывающего ---');
+    assert.equal(parseReport(text).report_id, id, 'файл остался валидным');
+  });
+
+  it('AC11: listIncoming по умолчанию не показывает rejected, includeResolved показывает', () => {
+    const rejected = seed('UI-44', 'Будет отклонён');
+    const accepted = seed('UI-45', 'Будет принят');
+    const open = seed('UI-46', 'Останется открытым');
+    ackReport(fx.project, rejected.id, { action: 'reject', reason: 'не наш баг' });
+    ackReport(fx.project, accepted.id, { action: 'accept', taskId: 'VL-393' });
+
+    const openOnly = listIncoming(fx.project, 'vl');
+    assert.deepEqual(openOnly.map((r) => r.source_task), [open.task], 'только открытые');
+
+    const all = listIncoming(fx.project, 'vl', { includeResolved: true });
+    assert.deepEqual(
+      all.map((r) => `${r.source_task}:${r.status}`).sort(),
+      ['UI-44:rejected', 'UI-45:accepted', 'UI-46:open'],
     );
   });
 });

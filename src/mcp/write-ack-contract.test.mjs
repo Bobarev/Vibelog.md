@@ -174,6 +174,8 @@ describe('VL-306 — все write-инструменты отвечают JSON-a
       'git_commit',
       // VL-363: upstream_report_bug отвечает JSON-ack (number/url/labels)
       'upstream_report_bug',
+      // VL-391: upstream_ack_report отвечает JSON-ack (status/accepted_as/rejected_reason)
+      'upstream_ack_report',
     ]);
     // Явные исключения с причиной: инструменты супервизора/очереди (VL-268)
     // управляют прогоном фаз, а не данными backlog; их ответ — карточка
@@ -310,6 +312,7 @@ const ACK_OUT_OF_SCOPE = {
   backlog_supervisor: 'прогон супервизора, а не данные backlog (VL-268)',
   reference_sync: 'ходит в сеть — сценарий недетерминирован в офлайн-тесте',
   upstream_report_bug: 'ходит в сеть (GitVerse Issues) — сценарий недетерминирован в офлайн-тесте; JSON-ack проверяется в gitverse-issues.test.mjs и upstream-tool.test.mjs',
+  upstream_ack_report: 'работает поверх git-инбокса (clone/pull/push) — сценарий в офлайн-тесте недетерминирован; JSON-ack проверяется в upstream-tool.test.mjs',
 };
 
 describe('VL-351 — каждый write-инструмент отвечает JSON-ack', () => {
@@ -450,6 +453,7 @@ const NOOP_NOT_APPLICABLE = {
   lesson_classify: 'LLM-классификация: отчёт по умолчанию, записи только по явному подтверждению',
   write_file: 'запись файла: сравнение содержимого вне домена backlog (отдельный инструмент)',
   upstream_report_bug: 'создание issue во внешней системе: каждый вызов даёт новый номер (дедуп — номер issue, а не сравнение полей)',
+  upstream_ack_report: 'ack не идемпотентен по ключу: повторный accept с тем же task_id перезаписывает те же значения (не noop-ответ, а повторная запись того же файла); решение по отчёту — не «поле задачи», сравнение снимков неприменимо',
 };
 
 describe('VL-310 — инвариант «каждый write-инструмент умеет noop»', () => {  it('AC2: каждый noop-способный инструмент отвечает {ok:false, noop:true} на повторной идентичной записи', async () => {
@@ -558,6 +562,7 @@ const PARTIAL_EXEMPT = {
   // «необязательное поле», поэтому partial-сценария нет.
   lesson_create: 'problem и solution обязательны: урок без тела — ровно тот дефект, который закрывал VL-379; отказ приходит ДО записи файла',
   upstream_report_bug: 'title обязателен: issue без заголовка не существует; body/severity/area/source_task — дополнение к телу, их отсутствие не делает репорт неполным',
+  upstream_ack_report: 'report_id и action обязательны: без них решение не определить; task_id/reason условно обязательны (accept/reject) и отказ приходит ДО записи файла',
   backlog_update_status: 'status обязателен: без него операция не имеет смысла',
   backlog_add_comment: 'comment обязателен: пустой комментарий не является записью',
   backlog_update_dependencies: 'add/remove обязательны по смыслу: без них менять нечего',

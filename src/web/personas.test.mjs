@@ -374,3 +374,51 @@ describe('промпт роли architect: план в аргумент plan (VL
     assert.doesNotMatch(text, /phase-plan\.md/);
   });
 });
+
+// ============================================================
+// VL-391 — доступ ролей к инструментам upstream
+// ============================================================
+
+/** Три инструмента upstream-транспорта (VL-375, VL-391). */
+const UPSTREAM_TOOLS = ['upstream_report_bug', 'upstream_list_reports', 'upstream_ack_report'];
+
+describe('VL-391 — роли «Помощник» и «Архитектор» видят инструменты upstream', () => {
+  it('AC9: у встроенных ролей нет allow_tools — ограничений нет, доступ есть автоматически', () => {
+    for (const id of ['helper', 'architect']) {
+      const persona = resolvePersona(cwd, id);
+      assert.ok(persona, `роль ${id} не найдена в реестре`);
+      assert.equal(persona.allowTools, undefined, `${id}: allow_tools не задан → доступ ко всем инструментам`);
+    }
+  });
+
+  it('AC9: если у роли задан allow_tools — все три имени валидны в реестре', () => {
+    writePersonas({
+      helper: { label: 'Помощник', prompt: 'helper', allow_tools: [...UPSTREAM_TOOLS, 'backlog_search', 'read_file'] },
+      architect: { label: 'Архитектор', prompt: 'architect', allow_tools: UPSTREAM_TOOLS },
+    });
+    const { personas, errors } = loadPersonas(cwd);
+    assert.deepEqual(errors, [], `ошибки валидации: ${errors.join(', ')}`);
+    const helper = personas.find(p => p.id === 'helper');
+    const architect = personas.find(p => p.id === 'architect');
+    for (const name of UPSTREAM_TOOLS) {
+      assert.ok(helper.allowTools.includes(name), `helper: ${name} должен быть в allow_tools`);
+      assert.ok(architect.allowTools.includes(name), `architect: ${name} должен быть в allow_tools`);
+    }
+  });
+
+  it('AC9: промпты ролей описывают приём отчётов и запрет автосоздания задачи', () => {
+    for (const id of ['helper', 'architect']) {
+      const persona = resolvePersona(cwd, id);
+      assert.ok(persona, `роль ${id} не найдена`);
+      const text = loadPersonaPrompt(cwd, persona);
+      assert.match(text, /upstream_list_reports/, `${id}: промпт не упоминает список входящих отчётов`);
+      assert.match(text, /upstream_ack_report/, `${id}: промпт не упоминает accept/reject`);
+      assert.match(text, /reason/, `${id}: промпт не требует причину отказа`);
+      assert.match(
+        text,
+        /превращается в задачу|Автосоздания задачи нет/i,
+        `${id}: промпт не фиксирует запрет автосоздания задачи`,
+      );
+    }
+  });
+});

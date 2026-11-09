@@ -179,9 +179,9 @@ describe('Совместимость: конфиг', () => {
 // ============================================================
 
 describe('Совместимость: MCP-инструменты', () => {
-  it('Vibelog.md имеет 46 инструментов с правильными именами', () => {
+  it('Vibelog.md имеет 48 инструментов с правильными именами', () => {
     const tools = listTools();
-    assert.equal(tools.length, 46);
+    assert.equal(tools.length, 48);
 
     const expected = [
       'backlog_create_task',
@@ -224,6 +224,9 @@ describe('Совместимость: MCP-инструменты', () => {
       'git_commit',
       // VL-363
       'upstream_report_bug',
+      // VL-391
+      'upstream_list_reports',
+      'upstream_ack_report',
     ];
 
     const actual = tools.map(t => t.name);

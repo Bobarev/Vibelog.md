@@ -171,20 +171,22 @@ describe('MCP-сервер', () => {
     assert.ok(responses[0].result.capabilities.tools);
   });
 
-  it('tools/list — возвращает 46 инструментов', async () => {
+  it('tools/list — возвращает 48 инструментов', async () => {
     const responses = await callMcp([
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
       { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
     ]);
     const listResp = responses.find(r => r.id === 2);
     assert.ok(listResp);
-    // VL-375: реестр целиком — listTools(); в проекте БЕЗ секции upstream
-    // инструмент upstream_report_bug скрыт (fail-closed) — на один меньше.
+    // VL-375/VL-391: реестр целиком — listTools(); в проекте БЕЗ секции
+    // upstream скрыты все три upstream-инструмента (fail-closed).
     const all = listTools();
-    assert.equal(all.length, 46, 'полный реестр — 46 инструментов');
-    assert.equal(listResp.result.tools.length, all.length - 1);
+    assert.equal(all.length, 48, 'полный реестр — 48 инструментов');
+    assert.equal(listResp.result.tools.length, all.length - 3);
     const names = listResp.result.tools.map(t => t.name);
     assert.ok(!names.includes('upstream_report_bug'), 'ненастроенный upstream скрыт в tools/list');
+    assert.ok(!names.includes('upstream_list_reports'));
+    assert.ok(!names.includes('upstream_ack_report'));
     // Существующие
     assert.ok(names.includes('backlog_create_task'));
     assert.ok(names.includes('backlog_list_tasks'));

@@ -182,10 +182,23 @@ function handleInitialize(id: RpcId, params: Record<string, unknown> | undefined
 }
 
 /**
+ * Инструменты upstream-транспорта: видны только при настроенной секции (VL-375, VL-391).
+ *
+ * Константа живёт здесь (реестр), а предикат видимости применяют MCP-сервер и
+ * веб-чат: набор из трёх имён должен совпадать в обоих местах, иначе чат
+ * покажет инструмент, которого нет в `tools/list`.
+ */
+export const UPSTREAM_TOOLS: readonly string[] = [
+  'upstream_report_bug',
+  'upstream_list_reports',
+  'upstream_ack_report',
+];
+
+/**
  * Обрабатывает метод tools/list.
  *
- * VL-375: список фильтруется по состоянию проекта — `upstream_report_bug`
- * виден только при валидной секции `upstream` (инструмент, который всё равно
+ * VL-375: список фильтруется по состоянию проекта — инструменты upstream
+ * видны только при валидной секции `upstream` (инструмент, который всё равно
  * не сработает, клиент не должен даже видеть). `listTools()` остаётся без
  * параметров: реестр описывает возможности системы (доктор, тесты паритета,
  * валидация персон), а видимость — политика сервера.
@@ -196,7 +209,7 @@ function handleInitialize(id: RpcId, params: Record<string, unknown> | undefined
  */
 function handleToolsList(id: RpcId, cwd: string, send: SendResponse): void {
   const tools = listTools().filter(
-    (tool) => tool.name !== 'upstream_report_bug' || isUpstreamConfigured(cwd),
+    (tool) => !UPSTREAM_TOOLS.includes(tool.name) || isUpstreamConfigured(cwd),
   );
   send(id, {
     tools,

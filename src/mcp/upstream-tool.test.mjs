@@ -15,7 +15,7 @@ import { describe, it, beforeAll, afterAll, beforeEach, afterEach } from 'vitest
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -304,5 +304,231 @@ describe('VL-363 — вызов upstream_report_bug', () => {
     assert.equal(ack.ok, false);
     assert.match(ack.error, /title/);
     assert.equal(hits, 0);
+  });
+});
+
+// ============================================================
+// VL-391 — приём входящих отчётов через MCP
+// ============================================================
+
+/** Проект с локальным bare-инбоксом: отчёт можно положить и принять. */
+function makeInboxProject() {
+  const dir = makeProject(undefined);
+  const remote = join(dir, 'inbox.git');
+  execFileSync('/usr/bin/git', ['init', '-q', '--bare', remote]);
+  const seed = join(dir, 'seed');
+  mkdirSync(seed, { recursive: true });
+  const gitSeed = (...args) => execFileSync('/usr/bin/git', args, { cwd: seed, encoding: 'utf8' }).trim();
+  execFileSync('/usr/bin/git', ['init', '-q'], { cwd: seed });
+  gitSeed('config', 'user.email', 't@e.com');
+  gitSeed('config', 'user.name', 'T');
+  writeFileSync(join(seed, 'README.md'), '# Inbox\n', 'utf8');
+  gitSeed('add', 'README.md');
+  gitSeed('commit', '-q', '-m', 'init');
+  gitSeed('remote', 'add', 'origin', remote);
+  gitSeed('push', '-q', 'origin', 'HEAD:main');
+  execFileSync('/usr/bin/git', ['--git-dir', remote, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
+  mkdirSync(join(dir, '.vibelog'), { recursive: true });
+  writeFileSync(
+    join(dir, '.vibelog', 'settings.json'),
+    JSON.stringify({ upstream: { mode: 'git', inbox: remote, prefix: 'ui' } }, null, 2),
+    'utf8',
+  );
+  // Клон создаём сразу: иначе seedIncomingReport подготовит каталог без .git,
+  // и ensureInboxClone упадёт на «destination path already exists».
+  execFileSync('/usr/bin/git', ['clone', '-q', remote, join(dir, INBOX_DIR)]);
+  return dir;
+}
+
+/** Кладёт отчёт в клон инбокса напрямую (без push) — фикстура приёма. */
+function seedIncomingReport(dir, { id, task = 'VL-390', title = 'Отчёт для приёма', status = 'open' }) {
+  const inbox = join(dir, INBOX_DIR);
+  const rel = `reports/tpl/2026-11-08-${task}-report.md`;
+  mkdirSync(join(inbox, 'reports', 'tpl'), { recursive: true });
+  writeFileSync(
+    join(inbox, rel),
+    [
+      '---',
+      `report_id: ${id}`,
+      'source_project: Templates',
+      'source_prefix: tpl',
+      `source_task: ${task}`,
+      `title: ${title}`,
+      'target: ui',
+      'severity: high',
+      'area: install',
+      'created: 2026-11-08',
+      `status: ${status}`,
+      'accepted_as: ""',
+      '---',
+      '',
+      '## Что произошло',
+      '',
+      'Файл компонента не копируется.',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return rel;
+}
+
+describe('VL-391 — регистрация и видимость инструментов приёма', () => {
+  it('AC1/AC2: оба инструмента есть в реестре и объявлены в TOOL_KINDS', () => {
+    const list = listTools();
+    const listReports = list.find((t) => t.name === 'upstream_list_reports');
+    const ackReports = list.find((t) => t.name === 'upstream_ack_report');
+    assert.ok(listReports, 'upstream_list_reports не зарегистрирован');
+    assert.ok(ackReports, 'upstream_ack_report не зарегистрирован');
+    assert.deepEqual(ackReports.inputSchema.required, ['report_id', 'action']);
+    assert.deepEqual(ackReports.inputSchema.properties.action.enum, ['accept', 'reject']);
+    assert.equal(TOOL_KINDS.upstream_list_reports, 'read');
+    assert.equal(TOOL_KINDS.upstream_ack_report, 'write');
+    assert.equal(isWriteOperation('upstream_ack_report'), true);
+    assert.equal(isWriteOperation('upstream_list_reports'), false);
+  });
+
+  it('AC8: без секции upstream оба скрыты в tools/list', async () => {
+    const dir = makeProject({});
+    const names = await toolsListNames(dir);
+    assert.ok(!names.includes('upstream_list_reports'));
+    assert.ok(!names.includes('upstream_ack_report'));
+  });
+
+  it('AC8: с валидной секцией оба видны', async () => {
+    const dir = makeProject({ upstream: { mode: 'git', inbox: '/tmp/nowhere.git', prefix: 'ui' } });
+    const names = await toolsListNames(dir);
+    assert.ok(names.includes('upstream_list_reports'));
+    assert.ok(names.includes('upstream_ack_report'));
+  });
+
+  it('AC8: невалидная секция (mode git без inbox) → инструментов нет', async () => {
+    const dir = makeProject({ upstream: { mode: 'git', prefix: 'ui' } });
+    const names = await toolsListNames(dir);
+    assert.ok(!names.includes('upstream_list_reports'));
+    assert.ok(!names.includes('upstream_ack_report'));
+  });
+});
+
+describe('VL-391 — вызовы приёма отчётов', () => {
+  it('AC2/AC12: mode api → оба инструмента отвечают понятной ошибкой', async () => {
+    const dir = makeProject({ upstream: { mode: 'api', repo: 'a/b' } });
+    const listAck = JSON.parse(await handleToolCall('upstream_list_reports', {}, dir));
+    assert.equal(listAck.ok, false);
+    assert.match(listAck.error, /mode: "git"/);
+    assert.equal(hits, 0, 'в API-режиме сеть не нужна');
+
+    const ackAck = JSON.parse(
+      await handleToolCall('upstream_ack_report', { report_id: 'abcdef12', action: 'accept', task_id: 'UI-1' }, dir),
+    );
+    assert.equal(ackAck.ok, false);
+    assert.match(ackAck.error, /mode: "git"/);
+  });
+
+  it('AC8: без секции upstream прямой вызов даёт actionable-ошибку', async () => {
+    const dir = makeProject({});
+    const ack = JSON.parse(await handleToolCall('upstream_list_reports', {}, dir));
+    assert.equal(ack.ok, false);
+    assert.match(ack.hint ?? '', /\.vibelog\/settings\.json/);
+    assert.ok(!/Неизвестный инструмент/.test(ack.error));
+  });
+
+  it('AC1/AC12: список отдаёт входящие, report_id — тело отчёта', async () => {
+    const dir = makeInboxProject();
+    const id = `a1b2c3d4${'0'.repeat(32)}`;
+    seedIncomingReport(dir, { id });
+
+    const list = JSON.parse(await handleToolCall('upstream_list_reports', {}, dir));
+    assert.equal(list.ok, true, JSON.stringify(list));
+    assert.equal(list.applied.count, 1);
+    const [first] = list.applied.reports;
+    for (const field of [
+      'report_id', 'source_project', 'source_task', 'title', 'target', 'severity', 'area', 'created', 'status',
+    ]) {
+      assert.ok(field in first, `поле ${field} отсутствует в списке`);
+    }
+    assert.equal(first.status, 'open');
+
+    const one = JSON.parse(await handleToolCall('upstream_list_reports', { report_id: id.slice(0, 8) }, dir));
+    assert.equal(one.ok, true);
+    assert.match(one.applied.report.body, /Файл компонента не копируется/);
+  });
+
+  it('AC3: accept с несуществующим task_id → rejected, файл не изменён', async () => {
+    const dir = makeInboxProject();
+    const id = `b2c3d4e5${'1'.repeat(32)}`;
+    const rel = seedIncomingReport(dir, { id });
+    const before = readFileSync(join(dir, INBOX_DIR, rel), 'utf8');
+
+    const ack = JSON.parse(
+      await handleToolCall('upstream_ack_report', { report_id: id, action: 'accept', task_id: 'VL-99999' }, dir),
+    );
+    assert.equal(ack.ok, false);
+    assert.match(ack.error, /VL-99999/);
+    assert.match(ack.hint ?? '', /backlog_create_task/);
+    assert.equal(readFileSync(join(dir, INBOX_DIR, rel), 'utf8'), before, 'отчёт не изменён');
+  });
+
+  it('AC4/AC12: accept с существующей задачей → отчёт accepted + комментарий в задаче', async () => {
+    const dir = makeInboxProject();
+    const id = `c3d4e5f6${'2'.repeat(32)}`;
+    const rel = seedIncomingReport(dir, { id });
+    mkdirSync(join(dir, 'backlog', 'tasks'), { recursive: true });
+  const task = JSON.parse(await handleToolCall('backlog_create_task', { title: 'Принять отчёт' }, dir));
+    const taskId = task.applied.id;
+
+    const ack = JSON.parse(
+      await handleToolCall('upstream_ack_report', { report_id: id, action: 'accept', task_id: taskId }, dir),
+    );
+    assert.equal(ack.ok, true, JSON.stringify(ack));
+    assert.equal(ack.applied.status, 'accepted');
+    // accepted_as нормализуется (префикс в верхний регистр): ui-1 → UI-1
+    const normalizedId = taskId.toUpperCase();
+    assert.equal(ack.applied.accepted_as, normalizedId);
+
+    const text = readFileSync(join(dir, INBOX_DIR, rel), 'utf8');
+    assert.match(text, /^status: accepted$/m);
+    assert.match(text, new RegExp(`^accepted_as: ${normalizedId}$`, 'm'));
+
+    // Комментарий ищем в markdown-файле задачи: accept обязан оставить
+    // обратную ссылку отчёт → задача (иначе связь живёт только в инбоксе).
+    const tasksDir = join(dir, 'backlog', 'tasks');
+    const taskFile = readdirSync(tasksDir).find((name) => name.endsWith('.md'));
+    assert.ok(taskFile, 'файл задачи не найден');
+    const comments = readFileSync(join(tasksDir, taskFile), 'utf8');
+    assert.match(comments, new RegExp(id.slice(0, 8)), 'комментарий ссылается на отчёт');
+    assert.match(comments, /Templates/, 'комментарий называет проект-источник');
+  });
+  it('AC2/AC12: reject без reason → rejected, файл не изменён', async () => {
+    const dir = makeInboxProject();
+    const id = `d4e5f6a7${'3'.repeat(32)}`;
+    const rel = seedIncomingReport(dir, { id });
+    const before = readFileSync(join(dir, INBOX_DIR, rel), 'utf8');
+
+    const ack = JSON.parse(
+      await handleToolCall('upstream_ack_report', { report_id: id, action: 'reject' }, dir),
+    );
+    assert.equal(ack.ok, false);
+    assert.match(ack.error, /reason/);
+    assert.equal(readFileSync(join(dir, INBOX_DIR, rel), 'utf8'), before);
+  });
+
+  it('AC2: reject с причиной пишет rejected_reason', async () => {
+    const dir = makeInboxProject();
+    const id = `e5f6a7b8${'4'.repeat(32)}`;
+    const rel = seedIncomingReport(dir, { id });
+
+    const ack = JSON.parse(
+      await handleToolCall(
+        'upstream_ack_report',
+        { report_id: id, action: 'reject', reason: 'не воспроизводится на 1.12.0' },
+        dir,
+      ),
+    );
+    assert.equal(ack.ok, true, JSON.stringify(ack));
+    assert.equal(ack.applied.status, 'rejected');
+    assert.equal(ack.applied.rejected_reason, 'не воспроизводится на 1.12.0');
+    const text = readFileSync(join(dir, INBOX_DIR, rel), 'utf8');
+    assert.match(text, /^status: rejected$/m);
+    assert.match(text, /rejected_reason: не воспроизводится/);
   });
 });
