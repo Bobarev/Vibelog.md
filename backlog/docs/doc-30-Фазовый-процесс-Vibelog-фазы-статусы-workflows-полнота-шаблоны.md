@@ -17,7 +17,7 @@ tags:
 **Дата актуализации:** 2026-11-10.
 **Источники (единственные, по которым документ проверен):** `templates/phases/*.md`, `src/web/phase-prompt.ts`, `src/core/workflow.ts`, `src/core/phase-transient.ts`, `src/mcp/tools.ts` (контракт `backlog_finish_phase`).
 
-Документ описывает **смысл и правила**. Полные перечни фаз, статусов и ключей настроек генерируются из кода: `vibelog instructions` (тема `overview`), MCP `initialize` (поле `instructions` — ориентир по фазам, VL-395) и команда `vibelog capabilities` (VL-394); расширение тем `vibelog instructions` (`workflow`, `mcp`, `settings`) — в разработке, VL-396. При расхождении прав код, а не этот текст.
+Документ описывает **смысл и правила**. Полные перечни фаз, статусов и ключей настроек генерируются из кода: `vibelog instructions` (темы `overview`, `workflow`, `mcp`, `settings`), MCP `initialize` (поле `instructions` — ориентир по фазам, VL-395) и команда `vibelog capabilities` (VL-394). При расхождении прав код, а не этот текст.
 
 ## 1. Фазы
 

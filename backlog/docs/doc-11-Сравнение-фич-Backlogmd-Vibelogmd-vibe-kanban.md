@@ -83,7 +83,7 @@ tags:
 | `config set` | ✅ (16 ключей) | ❌ | Отсутствует | P1 |
 | `config list` | ✅ | ❌ | Отсутствует | P2 |
 | `doctor` | ✅ (--fix дубликаты ID) | ✅ (окружение) | Разная семантика | — |
-| `instructions` | ✅ (--list, гайды) | ✅ (4 темы) | Совместимо | — |
+| `instructions` | ✅ (--list, гайды) | ✅ (7 тем) | Совместимо | — |
 | `mcp start` | ✅ | ✅ | Совместимо | — |
 | `agents --update-instructions` | ✅ | ❌ | Отсутствует | P3 |
 | `overview` | ✅ (TUI-статистика) | ❌ | Отсутствует | P2 |
@@ -222,7 +222,7 @@ tags:
 | `document_search` | ✅ (required: query) | ❌ | Отсутствует | P2 |
 | `definition_of_done_defaults_get` | ✅ | ❌ | Отсутствует | P2 |
 | `definition_of_done_defaults_upsert` | ✅ (required: items) | ❌ | Отсутствует | P2 |
-| `get_backlog_instructions` | ✅ (overview, task-creation, task-execution, task-finalization) | ✅ `vibelog instructions` (CLI) | Совместимо | — |
+| `get_backlog_instructions` | ✅ (overview, task-creation, task-execution, task-finalization) | ✅ `vibelog instructions` (CLI; 7 тем: overview, workflow, mcp, settings, task-creation, task-execution, task-finalization) | Совместимо | — |
 
 **Итого:** Backlog.md — 19 MCP-инструментов. Vibelog.md — 11. Совместимо — 5. Частично — 4. Отсутствует — 10.
 

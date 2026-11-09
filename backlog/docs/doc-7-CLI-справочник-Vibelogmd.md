@@ -323,7 +323,9 @@ vibelog browser [--port N] [--host ADDR] [--no-open]
 vibelog instructions [topic]
 ```
 
-Инструкции для AI-агентов. Темы: `overview`, `task-creation`, `task-execution`, `task-finalization`.
+Инструкции для AI-агентов. Темы: `overview`, `workflow`, `mcp`, `settings`, `task-creation`, `task-execution`, `task-finalization`.
+
+Без аргумента печатается `overview` и список тем с назначением; неизвестная тема — ошибка со списком. Темы `overview`, `workflow`, `mcp`, `settings` генерируются из реестров кода (`DEFAULT_WORKFLOW`, `DEFAULT_COMPLETENESS`, `listTools()`, `buildCapabilities()`), поэтому не расходятся с исполнением. Полный машинный список — `vibelog capabilities --json`.
 
 ---
 
