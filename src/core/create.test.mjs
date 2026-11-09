@@ -14,6 +14,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import {
   existsSync,
   mkdirSync,
@@ -898,5 +899,239 @@ describe('маркер VIBELOG_CREATE для postCreate (VL-389)', () => {
     });
     const post = deps.calls.find((call) => call.args[0] === 'run');
     assert.equal(post.env.VIBELOG_CREATE, 'no-git');
+  });
+});
+
+describe('installTemplateComponents и registryDependencies (VL-390)', () => {
+  /** Файлы фикстуры-реестра: путь в репозитории → содержимое. */
+  let registryFiles = {};
+  let server;
+  let baseUrl = '';
+
+  beforeEach(async () => {
+    registryFiles = {};
+    server = createServer((req, res) => {
+      const url = req.url ?? '';
+      const marker = '/raw/branch/';
+      const idx = url.indexOf(marker);
+      if (idx === -1) {
+        res.writeHead(400);
+        res.end('{\"code\":4305}');
+        return;
+      }
+      const rest = url.slice(idx + marker.length);
+      const slash = rest.indexOf('/');
+      const path = decodeURIComponent(rest.slice(slash + 1));
+      const body = registryFiles[path];
+      if (body === undefined) {
+        res.writeHead(400, { 'content-type': 'application/json;charset=utf-8' });
+        res.end(JSON.stringify({ code: 4305, message: 'not found' }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end(body);
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  afterEach(async () => {
+    await new Promise((resolve) => {
+      server.closeAllConnections?.();
+      server.close(() => resolve());
+    });
+  });
+
+  /** Кладёт манифест элемента и его файлы в фикстуру реестра. */
+  function seedItem(item, files) {
+    registryFiles[`public/r/${item.name}.json`] = JSON.stringify(item);
+    for (const [path, content] of Object.entries(files)) registryFiles[path] = content;
+  }
+
+  /** Элемент `base` — utils.ts и theme.css с npm-зависимостями. */
+  function baseItem() {
+    return {
+      name: 'base',
+      type: 'registry:lib',
+      version: '1.0.0',
+      dependencies: ['clsx', 'tailwind-merge'],
+      registryDependencies: [],
+      files: [
+        { path: 'src/lib/utils.ts', target: '../utils.ts', type: 'registry:lib' },
+        { path: 'src/lib/theme.css', target: '../theme.css', type: 'registry:lib' },
+      ],
+    };
+  }
+
+  /** Элемент `button`, зависящий от `base`. */
+  function buttonItem() {
+    return {
+      name: 'button',
+      type: 'registry:ui',
+      version: '1.0.0',
+      dependencies: [],
+      registryDependencies: ['vibelog.md/ui/base'],
+      files: [
+        { path: 'src/lib/components/ui/button.svelte', target: 'button.svelte', type: 'registry:ui' },
+      ],
+    };
+  }
+
+  /** Пустой проект с секцией components (как после postCreate). */
+  function freshProject() {
+    const dir = join(testDir, 'created');
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    writeSettings(dir, componentsConfig());
+    return dir;
+  }
+
+  /** Раннер пакетного менеджера: пишет package.json как настоящий npm. */
+  function depsRunnerWritingPackageJson(calls, status = 0) {
+    return (command, args, options) => {
+      calls.push({ command, args });
+      if (status !== 0) return { status };
+      const deps = {};
+      for (const name of args.slice(1)) deps[name] = '^1.0.0';
+      const path = join(options.cwd, 'package.json');
+      const existing = existsSync(path) ? JSON.parse(readFileSync(path, 'utf-8')) : {};
+      writeFileSync(
+        path,
+        JSON.stringify({ ...existing, dependencies: { ...(existing.dependencies ?? {}), ...deps } }),
+        'utf-8',
+      );
+      return { status };
+    };
+  }
+
+  it('ставит base (зависимость) до button: файлы, lock и npm-пакеты', async () => {
+    const dir = freshProject();
+    seedItem(baseItem(), {
+      'src/lib/utils.ts': 'export const cn = (...a) => a.join(" ");\n',
+      'src/lib/theme.css': ':root { --x: 1; }\n',
+    });
+    seedItem(buttonItem(), { 'src/lib/components/ui/button.svelte': 'button\n' });
+
+    const calls = [];
+    const outcome = await installTemplateComponents(['vibelog.md/ui/button'], dir, {
+      packageManager: 'npm',
+      depsRunner: depsRunnerWritingPackageJson(calls),
+      fetchOptions: { baseUrl, transport: 'raw' },
+    });
+
+    assert.deepEqual(outcome.failed, []);
+    assert.deepEqual(outcome.installed, ['vibelog.md/ui/button']);
+    // AC2: оба элемента на месте — base даёт utils.ts/theme.css.
+    assert.ok(existsSync(join(dir, 'src/lib/utils.ts')), 'нет utils.ts');
+    assert.ok(existsSync(join(dir, 'src/lib/theme.css')), 'нет theme.css');
+    assert.ok(existsSync(join(dir, 'src/lib/components/ui/button.svelte')));
+    // AC3: в lock обе записи, у base два файла, у button один.
+    const lock = JSON.parse(readFileSync(join(dir, '.vibelog/installed.lock.json'), 'utf-8'));
+    assert.ok(lock.components.base, JSON.stringify(lock));
+    assert.ok(lock.components.button, JSON.stringify(lock));
+    assert.equal(Object.keys(lock.components.base.files).length, 2);
+    assert.equal(Object.keys(lock.components.button.files).length, 1);
+    // AC4: пакеты цепочки поставлены одной командой.
+    assert.deepEqual(calls, [{ command: 'npm', args: ['install', 'clsx', 'tailwind-merge'] }]);
+    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8'));
+    assert.ok(pkg.dependencies.clsx);
+    assert.ok(pkg.dependencies['tailwind-merge']);
+    // AC5: в lock зависимости button записаны пакеты, поставленные для цепочки.
+    assert.deepEqual(lock.components.base.dependencies, ['clsx', 'tailwind-merge']);
+  });
+
+  it('неудача npm-зависимостей попадает в failed с причиной', async () => {
+    const dir = freshProject();
+    seedItem(baseItem(), {
+      'src/lib/utils.ts': 'x\n',
+      'src/lib/theme.css': 'y\n',
+    });
+    seedItem(buttonItem(), { 'src/lib/components/ui/button.svelte': 'button\n' });
+
+    const outcome = await installTemplateComponents(['vibelog.md/ui/button'], dir, {
+      packageManager: 'npm',
+      depsRunner: () => ({ status: 1 }),
+      fetchOptions: { baseUrl, transport: 'raw' },
+    });
+
+    assert.deepEqual(outcome.installed, []);
+    assert.equal(outcome.failed.length, 1);
+    assert.equal(outcome.failed[0].path, 'vibelog.md/ui/button');
+    assert.match(outcome.failed[0].error, /clsx/);
+    assert.match(outcome.failed[0].error, /tailwind-merge/);
+    // Транзакция не применилась: ни файлов, ни lock.
+    assert.ok(!existsSync(join(dir, 'src/lib/components/ui/button.svelte')));
+    assert.ok(!existsSync(join(dir, '.vibelog/installed.lock.json')));
+  });
+
+  it('повторный вызов не переустанавливает уже стоящий base', async () => {
+    const dir = freshProject();
+    seedItem(baseItem(), { 'src/lib/utils.ts': 'x\n', 'src/lib/theme.css': 'y\n' });
+    seedItem(buttonItem(), { 'src/lib/components/ui/button.svelte': 'button\n' });
+
+    const first = await installTemplateComponents(['vibelog.md/ui/button'], dir, {
+      packageManager: 'npm',
+      depsRunner: depsRunnerWritingPackageJson([]),
+      fetchOptions: { baseUrl, transport: 'raw' },
+    });
+    assert.deepEqual(first.failed, []);
+    const lockAfterFirst = readFileSync(join(dir, '.vibelog/installed.lock.json'), 'utf-8');
+
+    // Второй компонент той же цепочки: base уже в lock.
+    seedItem(
+      {
+        name: 'card',
+        type: 'registry:ui',
+        version: '1.0.0',
+        dependencies: [],
+        registryDependencies: ['vibelog.md/ui/base'],
+        files: [{ path: 'src/lib/components/ui/card.svelte', target: 'card.svelte', type: 'registry:ui' }],
+      },
+      { 'src/lib/components/ui/card.svelte': 'card\n' },
+    );
+    const second = await installTemplateComponents(['vibelog.md/ui/card'], dir, {
+      packageManager: 'npm',
+      depsRunner: depsRunnerWritingPackageJson([]),
+      fetchOptions: { baseUrl, transport: 'raw' },
+    });
+    assert.deepEqual(second.failed, []);
+    const lock = JSON.parse(readFileSync(join(dir, '.vibelog/installed.lock.json'), 'utf-8'));
+    assert.ok(lock.components.base);
+    assert.equal(lock.components.base.installedAt, JSON.parse(lockAfterFirst).components.base.installedAt);
+    assert.ok(existsSync(join(dir, 'src/lib/components/ui/card.svelte')));
+  });
+
+  it('несколько компонентов шаблона: base не ставится дважды', async () => {
+    const dir = freshProject();
+    seedItem(baseItem(), { 'src/lib/utils.ts': 'x\n', 'src/lib/theme.css': 'y\n' });
+    seedItem(buttonItem(), { 'src/lib/components/ui/button.svelte': 'button\n' });
+    seedItem(
+      {
+        name: 'card',
+        type: 'registry:ui',
+        version: '1.0.0',
+        dependencies: [],
+        registryDependencies: ['vibelog.md/ui/base'],
+        files: [{ path: 'src/lib/components/ui/card.svelte', target: 'card.svelte', type: 'registry:ui' }],
+      },
+      { 'src/lib/components/ui/card.svelte': 'card\n' },
+    );
+
+    const outcome = await installTemplateComponents(
+      ['vibelog.md/ui/button', 'vibelog.md/ui/card'],
+      dir,
+      {
+        packageManager: 'npm',
+        depsRunner: depsRunnerWritingPackageJson([]),
+        fetchOptions: { baseUrl, transport: 'raw' },
+      },
+    );
+    assert.deepEqual(outcome.failed, []);
+    assert.deepEqual(outcome.installed, ['vibelog.md/ui/button', 'vibelog.md/ui/card']);
+    const lock = JSON.parse(readFileSync(join(dir, '.vibelog/installed.lock.json'), 'utf-8'));
+    assert.deepEqual(Object.keys(lock.components).sort(), ['base', 'button', 'card']);
+    assert.equal(Object.keys(lock.components.base.files).length, 2);
   });
 });

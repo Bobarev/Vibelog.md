@@ -2,10 +2,12 @@
  * Команда `vb install` (VL-337, doc-25 §2.3, §4.3): доставка файлов
  * компонента из реестра в проект.
  *
- * Команда — тонкая оболочка над `core/install.ts`: разбирает флаги, спрашивает
- * пользователя про конфликты, печатает план/итог и выставляет код выхода.
- * Вся логика (пути, конфликты, атомарная запись, lock) — в ядре, чтобы
- * `--dry-run` и реальная установка шли по одному коду.
+ * Команда — тонкая оболочка над `core/install-chain.ts` (VL-390): разбирает
+ * флаги, спрашивает пользователя про конфликты, печатает план/итог и
+ * выставляет код выхода. Вся последовательность установки (включая
+ * `registryDependencies` и единую транзакцию записи) живёт в ядре — тем же
+ * оркестратором пользуется `vb create` для компонентов шаблона, поэтому
+ * расхождение путей невозможно.
  *
  * Коды выхода (doc-25 §5.2): 0 — успех и частичный успех, 1 — использование,
  * 2 — предусловие, 3 — сеть/данные, 4 — все файлы пропущены по конфликту,
@@ -21,34 +23,19 @@ import { createPromptSession, isInteractive, PromptCancelledError } from '../pro
 import type { PromptSession } from '../prompt.js';
 import {
   InstallError,
-  applyInstallChain,
-  buildInstallPlan,
   diffLines,
-  fetchInstallContents,
-  fetchInstallItem,
   forceOverwrite,
   isAllConflictsSkipped,
-  recomputeInstallPlan,
   resolveConflicts,
   resolveInstallContext,
   skipAllConflicts,
 } from '../../core/install.js';
 import type { InstallContext, InstallPlan, InstallPlanFile } from '../../core/install.js';
-import {
-  detectPackageManager,
-  formatCommand,
-  installCommand,
-  missingDeps,
-  readProjectDeps,
-  runDepsInstall,
-} from '../../core/install-deps.js';
+import { formatCommand } from '../../core/install-deps.js';
 import type { DepsRunner } from '../../core/install-deps.js';
-import {
-  checkChainOwnership,
-  resolveRegistryDeps,
-  transferOwnership,
-} from '../../core/install-registry-deps.js';
-import type { OwnershipEntry, RegistryDepNote } from '../../core/install-registry-deps.js';
+import { installWithDeps } from '../../core/install-chain.js';
+import type { ConflictStrategy, InstallChainOutcome } from '../../core/install-chain.js';
+import type { OwnershipEntry } from '../../core/install-registry-deps.js';
 import { RATE_LIMIT_BUDGET_MS } from '../../core/gitverse-http.js';
 import type { ProgressCallback, ProgressEvent } from '../../core/gitverse-http.js';
 import { readTokenWithSource } from '../../core/gitverse-auth.js';
@@ -257,6 +244,12 @@ async function askConflicts(
 /**
  * Выполняет команду install.
  *
+ * Вся последовательность установки (манифест → план → `registryDependencies`
+ * → владение файлами → npm-зависимости → конфликты → одна транзакция) живёт
+ * в `core/install-chain.ts` (VL-390): тем же оркестратором пользуется
+ * `vb create` для компонентов шаблона. Здесь остаётся CLI-слой: флаги,
+ * вопросы пользователю, печать плана и итога, код выхода.
+ *
  * @param positional — позиционные аргументы (первый — `<alias>/<repo>/<name>`)
  * @param flags — флаги команды
  * @param cwd — текущая рабочая директория
@@ -284,161 +277,128 @@ export async function runInstall(
     return fail(err);
   }
 
-  // --- Загрузка элемента и его файлов (сеть/данные — код 3) ---
-  let plan: InstallPlan;
-  let depPlans: InstallPlan[] = [];
-  let depWarnings: RegistryDepNote[] = [];
-  let alreadyInstalled: string[] = [];
   // VL-381: прогресс сетевых шагов идёт в stderr — stdout остаётся планом.
   const tokenInfo = readTokenWithSource(ctx.root);
   const progress = createProgressPrinter({
     verbose: options.verbose,
     hasToken: tokenInfo.token !== '',
   });
-  const fetchOptions = { onProgress: progress };
   if (options.verbose) {
     writeProgressLine(`токен: ${tokenSourceLabel(tokenInfo.source)}`);
   }
-  try {
-    writeProgressLine(`→ скачиваю ${ctx.ref}…`);
-    const item = await fetchInstallItem(ctx, fetchOptions);
-    writeProgressLine(`→ скачиваю файлы (${item.files.length})…`);
-    const contents = await fetchInstallContents(ctx, item, fetchOptions);
-    plan = buildInstallPlan(ctx.root, ctx.config, ctx.lock, item, contents, ctx.ref);
 
-    // --- registryDependencies: один уровень, до самого элемента (шаг 5) ---
-    const resolved = await resolveRegistryDeps(item, {
+  // Печать плана — до вопроса про пакеты: пользователь должен видеть, что
+  // именно ставится, прежде чем соглашаться на правку package.json.
+  let plansPrinted = false;
+  let depsDryRunMessage = false;
+
+  const conflictStrategy: ConflictStrategy = async (plan, lock) => {
+    if (options.force) {
+      forceOverwrite(plan, lock);
+      return;
+    }
+    if (options.yes || !isInteractive()) {
+      // --yes без --force и не-TTY: пропускаем — иначе пользователь не
+      // заметит, что компонент не установился.
+      skipAllConflicts(plan, lock);
+      return;
+    }
+    const prompts = createPromptSession();
+    try {
+      const decisions = await askConflicts(plan, prompts);
+      resolveConflicts(plan, decisions, lock);
+    } finally {
+      prompts.close();
+    }
+  };
+
+  let outcome: InstallChainOutcome;
+  try {
+    outcome = await installWithDeps({
       root: ctx.root,
       config: ctx.config,
       lock: ctx.lock,
-      ctx,
-      fetchOptions,
+      ref: ctx.ref,
+      ...(options.branch ? { branch: options.branch } : {}),
+      fetchOptions: { onProgress: progress },
+      dryRun: options.dryRun,
+      onConflict: conflictStrategy,
+      hooks: {
+        onBeforeItem: (ref) => writeProgressLine(`→ скачиваю ${ref}…`),
+        onBeforeContents: (item) => writeProgressLine(`→ скачиваю файлы (${item.files.length})…`),
+        onPlanReady: (info) => {
+          for (let i = 0; i < info.plans.length; i += 1) {
+            printPlan(info.plans[i], options.dryRun, info.reuses);
+          }
+          for (const note of info.warnings) printWarning(note.message);
+          for (const name of info.alreadyInstalled) {
+            printInfo(`Зависимость реестра «${name}» уже установлена — не переустанавливаем`);
+          }
+          plansPrinted = true;
+          if (info.missing.length === 0) return;
+          printInfo(
+            `Зависимости: отсутствуют ${info.missing.length} (${info.missing.join(', ')}), команда: ${formatCommand(info.command)}`,
+          );
+          if (options.dryRun) {
+            depsDryRunMessage = true;
+            printInfo('Режим --dry-run: пакеты не устанавливаются.');
+          }
+        },
+      },
+      deps: {
+        ...(deps.runner !== undefined ? { runner: deps.runner } : {}),
+        confirm: async (missing) => {
+          // --yes означает «без вопросов», а не «правь package.json»:
+          // молчаливая установка зависимостей недопустима (решение задачи).
+          if (options.dryRun || options.yes || !isInteractive()) return false;
+          const prompts = createPromptSession();
+          try {
+            return await prompts.askConfirm(`Установить отсутствующие пакеты (${missing.length})?`, true);
+          } finally {
+            prompts.close();
+          }
+        },
+      },
     });
-    depPlans = resolved.plans;
-    depWarnings = resolved.warnings;
-    alreadyInstalled = resolved.alreadyInstalled;
   } catch (err) {
+    if (err instanceof PromptCancelledError) {
+      printInfo('Отменено. Файлы не изменены.');
+      process.exitCode = 5;
+      return;
+    }
     return fail(err);
   }
 
-  const chain: InstallPlan[] = [...depPlans, plan];
-
-  // --- Владение файлами (doc-25 §3.2): reuse или конфликт ---
-  // Проверяется вся цепочка сразу: `base` ещё не в lock, но его `utils.ts`
-  // уже запланирован, и `card` обязан увидеть его владельцем.
-  const ownership = checkChainOwnership(ctx.lock, chain);
-  const reuses = ownership.reuses;
-
-  // --- npm-зависимости: сверка с package.json (шаг 6) ---
-  const projectDeps = readProjectDeps(ctx.root);
-  const missing: string[] = [];
-  for (const current of chain) {
-    for (const name of missingDeps(current.item, projectDeps)) {
-      if (!missing.includes(name)) missing.push(name);
+  // --- Секция npm-зависимостей: итог после попытки установки ---
+  const depsOutcome = outcome.deps;
+  if (depsOutcome.run !== undefined) {
+    const run = depsOutcome.run;
+    if (run.fallbackFrom) {
+      printWarning(`Пакетный менеджер «${run.fallbackFrom}» не найден — использован npm`);
     }
-  }
-  const pm = detectPackageManager(ctx.root);
-  const command = installCommand(pm, missing);
-
-  // --- Разрешение конфликтов (doc-25 §4.3 шаг 8) ---
-  // В --dry-run конфликты НЕ разрешаются: план должен показать их как есть,
-  // иначе пользователь не увидит, что именно потребует решения.
-  if (!options.dryRun) {
-    for (const current of chain) {
-      if (current.conflicts.length === 0) continue;
-      if (options.force) {
-        forceOverwrite(current, ctx.lock);
-      } else if (options.yes || !isInteractive()) {
-        // --yes без --force и не-TTY: пропускаем, но предупреждаем — иначе
-        // пользователь не заметит, что компонент не установился.
-        skipAllConflicts(current, ctx.lock);
-      } else {
-        const prompts = createPromptSession();
-        try {
-          const decisions = await askConflicts(current, prompts);
-          resolveConflicts(current, decisions, ctx.lock);
-        } catch (err) {
-          if (err instanceof PromptCancelledError) {
-            printInfo('Отменено. Файлы не изменены.');
-            process.exitCode = 5;
-            return;
-          }
-          return fail(err);
-        } finally {
-          prompts.close();
-        }
-      }
-    }
-  }
-
-  // --- Планы: зависимости реестра первыми, затем сам элемент ---
-  for (const current of depPlans) {
-    printPlan(current, options.dryRun, reuses);
-  }
-  printPlan(plan, options.dryRun, reuses);
-
-  for (const note of depWarnings) printWarning(note.message);
-  for (const name of alreadyInstalled) {
-    printInfo(`Зависимость реестра «${name}» уже установлена — не переустанавливаем`);
-  }
-
-  // --- Секция npm-зависимостей ---
-  let confirmedDeps: string[] = [];
-  if (missing.length > 0) {
-    printInfo(
-      `Зависимости: отсутствуют ${missing.length} (${missing.join(', ')}), команда: ${formatCommand(command)}`,
-    );
-    if (options.dryRun) {
-      printInfo('Режим --dry-run: пакеты не устанавливаются.');
-    } else if (options.yes || !isInteractive()) {
-      // --yes означает «без вопросов», а не «правь package.json»: молчаливая
-      // установка зависимостей недопустима (решение задачи).
+    if (run.ok) {
+      printSuccess(`Установлены пакеты: ${depsOutcome.confirmed.join(', ')}`);
+    } else {
       printWarning(
-        `Зависимости не установлены (--yes/не-TTY): выполните вручную «${formatCommand(command)}» — без них компонент может не работать`,
+        `Зависимости не установлены (${run.error ?? 'ненулевой код выхода'}): компонент может не работать`,
+      );
+    }
+  } else if (depsOutcome.missing.length > 0 && !depsDryRunMessage) {
+    if (options.yes || !isInteractive()) {
+      printWarning(
+        `Зависимости не установлены (--yes/не-TTY): выполните вручную «${formatCommand(depsOutcome.command)}» — без них компонент может не работать`,
       );
     } else {
-      const prompts = createPromptSession();
-      let agreed = false;
-      try {
-        agreed = await prompts.askConfirm(
-          `Установить отсутствующие пакеты (${missing.length})?`,
-          true,
-        );
-      } catch (err) {
-        if (err instanceof PromptCancelledError) {
-          printInfo('Отменено. Файлы не изменены.');
-          process.exitCode = 5;
-          return;
-        }
-        return fail(err);
-      } finally {
-        prompts.close();
-      }
-      if (!agreed) {
-        printWarning(
-          `Зависимости не установлены: выполните вручную «${formatCommand(command)}» — без них компонент может не работать`,
-        );
-      } else {
-        const run = runDepsInstall(pm, missing, ctx.root, deps.runner);
-        if (run.fallbackFrom) {
-          printWarning(
-            `Пакетный менеджер «${run.fallbackFrom}» не найден — использован npm`,
-          );
-        }
-        if (run.ok) {
-          // Перечитываем package.json: в lock попадают только подтверждённо
-          // установленные пакеты (doc-25 §3.2).
-          const after = readProjectDeps(ctx.root);
-          confirmedDeps = missing.filter((name) => after.has(name));
-          printSuccess(`Установлены пакеты: ${confirmedDeps.join(', ')}`);
-        } else {
-          printWarning(
-            `Зависимости не установлены (${run.error ?? 'ненулевой код выхода'}): компонент может не работать`,
-          );
-        }
-      }
+      printWarning(
+        `Зависимости не установлены: выполните вручную «${formatCommand(depsOutcome.command)}» — без них компонент может не работать`,
+      );
     }
   }
+
+  const chain = outcome.plans;
+  const depPlans = chain.slice(0, outcome.depCount);
+  const plan = chain[chain.length - 1];
+  if (!plansPrinted) return fail(new InstallError('план установки не построен', 3));
 
   if (options.dryRun) {
     // Ни temp-каталога, ни записи: план уже посчитан, выходим с 0.
@@ -447,25 +407,8 @@ export async function runInstall(
     return;
   }
 
-  // --- Финальный пересчёт планов: зависимости в lock + переиспользование ---
-  const now = new Date().toISOString();
-  for (const current of chain) {
-    const own = current.item.dependencies.filter((name) => confirmedDeps.includes(name));
-    // Пустой список не передаём: иначе повторная установка затрёт уже
-    // записанные в lock зависимости (идемпотентность, AC8 VL-337).
-    recomputeInstallPlan(current, ctx.lock, now, own.length > 0 ? own : undefined);
-  }
-  const transferred = transferOwnership(chain, ctx.lock);
-
-  // --- Запись всей цепочки одной транзакцией ---
-  let results;
-  try {
-    results = applyInstallChain(ctx.root, ctx.config, ctx.lock, chain);
-  } catch (err) {
-    return fail(err);
-  }
-
   // --- Итоговый блок ---
+  const results = outcome.results;
   for (let i = 0; i < chain.length; i += 1) {
     const current = chain[i];
     const isDep = i < depPlans.length;
@@ -479,10 +422,10 @@ export async function runInstall(
       printInfo(`Пропущен: ${file.relPath} — ${reason}`);
     }
   }
-  for (const entry of reuses) {
+  for (const entry of outcome.reuses) {
     printInfo(`Файл переиспользован из «${entry.owner}»: ${entry.relPath}`);
   }
-  for (const item of transferred) {
+  for (const item of outcome.transferred) {
     printInfo(`Владение файлом передано: ${item}`);
   }
   if (results.some((result) => result.lockWritten)) {

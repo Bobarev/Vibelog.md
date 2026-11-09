@@ -55,15 +55,9 @@ import {
 import type { ComponentsConfig, LockFile, RegistryEntry } from './components-config.js';
 import { detectPackageManager } from './install-deps.js';
 import type { DepsRunner, DepsRunnerResult, PackageManager } from './install-deps.js';
-import {
-  applyInstallChain,
-  buildInstallPlan,
-  fetchInstallContents,
-  fetchInstallItem,
-  parseInstallPath,
-  skipAllConflicts,
-} from './install.js';
-import type { InstallContext } from './install.js';
+import { skipAllConflicts } from './install.js';
+import type { InstallFetchOptions } from './install.js';
+import { installWithDeps } from './install-chain.js';
 import { DEFAULT_REGISTRY_BASE } from './registry-fetch.js';
 
 /** Код выхода CLI (doc-25 §5.2). */
@@ -110,6 +104,7 @@ export type GitRunner = (args: string[], cwd: string) => GitRunResult;
 export type ComponentsInstaller = (
   paths: string[],
   targetDir: string,
+  options?: { packageManager?: PackageManager; depsRunner?: DepsRunner },
 ) => Promise<{ installed: string[]; failed: Array<{ path: string; error: string }> }>;
 
 /** Манифест шаблона — то, что читается из `package.json` подпапки. */
@@ -710,11 +705,29 @@ export function readTemplateManifest(templateDir: string): TemplateManifest {
 }
 
 /**
- * Устанавливает компоненты шаблона логикой `vb install` (VL-337/338).
+ * Устанавливает компоненты шаблона той же последовательностью, что `vb install`
+ * (VL-337/338/390).
  *
  * Корень проекта — сам созданный каталог, а НЕ git-корень: `vb create` может
  * запускаться внутри другого репозитория, и `findGitRoot` увёл бы установку в
  * родительский проект.
+ *
+ * Почему через `installWithDeps` (VL-390). Раньше здесь была сокращённая
+ * копия последовательности: манифест → файлы → план → запись. Шаг
+ * `resolveRegistryDeps` в ней отсутствовал, поэтому `button` ставился без
+ * `base`, его `utils.ts` не появлялся, а `button.svelte` не собирался
+ * (`Cannot find module '../utils'`). Копия неизбежно расходится с оригиналом,
+ * поэтому оркестратор теперь общий, а различие — только стратегия конфликтов
+ * (`skipAllConflicts`: в свежем проекте конфликтов быть не должно, но если
+ * файл создал `postCreate` — не перезаписываем без спроса).
+ *
+ * npm-зависимости: `vb create` уже выполнил `<pm> install` до `postCreate`,
+ * поэтому менеджер и раннер приходят параметрами (повторный
+ * `detectPackageManager` зависел бы от lock-файла в только что скопированном
+ * каталоге). Ставим недостающие пакеты цепочки без вопросов — пользователь уже
+ * согласился на установку зависимостей проекта. Если пакеты поставить не
+ * удалось, элемент попадает в `failed`: молчаливое «установлено: button» при
+ * отсутствии `clsx` было бы ложью (VL-390 AC6).
  *
  * Ошибка одного компонента не отменяет создание проекта: проект уже рабочий,
  * а неудачные пути перечисляются в итоге.
@@ -722,6 +735,12 @@ export function readTemplateManifest(templateDir: string): TemplateManifest {
 export async function installTemplateComponents(
   paths: string[],
   targetDir: string,
+  options: {
+    packageManager?: PackageManager;
+    depsRunner?: DepsRunner;
+    /** Опции сетевых вызовов (инъекция в тестах: локальный HTTP-фикстур). */
+    fetchOptions?: InstallFetchOptions;
+  } = {},
 ): Promise<{ installed: string[]; failed: Array<{ path: string; error: string }> }> {
   const installed: string[] = [];
   const failed: Array<{ path: string; error: string }> = [];
@@ -748,29 +767,25 @@ export async function installTemplateComponents(
 
   for (const ref of paths) {
     try {
-      const { alias, repo, name } = parseInstallPath(ref);
-      const registry = config.registries[alias];
-      if (!registry) {
-        throw new Error(`неизвестный реестр «${alias}»`);
-      }
-      const ctx: InstallContext = {
+      const outcome = await installWithDeps({
         root: resolve(targetDir),
         config,
         lock,
-        alias,
-        repo,
-        name,
-        branch: registry.branch,
-        registry,
         ref,
-      };
-      const item = await fetchInstallItem(ctx);
-      const contents = await fetchInstallContents(ctx, item);
-      const plan = buildInstallPlan(ctx.root, config, lock, item, contents, ref);
-      // Конфликтов в свежем проекте быть не должно; если файл всё же есть
-      // (его создал postCreate) — не перезаписываем без спроса.
-      skipAllConflicts(plan, lock);
-      applyInstallChain(ctx.root, config, lock, [plan]);
+        ...(options.fetchOptions !== undefined ? { fetchOptions: options.fetchOptions } : {}),
+        onConflict: skipAllConflicts,
+        deps: {
+          ...(options.packageManager !== undefined ? { pm: options.packageManager } : {}),
+          ...(options.depsRunner !== undefined ? { runner: options.depsRunner } : {}),
+          // Зависимости проекта уже поставлены выше — недостающие пакеты
+          // цепочки ставим без вопроса, это часть той же операции.
+          confirm: () => true,
+          onUnresolved: 'throw',
+        },
+      });
+      // Перечитываемый lock: `base`, установленный как зависимость `button`,
+      // обязан быть виден следующему компоненту (иначе он поставится дважды).
+      lock = outcome.lock;
       installed.push(ref);
     } catch (err) {
       failed.push({ path: ref, error: (err as Error).message });
@@ -932,7 +947,10 @@ export async function createProject(options: CreateProjectOptions): Promise<Crea
   // --- Компоненты шаблона (после postCreate: он создаёт секцию components) ---
   if (manifest.components.length > 0) {
     const installer = options.installComponents ?? installTemplateComponents;
-    const outcome = await installer(manifest.components, targetDir);
+    const outcome = await installer(manifest.components, targetDir, {
+      ...(result.packageManager !== null ? { packageManager: result.packageManager } : {}),
+      depsRunner,
+    });
     result.installedComponents = outcome.installed;
     result.failedComponents = outcome.failed;
     for (const failure of outcome.failed) {
