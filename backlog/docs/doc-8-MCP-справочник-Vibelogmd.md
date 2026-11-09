@@ -34,6 +34,22 @@ tags:
 
 ---
 
+## Handshake: поле `instructions` (VL-395)
+
+Ответ на MCP `initialize` содержит поле **`instructions`** — необязательное строковое поле результата по спецификации MCP (2024-11-05), предназначенное для «нулевого хода» агента: клиент (qwen, opencode, claude) получает текст в handshake, ещё до первого `tools/list` и без чтения файлов проекта.
+
+Что в нём (константа `MCP_INSTRUCTIONS` в `src/mcp/server.ts`, ≈1 КБ, лимит — 2000 символов):
+
+- что такое Vibelog.md и что задачи в `backlog/tasks/*.md` правятся MCP-инструментами (`backlog_*`), а не `edit`/`write_file`;
+- фазы workflow по умолчанию (`To Do --spec--> Spec --plan--> Planned --code--> Review --close--> Done`), ветка `reject` и fix-цикл `Review --code--> Review`, служебные фазы (`comment`, `prompt`, `analyze`, `resume`);
+- явное «это дефолт в КОДЕ (`DEFAULT_WORKFLOW`), секции `workflows` в `.vibelog/settings.json` может не быть — её отсутствие нормально»;
+- правило доступа: чтение — сразу, запись — через подтверждение пользователя;
+- отсылка за полным справочником — `vibelog capabilities` / `vibelog instructions`.
+
+Ориентир сознательно неполный: перечня MCP-инструментов (он в `tools/list`) и шаблонов фаз в нём нет. Текст статичен и не зависит от проекта — он не читает `settings.json`/`cwd`, поэтому не может разъехаться с протоколом при битом конфиге. Переопределять его не нужно и нечем; полный справочник — `vibelog capabilities` (генерируется из реестров кода).
+
+---
+
 ## Задачи
 
 ### backlog_create_task — создать задачу

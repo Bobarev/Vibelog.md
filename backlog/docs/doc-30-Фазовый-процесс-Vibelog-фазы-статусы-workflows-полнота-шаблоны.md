@@ -17,7 +17,7 @@ tags:
 **Дата актуализации:** 2026-11-10.
 **Источники (единственные, по которым документ проверен):** `templates/phases/*.md`, `src/web/phase-prompt.ts`, `src/core/workflow.ts`, `src/core/phase-transient.ts`, `src/mcp/tools.ts` (контракт `backlog_finish_phase`).
 
-Документ описывает **смысл и правила**. Полные перечни фаз, статусов и ключей настроек генерируются из кода: `vibelog instructions` (тема `overview`), MCP `initialize` и команда `vibelog capabilities` (в разработке — VL-394/VL-395/VL-396). При расхождении прав код, а не этот текст.
+Документ описывает **смысл и правила**. Полные перечни фаз, статусов и ключей настроек генерируются из кода: `vibelog instructions` (тема `overview`), MCP `initialize` (поле `instructions` — ориентир по фазам, VL-395) и команда `vibelog capabilities` (VL-394); расширение тем `vibelog instructions` (`workflow`, `mcp`, `settings`) — в разработке, VL-396. При расхождении прав код, а не этот текст.
 
 ## 1. Фазы
 
@@ -138,4 +138,4 @@ Workflow — граф «статус → фаза → статус» (`DEFAULT_W
 - Настройка workflow/типов/статусов в проекте — `backlog/config.yml` и `.vibelog/settings.json` (ключи `workflows`, `task_workflows`, `completeness`).
 - Модель, лимиты и внутреннее устройство исполнителя фаз — doc-31 «Агент vb: архитектура и лимиты».
 - Команды и флаги — doc-7 (CLI-справочник), MCP-инструменты (включая `backlog_finish_phase`) — doc-8.
-- Машинный справочник, генерируемый из кода — `vibelog instructions`, MCP `initialize`, `vibelog capabilities` (VL-394/VL-395/VL-396).
+- Машинный справочник, генерируемый из кода — `vibelog instructions`, MCP `initialize` (поле `instructions`, VL-395), `vibelog capabilities` (VL-394); расширение `vibelog instructions` — VL-396.
