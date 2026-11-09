@@ -341,15 +341,22 @@ ui/
   "name": "svelte-minimal",
   "version": "0.1.0",
   "description": "SvelteKit minimal + Tailwind + .vibelog/",
-  "scripts": { "postCreate": "vb init --components --yes" },
+  "scripts": { "postCreate": "node ./scripts/init-vibelog.mjs" },
   "vibelog": { "type": "template", "components": [] }
 }
 ```
 
 Правила:
 - `vibelog.type === "template"` — обязательная проверка; иначе код `3`;
-- `scripts.postCreate` — после установки зависимостей; способ вызова `vb` фиксируется в шаблоне;
+- `scripts.postCreate` — после установки зависимостей;
 - `vibelog.components` — пути вида `vibelog.md/ui/button`, устанавливаемые после `postCreate`.
+
+**Способ вызова CLI из `postCreate` (VL-386).** Шаблон **не** пишет в скрипт `vb init …` — это резолвится через PATH и может попасть в чужую (устаревшую) версию CLI. Контракт:
+
+1. `vb create` передаёт в окружение `postCreate` переменную `VIBELOG_BIN` — абсолютный путь к `.mjs`-энтрипоинту того CLI, который запустил `create` (`process.argv[1]`, `resolve()` + `realpathSync`, т.к. путь бывает относительным, а `node_modules/.bin/vb` — симлинк). Env мержится поверх `process.env` (PATH, HOME, токены нужны npm-скрипту), переменные агентской сессии (`VIBELOG_PHASE_*`, `VIBELOG_RUN_*`, `VIBELOG_SESSION_ID`, `VIBELOG_CWD`) отфильтровываются.
+2. Дополнительно `vb create` в POSIX-системах ставит в начало `PATH` каталог-шим с исполняемыми `vb` и `vibelog` (`#!/bin/sh` + `exec <node> <bin> "$@"`) — на случай чужого шаблона, который всё ещё зовёт `vb` по имени. На Windows шим не создаётся (shell-скрипты не исполняются).
+3. Шаблон вызывает CLI через файл `scripts/init-vibelog.mjs` (≈10 строк): если `VIBELOG_BIN` задан — `spawnSync(process.execPath, [bin, 'init', '--components', '--yes'], { stdio: 'inherit' })`, иначе fallback на `spawnSync('vb', [...])` из PATH; код выхода пробрасывается. Запуск через `process.execPath` — у `.mjs` может не быть executable-бита; `spawnSync` с массивом аргументов кроссплатформенен, `"$VIBELOG_BIN"` в npm-скрипте — нет.
+4. Верификация: после успешного `postCreate` `vb create` проверяет, что секция `components` в `.vibelog/settings.json` появилась. Её нет при непустом `vibelog.components` — предупреждение «вероятно, шаблон вызвал устаревший `vb` из PATH; обновите vibelog.md или проверьте VIBELOG_BIN»; создание проекта при этом не валится.
 
 ### 3.6. Git-политика `.vibelog/`
 
@@ -387,9 +394,10 @@ ui/
 8. Удалить временный каталог.
 9. Пакетный менеджер: флаг → интерактивный вопрос → `npm`. `--no-install` — пропустить.
 10. Установить зависимости.
-11. Выполнить `scripts.postCreate`.
-12. Для каждого пути из `vibelog.components` — логика `vb install`.
-13. Если не `--no-git`: `git init`, `git add -A`, первый коммит.
+11. Выполнить `scripts.postCreate` с окружением `process.env` + `VIBELOG_BIN` (абсолютный путь к своему `.mjs`-энтрипоинту из `process.argv[1]`; переменные агентской сессии `VIBELOG_PHASE_*`/`VIBELOG_RUN_*`/`VIBELOG_SESSION_ID`/`VIBELOG_CWD` отфильтрованы). На POSIX в начало `PATH` подставляется каталог-шим с `vb`/`vibelog`, указывающими на тот же энтрипоинт. Так версия CLI, создавшая проект, и версия, выполнившая `postCreate`, не могут разъехаться (§3.5). Если `process.argv[1]` пуст или не существует — `VIBELOG_BIN` не передаётся, в `warnings` добавляется предупреждение, `postCreate` падает обратно на `vb` из PATH (совместимое поведение со старыми шаблонами).
+12. **Верификация `postCreate`:** проверить, что секция `components` появилась в `.vibelog/settings.json`. Нет при непустом `vibelog.components` — предупреждение с явной причиной (устаревший `vb` из PATH) в `result.warnings` и в итоговом блоке; создание проекта не прерывается.
+13. Для каждого пути из `vibelog.components` — логика `vb install`.
+14. Если не `--no-git`: `git init`, `git add -A`, первый коммит.
 
 ### 4.2. `vb init` (шаг «компоненты»)
 
