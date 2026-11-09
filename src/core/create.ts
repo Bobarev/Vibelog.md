@@ -29,12 +29,14 @@
 
 import { spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -51,7 +53,7 @@ import {
 } from './components-config.js';
 import type { ComponentsConfig, LockFile, RegistryEntry } from './components-config.js';
 import { detectPackageManager } from './install-deps.js';
-import type { DepsRunner, PackageManager } from './install-deps.js';
+import type { DepsRunner, DepsRunnerResult, PackageManager } from './install-deps.js';
 import {
   applyInstallChain,
   buildInstallPlan,
@@ -176,6 +178,12 @@ export interface CreateProjectOptions {
   gitRunner?: GitRunner;
   depsRunner?: DepsRunner;
   installComponents?: ComponentsInstaller;
+  /**
+   * Значение `process.argv[1]` текущего процесса (VL-386). Инъекция нужна
+   * тестам: под `vitest` `argv[1]` — сам раннер тестов, а не CLI. `null` —
+   * эмулировать отсутствие энтрипоинта (проверка предупреждения).
+   */
+  selfBin?: string | null;
   tmpRoot?: string;
   baseUrl?: string;
   cloneUrl?: string;
@@ -198,15 +206,150 @@ const defaultGitRunner: GitRunner = (args, cwd) => {
 
 /** Раннер пакетного менеджера по умолчанию: наследует stdio (прогресс виден). */
 const defaultDepsRunner: DepsRunner = (command, args, options) => {
-  const res = spawnSync(command, args, { cwd: options.cwd, stdio: 'inherit' });
+  const res = spawnSync(command, args, {
+    cwd: options.cwd,
+    stdio: 'inherit',
+    ...(options.env !== undefined ? { env: options.env } : {}),
+  });
   return { status: res.status, ...(res.error ? { error: res.error } : {}) };
 };
+
+/**
+ * Абсолютный путь к энтрипоинту текущего CLI (`bin/vibelog.mjs`) либо `null`.
+ *
+ * Зачем (VL-386): `vb create` выполняет `scripts.postCreate` шаблона, и тот
+ * обязан вызвать **ту же** версию CLI, которая создала проект. Без этого
+ * `postCreate` находит в PATH какой угодно `vb` — у пользователя, поставившего
+ * пакет полгода назад, это устаревший CLI, который не знает новых флагов
+ * (`--components`) и молча ломает установку компонентов.
+ *
+ * Источник пути — `process.argv[1]`: именно им запущен текущий процесс. Он
+ * может быть относительным (запуск из другого каталога) и может быть симлинком
+ * из `node_modules/.bin` — `realpathSync` разворачивает и то, и другое, чтобы
+ * `postCreate` получил настоящий файл, а не шим.
+ *
+ * `null` — если `argv[1]` пуст или файл не существует (необычный эмбеддинг,
+ * тесты через API): тогда `VIBELOG_BIN` не передаётся и шаблон падает назад на
+ * `vb` из PATH — поведение совместимо со старыми шаблонами.
+ */
+export function selfBinPath(argvEntry: string | null | undefined = process.argv[1]): string | null {
+  const raw = String(argvEntry ?? '').trim();
+  if (raw === '') return null;
+  const absolute = resolve(raw);
+  if (!existsSync(absolute)) return null;
+  try {
+    return realpathSync(absolute);
+  } catch {
+    // Симлинк в никуда/нет прав на чтение — абсолютный путь всё равно полезнее
+    // PATH: он указывает на конкретную установку, а не на «первый vb в PATH».
+    return absolute;
+  }
+}
+
+/**
+ * Окружение для `scripts.postCreate`: обычное окружение процесса плюс
+ * `VIBELOG_BIN` с путём к текущему CLI и (на POSIX) каталог-шим `vb` в начале
+ * `PATH` (VL-386).
+ *
+ * Шим нужен шаблонам, которые зовут `vb` по имени, — обновить все чужие
+ * шаблоны невозможно, а так даже неизменённый `postCreate` попадает в
+ * правильную версию CLI. На Windows shell-шимы не работают: там остаётся
+ * `VIBELOG_BIN`.
+ *
+ * `...process.env` обязателен: npm-скрипт — полноценный процесс, которому нужны
+ * PATH, HOME, npm_config_* и токены реестров. Мержатся переменные поверх, так
+ * что ничего не затирается, кроме одного имени — `VIBELOG_BIN` (ради него всё
+ * и делается).
+ *
+ * Переменные агентской сессии (`VIBELOG_PHASE_*`, `VIBELOG_RUN_*`,
+ * `VIBELOG_SESSION_ID`, `VIBELOG_CWD`) в чужой проект не передаются: созданный
+ * проект не должен унаследовать контекст фазы. `VIBELOG_BIN` ставится уже
+ * после фильтра — иначе он бы отфильтровался вместе с префиксом.
+ */
+export function postCreateEnv(
+  selfEntry: string | null,
+  shimDir: string | null = null,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (
+      key.startsWith('VIBELOG_PHASE_') ||
+      key.startsWith('VIBELOG_RUN_') ||
+      key === 'VIBELOG_SESSION_ID' ||
+      key === 'VIBELOG_CWD'
+    ) {
+      continue;
+    }
+    env[key] = value;
+  }
+  if (selfEntry !== null) env.VIBELOG_BIN = selfEntry;
+  if (shimDir !== null) {
+    const separator = process.platform === 'win32' ? ';' : ':';
+    env.PATH = env.PATH === undefined ? shimDir : `${shimDir}${separator}${env.PATH}`;
+  }
+  return env;
+}
+
+/** Имена, под которыми шаблон может звать CLI: `vb` и полное `vibelog`. */
+const SHIM_NAMES = ['vb', 'vibelog'];
+
+/**
+ * Создаёт каталог-шим с `vb`/`vibelog`, запускающими текущий CLI (VL-386).
+ *
+ * Зачем: `postCreate` шаблона пишет `vb init --components --yes`, а в PATH у
+ * пользователя может лежать `vb` полугодовой давности. `VIBELOG_BIN` решает
+ * проблему, только если шаблон его читает, поэтому на POSIX дополнительно
+ * подставляется шим: любая команда `vb` внутри `postCreate` попадёт в нашу
+ * версию. Запуск — через `node <bin>`, а не напрямую: у `.mjs` может не быть
+ * executable-бита (npm ставит его только на энтрипоинт пакета).
+ *
+ * `null` — Windows (shell-скрипты там не исполняются) или нечего запускать.
+ * Каталог создаёт функция, убирает вызывающий код.
+ */
+export function makeBinShim(selfEntry: string | null, tmpRoot?: string): string | null {
+  if (selfEntry === null || process.platform === 'win32') return null;
+  const dir = mkdtempSync(join(tmpRoot ?? tmpdir(), 'vb-create-shim-'));
+  try {
+    for (const name of SHIM_NAMES) {
+      // Кавычки вокруг пути обязательны: путь установки может содержать пробелы.
+      writeFileSync(
+        join(dir, name),
+        `#!/bin/sh\nexec "${process.execPath}" "${selfEntry}" "$@"\n`,
+        'utf-8',
+      );
+      chmodSync(join(dir, name), 0o755);
+    }
+  } catch (err) {
+    // Нет прав на запись в tmp — не повод валить создание проекта: остаётся
+    // VIBELOG_BIN, а для старого шаблона сработает предупреждение ниже.
+    rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
+  return dir;
+}
 
 /** Последние строки stderr — для сообщения об ошибке git. */
 function tail(text: string | undefined, lines = 3): string {
   const value = (text ?? '').trim();
   if (value === '') return 'без вывода';
   return value.split('\n').slice(-lines).join(' | ');
+}
+
+/**
+ * Читает секцию `components` без исключений: битый файл считается отсутствием
+ * секции (VL-386).
+ *
+ * Верификация после `postCreate` не должна валить создание проекта: битый
+ * `.vibelog/settings.json` — проблема установки компонентов, а не повод
+ * считать создание неуспешным (и ниже настоящая установка сообщит об ошибке
+ * разбора своим текстом).
+ */
+function readComponentsConfigSafe(cwd: string): ComponentsConfig | null {
+  try {
+    return readComponentsConfig(cwd);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -577,7 +720,12 @@ export async function installTemplateComponents(
   try {
     config = readComponentsConfig(targetDir);
     if (config === null) {
-      throw new Error('секция components не найдена в .vibelog/settings.json');
+      // Подсказка про версию (VL-386): секцию обычно создаёт `scripts.postCreate`
+      // через `vb init --components`. Если её нет, почти всегда виноват
+      // устаревший CLI из PATH (шаблон вызвал не тот `vb`), а не сам проект.
+      throw new Error(
+        'секция components не найдена в .vibelog/settings.json — вероятно, postCreate выполнил устаревший «vb» из PATH: обновите vibelog.md либо задайте VIBELOG_BIN путём к актуальному CLI и повторите «vb init --components»',
+      );
     }
     lock = readLock(targetDir, config);
   } catch (err) {
@@ -728,7 +876,25 @@ export async function createProject(options: CreateProjectOptions): Promise<Crea
   }
 
   if (manifest.postCreate !== undefined) {
-    const post = depsRunner(pm, ['run', 'postCreate'], { cwd: targetDir });
+    // VL-386: шаблон должен вызвать ИМЕННО этот CLI. `VIBELOG_BIN` передаётся
+    // абсолютным путём, а `...process.env` — чтобы npm-скрипт видел обычное
+    // окружение (PATH, HOME, токены); см. `postCreateEnv`.
+    const selfEntry = selfBinPath(options.selfBin);
+    if (selfEntry === null) {
+      warn(
+        'VIBELOG_BIN не определён: не удалось вычислить путь к текущему CLI (process.argv[1]) — scripts.postCreate вызовет «vb» из PATH, и версия CLI может не совпасть с создавшей проект',
+      );
+    }
+    const shimDir = makeBinShim(selfEntry, options.tmpRoot);
+    let post: DepsRunnerResult;
+    try {
+      post = depsRunner(pm, ['run', 'postCreate'], {
+        cwd: targetDir,
+        env: postCreateEnv(selfEntry, shimDir),
+      });
+    } finally {
+      if (shimDir !== null) rmSync(shimDir, { recursive: true, force: true });
+    }
     if (post.error || post.status !== 0) {
       // doc-25 §8 п.5: каталог НЕ удаляется — в нём уже лежит рабочий код,
       // и повторная установка зависимостей дороже ручной правки скрипта.
@@ -739,6 +905,16 @@ export async function createProject(options: CreateProjectOptions): Promise<Crea
       );
     }
     result.scriptsRun.push('postCreate');
+
+    // Верификация результата: секцию `components` создаёт `vb init --components`
+    // внутри postCreate. Её отсутствие при непустом `vibelog.components` — почти
+    // всегда рассинхрон версий (шаблон вызвал устаревший `vb` из PATH), поэтому
+    // предупреждение говорит причину прямо, а не «секция не найдена».
+    if (manifest.components.length > 0 && readComponentsConfigSafe(targetDir) === null) {
+      warn(
+        `postCreate не создал секцию «components» в .vibelog/settings.json — вероятно, шаблон вызвал устаревший «vb» из PATH; обновите vibelog.md или проверьте VIBELOG_BIN (компоненты шаблона установить не удастся без секции)`,
+      );
+    }
   }
 
   // --- Компоненты шаблона (после postCreate: он создаёт секцию components) ---

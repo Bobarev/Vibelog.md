@@ -134,6 +134,15 @@ function printResult(result: CreateResult): void {
     printWarning(
       `Не установлены компоненты: ${result.failedComponents.map((f) => f.path).join(', ')} — проект рабочий, установите их вручную через «vb install»`,
     );
+    // VL-386: самая частая причина отказа — отсутствие секции `components`,
+    // а её создаёт `vb init --components` внутри `postCreate`. Если ошибка
+    // указывает именно на секцию, говорим про рассинхрон версий CLI прямо:
+    // иначе пользователь видит «секция не найдена» и не знает, что делать.
+    if (result.failedComponents.some((f) => /components/i.test(f.error))) {
+      printInfo(
+        'Подсказка: секцию components создаёт «vb init --components» в scripts.postCreate шаблона. Если её нет — шаблон вызвал устаревший «vb» из PATH: обновите vibelog.md (либо задайте VIBELOG_BIN путём к актуальному CLI) и выполните «vb init --components» в проекте.',
+      );
+    }
   }
   if (result.git === 'initialized') {
     printSuccess('Git: репозиторий инициализирован, создан первый коммит');

@@ -65,11 +65,15 @@ export interface DepsRunnerResult {
 /**
  * Функция запуска процесса. Инъекция нужна тестам: `stdio: 'inherit'` в
  * vitest неудобен, а настоящий `pnpm add` ходил бы в сеть.
+ *
+ * `env` — окружение дочернего процесса (VL-386). Передаётся только там, где
+ * дочернему процессу нужно знать про путь к CLI (`vb create` → `postCreate`);
+ * по умолчанию `spawnSync` наследует `process.env`.
  */
 export type DepsRunner = (
   command: string,
   args: string[],
-  options: { cwd: string },
+  options: { cwd: string; env?: NodeJS.ProcessEnv },
 ) => DepsRunnerResult;
 
 /**
@@ -156,7 +160,14 @@ export function missingDeps(
 
 /** Раннер по умолчанию: настоящий процесс с наследованием stdio. */
 const defaultDepsRunner: DepsRunner = (command, args, options) => {
-  const res = spawnSync(command, args, { cwd: options.cwd, stdio: 'inherit' });
+  // env передаётся, только если вызывающий его задал (VL-386): явный
+  // `env: undefined` в spawnSync заменяет окружение на пустое на некоторых
+  // платформах, поэтому поле добавляется условно.
+  const res = spawnSync(command, args, {
+    cwd: options.cwd,
+    stdio: 'inherit',
+    ...(options.env !== undefined ? { env: options.env } : {}),
+  });
   return { status: res.status, ...(res.error ? { error: res.error } : {}) };
 };
 
