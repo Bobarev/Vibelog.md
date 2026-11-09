@@ -23,12 +23,39 @@
  *   (подмена базы для тестов), домен захардкожен ровно один раз.
  */
 
-import { fetch as undiciFetch } from 'undici';
 import { loadConfig } from './config.js';
 import { loadSettings, saveSettingsPatch } from './settings.js';
-import { readEnvFile } from './setup-secrets.js';
+import {
+  DEFAULT_RATE_LIMIT_DELAYS_MS,
+  DEFAULT_RETRY_DELAYS_MS,
+  DEFAULT_TIMEOUT_MS,
+  GitverseHttpError,
+  buildUrl,
+  extractErrorMessage,
+  isPlainObject,
+  maskText,
+  parseJson,
+  requestWithRetries,
+  resolveBase,
+  type HttpErrorFactory,
+  type HttpResponse,
+  type StatusClassification,
+  type TransportContext,
+} from './gitverse-http.js';
+import {
+  GITVERSE_TOKEN_ENV,
+  maskToken,
+  readToken,
+  tokenHint,
+} from './gitverse-auth.js';
 import { resolveGitUpstreamConfig, reportId, sourceProjectName, writeReport } from './upstream-git.js';
 import type { UpstreamGitConfig } from './upstream-git.js';
+
+// VL-380: авторизация GitVerse вынесена в `gitverse-auth.ts` (её использует и
+// реестр компонентов), а транспорт — в `gitverse-http.ts`. Реэкспорт сохраняет
+// прежний публичный API модуля: внешние импортёры (`cli/commands/upstream.ts`,
+// `mcp/tools.ts`, тесты) не меняются.
+export { GITVERSE_TOKEN_ENV, maskToken, readToken, tokenHint };
 
 /** База API GitVerse по умолчанию (не `gitverse.ru` — именно `api.`). */
 export const DEFAULT_API_BASE = 'https://api.gitverse.ru';
@@ -36,20 +63,20 @@ export const DEFAULT_API_BASE = 'https://api.gitverse.ru';
 /** Переменная окружения, подменяющая базу целиком (только для тестов). */
 export const API_BASE_ENV = 'VIBELOG_GITVERSE_API_BASE';
 
-/** Имя переменной `.env` с токеном GitVerse (зафиксировано, VL-363). */
-export const GITVERSE_TOKEN_ENV = 'GITVERSE_TOKEN';
-
 /** Обязательный заголовок Accept Публичного API GitVerse. */
 export const ACCEPT = 'application/vnd.gitverse.object+json;version=1';
 
 /** Таймаут одного запроса, мс. */
-export const REQUEST_TIMEOUT_MS = 30_000;
+export const REQUEST_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
 
 /** Максимальный размер тела ответа, байт (1 МБ — с запасом для issues). */
 export const MAX_BODY_BYTES = 1024 * 1024;
 
 /** Паузы между повторами: до двух повторов, только 5xx и сетевые ошибки. */
-export const RETRY_DELAYS_MS: readonly number[] = [500, 1500];
+export const RETRY_DELAYS_MS: readonly number[] = DEFAULT_RETRY_DELAYS_MS;
+
+/** Паузы для 429 без заголовка `Retry-After` (VL-380: общая механика). */
+export const RATE_LIMIT_DELAYS_MS: readonly number[] = DEFAULT_RATE_LIMIT_DELAYS_MS;
 
 /** Допустимые типы задач GitVerse. */
 export const ISSUE_TYPES = ['task', 'bug', 'story', 'epic'] as const;
@@ -70,10 +97,12 @@ export type GitverseErrorKind =
   | 'forbidden'
   | 'not_found'
   | 'bad_request'
+  | 'rate_limited'
   | 'server'
   | 'network'
   | 'timeout'
   | 'invalid_json'
+  | 'too_large'
   | 'config'
   | 'no_token';
 
@@ -83,10 +112,12 @@ const EXIT_CODES: Record<GitverseErrorKind, number> = {
   forbidden: 3,
   not_found: 3,
   bad_request: 3,
+  rate_limited: 3,
   server: 3,
   network: 3,
   timeout: 3,
   invalid_json: 3,
+  too_large: 3,
   config: 2,
   no_token: 4,
 };
@@ -97,33 +128,26 @@ const EXIT_CODES: Record<GitverseErrorKind, number> = {
  * `code` — код выхода CLI (AC2): 2 — конфиг, 3 — сеть/данные, 4 — нет токена.
  * `message` самодостаточен (печатается одной строкой, без стектрейса) и
  * всегда прошёл через `maskToken`.
+ *
+ * VL-380: класс наследует общий `GitverseHttpError` (транспорт общий с
+ * реестром), поэтому поля `kind`/`code`/`status`/`url`/`attempts` остались
+ * прежними — `instanceof GitverseError` в существующих тестах работает.
  */
-export class GitverseError extends Error {
-  /** Код выхода CLI. */
-  readonly code: number;
-  readonly kind: GitverseErrorKind;
-  /** HTTP-статус, если ошибка пришла от сервера. */
-  readonly status?: number;
-  /** URL запроса (для диагностики). */
-  readonly url: string;
-  /** Сколько попыток сделали до отказа. */
-  readonly attempts: number;
-
+export class GitverseError extends GitverseHttpError<GitverseErrorKind> {
   constructor(
     message: string,
     kind: GitverseErrorKind,
     url = '',
     details: { status?: number; attempts?: number } = {},
   ) {
-    super(message);
+    super(message, kind, url, { ...details, code: EXIT_CODES[kind] });
     this.name = 'GitverseError';
-    this.kind = kind;
-    this.code = EXIT_CODES[kind];
-    this.url = url;
-    this.status = details.status;
-    this.attempts = details.attempts ?? 1;
   }
 }
+
+/** Фабрика ошибок этого модуля — её получает общий транспорт. */
+const makeGitverseError: HttpErrorFactory = (message, kind, url, details) =>
+  new GitverseError(message, kind as GitverseErrorKind, url, details ?? {});
 
 /** Разрешённая конфигурация upstream (секция `upstream` + токен). */
 export interface UpstreamConfig {
@@ -199,74 +223,20 @@ export interface RequestOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-/** Объект (не null и не массив). */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-/**
- * Вырезает токен из произвольного текста (AC4).
- *
- * Токен может попасть в текст ошибки двумя путями: сервер вернул его в теле
- * (маловероятно, но бывает в эхе запроса) или мы сами вставили URL с query.
- * Маскирование — последняя линия: даже если кто-то забудет вызвать функцию,
- * `GitverseError` создаётся только через `fail()` ниже.
- */
-export function maskToken(text: string, token: string): string {
-  if (!token || token.length < 4) return text;
-  return text.split(token).join('***');
-}
-
 /**
  * Резолвит базу API.
  *
  * `VIBELOG_GITVERSE_API_BASE` подменяет `https://api.gitverse.ru` целиком
  * (схема + хост + порт) — иначе юнит-тесты ходили бы в реальную сеть.
+ * Валидация общая с реестром (`resolveBase` из `gitverse-http`), различается
+ * только вид ошибки: для Issues битая база — «не настроено» (код 2).
  */
 export function resolveApiBase(env: NodeJS.ProcessEnv = process.env): string {
-  const raw = env[API_BASE_ENV];
-  if (raw === undefined || raw.trim() === '') return DEFAULT_API_BASE;
-  const value = raw.trim();
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new GitverseError(
-      `переменная ${API_BASE_ENV} содержит некорректный URL «${value}»; ожидался полный адрес вида https://<хост>`,
-      'config',
-      value,
-    );
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new GitverseError(
-      `переменная ${API_BASE_ENV} должна содержать http(s)-адрес, получено «${parsed.protocol}//…»`,
-      'config',
-      value,
-    );
-  }
-  return value.replace(/\/+$/, '');
-}
-
-/**
- * Читает токен: приоритет shell env → `.env` (VL-329).
- *
- * Используется `readEnvFile` из core, а не `loadDotEnv` из `bot/env.ts`:
- * последний пишет в `process.env` и тянет за собой bot-слой, которому в core
- * не место. Парсер тот же (комментарии, `export KEY=`, кавычки).
- */
-export function readToken(cwd: string, envName: string = GITVERSE_TOKEN_ENV): string {
-  const fromShell = process.env[envName];
-  if (typeof fromShell === 'string' && fromShell.trim() !== '') return fromShell.trim();
-  const fromFile = readEnvFile(cwd)[envName];
-  return typeof fromFile === 'string' ? fromFile.trim() : '';
-}
-
-/** Подсказка «как завести токен» — единый текст для CLI и MCP (AC3). */
-export function tokenHint(envName: string = GITVERSE_TOKEN_ENV): string {
-  return (
-    `добавь ${envName}=<токен> в .env (создать: https://gitverse.ru/settings/tokens, ` +
-    'права: Запись на репозиторий)'
-  );
+  return resolveBase(env, {
+    envName: API_BASE_ENV,
+    defaultBase: DEFAULT_API_BASE,
+    fail: (message, url) => new GitverseError(message, 'config', url),
+  });
 }
 
 /** Подсказка «как настроить секцию upstream» — единый текст (AC5). */
@@ -485,6 +455,7 @@ function kindByStatus(status: number): GitverseErrorKind {
   if (status === 401) return 'unauthorized';
   if (status === 403) return 'forbidden';
   if (status === 404) return 'not_found';
+  if (status === 429) return 'rate_limited';
   if (status >= 500) return 'server';
   return 'bad_request';
 }
@@ -508,90 +479,13 @@ function hintByKind(kind: GitverseErrorKind): string {
       return 'GitVerse не ответил вовремя — повтори позже';
     case 'invalid_json':
       return 'ответ GitVerse не разобрался как JSON — повтори позже';
+    case 'rate_limited':
+      return 'GitVerse ограничил запросы — повтори позже или задай GITVERSE_TOKEN в .env (авторизованные запросы лимитируются выше)';
+    case 'too_large':
+      return 'ответ GitVerse больше допустимого размера — повтори позже';
     default:
       return '';
   }
-}
-
-/** Собирает URL запроса с query-параметрами. */
-function buildUrl(base: string, path: string, query?: Record<string, string | number | undefined>): string {
-  const url = new URL(`${base.replace(/\/+$/, '')}${path}`);
-  if (query) {
-    for (const [key, value] of Object.entries(query)) {
-      if (value === undefined || value === '') continue;
-      url.searchParams.set(key, String(value));
-    }
-  }
-  return url.toString();
-}
-
-/** Коды сетевых ошибок, на которых имеет смысл повторять запрос. */
-const RETRYABLE_NETWORK_CODES = new Set([
-  'ECONNRESET',
-  'ETIMEDOUT',
-  'ENOTFOUND',
-  'EAI_AGAIN',
-  'ECONNREFUSED',
-  'EPIPE',
-  'EHOSTUNREACH',
-  'ENETUNREACH',
-  'UND_ERR_CONNECT_TIMEOUT',
-  'UND_ERR_SOCKET',
-]);
-
-/** Достаёт машинный код сетевой ошибки (undici складывает его в cause). */
-function networkErrorCode(err: unknown): string | undefined {
-  const e = err as { code?: unknown; cause?: { code?: unknown } };
-  if (typeof e?.code === 'string') return e.code;
-  const cause = e?.cause as { code?: unknown } | undefined;
-  if (cause && typeof cause.code === 'string') return cause.code;
-  return undefined;
-}
-
-/** Текст сетевой ошибки для сообщения об одной строке. */
-function networkErrorMessage(err: unknown): string {
-  const code = networkErrorCode(err);
-  if (code) return code;
-  const message = err instanceof Error ? err.message : String(err);
-  return message.slice(0, 200);
-}
-
-/** Пауза между повторами. */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Читает тело ответа чанками с лимитом байт. */
-async function readBodyLimited(
-  body: ReadableStream<Uint8Array> | null,
-  maxBodyBytes: number,
-  url: string,
-  token: string,
-): Promise<string> {
-  if (!body) return '';
-  const reader = body.getReader();
-  const chunks: Buffer[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      total += value.byteLength;
-      if (total > maxBodyBytes) {
-        await reader.cancel().catch(() => undefined);
-        throw new GitverseError(
-          maskToken(`ответ GitVerse больше лимита ${maxBodyBytes} байт (${url})`, token),
-          'invalid_json',
-          url,
-        );
-      }
-      chunks.push(Buffer.from(value));
-    }
-  } finally {
-    reader.releaseLock?.();
-  }
-  return Buffer.concat(chunks).toString('utf8');
 }
 
 /** Минимальный интерфейс заголовков ответа (нужен только `Link`). */
@@ -599,98 +493,80 @@ interface ResponseHeaders {
   get(name: string): string | null;
 }
 
-/** Результат одной попытки. */
+/** Результат одной успешной попытки. */
 interface AttemptResult {
   status: number;
   text: string;
   headers: ResponseHeaders;
 }
 
+/** Контекст транспорта для этого клиента: маскирование токена и тексты. */
+function transportContext(token: string): TransportContext {
+  return {
+    what: 'GitVerse',
+    makeError: makeGitverseError,
+    mask: (text: string) => maskToken(text, token),
+  };
+}
+
 /**
- * Одна попытка запроса с таймаутом.
+ * Семантика HTTP-статусов GitVerse Issues (VL-380).
  *
- * Таймер обязательно гасится в `finally`: живой `setTimeout` держит event loop
- * и vitest сообщает о висящем хендлере.
+ * Единственное место, где живёт эта семантика: транспорт общий с реестром, но
+ * `400`/`404`/`429` значат у эндпоинтов разное. 429 — ретраибельно (общая
+ * механика транспорта: пауза из `Retry-After`, длинный список попыток,
+ * верхний предел общего времени).
  */
-async function fetchOnce(
+function classifyIssueStatus(
+  status: number,
+  text: string,
   url: string,
   token: string,
-  method: string,
-  body: unknown,
-  timeoutMs: number,
-  maxBodyBytes: number,
-): Promise<AttemptResult> {
-  const controller = new AbortController();
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeoutMs);
+): StatusClassification {
+  const parsed = parseGitverseError(status, text);
+  const detail = parsed.message;
+  const codePart = parsed.code ? ` [${parsed.code}]` : '';
 
-  const timeoutReject = new Promise<never>((_, reject) => {
-    controller.signal.addEventListener(
-      'abort',
-      () =>
-        reject(
-          new GitverseError(
-            maskToken(`GitVerse не ответил за ${Math.round(timeoutMs / 1000)} с (${url}); повтори позже`, token),
-            'timeout',
-            url,
-          ),
-        ),
-      { once: true },
-    );
-  });
-
-  const headers: Record<string, string> = {
-    authorization: `Bearer ${token}`,
-    accept: ACCEPT,
-  };
-  if (body !== undefined) headers['content-type'] = 'application/json';
-
-  const work = (async (): Promise<AttemptResult> => {
-    const response = await undiciFetch(url, {
-      method,
-      signal: controller.signal,
-      headers,
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    });
-    const text = await readBodyLimited(
-      response.body as unknown as ReadableStream<Uint8Array> | null,
-      maxBodyBytes,
-      url,
-      token,
-    );
-    return { status: response.status, text, headers: response.headers as unknown as ResponseHeaders };
-  })();
-
-  try {
-    return await Promise.race([work, timeoutReject]);
-  } catch (err) {
-    if (err instanceof GitverseError) throw err;
-    if (timedOut || controller.signal.aborted) {
-      throw new GitverseError(
-        maskToken(`GitVerse не ответил за ${Math.round(timeoutMs / 1000)} с (${url}); повтори позже`, token),
-        'timeout',
-        url,
-      );
-    }
-    throw new GitverseError(
-      maskToken(`не удалось связаться с GitVerse (${networkErrorMessage(err)}): ${url}; проверь сеть`, token),
-      'network',
-      url,
-    );
-  } finally {
-    clearTimeout(timer);
-    work.catch(() => undefined);
+  if (status === 429) {
+    return {
+      kind: 'rate_limited',
+      message: maskToken(
+        `GitVerse ограничил запросы (HTTP 429)${detail ? `: ${detail}` : ''} (${url})`,
+        token,
+      ),
+      retryable: true,
+    };
   }
+
+  const kind = kindByStatus(status);
+
+  if (status >= 500) {
+    return {
+      kind,
+      message: maskToken(
+        `GitVerse ответил ошибкой ${status}${detail ? `: ${detail}` : ''}; ${hintByKind(kind)}`,
+        token,
+      ),
+      retryable: true,
+    };
+  }
+
+  return {
+    kind,
+    message: maskToken(
+      `GitVerse ответил ошибкой ${status}${codePart}: ${detail} (${url}); ${hintByKind(kind)}`,
+      token,
+    ),
+    retryable: false,
+  };
 }
 
 /**
  * Запрос с ретраями и классификацией ответа.
  *
- * Ретраи — только 5xx и сетевые ошибки (до двух повторов, паузы
- * `RETRY_DELAYS_MS`). 4xx не повторяются: 401/403/404 не «моргнули».
+ * Цикл ретраев, таймаут, лимит тела и разбор `Retry-After` — в общем
+ * `requestWithRetries` (VL-380); здесь остаются заголовки этого API, метод,
+ * тело и семантика статусов.
  */
 async function request(
   cfg: UpstreamConfig,
@@ -705,86 +581,27 @@ async function request(
   } = {},
 ): Promise<AttemptResult> {
   const url = buildUrl(cfg.apiBase, path, opts.query);
-  const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
-  const maxBodyBytes = opts.maxBodyBytes ?? MAX_BODY_BYTES;
-  const retryDelays = opts.retryDelaysMs ?? RETRY_DELAYS_MS;
-  const attemptsMax = retryDelays.length + 1;
-
-  for (let attempt = 1; attempt <= attemptsMax; attempt += 1) {
-    let result: AttemptResult;
-    try {
-      result = await fetchOnce(url, cfg.token, method, opts.body, timeoutMs, maxBodyBytes);
-    } catch (err) {
-      const failure = err instanceof GitverseError ? err : undefined;
-      // timeout/invalid_json — не ретраим: повтор даст тот же результат.
-      if (!failure || (failure.kind !== 'server' && failure.kind !== 'network')) throw err;
-      const delay = retryDelays[attempt - 1];
-      if (delay !== undefined) {
-        await sleep(delay);
-        continue;
-      }
-      throw new GitverseError(
-        maskToken(`${failure.message} — попыток: ${attempt}`, cfg.token),
-        failure.kind,
-        url,
-        { attempts: attempt },
-      );
-    }
-
-    if (result.status >= 200 && result.status < 300) return result;
-
-    if (result.status >= 500) {
-      const delay = retryDelays[attempt - 1];
-      if (delay !== undefined) {
-        await sleep(delay);
-        continue;
-      }
-      const parsed = parseGitverseError(result.status, result.text);
-      throw new GitverseError(
-        maskToken(
-          `GitVerse ответил ошибкой ${result.status}${parsed.message ? `: ${parsed.message}` : ''} — попыток: ${attempt}; ${hintByKind('server')}`,
-          cfg.token,
-        ),
-        'server',
-        url,
-        { status: result.status, attempts: attempt },
-      );
-    }
-
-    const kind = kindByStatus(result.status);
-    const parsed = parseGitverseError(result.status, result.text);
-    const codePart = parsed.code ? ` [${parsed.code}]` : '';
-    throw new GitverseError(
-      maskToken(
-        `GitVerse ответил ошибкой ${result.status}${codePart}: ${parsed.message} (${url}); ${hintByKind(kind)}`,
-        cfg.token,
-      ),
-      kind,
-      url,
-      { status: result.status },
-    );
-  }
-
-  // Недостижимо: цикл либо возвращает значение, либо бросает ошибку.
-  throw new GitverseError(
-    maskToken(`не удалось выполнить запрос к GitVerse — попыток: ${attemptsMax}`, cfg.token),
-    'server',
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${cfg.token}`,
+    accept: ACCEPT,
+  };
+  const result = await requestWithRetries({
+    ...transportContext(cfg.token),
     url,
-    { attempts: attemptsMax },
-  );
+    method,
+    headers,
+    ...(opts.body !== undefined ? { body: opts.body } : {}),
+    timeoutMs: opts.timeoutMs ?? REQUEST_TIMEOUT_MS,
+    maxBodyBytes: opts.maxBodyBytes ?? MAX_BODY_BYTES,
+    retryDelaysMs: opts.retryDelaysMs ?? RETRY_DELAYS_MS,
+    classify: (status, text) => classifyIssueStatus(status, text, url, cfg.token),
+  });
+  return { status: result.status, text: result.text, headers: result.headers };
 }
 
 /** Разбирает JSON-тело успешного ответа. */
-function parseJson(text: string, url: string, token: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new GitverseError(
-      maskToken(`ответ GitVerse не является корректным JSON (${url})`, token),
-      'invalid_json',
-      url,
-    );
-  }
+function parseResponseJson(text: string, url: string, token: string): unknown {
+  return parseJson(text, url, transportContext(token));
 }
 
 /** Путь к задачам репозитория. */
@@ -820,7 +637,7 @@ export async function createIssue(
 
   const url = buildUrl(cfg.apiBase, issuesPath(cfg));
   const result = await request(cfg, 'POST', issuesPath(cfg), { body, ...opts });
-  const parsed = parseJson(result.text, url, cfg.token);
+  const parsed = parseResponseJson(result.text, url, cfg.token);
   if (!isPlainObject(parsed)) {
     throw new GitverseError(
       maskToken(`ответ GitVerse на создание issue не является объектом (${url})`, cfg.token),
@@ -854,7 +671,7 @@ export async function createIssue(
 export async function listLabels(cfg: UpstreamConfig, opts: RequestOptions = {}): Promise<string[]> {
   const url = buildUrl(cfg.apiBase, labelsPath(cfg), { limit: 100 });
   const result = await request(cfg, 'GET', labelsPath(cfg), { query: { limit: 100 }, ...opts });
-  const parsed = parseJson(result.text, url, cfg.token);
+  const parsed = parseResponseJson(result.text, url, cfg.token);
   if (!Array.isArray(parsed)) {
     throw new GitverseError(
       maskToken(`ответ GitVerse со списком меток не является массивом (${url})`, cfg.token),
@@ -948,7 +765,7 @@ export async function listIssues(
   };
   const url = buildUrl(cfg.apiBase, issuesPath(cfg), params);
   const result = await request(cfg, 'GET', issuesPath(cfg), { query: params, ...opts });
-  const parsed = parseJson(result.text, url, cfg.token);
+  const parsed = parseResponseJson(result.text, url, cfg.token);
   if (!Array.isArray(parsed)) {
     throw new GitverseError(
       maskToken(`ответ GitVerse со списком задач не является массивом (${url})`, cfg.token),

@@ -186,6 +186,14 @@ export interface InstallFetchOptions {
   baseUrl?: string;
   timeoutMs?: number;
   retryDelaysMs?: readonly number[];
+  /** Паузы для 429 без `Retry-After` (VL-380; инъекция для тестов). */
+  rateLimitDelaysMs?: readonly number[];
+  /** Суммарный бюджет ожидания на 429, мс (инъекция для тестов). */
+  rateLimitBudgetMs?: number;
+  /** Инъекция пауз: тесты не должны ждать настоящие секунды. */
+  sleepFn?: (ms: number) => Promise<void>;
+  /** Готовый токен GitVerse (иначе читается из `ctx.root`: shell env → .env). */
+  token?: string;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -311,6 +319,9 @@ export async function fetchInstallItem(
       repo: ctx.repo,
       branch: ctx.branch,
       name: ctx.name,
+      // VL-380: токен читается из проекта-получателя (shell env → .env),
+      // иначе GitVerse лимитирует анонимные запросы и отдаёт 429.
+      cwd: ctx.root,
       ...options,
     });
   } catch (err) {
@@ -345,6 +356,8 @@ export async function fetchInstallContents(
         repo: ctx.repo,
         branch: ctx.branch,
         path: file.path,
+        // VL-380: токен — из проекта-получателя (shell env → .env).
+        cwd: ctx.root,
         ...options,
       });
     } catch (err) {

@@ -13,7 +13,9 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   DEFAULT_REGISTRY_BASE,
@@ -61,6 +63,8 @@ let hits = 0;
 let methods = [];
 /** Пути всех пришедших запросов. */
 let paths = [];
+/** Временные каталоги тестов (mkdtemp, VL-241). */
+const tmpDirs = [];
 
 beforeEach(async () => {
   hits = 0;
@@ -92,6 +96,7 @@ afterEach(async () => {
 
 afterAll(() => {
   delete process.env[REGISTRY_BASE_ENV];
+  for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true });
 });
 
 /** База фикстуры. */
@@ -301,12 +306,13 @@ describe('VL-335: fetchRegistryItem', () => {
     assert.equal(hits, 1);
   });
 
-  it('прочие 4xx (403) → ошибка без ретраев', async () => {
+  it('прочие 4xx (403) → отдельный вид forbidden без ретраев (VL-380, AC9)', async () => {
     handler = (_req, res) => {
       res.writeHead(403, { 'content-type': 'text/html' });
       res.end('<html>forbidden</html>');
     };
-    await expectFetchError(fetchItem(), 'server');
+    const err = await expectFetchError(fetchItem(), 'forbidden');
+    assert.match(err.message, /GITVERSE_TOKEN/);
     assert.equal(hits, 1);
   });
 
@@ -401,6 +407,133 @@ describe('VL-335: fetchRegistryItem', () => {
       'network',
     );
     assert.match(err.message, /попыток: 3/);
+  });
+});
+
+describe('VL-380: токен и rate-limit в реестре', () => {
+  it('Authorization отправляется только при наличии токена (AC5)', async () => {
+    let authHeader;
+    handler = (req, res) => {
+      authHeader = req.headers.authorization;
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end(JSON.stringify(validItem()));
+    };
+    await fetchItem({ token: 'gv_registry_token_123456' });
+    assert.equal(authHeader, 'Bearer gv_registry_token_123456');
+
+    authHeader = 'sentinel';
+    await fetchItem({ token: '' });
+    assert.equal(authHeader, undefined, 'без токена заголовка быть не должно');
+  });
+
+  it('токен читается из cwd (.env), а не только параметром', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-registry-token-'));
+    tmpDirs.push(dir);
+    writeFileSync(join(dir, '.env'), 'GITVERSE_TOKEN=gv_from_env_file\n', 'utf-8');
+    // Приоритет — shell env (VL-329): в CI/агентской сессии GITVERSE_TOKEN может
+    // быть задан, поэтому `.env` проверяем без него.
+    const savedToken = process.env.GITVERSE_TOKEN;
+    delete process.env.GITVERSE_TOKEN;
+    let authHeader;
+    try {
+      handler = (req, res) => {
+        authHeader = req.headers.authorization;
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end(JSON.stringify(validItem()));
+      };
+      await fetchItem({ cwd: dir });
+    } finally {
+      if (savedToken !== undefined) process.env.GITVERSE_TOKEN = savedToken;
+    }
+    assert.equal(authHeader, 'Bearer gv_from_env_file');
+  });
+
+  it('429 + Retry-After: 2 → ретрай через 2 с (инъекция пауз, AC11)', async () => {
+    const pauses = [];
+    let call = 0;
+    handler = (req, res) => {
+      call += 1;
+      if (call === 1) {
+        res.writeHead(429, { 'content-type': 'text/html', 'retry-after': '2' });
+        res.end('<html><body>Unauthenticated requests rate-limit exceeded</body></html>');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end(JSON.stringify(validItem()));
+    };
+    const item = await fetchItem({
+      sleepFn: async (ms) => {
+        pauses.push(ms);
+      },
+    });
+    assert.equal(item.name, 'button');
+    assert.deepEqual(pauses, [2000]);
+    assert.equal(hits, 2);
+  });
+
+  it('429 без Retry-After → дефолтная пауза rate-limit (инъекция, AC11)', async () => {
+    const pauses = [];
+    let call = 0;
+    handler = (req, res) => {
+      call += 1;
+      if (call === 1) {
+        res.writeHead(429, { 'content-type': 'text/plain' });
+        res.end('slow down');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end(JSON.stringify(validItem()));
+    };
+    await fetchItem({
+      rateLimitDelaysMs: [60_000],
+      sleepFn: async (ms) => {
+        pauses.push(ms);
+      },
+    });
+    assert.deepEqual(pauses, [60_000]);
+  });
+
+  it('исчерпание попыток на 429 → kind rate_limited с подсказкой про токен (AC7/AC8)', async () => {
+    handler = (_req, res) => {
+      res.writeHead(429, { 'content-type': 'text/html' });
+      res.end('<html><body>Unauthenticated requests rate-limit exceeded</body></html>');
+    };
+    const err = await expectFetchError(
+      fetchItem({
+        rateLimitDelaysMs: [1, 1],
+        sleepFn: async () => undefined,
+      }),
+      'rate_limited',
+    );
+    assert.equal(err.status, 429);
+    assert.equal(err.attempts, 3, 'для 429 попыток больше, чем для 5xx (3)');
+    assert.match(err.message, /попыток: 3/);
+    assert.match(err.message, /GITVERSE_TOKEN/);
+    assert.match(err.message, /следующая попытка через/);
+    // HTML не обрезается тегами: пользователь видит причину, а не <!DOCTYPE…>
+    assert.match(err.message, /Unauthenticated requests rate-limit exceeded/);
+    assert.doesNotMatch(err.message, /<html>/);
+  });
+
+  it('токен не попадает в текст ошибки (AC6)', async () => {
+    const token = 'gv_secret_token_abcdef';
+    handler = (_req, res) => {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ code: 401, message: `bad token ${token}` }));
+    };
+    const err = await (async () => {
+      try {
+        await fetchItem({ token });
+        return null;
+      } catch (e) {
+        return e;
+      }
+    })();
+    assert.ok(err);
+    assert.equal(err.kind, 'unauthorized');
+    assert.ok(!err.message.includes(token), `токен утёк: ${err.message}`);
+    assert.match(err.message, /GITVERSE_TOKEN/);
+    assert.equal(hits, 1, '401 не ретраится');
   });
 });
 
