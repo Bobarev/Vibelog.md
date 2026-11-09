@@ -40,6 +40,13 @@ import {
   selfBinPath,
   validateProjectName,
 } from '../../dist/core/create.js';
+import {
+  CREATE_MARKER_ENV,
+  CREATE_MARKER_GIT,
+  CREATE_MARKER_NO_GIT,
+  createMarkerValue,
+  readCreateContext,
+} from '../../dist/core/env-markers.js';
 
 /** Каталог теста: mkdtemp (VL-241: фиксированные пути запрещены). */
 let testDir;
@@ -822,5 +829,74 @@ describe('VIBELOG_BIN и верификация postCreate (VL-386)', () => {
     assert.equal(outcome.failed.length, 1);
     assert.match(outcome.failed[0].error, /components/);
     assert.match(outcome.failed[0].error, /VIBELOG_BIN/);
+  });
+});
+
+describe('маркер VIBELOG_CREATE для postCreate (VL-389)', () => {
+  it('createMarkerValue: git будет → 1, --no-git → no-git', () => {
+    assert.equal(createMarkerValue(false), CREATE_MARKER_GIT);
+    assert.equal(createMarkerValue(true), CREATE_MARKER_NO_GIT);
+    assert.equal(CREATE_MARKER_ENV, 'VIBELOG_CREATE');
+  });
+
+  it('readCreateContext: без маркера fromCreate=false, git не ждём', () => {
+    const ctx = readCreateContext({});
+    assert.equal(ctx.fromCreate, false);
+    assert.equal(ctx.gitWillBeInitialized, false);
+  });
+
+  it('readCreateContext: маркер 1 — git будет; no-git — не будет', () => {
+    assert.deepEqual(readCreateContext({ VIBELOG_CREATE: '1' }), {
+      fromCreate: true,
+      gitWillBeInitialized: true,
+    });
+    assert.deepEqual(readCreateContext({ VIBELOG_CREATE: 'no-git' }), {
+      fromCreate: true,
+      gitWillBeInitialized: false,
+    });
+  });
+
+  it('postCreateEnv по умолчанию ставит VIBELOG_CREATE=1', () => {
+    const env = postCreateEnv('vibelog.mjs');
+    assert.equal(env.VIBELOG_CREATE, '1');
+  });
+
+  it('postCreateEnv с noGit ставит VIBELOG_CREATE=no-git', () => {
+    const env = postCreateEnv('vibelog.mjs', null, true);
+    assert.equal(env.VIBELOG_CREATE, 'no-git');
+  });
+
+  it('VIBELOG_CREATE передаётся в env раннера postCreate (обычный запуск → 1)', async () => {
+    const deps = mockRunner();
+    await createProject({
+      cwd: testDir,
+      name: 'myapp',
+      template: 'vibelog.md/templates/svelte-minimal',
+      cloneUrl: fixtureRepo,
+      tmpRoot,
+      depsRunner: deps.runner,
+      selfBin: fakeBin(join(testDir, 'bin')),
+    });
+    const post = deps.calls.find((call) => call.args[0] === 'run');
+    assert.ok(post, 'postCreate не запускался');
+    assert.equal(post.env.VIBELOG_CREATE, '1');
+    // install маркер не нужен — env не передаётся вовсе.
+    assert.equal(deps.calls.find((call) => call.args[0] === 'install').env, undefined);
+  });
+
+  it('VIBELOG_CREATE=no-git при --no-git', async () => {
+    const deps = mockRunner();
+    await createProject({
+      cwd: testDir,
+      name: 'myapp',
+      template: 'vibelog.md/templates/svelte-minimal',
+      cloneUrl: fixtureRepo,
+      tmpRoot,
+      depsRunner: deps.runner,
+      selfBin: fakeBin(join(testDir, 'bin')),
+      noGit: true,
+    });
+    const post = deps.calls.find((call) => call.args[0] === 'run');
+    assert.equal(post.env.VIBELOG_CREATE, 'no-git');
   });
 });

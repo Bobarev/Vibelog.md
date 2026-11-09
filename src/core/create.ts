@@ -45,6 +45,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { commitMessageArgs } from './commit-trailer.js';
+import { CREATE_MARKER_ENV, createMarkerValue } from './env-markers.js';
 import {
   ComponentsConfigError,
   defaultComponentsConfig,
@@ -265,10 +266,20 @@ export function selfBinPath(argvEntry: string | null | undefined = process.argv[
  * `VIBELOG_SESSION_ID`, `VIBELOG_CWD`) в чужой проект не передаются: созданный
  * проект не должен унаследовать контекст фазы. `VIBELOG_BIN` ставится уже
  * после фильтра — иначе он бы отфильтровался вместе с префиксом.
+ *
+ * VL-389: здесь же ставится маркер `VIBELOG_CREATE` — `postCreate` вызывает
+ * `vb init`, и тот должен знать, что работает внутри `vb create`: иначе он
+ * предупреждает «проект не в git» (репозиторий создаст `create` через два
+ * шага) и печатает вторую подсказку «Дальше: …». Значение несёт смысл «git
+ * будет / git не будет» (`createMarkerValue`).
+ *
+ * @param noGit — `vb create` запущен с `--no-git`: `init` не должен подавлять
+ *   предупреждение о git, репозитория действительно не будет
  */
 export function postCreateEnv(
   selfEntry: string | null,
   shimDir: string | null = null,
+  noGit = false,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -283,6 +294,7 @@ export function postCreateEnv(
     env[key] = value;
   }
   if (selfEntry !== null) env.VIBELOG_BIN = selfEntry;
+  env[CREATE_MARKER_ENV] = createMarkerValue(noGit);
   if (shimDir !== null) {
     const separator = process.platform === 'win32' ? ';' : ':';
     env.PATH = env.PATH === undefined ? shimDir : `${shimDir}${separator}${env.PATH}`;
@@ -890,7 +902,7 @@ export async function createProject(options: CreateProjectOptions): Promise<Crea
     try {
       post = depsRunner(pm, ['run', 'postCreate'], {
         cwd: targetDir,
-        env: postCreateEnv(selfEntry, shimDir),
+        env: postCreateEnv(selfEntry, shimDir, options.noGit === true),
       });
     } finally {
       if (shimDir !== null) rmSync(shimDir, { recursive: true, force: true });
