@@ -1,0 +1,81 @@
+{
+  "taskId": "VL-383",
+  "sessions": [
+    {
+      "sessionId": "agent-1794214160128",
+      "phase": "code",
+      "startedAt": "2026-11-09T08:49:20.002Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-09T08:59:52.355Z",
+      "durationMs": 627945,
+      "usage": {
+        "input": 3966163,
+        "output": 31417,
+        "cache": 3560448,
+        "total": 3997580,
+        "requests": 64,
+        "reasoning": 17019
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794214160128",
+      "phase": "code",
+      "startedAt": "2026-11-09T08:49:20.002Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-09T08:59:52.385Z",
+      "durationMs": 627945,
+      "usage": {
+        "input": 3966163,
+        "output": 31417,
+        "cache": 3560448,
+        "total": 3997580,
+        "requests": 64,
+        "reasoning": 17019
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794217867105",
+      "phase": "close",
+      "startedAt": "2026-11-09T09:51:06.997Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-09T09:55:11.291Z",
+      "durationMs": 241317,
+      "usage": {
+        "input": 1395871,
+        "output": 6294,
+        "cache": 1224192,
+        "total": 1402165,
+        "requests": 31,
+        "reasoning": 861
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794217867105",
+      "phase": "close",
+      "startedAt": "2026-11-09T09:51:06.997Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-09T09:55:11.410Z",
+      "durationMs": 241317,
+      "usage": {
+        "input": 1395871,
+        "output": 6294,
+        "cache": 1224192,
+        "total": 1402165,
+        "requests": 31,
+        "reasoning": 861
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    }
+  ]
+}
