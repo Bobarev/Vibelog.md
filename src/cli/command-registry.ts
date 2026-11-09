@@ -42,7 +42,7 @@ export const CLI_COMMANDS: readonly CliCommandEntry[] = [
   { name: 'search', summary: 'Поиск задач по тексту и фильтрам (статус, тип, приоритет)' },
   { name: 'map', summary: 'Карта проекта: модули, назначение, экспорты; --query для поиска' },
   { name: 'capabilities', summary: 'Справочник возможностей: workflow, фазы, MCP, CLI, ключи конфигов' },
-  { name: 'instructions', summary: 'Краткие инструкции для агента по темам (overview, task-*)' },
+  { name: 'instructions', summary: 'Инструкции для агента: overview, workflow, mcp, settings, task-*' },
   { name: 'mcp', summary: 'MCP-сервер по stdio: mcp start' },
   { name: 'browser', summary: 'Веб-интерфейс проекта (--port, --host)' },
   { name: 'bot', summary: 'Telegram-бот: фазы и действия из чата' },
