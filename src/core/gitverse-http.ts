@@ -36,6 +36,28 @@ import { fetch as undiciFetch } from 'undici';
 /** Таймаут одного запроса по умолчанию, мс. */
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
+/**
+ * База Публичного API GitVerse (`api.`, не веб-хост) — VL-382.
+ *
+ * Живёт в транспорте, а не в клиенте: баз теперь две (веб-хост для raw и
+ * `api.` для Contents API), и реестр обязан брать их из одного места. Импорт
+ * `registry-fetch` → `gitverse-issues` ради константы тянул бы за собой
+ * `upstream-git`, `config` и `settings` (git-операции реестру не нужны) —
+ * та же причина, по которой авторизация вынесена в `gitverse-auth.ts`.
+ */
+export const DEFAULT_API_BASE = 'https://api.gitverse.ru';
+
+/** Переменная окружения, подменяющая базу Публичного API (только для тестов). */
+export const API_BASE_ENV = 'VIBELOG_GITVERSE_API_BASE';
+
+/**
+ * Обязательный `Accept` Публичного API GitVerse.
+ *
+ * Без него сервер отвечает `415 UNSUPPORTED_MEDIA_TYPE` — проверено спайком
+ * 2026-11-09 (ref-26, ref-32).
+ */
+export const ACCEPT = 'application/vnd.gitverse.object+json;version=1';
+
 /** Паузы между повторами для 5xx и сетевых ошибок (два повтора). */
 export const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [500, 1500];
 

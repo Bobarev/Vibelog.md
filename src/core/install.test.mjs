@@ -47,6 +47,33 @@ beforeEach(async () => {
   registryFiles = {};
   server = createServer((req, res) => {
     const url = req.url ?? '';
+    let path;
+    // VL-382: два транспорта — raw (анонимно) и Contents API (с токеном).
+    // /repos/<owner>/<repo>/contents/<path>?ref=<branch>&scope=full
+    const contentsMarker = '/contents/';
+    const contentsIdx = url.indexOf(contentsMarker);
+    if (contentsIdx !== -1) {
+      const rest = url.slice(contentsIdx + contentsMarker.length);
+      path = decodeURIComponent(rest.split('?')[0]);
+      const body = registryFiles[path];
+      if (body === undefined) {
+        res.writeHead(404, { 'content-type': 'application/json;charset=utf-8' });
+        res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'no file', status: 404 } }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/vnd.gitverse.object+json;version=1' });
+      res.end(
+        JSON.stringify({
+          type: 'file',
+          encoding: 'base64',
+          size: Buffer.byteLength(body, 'utf8'),
+          name: path.split('/').pop(),
+          path,
+          content: Buffer.from(body, 'utf8').toString('base64'),
+        }),
+      );
+      return;
+    }
     // /api/repos/<owner>/<repo>/raw/branch/<branch>/<path>
     const marker = '/raw/branch/';
     const idx = url.indexOf(marker);
@@ -57,7 +84,7 @@ beforeEach(async () => {
     }
     const rest = url.slice(idx + marker.length);
     const slash = rest.indexOf('/');
-    const path = decodeURIComponent(rest.slice(slash + 1));
+    path = decodeURIComponent(rest.slice(slash + 1));
     const body = registryFiles[path];
     if (body === undefined) {
       // GitVerse отдаёт 400 на отсутствующий файл (спайк, doc-25 §10)
@@ -127,9 +154,17 @@ function seedItem(item, files) {
  */
 function runCli(...args) {
   return new Promise((resolve) => {
+    const token = process.env.VIBELOG_TEST_REGISTRY_TOKEN ?? '';
     const child = spawn('node', [cliPath, ...args], {
       cwd: testDir,
-      env: testSpawnEnv({ VIBELOG_REGISTRY_BASE_URL: baseUrl }),
+      // VL-382: обе базы (raw и Contents API) подменяются одним именем;
+      // GITVERSE_TOKEN снимаем — иначе унаследованный из агентской сессии
+      // токен увёл бы CLI на Публичный API, а фикстура изображает raw.
+      env: testSpawnEnv({
+        VIBELOG_REGISTRY_BASE_URL: baseUrl,
+        GITVERSE_REGISTRY_BASE_URL: baseUrl,
+        GITVERSE_TOKEN: token,
+      }),
     });
     let out = '';
     child.stdout.on('data', (chunk) => {
@@ -201,6 +236,25 @@ describe('diffLines', () => {
 });
 
 describe('vb install', () => {
+  it('VL-382: с токеном запрос идёт через Contents API и файл ставится', async () => {
+    freshProject();
+    const content = 'export const button = 1; // кнопка\n';
+    seedItem(buttonItem(), { 'src/lib/components/ui/button.svelte': content });
+
+    process.env.VIBELOG_TEST_REGISTRY_TOKEN = 'gv_test_token';
+    let result;
+    try {
+      result = await runCli('install', 'vibelog.md/ui/button', '--yes');
+    } finally {
+      delete process.env.VIBELOG_TEST_REGISTRY_TOKEN;
+    }
+    assert.equal(result.code, 0, result.out);
+    assert.equal(
+      readFileSync(join(testDir, 'src/lib/components/ui/button.svelte'), 'utf-8'),
+      content,
+    );
+  });
+
   it('устанавливает один файл и пишет корректный хеш в lock', async () => {
     freshProject();
     const content = 'export const button = 1;\n';

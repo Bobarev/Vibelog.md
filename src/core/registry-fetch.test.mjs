@@ -18,17 +18,25 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  CONTENTS_MAX_BODY_BYTES,
+  DEFAULT_API_BASE,
   DEFAULT_REGISTRY_BASE,
   MAX_BODY_BYTES,
   REGISTRY_BASE_ENV,
+  REGISTRY_BASE_ENV_ALIAS,
   REQUEST_TIMEOUT_MS,
   RETRY_DELAYS_MS,
   RegistryFetchError,
+  buildContentsUrl,
   buildRawUrl,
   buildRegistryItemUrl,
+  decodeContentsPayload,
   extractErrorMessage,
+  fetchRegistryFile,
   fetchRegistryItem,
+  resolveRegistryApiBase,
   resolveRegistryBase,
+  resolveRegistryTransport,
   validateRegistryItem,
 } from '../../dist/core/registry-fetch.js';
 
@@ -112,7 +120,12 @@ function ok() {
   };
 }
 
-/** Загрузка элемента через фикстуру. */
+/**
+ * Загрузка элемента через фикстуру.
+ *
+ * По умолчанию — raw без токена (VL-382: именно этот режим работает
+ * анонимно). Тесты contents передают `token` явно.
+ */
 async function fetchItem(extra = {}) {
   return fetchRegistryItem({
     baseUrl: base(),
@@ -120,10 +133,29 @@ async function fetchItem(extra = {}) {
     repo: 'ui',
     branch: 'master',
     name: 'button',
+    token: '',
     retryDelaysMs: FAST_RETRIES,
     timeoutMs: 2000,
     ...extra,
   });
+}
+
+/** Ответ Contents API: конверт с base64-содержимым (VL-382, ref-32). */
+function contentsOk(text, extra = {}) {
+  return (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/vnd.gitverse.object+json;version=1' });
+    res.end(
+      JSON.stringify({
+        type: 'file',
+        encoding: 'base64',
+        size: Buffer.byteLength(text, 'utf8'),
+        name: 'button.json',
+        path: 'public/r/button.json',
+        content: Buffer.from(text, 'utf8').toString('base64'),
+        ...extra,
+      }),
+    );
+  };
 }
 
 /** Проверяет, что промис падает RegistryFetchError нужного вида. */
@@ -410,43 +442,47 @@ describe('VL-335: fetchRegistryItem', () => {
   });
 });
 
-describe('VL-380: токен и rate-limit в реестре', () => {
-  it('Authorization отправляется только при наличии токена (AC5)', async () => {
-    let authHeader;
+describe('VL-382: raw-транспорт АНОНИМНЫЙ (регрессия дефекта VL-380)', () => {
+  it('в raw-запросе нет заголовка authorization даже при наличии токена', async () => {
+    // Замеры 2026-11-09: raw + Authorization: Bearer → 429 ВСЕГДА. Поэтому
+    // токен в raw не уходит ни при каком его наличии — ни из опций, ни из .env.
+    let authHeader = 'sentinel';
     handler = (req, res) => {
       authHeader = req.headers.authorization;
       res.writeHead(200, { 'content-type': 'text/plain' });
       res.end(JSON.stringify(validItem()));
     };
-    await fetchItem({ token: 'gv_registry_token_123456' });
-    assert.equal(authHeader, 'Bearer gv_registry_token_123456');
+    await fetchItem({ token: 'gv_registry_token_123456', transport: 'raw' });
+    assert.equal(authHeader, undefined, 'raw не должен отправлять Authorization');
 
-    authHeader = 'sentinel';
-    await fetchItem({ token: '' });
-    assert.equal(authHeader, undefined, 'без токена заголовка быть не должно');
-  });
-
-  it('токен читается из cwd (.env), а не только параметром', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'vibelog-registry-token-'));
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-registry-raw-'));
     tmpDirs.push(dir);
     writeFileSync(join(dir, '.env'), 'GITVERSE_TOKEN=gv_from_env_file\n', 'utf-8');
-    // Приоритет — shell env (VL-329): в CI/агентской сессии GITVERSE_TOKEN может
-    // быть задан, поэтому `.env` проверяем без него.
     const savedToken = process.env.GITVERSE_TOKEN;
     delete process.env.GITVERSE_TOKEN;
-    let authHeader;
+    authHeader = 'sentinel';
     try {
-      handler = (req, res) => {
-        authHeader = req.headers.authorization;
-        res.writeHead(200, { 'content-type': 'text/plain' });
-        res.end(JSON.stringify(validItem()));
-      };
-      await fetchItem({ cwd: dir });
+      await fetchItem({ cwd: dir, transport: 'raw' });
     } finally {
       if (savedToken !== undefined) process.env.GITVERSE_TOKEN = savedToken;
     }
-    assert.equal(authHeader, 'Bearer gv_from_env_file');
+    assert.equal(authHeader, undefined, 'токен из .env тоже не должен попасть в raw');
   });
+
+  it('raw-запрос идёт на веб-хост с обычным accept', async () => {
+    let acceptHeader;
+    handler = (req, res) => {
+      acceptHeader = req.headers.accept;
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end(JSON.stringify(validItem()));
+    };
+    await fetchItem();
+    assert.match(String(acceptHeader), /application\/json/);
+    assert.equal(paths[0], '/api/repos/Vibelog-md/ui/raw/branch/master/public/r/button.json');
+  });
+});
+
+describe('VL-380: rate-limit в реестре (общая политика)', () => {
 
   it('429 + Retry-After: 2 → ретрай через 2 с (инъекция пауз, AC11)', async () => {
     const pauses = [];
@@ -534,6 +570,243 @@ describe('VL-380: токен и rate-limit в реестре', () => {
     assert.ok(!err.message.includes(token), `токен утёк: ${err.message}`);
     assert.match(err.message, /GITVERSE_TOKEN/);
     assert.equal(hits, 1, '401 не ретраится');
+  });
+});
+
+describe('VL-382: выбор схемы доступа', () => {
+  it('токена нет → raw', () => {
+    const t = resolveRegistryTransport({ token: '', env: {} });
+    assert.equal(t.kind, 'raw');
+    assert.equal(t.token, '');
+    assert.equal(t.baseUrl, DEFAULT_REGISTRY_BASE);
+  });
+
+  it('токен задан → contents, база — Публичный API', () => {
+    const t = resolveRegistryTransport({ token: 'gv_tok', env: {} });
+    assert.equal(t.kind, 'contents');
+    assert.equal(t.token, 'gv_tok');
+    assert.equal(t.baseUrl, DEFAULT_API_BASE);
+    assert.equal(DEFAULT_API_BASE, 'https://api.gitverse.ru');
+  });
+
+  it('токен читается из .env каталога проекта', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-registry-transport-'));
+    tmpDirs.push(dir);
+    writeFileSync(join(dir, '.env'), 'GITVERSE_TOKEN=from_file\n', 'utf-8');
+    const savedToken = process.env.GITVERSE_TOKEN;
+    delete process.env.GITVERSE_TOKEN;
+    try {
+      const t = resolveRegistryTransport({ cwd: dir, env: {} });
+      assert.equal(t.kind, 'contents');
+      assert.equal(t.token, 'from_file');
+    } finally {
+      if (savedToken !== undefined) process.env.GITVERSE_TOKEN = savedToken;
+      // .env мог быть прочитан из кеша — путь уникален, кеша нет
+    }
+  });
+
+  it('явный transport переопределяет выбор по токену', () => {
+    assert.equal(resolveRegistryTransport({ token: 'gv', transport: 'raw', env: {} }).kind, 'raw');
+    assert.equal(
+      resolveRegistryTransport({ token: '', transport: 'contents', env: {} }).kind,
+      'contents',
+    );
+  });
+
+  it('явный baseUrl переопределяет базу выбранной схемы', () => {
+    const t = resolveRegistryTransport({ token: 'gv', baseUrl: 'http://127.0.0.1:9', env: {} });
+    assert.equal(t.baseUrl, 'http://127.0.0.1:9');
+  });
+
+  it('GITVERSE_REGISTRY_BASE_URL подменяет обе базы, старое имя — только raw', () => {
+    const env = { [REGISTRY_BASE_ENV_ALIAS]: 'http://127.0.0.1:7777/' };
+    assert.equal(resolveRegistryBase(env), 'http://127.0.0.1:7777');
+    assert.equal(resolveRegistryApiBase(env), 'http://127.0.0.1:7777');
+    assert.equal(
+      resolveRegistryApiBase({ [REGISTRY_BASE_ENV]: 'http://127.0.0.1:8888' }),
+      DEFAULT_API_BASE,
+    );
+  });
+});
+
+describe('VL-382: buildContentsUrl', () => {
+  it('собирает URL Публичного API с ref и scope=full', () => {
+    assert.equal(
+      buildContentsUrl('https://api.gitverse.ru', 'Vibelog-md', 'ui', 'master', 'public/r/button.json'),
+      'https://api.gitverse.ru/repos/Vibelog-md/ui/contents/public/r/button.json?ref=master&scope=full',
+    );
+  });
+
+  it('кодирует сегменты пути по одному, сохраняя слэши', () => {
+    const url = buildContentsUrl('https://api.gitverse.ru/', 'o', 'r', 'release/1.0', 'dir/a b/c#d.json');
+    assert.ok(url.endsWith('/contents/dir/a%20b/c%23d.json?ref=release%2F1.0&scope=full'));
+  });
+});
+
+describe('VL-382: contents-транспорт', () => {
+  it('200 с base64 → элемент распарсен; Bearer и кастомный Accept', async () => {
+    let authHeader;
+    let acceptHeader;
+    handler = (req, res) => {
+      authHeader = req.headers.authorization;
+      acceptHeader = req.headers.accept;
+      contentsOk(JSON.stringify(validItem()))(req, res);
+    };
+    const item = await fetchItem({ token: 'gv_contents_token' });
+    assert.equal(item.name, 'button');
+    assert.equal(authHeader, 'Bearer gv_contents_token');
+    assert.equal(acceptHeader, 'application/vnd.gitverse.object+json;version=1');
+    assert.equal(
+      paths[0],
+      '/repos/Vibelog-md/ui/contents/public/r/button.json?ref=master&scope=full',
+    );
+  });
+
+  it('кириллица в содержимом декодируется в UTF-8', async () => {
+    const cyrillic = JSON.stringify(validItem({ name: 'кнопка', comment: 'описание «кнопки»' }));
+    handler = contentsOk(cyrillic);
+    const text = await fetchRegistryFile({
+      baseUrl: base(),
+      owner: 'Vibelog-md',
+      repo: 'ui',
+      branch: 'master',
+      path: 'src/lib/components/ui/button.svelte',
+      token: 'gv_tok',
+      retryDelaysMs: FAST_RETRIES,
+      timeoutMs: 2000,
+    });
+    assert.equal(text, cyrillic);
+    assert.match(text, /описание «кнопки»/);
+  });
+
+  it('415 без правильного Accept → bad_accept с подсказкой про заголовок', async () => {
+    handler = (_req, res) => {
+      res.writeHead(415, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 'UNSUPPORTED_MEDIA_TYPE', message: 'bad accept' } }));
+    };
+    const err = await expectFetchError(fetchItem({ token: 'gv_tok' }), 'bad_accept');
+    assert.match(err.message, /application\/vnd\.gitverse\.object\+json/);
+    assert.equal(hits, 1, '415 не ретраится');
+  });
+
+  it('401 → unauthorized с подсказкой проверить токен и права «Чтение»', async () => {
+    handler = (_req, res) => {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'bad token', status: 401 } }));
+    };
+    const err = await expectFetchError(fetchItem({ token: 'gv_bad' }), 'unauthorized');
+    assert.match(err.message, /GITVERSE_TOKEN/);
+    assert.match(err.message, /Чтение/);
+    assert.equal(hits, 1);
+  });
+
+  it('404 → not_found (нет файла или ветки)', async () => {
+    handler = (_req, res) => {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'no file', status: 404 } }));
+    };
+    const err = await expectFetchError(fetchItem({ token: 'gv_tok' }), 'not_found');
+    assert.match(err.message, /нет файла или ветки/);
+  });
+
+  it('429 с Retry-After в contents ретраится', async () => {
+    const pauses = [];
+    let call = 0;
+    handler = (req, res) => {
+      call += 1;
+      if (call === 1) {
+        res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '3' });
+        res.end(JSON.stringify({ error: { code: 'RATE_LIMIT', message: 'slow down' } }));
+        return;
+      }
+      contentsOk(JSON.stringify(validItem()))(req, res);
+    };
+    const item = await fetchItem({
+      token: 'gv_tok',
+      sleepFn: async (ms) => {
+        pauses.push(ms);
+      },
+    });
+    assert.equal(item.name, 'button');
+    assert.deepEqual(pauses, [3000]);
+    assert.equal(hits, 2);
+  });
+
+  it('encoding не base64 → invalid_schema с указанием пути', async () => {
+    handler = contentsOk(JSON.stringify(validItem()), { encoding: 'utf-8' });
+    const err = await expectFetchError(fetchItem({ token: 'gv_tok' }), 'invalid_schema');
+    assert.match(err.message, /base64/);
+    assert.match(err.message, /public\/r\/button\.json/);
+  });
+
+  it('битый base64 → invalid_schema', async () => {
+    handler = contentsOk(JSON.stringify(validItem()), { content: '%%%%не-base64%%%%' });
+    const err = await expectFetchError(fetchItem({ token: 'gv_tok' }), 'invalid_schema');
+    assert.match(err.message, /base64/);
+  });
+
+  it('пустой content → invalid_schema', async () => {
+    handler = contentsOk(JSON.stringify(validItem()), { content: '' });
+    await expectFetchError(fetchItem({ token: 'gv_tok' }), 'invalid_schema');
+  });
+
+  it('type: dir → понятная ошибка «ожидался файл»', async () => {
+    handler = contentsOk('x', { type: 'dir', content: null });
+    const err = await expectFetchError(fetchItem({ token: 'gv_tok' }), 'invalid_schema');
+    assert.match(err.message, /ожидался файл/);
+  });
+
+  it('ответ-массив (директория) → ошибка про директорию', async () => {
+    handler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/vnd.gitverse.object+json;version=1' });
+      res.end(JSON.stringify([{ type: 'file', name: 'a' }]));
+    };
+    const err = await expectFetchError(fetchItem({ token: 'gv_tok' }), 'invalid_schema');
+    assert.match(err.message, /директория/);
+  });
+
+  it('лимит тела для contents выше (base64 удваивает размер)', () => {
+    assert.ok(CONTENTS_MAX_BODY_BYTES > MAX_BODY_BYTES);
+  });
+
+  it('decodeContentsPayload чистая функция: конверт → текст', () => {
+    const text = 'привет, мир';
+    const wrapped = JSON.stringify({
+      type: 'file',
+      encoding: 'base64',
+      content: Buffer.from(text, 'utf8').toString('base64'),
+    });
+    assert.equal(decodeContentsPayload(wrapped, 'http://x/y', 'файл'), text);
+  });
+});
+
+describe('VL-382: fetchRegistryFile в обоих режимах', () => {
+  it('raw и contents дают одинаковый текст', async () => {
+    const content = 'export const button = 1; // кнопка\n';
+    handler = (req, res) => {
+      if (req.url.includes('/contents/')) {
+        contentsOk(content)(req, res);
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end(content);
+    };
+    const common = {
+      baseUrl: base(),
+      owner: 'Vibelog-md',
+      repo: 'ui',
+      branch: 'master',
+      path: 'src/lib/components/ui/button.svelte',
+      retryDelaysMs: FAST_RETRIES,
+      timeoutMs: 2000,
+    };
+    const viaRaw = await fetchRegistryFile({ ...common, token: '' });
+    const viaContents = await fetchRegistryFile({ ...common, token: 'gv_tok' });
+    assert.equal(viaRaw, content);
+    assert.equal(viaContents, content);
+    assert.equal(viaRaw, viaContents);
+    assert.ok(paths[0].includes('/raw/branch/'));
+    assert.ok(paths[1].includes('/contents/'));
   });
 });
 

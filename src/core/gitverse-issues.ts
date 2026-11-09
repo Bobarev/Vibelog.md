@@ -26,6 +26,9 @@
 import { loadConfig } from './config.js';
 import { loadSettings, saveSettingsPatch } from './settings.js';
 import {
+  ACCEPT,
+  API_BASE_ENV,
+  DEFAULT_API_BASE,
   DEFAULT_RATE_LIMIT_DELAYS_MS,
   DEFAULT_RETRY_DELAYS_MS,
   DEFAULT_TIMEOUT_MS,
@@ -54,14 +57,10 @@ import type { UpstreamGitConfig } from './upstream-git.js';
 // `mcp/tools.ts`, тесты) не меняются.
 export { GITVERSE_TOKEN_ENV, maskToken, readToken, tokenHint };
 
-/** База API GitVerse по умолчанию (не `gitverse.ru` — именно `api.`). */
-export const DEFAULT_API_BASE = 'https://api.gitverse.ru';
-
-/** Переменная окружения, подменяющая базу целиком (только для тестов). */
-export const API_BASE_ENV = 'VIBELOG_GITVERSE_API_BASE';
-
-/** Обязательный заголовок Accept Публичного API GitVerse. */
-export const ACCEPT = 'application/vnd.gitverse.object+json;version=1';
+// VL-382: база и `Accept` Публичного API теперь в транспорте — их использует и
+// реестр (Contents API). Импорт + реэкспорт: значения нужны в этом модуле, а
+// прежний публичный API (`ACCEPT`, `API_BASE_ENV`, `DEFAULT_API_BASE`) сохранён.
+export { ACCEPT, API_BASE_ENV, DEFAULT_API_BASE };
 
 /** Таймаут одного запроса, мс. */
 export const REQUEST_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;

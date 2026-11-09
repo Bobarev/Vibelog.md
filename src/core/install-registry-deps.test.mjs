@@ -122,7 +122,13 @@ function runCli(...args) {
   return new Promise((resolve) => {
     const child = spawn('node', [cliPath, ...args], {
       cwd: testDir,
-      env: testSpawnEnv({ VIBELOG_REGISTRY_BASE_URL: baseUrl }),
+      // VL-382: фикстура изображает raw-эндпоинт, поэтому токен снимаем —
+      // унаследованный GITVERSE_TOKEN увёл бы CLI на Публичный API.
+      env: testSpawnEnv({
+        VIBELOG_REGISTRY_BASE_URL: baseUrl,
+        GITVERSE_REGISTRY_BASE_URL: baseUrl,
+        GITVERSE_TOKEN: '',
+      }),
     });
     let out = '';
     child.stdout.on('data', (chunk) => {
@@ -216,7 +222,7 @@ describe('resolveRegistryDeps', () => {
       config: ctx.config,
       lock: ctx.lock,
       ctx,
-      fetchOptions: { baseUrl },
+      fetchOptions: { baseUrl, transport: 'raw' },
     });
     assert.equal(res.plans.length, 1);
     assert.equal(res.plans[0].item.name, 'base');
@@ -244,7 +250,7 @@ describe('resolveRegistryDeps', () => {
       config: ctx.config,
       lock: ctx.lock,
       ctx,
-      fetchOptions: { baseUrl },
+      fetchOptions: { baseUrl, transport: 'raw' },
     });
     assert.equal(res.plans.length, 0);
     assert.deepEqual(res.alreadyInstalled, ['base']);
@@ -271,7 +277,7 @@ describe('resolveRegistryDeps', () => {
       config: ctx.config,
       lock: ctx.lock,
       ctx,
-      fetchOptions: { baseUrl },
+      fetchOptions: { baseUrl, transport: 'raw' },
     });
     assert.equal(res.plans.length, 0);
     assert.equal(res.warnings.length, 1);
@@ -290,7 +296,7 @@ describe('resolveRegistryDeps', () => {
       config: ctx.config,
       lock: ctx.lock,
       ctx,
-      fetchOptions: { baseUrl },
+      fetchOptions: { baseUrl, transport: 'raw' },
     });
     // base установится, но его собственная ссылка на button не разрешается
     assert.equal(res.plans.length, 1);
@@ -321,7 +327,7 @@ describe('resolveRegistryDeps', () => {
       config: ctx.config,
       lock: ctx.lock,
       ctx,
-      fetchOptions: { baseUrl },
+      fetchOptions: { baseUrl, transport: 'raw' },
     });
     assert.equal(res.plans.length, 1);
     assert.equal(res.plans[0].item.name, 'base');
@@ -339,7 +345,7 @@ describe('resolveRegistryDeps', () => {
           config: ctx.config,
           lock: ctx.lock,
           ctx,
-          fetchOptions: { baseUrl },
+          fetchOptions: { baseUrl, transport: 'raw' },
         }),
       (err) => err instanceof InstallError && err.code === 3,
     );

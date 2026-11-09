@@ -195,6 +195,12 @@ export interface InstallFetchOptions {
   sleepFn?: (ms: number) => Promise<void>;
   /** Готовый токен GitVerse (иначе читается из `ctx.root`: shell env → .env). */
   token?: string;
+  /**
+   * Явная схема доступа к реестру (VL-382): 'raw' — анонимный веб-эндпоинт,
+   * 'contents' — Публичный API с токеном. Нужна тестам: иначе унаследованный
+   * `GITVERSE_TOKEN` агентской сессии увёл бы запрос на другой транспорт.
+   */
+  transport?: 'raw' | 'contents';
   env?: NodeJS.ProcessEnv;
   /**
    * Подписка на прогресс сетевых операций (VL-381). Печать — забота CLI:
