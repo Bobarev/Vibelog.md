@@ -65,7 +65,8 @@ vibelog browser
 | [Руководство пользователя](backlog/docs/doc-6-Руководство-пользователя-Vibelogmd.md) | Задачи, вехи, документы, веб-интерфейс, Telegram-бот, формы файлов — обзор для пользователя |
 | [CLI-справочник](backlog/docs/doc-7-CLI-справочник-Vibelogmd.md) | Все команды, подкоманды, флаги, диагностика |
 | [MCP-справочник](backlog/docs/doc-8-MCP-справочник-Vibelogmd.md) | Все MCP-инструменты: параметры, контракт ответа (включая `noop` = `isError`), примеры |
-| [Агент Vibelog](backlog/docs/doc-10-Агент-Vibelog-vibelog-agent.md) | LLM-агент: TUI, headless-фазы, лимиты и guard повторов, модели и провайдеры, учёт токенов |
+| [Агент vb](backlog/docs/doc-31-Агент-vb-архитектура-и-лимиты.md) | LLM-агент: tool-calling loop, лимиты и guard повторов, MCP-клиент, модели, TUI и чат, сессии |
+| [Фазовый процесс](backlog/docs/doc-30-Фазовый-процесс-Vibelog-фазы-статусы-workflows-полнота-шаблоны.md) | Фазы и шаблоны, статусы и переходы, workflows, правила полноты, переопределение шаблонов |
 | [Супервизор](backlog/docs/doc-19-Роль-Супервизор-автозапуск-и-лечение-фаз-из-чата-спецификация.md) | Роль «Супервизор»: тик-цикл, лечение фаз, grant на прогон, шаблоны лечения, планировщик |
 | [Best practices](backlog/docs/doc-9-Best-practices-и-производительность-Vibelogmd.md) | Workflow с Qwen Code, dogfooding, производительность |
 | [Поддержка lessons](backlog/docs/doc-20-Lessons-как-поддерживать-корпус-в-актуальном-состоянии-аудит-supersede-outdated-workaround.md) | Аудит корпуса, `needs-review`, `supersede`/`outdated`, техдолг из workaround'ов |

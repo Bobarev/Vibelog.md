@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Изменено
+
+- **VL-397: doc-10 разделён на два актуальных документа — фазовый процесс и агент vb** — прежний «Агент Vibelog (vibelog-agent)» (594 строки, 2026-10-06) смешивал темы и описывал устаревшие вещи. Теперь: **doc-30 «Фазовый процесс Vibelog»** — фазы и их шаблоны (`templates/phases/`), статусы и переходы `DEFAULT_WORKFLOW`, служебные фазы, `workflows`/`task_workflows` в `.vibelog/settings.json`, правила полноты (`completeness`), переопределение шаблонов через `.vibelog/prompts/phases/`, итог фазы (транзиентный `In Progress`, `produces_status`, `backlog_finish_phase`, аварийная ветка `aborted`); **doc-31 «Агент vb: архитектура и лимиты»** — tool-calling loop, лимиты (tool-calls/wall-time/requests/idle), loop detection и guard повторов, защита от переполнения запроса, MCP-клиент и внешние MCP-серверы, реестр моделей и `api_mode`, системный промпт, headless-контракт, TUI и чат, сессии и транскрипты. doc-10 оставлен заглушкой с баннером «устарел» и ссылками на новые документы (тело не переписывалось: баннер вставлен и устаревшие фрагменты заменены точечно через `document_edit`). Из содержимого убрано устаревшее: ссылки на `templates/qwen-commands/` (шаблоны фаз давно в `templates/phases/`), секция `env` в `settings.json` (секреты — только `.env`, VL-329), описание TUI на Ink. Ссылки на doc-10 переведены на doc-31: README, AGENTS.md, `templates/agent-prompt.md`, doc-7, doc-23, `src/agent/tui.ts` (комментарий).
+
 ## [1.13.0] — 2026-11-09
 
 ### Изменено (ломающие изменения)
