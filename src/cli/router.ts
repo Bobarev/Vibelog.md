@@ -168,7 +168,7 @@ ${colorize('Vibelog.md', colors.bold)} — markdown-нативный таск-м
 
 ${colorize('Команды:', colors.bold)}
   ${colorize('init', colors.cyan)} [name] [--yes] [--mode fresh|upgrade]  Wizard настройки проекта
-  ${colorize('install', colors.cyan)} <alias>/<repo>/<name> [--yes] [--force] [--dry-run] [--branch b]  Установка компонента из реестра
+  ${colorize('install', colors.cyan)} <alias>/<repo>/<name> [--yes] [--force] [--dry-run] [--branch b] [--verbose]  Установка компонента из реестра
   ${colorize('create', colors.cyan)} <name> --template <alias>/<repo>/<t> [--branch b] [--package-manager pm] [--no-install] [--no-git] [--yes]  Новый проект из шаблона
   ${colorize('upstream', colors.cyan)} report --title <t> [--body <b>|--body-file <f>] [--severity s] [--area a] [--source-task ID] [--label l] [--json]  Репорт бага в upstream через GitVerse Issues
   ${colorize('task', colors.cyan)} create|list|view|edit|...     Управление задачами
@@ -271,6 +271,9 @@ components (.vibelog/settings.json), пишет файлы атомарно и �
   --force                — перезаписать конфликтующие файлы
   --dry-run              — показать план и выйти, ничего не записывая
   --branch <b>           — переопределить ветку реестра
+  --verbose              — URL запросов, HTTP-статусы, попытки и причины
+                           повторов (прогресс идёт в stderr; алиаса -v нет:
+                           -v зарезервирован под --version)
 
 Коды выхода: 0 — успех (в т.ч. частичный), 1 — использование,
 2 — предусловие (нет секции components, неизвестный alias),

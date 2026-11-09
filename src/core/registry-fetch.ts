@@ -44,6 +44,7 @@ import {
   requestWithRetries,
   resolveBase,
   type HttpErrorFactory,
+  type ProgressCallback,
   type StatusClassification,
   type TransportContext,
 } from './gitverse-http.js';
@@ -172,6 +173,8 @@ interface RegistryFetchCommonOptions {
   cwd?: string;
   /** Готовый токен (инъекция для тестов; приоритетнее `cwd`). */
   token?: string;
+  /** Подписка на прогресс сетевых операций (VL-381; по умолчанию — молчание). */
+  onProgress?: ProgressCallback;
 }
 
 /** Опции загрузки элемента. */
@@ -366,6 +369,7 @@ async function fetchTextWithRetries(
     token: string;
   },
   sleepFn?: (ms: number) => Promise<void>,
+  onProgress?: ProgressCallback,
 ): Promise<string> {
   const ctx: TransportContext = {
     what: 'реестр',
@@ -393,6 +397,7 @@ async function fetchTextWithRetries(
       ? { rateLimitBudgetMs: settings.rateLimitBudgetMs }
       : {}),
     ...(sleepFn !== undefined ? { sleepFn } : {}),
+    ...(onProgress !== undefined ? { onProgress } : {}),
     classify: (status, text) => classifyRegistryStatus(status, text, what, branch, url),
   });
   return response.text;
@@ -533,6 +538,7 @@ export async function fetchRegistryFile(
       token: resolveToken(options),
     },
     options.sleepFn,
+    options.onProgress,
   );
 }
 
@@ -577,6 +583,7 @@ export async function fetchRegistryItem(
       token,
     },
     sleepFn,
+    options.onProgress,
   );
 
   const ctx: TransportContext = {

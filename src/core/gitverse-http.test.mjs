@@ -466,6 +466,145 @@ describe('VL-380: requestWithRetries', () => {
   });
 });
 
+describe('VL-381: onProgress', () => {
+  const classify = (status) => {
+    if (status === 429) {
+      return {
+        kind: 'rate_limited',
+        message: 'GitVerse ограничил запросы (HTTP 429)',
+        retryable: true,
+        retryHint: (nextDelayMs) => `следующая попытка через ${Math.round((nextDelayMs ?? 60_000) / 1000)} с`,
+      };
+    }
+    if (status >= 500) return { kind: 'server', message: `ответ ${status}`, retryable: true };
+    return { kind: 'bad_request', message: `ответ ${status}`, retryable: false };
+  };
+
+  it('события идут в порядке request → response, поля заполнены', async () => {
+    const events = [];
+    handler = (_req, res) => {
+      res.writeHead(200);
+      res.end('ok');
+    };
+    await requestWithRetries({
+      ...CTX,
+      url: url(),
+      timeoutMs: 2000,
+      classify,
+      onProgress: (event) => events.push(event),
+    });
+    assert.deepEqual(
+      events.map((event) => event.kind),
+      ['request', 'response'],
+    );
+    assert.equal(events[0].url, url());
+    assert.equal(events[0].attempt, 1);
+    assert.equal(events[1].status, 200);
+    assert.equal(events[1].bytes, 2);
+  });
+
+  it('429: waiting несёт delayMs из Retry-After и reason rate_limited', async () => {
+    const events = [];
+    let call = 0;
+    handler = (_req, res) => {
+      call += 1;
+      if (call === 1) {
+        res.writeHead(429, { 'retry-after': '3' });
+        res.end('slow down');
+        return;
+      }
+      res.writeHead(200);
+      res.end('ok');
+    };
+    await requestWithRetries({
+      ...CTX,
+      url: url(),
+      timeoutMs: 2000,
+      classify,
+      sleepFn: async () => undefined,
+      onProgress: (event) => events.push(event),
+    });
+    const waiting = events.filter((event) => event.kind === 'waiting');
+    assert.equal(waiting.length, 1);
+    assert.equal(waiting[0].delayMs, 3000);
+    assert.equal(waiting[0].reason, 'rate_limited');
+    assert.equal(waiting[0].attempt, 2);
+  });
+
+  it('5xx: waiting с reason server, error сетевой попытки — reason network', async () => {
+    const events = [];
+    handler = (_req, res) => {
+      res.writeHead(500);
+      res.end('boom');
+    };
+    await assert.rejects(() =>
+      requestWithRetries({
+        ...CTX,
+        url: url(),
+        timeoutMs: 2000,
+        classify,
+        retryDelaysMs: [1],
+        sleepFn: async () => undefined,
+        onProgress: (event) => events.push(event),
+      }),
+    );
+    const waiting = events.filter((event) => event.kind === 'waiting');
+    assert.equal(waiting.length, 1);
+    assert.equal(waiting[0].reason, 'server');
+    assert.equal(waiting[0].delayMs, 1);
+  });
+
+  it('таймаут даёт событие error с reason timeout', async () => {
+    const events = [];
+    handler = () => {
+      /* молчим */
+    };
+    await assert.rejects(() =>
+      requestWithRetries({
+        ...CTX,
+        url: url(),
+        timeoutMs: 50,
+        classify,
+        onProgress: (event) => events.push(event),
+      }),
+    );
+    const errors = events.filter((event) => event.kind === 'error');
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0].reason, 'timeout');
+  });
+
+  it('без onProgress ничего не падает и ничего не печатается', async () => {
+    const printed = [];
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    const originalErrWrite = process.stderr.write.bind(process.stderr);
+    process.stdout.write = (chunk, ...rest) => {
+      printed.push(String(chunk));
+      return originalWrite(chunk, ...rest);
+    };
+    process.stderr.write = (chunk, ...rest) => {
+      printed.push(String(chunk));
+      return originalErrWrite(chunk, ...rest);
+    };
+    try {
+      handler = (_req, res) => {
+        res.writeHead(200);
+        res.end('ok');
+      };
+      const response = await requestWithRetries({
+        ...CTX,
+        url: url(),
+        timeoutMs: 2000,
+        classify,
+      });
+      assert.equal(response.status, 200);
+    } finally {
+      process.stdout.write = originalWrite;
+      process.stderr.write = originalErrWrite;
+    }
+    assert.deepEqual(printed, [], 'транспорт не должен печатать сам');
+  });
+});
+
 describe('VL-380: parseJson', () => {
   it('разбирает валидный JSON и бросает invalid_json на битом', () => {
     assert.deepEqual(parseJson('{"a":1}', 'u', CTX), { a: 1 });

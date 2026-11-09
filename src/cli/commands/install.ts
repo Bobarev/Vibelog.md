@@ -49,9 +49,12 @@ import {
   transferOwnership,
 } from '../../core/install-registry-deps.js';
 import type { OwnershipEntry, RegistryDepNote } from '../../core/install-registry-deps.js';
+import { RATE_LIMIT_BUDGET_MS } from '../../core/gitverse-http.js';
+import type { ProgressCallback, ProgressEvent } from '../../core/gitverse-http.js';
+import { readTokenWithSource } from '../../core/gitverse-auth.js';
 
 /** Известные флаги команды: неизвестный флаг — ошибка использования (код 1). */
-const KNOWN_FLAGS = new Set(['yes', 'force', 'dry-run', 'branch', 'help', 'h']);
+const KNOWN_FLAGS = new Set(['yes', 'force', 'dry-run', 'branch', 'verbose', 'help', 'h']);
 
 /** Опции команды после разбора флагов. */
 interface InstallOptions {
@@ -59,6 +62,8 @@ interface InstallOptions {
   force: boolean;
   dryRun: boolean;
   branch?: string;
+  /** `--verbose`: URL, статус, попытка и причина повтора (VL-381). */
+  verbose: boolean;
 }
 
 /**
@@ -72,17 +77,110 @@ function parseOptions(flags: FlagValues): InstallOptions {
   for (const key of Object.keys(flags)) {
     if (!KNOWN_FLAGS.has(key)) {
       throw new InstallError(
-        `неизвестный флаг «--${key}»; поддерживаются: --yes, --force, --dry-run, --branch <b>`,
+        `неизвестный флаг «--${key}»; поддерживаются: --yes, --force, --dry-run, --branch <b>, --verbose`,
         1,
       );
     }
   }
   const branch = getFlag(flags, 'branch', '');
+  // Алиас -v НЕ вводим: в роутере `-v` перехватывается как --version ещё до
+  // команды, поэтому такой «алиас» молча печатал бы версию вместо прогресса.
   return {
     yes: flags.yes === true,
     force: flags.force === true,
     dryRun: flags['dry-run'] === true,
+    verbose: flags.verbose === true,
     ...(branch !== '' ? { branch } : {}),
+  };
+}
+
+/** Печатает строку прогресса в stderr: stdout остаётся машиночитаемым (AC7). */
+function writeProgressLine(line: string): void {
+  process.stderr.write(`${line}\n`);
+}
+
+/** Источник токена словами (для `--verbose`). */
+function tokenSourceLabel(source: 'env' | 'file' | 'none'): string {
+  if (source === 'env') return 'из окружения';
+  if (source === 'file') return 'из .env';
+  return 'нет';
+}
+
+/** Опции печати прогресса `vb install` (VL-381). */
+export interface InstallProgressOptions {
+  /** `--verbose`: URL, статусы, причины повторов. */
+  verbose: boolean;
+  /** Есть ли токен GitVerse (для диагностики 429). */
+  hasToken: boolean;
+  /** Суммарный бюджет ожидания на 429, мс — попадает в оценку «суммарно до N с». */
+  rateLimitBudgetMs?: number;
+  /** Куда писать (по умолчанию — stderr; инъекция для тестов). */
+  write?: (line: string) => void;
+}
+
+/**
+ * Создаёт обработчик прогресса сетевых операций (VL-381).
+ *
+ * Зачем отдельная функция: одинаковые события транспорта должны выглядеть
+ * по-разному в обычном и `--verbose`-режиме, а предупреждение про 429 —
+ * выйти РОВНО ОДИН раз на весь запуск (иначе три паузы дают три копии текста).
+ *
+ * Жёсткие инварианты:
+ * - только stderr: `--dry-run` парсится скриптами, а stdout занят планом;
+ * - токен не печатается никогда — максимум «из .env»/«из окружения»/«нет»;
+ * - без `--verbose` на одну сетевую операцию приходится одна строка
+ *   («скачиваю …» печатает вызывающий код), плюс строки ожидания при повторе.
+ */
+export function createProgressPrinter(options: InstallProgressOptions): ProgressCallback {
+  const write = options.write ?? writeProgressLine;
+  const budgetSeconds = Math.round((options.rateLimitBudgetMs ?? RATE_LIMIT_BUDGET_MS) / 1000);
+  let warnedRateLimit = false;
+
+  return (event: ProgressEvent): void => {
+    if (event.kind === 'request') {
+      if (options.verbose) {
+        write(`→ GET ${event.url} (попытка ${event.attempt}/${event.attemptsMax})`);
+      }
+      return;
+    }
+
+    if (event.kind === 'response') {
+      if (options.verbose) {
+        const size = event.bytes === undefined ? '' : ` (${event.bytes} байт)`;
+        write(`← ${event.status ?? '?'}${size}`);
+      }
+      return;
+    }
+
+    if (event.kind === 'error') {
+      if (options.verbose) write(`⚠ ${event.message ?? 'ошибка запроса'}`);
+      return;
+    }
+
+    // kind === 'waiting' — начинается пауза перед повтором.
+    const delaySeconds = Math.round((event.delayMs ?? 0) / 1000);
+    const attemptInfo = `попытка ${event.attempt}/${event.attemptsMax}`;
+
+    if (event.reason === 'rate_limited') {
+      if (!warnedRateLimit) {
+        warnedRateLimit = true;
+        // Диагностика СРАЗУ, а не после исчерпания попыток: иначе пользователь
+        // три минуты не знает, помог бы токен (AC4/AC5).
+        const cause = options.hasToken
+          ? '⚠ GitVerse ограничивает запросы даже с токеном (429).'
+          : '⚠ GitVerse ограничил анонимные запросы (429). Добавь GITVERSE_TOKEN в .env — авторизованные запросы лимитируются выше (https://gitverse.ru/settings/tokens).';
+        write(
+          `${cause} Жду ${delaySeconds} с (${attemptInfo}, суммарно до ${budgetSeconds} с).`,
+        );
+      }
+      write(`→ жду ${delaySeconds} с (429, ${attemptInfo})…`);
+      return;
+    }
+
+    if (options.verbose) {
+      const reason = event.reason === 'server' ? '5xx' : 'сеть';
+      write(`→ жду ${delaySeconds} с (${reason}, ${attemptInfo})…`);
+    }
   };
 }
 
@@ -191,9 +289,21 @@ export async function runInstall(
   let depPlans: InstallPlan[] = [];
   let depWarnings: RegistryDepNote[] = [];
   let alreadyInstalled: string[] = [];
+  // VL-381: прогресс сетевых шагов идёт в stderr — stdout остаётся планом.
+  const tokenInfo = readTokenWithSource(ctx.root);
+  const progress = createProgressPrinter({
+    verbose: options.verbose,
+    hasToken: tokenInfo.token !== '',
+  });
+  const fetchOptions = { onProgress: progress };
+  if (options.verbose) {
+    writeProgressLine(`токен: ${tokenSourceLabel(tokenInfo.source)}`);
+  }
   try {
-    const item = await fetchInstallItem(ctx);
-    const contents = await fetchInstallContents(ctx, item);
+    writeProgressLine(`→ скачиваю ${ctx.ref}…`);
+    const item = await fetchInstallItem(ctx, fetchOptions);
+    writeProgressLine(`→ скачиваю файлы (${item.files.length})…`);
+    const contents = await fetchInstallContents(ctx, item, fetchOptions);
     plan = buildInstallPlan(ctx.root, ctx.config, ctx.lock, item, contents, ctx.ref);
 
     // --- registryDependencies: один уровень, до самого элемента (шаг 5) ---
@@ -202,6 +312,7 @@ export async function runInstall(
       config: ctx.config,
       lock: ctx.lock,
       ctx,
+      fetchOptions,
     });
     depPlans = resolved.plans;
     depWarnings = resolved.warnings;

@@ -33,6 +33,31 @@ export function maskToken(text: string, token: string): string {
   return text.split(token).join('***');
 }
 
+/** Откуда взят токен (для `--verbose` в `vb install`, VL-381). */
+export type TokenSource = 'env' | 'file' | 'none';
+
+/**
+ * Читает токен вместе с источником.
+ *
+ * Отдельно от `readToken`: для диагностики 429 пользователю важно ЗНАТЬ, откуда
+ * взят токен («из .env» или «из окружения») — иначе непонятно, куда вписывать
+ * новый (VL-381).
+ */
+export function readTokenWithSource(
+  cwd: string,
+  envName: string = GITVERSE_TOKEN_ENV,
+): { token: string; source: TokenSource } {
+  const fromShell = process.env[envName];
+  if (typeof fromShell === 'string' && fromShell.trim() !== '') {
+    return { token: fromShell.trim(), source: 'env' };
+  }
+  const fromFile = readEnvFile(cwd)[envName];
+  if (typeof fromFile === 'string' && fromFile.trim() !== '') {
+    return { token: fromFile.trim(), source: 'file' };
+  }
+  return { token: '', source: 'none' };
+}
+
 /**
  * Читает токен: приоритет shell env → `.env` (VL-329).
  *
@@ -41,10 +66,7 @@ export function maskToken(text: string, token: string): string {
  * не место. Парсер тот же (комментарии, `export KEY=`, кавычки).
  */
 export function readToken(cwd: string, envName: string = GITVERSE_TOKEN_ENV): string {
-  const fromShell = process.env[envName];
-  if (typeof fromShell === 'string' && fromShell.trim() !== '') return fromShell.trim();
-  const fromFile = readEnvFile(cwd)[envName];
-  return typeof fromFile === 'string' ? fromFile.trim() : '';
+  return readTokenWithSource(cwd, envName).token;
 }
 
 /** Подсказка «как завести токен» — единый текст для CLI и MCP. */

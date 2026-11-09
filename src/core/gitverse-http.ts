@@ -111,6 +111,48 @@ export type HttpErrorFactory = (
   details?: { status?: number; attempts?: number },
 ) => GitverseHttpError<string>;
 
+/**
+ * Вид события прогресса сетевой операции (VL-381).
+ *
+ * `request` — уходит запрос, `response` — пришёл ответ, `waiting` — начинается
+ * пауза перед повтором, `error` — попытка закончилась ошибкой (таймаут, лимит
+ * тела, сеть).
+ */
+export type ProgressEventKind = 'request' | 'response' | 'waiting' | 'error';
+
+/** Причина повтора или ошибки в событии прогресса. */
+export type ProgressReason = 'rate_limited' | 'server' | 'network' | 'timeout' | 'too_large';
+
+/**
+ * Событие прогресса сетевой операции.
+ *
+ * Транспорт НЕ печатает ничего сам: он лишь рассказывает клиенту, что
+ * происходит («молчаливое ожидание 3 минуты» — класс дефектов, VL-381).
+ * Печать — забота CLI: библиотека в тестах и MCP-режиме не имеет права
+ * писать в stdout (там JSON-RPC).
+ */
+export interface ProgressEvent {
+  kind: ProgressEventKind;
+  url: string;
+  /** Номер текущей попытки (с 1). */
+  attempt: number;
+  /** Сколько попыток возможно в худшем случае (для «попытка K/M»). */
+  attemptsMax: number;
+  /** HTTP-статус ответа (только у `response`). */
+  status?: number;
+  /** Длительность предстоящей паузы, мс (только у `waiting`). */
+  delayMs?: number;
+  /** Причина повтора/ошибки. */
+  reason?: ProgressReason;
+  /** Размер тела ответа в байтах (только у `response`). */
+  bytes?: number;
+  /** Текст ошибки (только у `error`; уже прошёл через `mask`). */
+  message?: string;
+}
+
+/** Подписчик на события прогресса (по умолчанию — no-op). */
+export type ProgressCallback = (event: ProgressEvent) => void;
+
 /** Коды сетевых ошибок, на которых имеет смысл повторять запрос. */
 export const RETRYABLE_NETWORK_CODES = new Set([
   'ECONNRESET',
@@ -490,6 +532,11 @@ export interface RequestWithRetriesOptions extends FetchOnceOptions {
   rateLimitBudgetMs?: number;
   /** Инъекция пауз для тестов (по умолчанию `sleep`). */
   sleepFn?: (ms: number) => Promise<void>;
+  /**
+   * Подписка на прогресс (VL-381). По умолчанию — no-op: транспорт молчит,
+   * печатью занимается CLI.
+   */
+  onProgress?: ProgressCallback;
 }
 
 /**
@@ -511,6 +558,8 @@ export async function requestWithRetries(
   const rateLimitDelays = options.rateLimitDelaysMs ?? DEFAULT_RATE_LIMIT_DELAYS_MS;
   const budget = options.rateLimitBudgetMs ?? RATE_LIMIT_BUDGET_MS;
   const pause = options.sleepFn ?? sleep;
+  // Потребитель прогресса может отсутствовать — тогда всё превращается в no-op.
+  const progress: ProgressCallback = options.onProgress ?? (() => undefined);
 
   let serverRetries = 0;
   let rateLimitRetries = 0;
@@ -519,6 +568,10 @@ export async function requestWithRetries(
 
   for (;;) {
     attempts += 1;
+    // Оценка «сколько попыток в худшем случае» — нужна для текста «попытка K/M».
+    const attemptsMaxFor = (kind: ProgressReason): number =>
+      1 + (kind === 'rate_limited' ? rateLimitDelays.length : retryDelays.length);
+    progress({ kind: 'request', url: options.url, attempt: attempts, attemptsMax: attemptsMaxFor('server') });
 
     let result: HttpResponse;
     try {
@@ -526,10 +579,36 @@ export async function requestWithRetries(
     } catch (err) {
       const failure = err instanceof GitverseHttpError ? err : undefined;
       // timeout/too_large — не ретраим: повтор даст тот же результат.
-      if (!failure || failure.kind !== 'network') throw err;
+      if (!failure || failure.kind !== 'network') {
+        progress({
+          kind: 'error',
+          url: options.url,
+          attempt: attempts,
+          attemptsMax: attemptsMaxFor('network'),
+          reason: failure?.kind === 'timeout' ? 'timeout' : failure?.kind === 'too_large' ? 'too_large' : 'network',
+          message: failure?.message ?? (err instanceof Error ? err.message : String(err)),
+        });
+        throw err;
+      }
       const delay = retryDelays[serverRetries];
       if (delay !== undefined) {
+        progress({
+          kind: 'error',
+          url: options.url,
+          attempt: attempts,
+          attemptsMax: attemptsMaxFor('network'),
+          reason: 'network',
+          message: failure.message,
+        });
         serverRetries += 1;
+        progress({
+          kind: 'waiting',
+          url: options.url,
+          attempt: attempts + 1,
+          attemptsMax: attemptsMaxFor('network'),
+          delayMs: delay,
+          reason: 'network',
+        });
         await pause(delay);
         continue;
       }
@@ -540,6 +619,15 @@ export async function requestWithRetries(
         { attempts },
       );
     }
+
+    progress({
+      kind: 'response',
+      url: options.url,
+      attempt: attempts,
+      attemptsMax: attemptsMaxFor('server'),
+      status: result.status,
+      bytes: result.text.length,
+    });
 
     if (result.status >= 200 && result.status < 300) return result;
 
@@ -554,6 +642,14 @@ export async function requestWithRetries(
       if (delay !== undefined && waitedMs + delay <= budget) {
         waitedMs += delay;
         rateLimitRetries += 1;
+        progress({
+          kind: 'waiting',
+          url: options.url,
+          attempt: attempts + 1,
+          attemptsMax: attemptsMaxFor('rate_limited'),
+          delayMs: delay,
+          reason: 'rate_limited',
+        });
         await pause(delay);
         continue;
       }
@@ -571,6 +667,14 @@ export async function requestWithRetries(
       const delay = retryDelays[serverRetries];
       if (delay !== undefined) {
         serverRetries += 1;
+        progress({
+          kind: 'waiting',
+          url: options.url,
+          attempt: attempts + 1,
+          attemptsMax: attemptsMaxFor('server'),
+          delayMs: delay,
+          reason: 'server',
+        });
         await pause(delay);
         continue;
       }
