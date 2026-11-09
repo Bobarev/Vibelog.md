@@ -44,7 +44,7 @@ describe('VL-219 — isWriteOperation (по природе операции)', (
       'backlog_create_task', 'backlog_update_task', 'backlog_update_status',
       'backlog_manage_ac', 'backlog_add_comment', 'backlog_finish_phase',
       'milestone_add', 'milestone_remove', 'milestone_rename', 'milestone_archive',
-      'document_create', 'document_update',
+      'document_create', 'document_update', 'document_edit',
       'reference_add', 'reference_update', 'reference_remove', 'reference_sync',
       'lesson_create', 'lesson_update', 'lesson_supersede', 'reference_link',
       // VL-311: коммит меняет историю репозитория — write по природе

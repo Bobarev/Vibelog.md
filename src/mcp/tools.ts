@@ -67,6 +67,8 @@ import { truncateToolOutput } from '../agent/tools.js';
 import { ackOk, ackOkDetailed, ackRead, ackNoop, ackNoopDetailed, ackError, ackErrorDetailed, unknownFields, sameValue, sameFieldsUpToDate, SET_FIELDS, BODY_FIELD } from './tool-result.js';
 import { runUpdate } from './update-pipeline.js';
 import type { EntitySpec, RejectDetail } from './update-pipeline.js';
+// VL-399: точечная правка тела документа + guard от молчаливой потери тела
+import { applyBodyEdit, contentShrinkCheck } from './document-edit.js';
 import { buildAutoReport, uncheckedItems } from './auto-report.js';
 import type { SkippedField } from './tool-result.js';
 import { withIdempotency } from './idempotency.js';
@@ -454,11 +456,45 @@ export function listTools(): ToolDefinition[] {
         properties: {
           id: { type: 'string', description: 'ID документа' },
           title: { type: 'string', description: 'Новый заголовок' },
-          content: { type: 'string', description: 'Новое содержимое (полная замена)' },
+          content: {
+            type: 'string',
+            description:
+              'Новое содержимое — ПОЛНАЯ замена тела документа. Точечная правка — document_edit. ' +
+              'Если текст короче текущего более чем на 40% и не сохраняет его начала, вызов отклоняется: ' +
+              'осознанная замена требует full_replace: true',
+          },
           type: { type: 'string', enum: ['readme', 'guide', 'specification', 'other'], description: 'Тип' },
           tags: { type: 'array', items: { type: 'string', maxLength: 100 }, description: 'Теги (полная замена)' },
+          full_replace: {
+            type: 'boolean',
+            description:
+              'Явное согласие на полную замену тела, даже если content короче текущего более чем на 40% ' +
+              '(guard от молчаливой потери тела, VL-399)',
+          },
         },
         required: ['id'],
+      },
+    },
+    {
+      // VL-399: точечная правка тела документа. Отдельный инструмент, а не
+      // edit-режим document_update: смешение «content — полная замена» и
+      // «old_string → new_string» в одном вызове дало бы неопределённый исход
+      // при передаче обоих полей. Модель уже знает семантику файлового edit.
+      name: 'document_edit',
+      description:
+        'Точечная правка ТЕЛА документа: заменяет old_string на new_string. ' +
+        'Без replace_all old_string обязан встречаться ровно один раз — иначе отказ без записи. ' +
+        'Заголовок/тип/теги — через document_update (там content — ПОЛНАЯ замена тела).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'ID документа (например doc-1)' },
+          old_string: { type: 'string', description: 'Точный текст для поиска в теле' },
+          new_string: { type: 'string', description: 'Текст замены' },
+          replace_all: { type: 'boolean', description: 'Заменить все вхождения' },
+          idempotencyKey: { type: 'string', description: 'Ключ идемпотентности: повтор с тем же ключом не применяет изменение второй раз' },
+        },
+        required: ['id', 'old_string', 'new_string'],
       },
     },
     {
@@ -953,6 +989,11 @@ export async function handleToolCall(
       return toolDocumentCreate(args, cwd);
     case 'document_update':
       return toolDocumentUpdate(args, cwd);
+    case 'document_edit':
+      // VL-399: точечная правка тела. Идемпотентность по ключу вызывающего —
+      // как у остальных write-инструментов (VL-262): повтор после таймаута
+      // возвращает сохранённый ответ первого применения.
+      return withIdempotency(cwd, name, args.idempotencyKey, () => toolDocumentEdit(args, cwd));
     case 'document_search':
       return toolDocumentSearch(args, cwd);
     case 'reference_list':
@@ -2584,7 +2625,10 @@ function requireBacklogDirOrThrow(cwd: string): string {
  */
 const documentSpec: EntitySpec<DocumentEntity> = {
   name: 'Документ',
-  fields: ['id', 'title', 'content', 'type', 'tags', 'idempotencyKey'],
+  // `full_replace` — управляющий флаг guard'а (VL-399), а не поле документа:
+  // в updates он не попадает, но обязан быть в fields, иначе уйдёт в skipped
+  // как «неизвестное поле» и ответ начнёт врать.
+  fields: ['id', 'title', 'content', 'type', 'tags', 'full_replace', 'idempotencyKey'],
   setFields: DOC_SET_FIELDS,
   // В аргументах тело называется content, в снимке — BODY_FIELD (см. sameValue)
   bodyArg: 'content',
@@ -2606,15 +2650,46 @@ const documentSpec: EntitySpec<DocumentEntity> = {
     ...(entity.document as unknown as Record<string, unknown>),
     [BODY_FIELD]: entity.body,
   }),
-  // applied: id есть всегда, тело сворачиваем до длины (полный markdown раздувает ответ)
-  applied: (entity, keys) => {
+  // applied: id есть всегда, тело сворачиваем до длины (полный markdown раздувает ответ).
+  // VL-399: плюс размеры тела до/после и маркер усечения — потеря объёма должна
+  // быть видна в ответе инструмента, а не только в git-диффе (инцидент doc-10:
+  // ответ «Документ обновлён» при падении тела с 60 КБ до 1 КБ).
+  applied: (entity, keys, _via, previous) => {
     const result: Record<string, unknown> = { id: entity.document.id };
+    const bodyAfter = String(entity.body).length;
     for (const key of keys.filter(k => k !== 'id')) {
-      result[key] = key === 'content'
-        ? String(entity.body).length
-        : (entity.document as unknown as Record<string, unknown>)[key];
+      result[key] = key === 'content' ? bodyAfter : (entity.document as unknown as Record<string, unknown>)[key];
+    }
+    // Размеры имеют смысл только когда тело переписывалось.
+    if (keys.includes('content')) {
+      const bodyBefore = previous !== undefined ? String(previous.body).length : bodyAfter;
+      result.bodyLengthBefore = bodyBefore;
+      result.bodyLengthAfter = bodyAfter;
+      result.truncated = bodyAfter < bodyBefore;
     }
     return result;
+  },
+  // VL-399: guard против молчаливой потери тела. Переданный content — ПОЛНАЯ
+  // замена; если он заметно короче текущего тела и не сохраняет его начала,
+  // это с высокой вероятностью «модель прислала только правимый фрагмент».
+  // Отказ, а не предупреждение: молчаливое применение уже стоило документа.
+  // Выход — либо document_edit (точечно), либо full_replace: true (осознанно).
+  beforeWrite: (args, _updates, current) => {
+    if (args.content === undefined || args.full_replace === true) return null;
+    const check = contentShrinkCheck(current.body, String(args.content));
+    if (!check.suspicious) return null;
+    const id = current.document.id;
+    return {
+      message:
+        `content — ПОЛНАЯ замена тела документа ${id}: ${check.bodyLengthAfter} симв. вместо ` +
+        `${check.bodyLengthBefore} (сокращение ${check.shrinkPercent}%), начало текущего текста не сохранено. ` +
+        'Ничего не записано.',
+      hint:
+        'Точечная правка — document_edit {"id","old_string","new_string"} ' +
+        '(old_string берётся дословно из document_view). ' +
+        'Осознанная полная замена — тот же document_update с full_replace: true.',
+      retryWith: { id, content: args.content, full_replace: true },
+    };
   },
   // Тело документа необязательно по смыслу (см. PARTIAL_EXEMPT в контракт-тесте)
   completeness: () => [],
@@ -2630,6 +2705,73 @@ const documentSpec: EntitySpec<DocumentEntity> = {
  */
 function toolDocumentUpdate(args: ToolArgs, cwd: string): string {
   return runUpdate(documentSpec, args, cwd);
+}
+
+function toolDocumentEdit(args: ToolArgs, cwd: string): string {
+  const backlogDir = requireBacklogDirOrThrow(cwd);
+  const id = typeof args.id === 'string' ? args.id.trim() : '';
+  if (!id) throw new Error('Не передан id документа (параметр "id").');
+  const oldString = args.old_string;
+  const newString = args.new_string;
+  // Пустой old_string превратил бы замену в «вставку между всеми символами»
+  // (split('') разваливает тело на буквы) — это испорченный аргумент.
+  if (typeof oldString !== 'string' || oldString === '') {
+    throw new Error('old_string пустой: точечная правка без искомого текста невозможна.');
+  }
+  if (typeof newString !== 'string') {
+    throw new Error('Не передан new_string (параметр "new_string").');
+  }
+  const entry = getDocument(backlogDir, id);
+  if (!entry) throw new Error(`Документ ${id} не найден.`);
+  const before = entry.body;
+  const replaceAll = args.replace_all === true;
+  const result = applyBodyEdit(before, oldString, newString, replaceAll);
+
+  if (!result.ok) {
+    // Отказ ДО записи: файл остаётся байт-в-байт прежним (AC2).
+    if (result.reason === 'not_found') {
+      return ackErrorDetailed(
+        `old_string не найден в теле документа ${id} (тело ${before.length} симв.). Ничего не записано. ` +
+          'Проверь точный текст: document_view {"id":"' + id + '"}. ' +
+          'Возможно, документ восстановлен из git и текст в нём другой.',
+        {
+          hint:
+            'Скопируй фрагмент из ответа document_view дословно (включая отступы и переносы строк) ' +
+            'и повтори document_edit с ним в old_string.',
+          retryWith: { id, old_string: oldString, new_string: newString },
+        },
+      );
+    }
+    return ackErrorDetailed(
+      `old_string встречается ${result.count} раз(а) в теле документа ${id}: уточни текст ` +
+        '(добавь соседнюю строку как контекст) или передай replace_all: true. Ничего не записано.',
+      {
+        hint: 'Двусмысленная правка не применяется: одна и та же строка в нескольких местах — добавь контекст.',
+        retryWith: { id, old_string: oldString, new_string: newString, replace_all: true },
+      },
+    );
+  }
+
+  // old_string === new_string (или замена на тот же текст): файл не переписываем —
+  // это noop по природе, а не применение (VL-303/lesson-92).
+  if (result.body === before) {
+    return ackNoopDetailed(
+      'Изменений нет: old_string и new_string дают тот же текст. ' +
+        'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор не изменит документ.',
+      { id, replaced: 0, bodyLengthBefore: before.length, bodyLengthAfter: before.length },
+    );
+  }
+
+  const written = updateDocument(backlogDir, id, { content: result.body });
+  if (!written) throw new Error(`Документ ${id} не найден.`);
+  const after = written.body.length;
+  return ackOk(`Документ ${id} обновлён: заменено вхождений — ${result.replaced}`, {
+    id,
+    replaced: result.replaced,
+    bodyLengthBefore: before.length,
+    bodyLengthAfter: after,
+    truncated: after < before.length,
+  });
 }
 
 function toolDocumentSearch(args: ToolArgs, cwd: string): string {

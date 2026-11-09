@@ -69,11 +69,11 @@ function runCli(...args) {
 // ============================================================
 
 describe('VL-11 — document_* инструменты', () => {
-  it('Все 48 инструментов, document_* зарегистрированы', () => {
+  it('Все 49 инструментов, document_* зарегистрированы', () => {
     const tools = listTools();
-    assert.equal(tools.length, 48);
+    assert.equal(tools.length, 49);
     const names = tools.map(t => t.name);
-    for (const n of ['document_list', 'document_view', 'document_create', 'document_update', 'document_search']) {
+    for (const n of ['document_list', 'document_view', 'document_create', 'document_update', 'document_edit', 'document_search']) {
       assert.ok(names.includes(n), `${n} не найден`);
     }
   });
