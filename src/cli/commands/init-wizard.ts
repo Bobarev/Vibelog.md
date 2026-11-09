@@ -458,8 +458,14 @@ export async function runWizard(
   cwd: string,
   flags: FlagValues,
   state: SetupState,
+  options: { forceInteractive?: boolean } = {},
 ): Promise<SetupAnswers> {
-  const session = createPromptSession();
+  // VL-392: внутри `vb create` интерактив решает маркер окружения, а не
+  // собственный TTY-детект: `postCreate` идёт через `npm run`, и stdio там
+  // может быть перенаправлен — тогда вопросы просто не появились бы.
+  const session = createPromptSession({
+    ...(options.forceInteractive === true ? { forceInteractive: true } : {}),
+  });
   try {
     // --- 1. Имя проекта и prefix ---
     const projectName = await session.askText(

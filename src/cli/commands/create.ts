@@ -144,6 +144,19 @@ function printResult(result: CreateResult): void {
       );
     }
   }
+  if (result.setupCancelled) {
+    printWarning(
+      'Настройка отменена: проект создан и работает, но агент, модель и MCP не настроены.',
+    );
+    printInfo(`Дальше: cd ${result.targetDir} && vibelog init`);
+    return;
+  }
+  if (result.packageManager === null) {
+    // VL-392: `--no-install` не выполняет `postCreate`, а именно он проводит
+    // настройку проекта — молчать об этом нельзя, иначе пользователь ищет
+    // настройки там, где их нет.
+    printInfo('Настройка не выполнялась: без зависимостей scripts.postCreate не запускается — выполните «vibelog init» в проекте');
+  }
   if (result.git === 'initialized') {
     printSuccess('Git: репозиторий инициализирован, создан первый коммит');
   } else if (result.git === 'skipped') {
@@ -183,6 +196,18 @@ export async function runCreate(
     return;
   }
 
+  // VL-392: режим настройки. Без нового флага: `--yes` уже означает «без
+  // вопросов, дефолты» (как в `vibelog init`, VL-336), а его отсутствие в TTY —
+  // полный wizard. В не-TTY wizard невозможен, поэтому дефолты принудительно,
+  // и пользователь получает одну строку-пояснение (один раз, не в цикле).
+  const tty = isInteractive();
+  const interactive = tty && !options.yes;
+  if (!tty && !options.yes) {
+    printInfo(
+      'не-TTY: использую дефолты, полная настройка недоступна — запустите «vibelog init» интерактивно',
+    );
+  }
+
   try {
     const result = await createProject({
       cwd,
@@ -192,11 +217,14 @@ export async function runCreate(
       ...(options.packageManager !== undefined ? { packageManager: options.packageManager } : {}),
       ...(options.noInstall ? { noInstall: true } : {}),
       ...(options.noGit ? { noGit: true } : {}),
+      ...(interactive ? { interactive: true } : {}),
       resolvePackageManager: (templateDir) => askPackageManager(templateDir, options.yes),
       onWarning: (message) => printWarning(message),
     });
     printResult(result);
-    process.exitCode = 0;
+    // VL-392: отмена wizard-а внутри postCreate — проект создан, настройка нет.
+    // Код 5 тот же, что у `vibelog init` при отмене промпта (doc-25 §5.2).
+    process.exitCode = result.setupCancelled ? 5 : 0;
   } catch (err) {
     if (err instanceof PromptCancelledError) {
       printInfo('Отменено. Проект не создан.');

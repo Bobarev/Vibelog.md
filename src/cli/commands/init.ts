@@ -92,12 +92,17 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
   // Прежняя защита «уже инициализирован» остаётся для неинтерактивного
   // запуска без --force: без TTY wizard не может спросить, а молча
   // перезаписывать чужой проект нельзя. С TTY это штатный upgrade-режим.
+  // VL-392: маркер `VIBELOG_CREATE_INTERACTIVE=1` из `vb create` решающий.
+  // `postCreate` идёт через `npm run`, и если npm перенаправит stdio, TTY-детект
+  // внутри `init` дал бы false — wizard молча ушёл бы в дефолты, хотя `create`
+  // обещал полную настройку. Маркер ставится только когда TTY есть у `create`.
   const interactive =
-    process.stdin.isTTY === true &&
-    process.stdout.isTTY === true &&
-    flags.yes !== true &&
     flags['no-wizard'] !== true &&
-    flags.web !== true;
+    flags.web !== true &&
+    (createContext.forceInteractive ||
+      (process.stdin.isTTY === true &&
+        process.stdout.isTTY === true &&
+        flags.yes !== true));
 
   if (existing && !force && !interactive && modeOverride !== 'upgrade') {
     console.log(`✗ Проект уже инициализирован: ${existing}`);
@@ -128,7 +133,9 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
           ? 'Режим: upgrade (backlog/ найден). Текущие значения — дефолты, Enter — оставить.'
           : 'Режим: fresh. Настройка нового проекта Vibelog.md.',
       );
-      answers = await runWizard(cwd, flags, state);
+      answers = await runWizard(cwd, flags, state, {
+        forceInteractive: createContext.forceInteractive,
+      });
     } else {
       answers = answersFromFlags(flags, state, cwd);
     }
@@ -147,7 +154,12 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
     // VL-320: отмена (Ctrl+C) — штатный выход, не ошибка и не стек-трейс
     if (err instanceof PromptCancelledError) {
       printInfo('Отменено. Настройки не изменены.');
-      process.exitCode = 0;
+      // VL-392: внутри `vb create` отмена — не конец работы: проект уже
+      // создан, и `create` обязан напечатать итог с подсказкой «vibelog init».
+      // Код 5 (документированный код отмены промпта, doc-25 §5.2) сообщает
+      // `create`, что случилась именно отмена, а не сбой postCreate.
+      // Прямой запуск `init` сохраняет прежний код 0 (на него опираются тесты).
+      process.exitCode = createContext.forceInteractive ? 5 : 0;
       return;
     }
     printError((err as Error)?.message ?? String(err));

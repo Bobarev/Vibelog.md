@@ -42,9 +42,13 @@ import {
   validateProjectName,
 } from '../../dist/core/create.js';
 import {
+  CREATE_MARKER_DEFAULTS,
   CREATE_MARKER_ENV,
   CREATE_MARKER_GIT,
+  CREATE_MARKER_INTERACTIVE,
+  CREATE_MARKER_INTERACTIVE_ENV,
   CREATE_MARKER_NO_GIT,
+  createInteractiveMarkerValue,
   createMarkerValue,
   readCreateContext,
 } from '../../dist/core/env-markers.js';
@@ -850,10 +854,12 @@ describe('маркер VIBELOG_CREATE для postCreate (VL-389)', () => {
     assert.deepEqual(readCreateContext({ VIBELOG_CREATE: '1' }), {
       fromCreate: true,
       gitWillBeInitialized: true,
+      forceInteractive: false,
     });
     assert.deepEqual(readCreateContext({ VIBELOG_CREATE: 'no-git' }), {
       fromCreate: true,
       gitWillBeInitialized: false,
+      forceInteractive: false,
     });
   });
 
@@ -1133,5 +1139,127 @@ describe('installTemplateComponents и registryDependencies (VL-390)', () => {
     const lock = JSON.parse(readFileSync(join(dir, '.vibelog/installed.lock.json'), 'utf-8'));
     assert.deepEqual(Object.keys(lock.components).sort(), ['base', 'button', 'card']);
     assert.equal(Object.keys(lock.components.base.files).length, 2);
+  });
+});
+
+describe('режим настройки в postCreate: VIBELOG_CREATE_INTERACTIVE (VL-392)', () => {
+  it('createInteractiveMarkerValue: интерактив → 1, дефолты → yes', () => {
+    assert.equal(createInteractiveMarkerValue(true), CREATE_MARKER_INTERACTIVE);
+    assert.equal(createInteractiveMarkerValue(false), CREATE_MARKER_DEFAULTS);
+    assert.equal(CREATE_MARKER_INTERACTIVE, '1');
+    assert.equal(CREATE_MARKER_DEFAULTS, 'yes');
+    assert.equal(CREATE_MARKER_INTERACTIVE_ENV, 'VIBELOG_CREATE_INTERACTIVE');
+  });
+
+  it('postCreateEnv: по умолчанию маркер режима = yes (прежнее поведение)', () => {
+    const env = postCreateEnv('vibelog.mjs');
+    assert.equal(env.VIBELOG_CREATE_INTERACTIVE, 'yes');
+    // Маркер «откуда вызван init» (VL-389) не меняется: это отдельная ось.
+    assert.equal(env.VIBELOG_CREATE, '1');
+  });
+
+  it('postCreateEnv: interactive=true ставит маркер режима = 1', () => {
+    const env = postCreateEnv('vibelog.mjs', null, false, true);
+    assert.equal(env.VIBELOG_CREATE_INTERACTIVE, '1');
+  });
+
+  it('readCreateContext: маркер режима даёт forceInteractive, без него — false', () => {
+    assert.equal(readCreateContext({}).forceInteractive, false);
+    assert.equal(readCreateContext({ VIBELOG_CREATE: '1' }).forceInteractive, false);
+    assert.equal(
+      readCreateContext({ VIBELOG_CREATE: '1', VIBELOG_CREATE_INTERACTIVE: '1' }).forceInteractive,
+      true,
+    );
+    assert.equal(readCreateContext({ VIBELOG_CREATE_INTERACTIVE: 'yes' }).forceInteractive, false);
+  });
+
+  it('createProject без interactive: в env postCreate уходит yes (в тестах нет TTY)', async () => {
+    const deps = mockRunner();
+    const result = await createProject({
+      cwd: testDir,
+      name: 'myapp',
+      template: 'vibelog.md/templates/svelte-minimal',
+      cloneUrl: fixtureRepo,
+      tmpRoot,
+      depsRunner: deps.runner,
+      selfBin: fakeBin(join(testDir, 'bin')),
+      noGit: true,
+    });
+    const post = deps.calls.find((call) => call.args[0] === 'run');
+    assert.ok(post, 'postCreate не запускался');
+    assert.equal(post.env.VIBELOG_CREATE_INTERACTIVE, 'yes');
+    assert.equal(result.setupCancelled, false);
+  });
+
+  it('createProject с interactive: маркер режима = 1', async () => {
+    const deps = mockRunner();
+    await createProject({
+      cwd: testDir,
+      name: 'myapp',
+      template: 'vibelog.md/templates/svelte-minimal',
+      cloneUrl: fixtureRepo,
+      tmpRoot,
+      depsRunner: deps.runner,
+      selfBin: fakeBin(join(testDir, 'bin')),
+      noGit: true,
+      interactive: true,
+    });
+    const post = deps.calls.find((call) => call.args[0] === 'run');
+    assert.equal(post.env.VIBELOG_CREATE_INTERACTIVE, '1');
+  });
+
+  it('отмена wizard-а (postCreate вернул 5) в интерактиве: проект создан, настройка отменена', async () => {
+    const runner = (command, args) => ({ status: args[0] === 'run' ? 5 : 0 });
+    const result = await createProject({
+      cwd: testDir,
+      name: 'myapp',
+      template: 'vibelog.md/templates/svelte-minimal',
+      cloneUrl: fixtureRepo,
+      tmpRoot,
+      depsRunner: runner,
+      selfBin: fakeBin(join(testDir, 'bin')),
+      interactive: true,
+    });
+    assert.equal(result.setupCancelled, true);
+    assert.deepEqual(result.scriptsRun, ['postCreate']);
+    assert.equal(existsSync(join(result.targetDir, 'package.json')), true);
+    assert.equal(result.git, 'initialized');
+    assert.equal(result.failedComponents.length, 0);
+  });
+
+  it('код 5 от postCreate без интерактива — прежняя ошибка с кодом 3', async () => {
+    const runner = (command, args) => ({ status: args[0] === 'run' ? 5 : 0 });
+    await assert.rejects(
+      createProject({
+        cwd: testDir,
+        name: 'myapp',
+        template: 'vibelog.md/templates/svelte-minimal',
+        cloneUrl: fixtureRepo,
+        tmpRoot,
+        depsRunner: runner,
+        selfBin: fakeBin(join(testDir, 'bin')),
+        noGit: true,
+      }),
+      (err) => err instanceof CreateError && err.code === 3,
+    );
+  });
+
+  it('--no-install: postCreate не вызывается, полной настройки нет', async () => {
+    const deps = mockRunner();
+    const result = await createProject({
+      cwd: testDir,
+      name: 'myapp',
+      template: 'vibelog.md/templates/svelte-minimal',
+      cloneUrl: fixtureRepo,
+      tmpRoot,
+      depsRunner: deps.runner,
+      selfBin: fakeBin(join(testDir, 'bin')),
+      noInstall: true,
+      interactive: true,
+    });
+    assert.deepEqual(deps.calls, []);
+    assert.equal(result.packageManager, null);
+    assert.equal(result.setupCancelled, false);
+    assert.deepEqual(result.scriptsRun, []);
   });
 });
