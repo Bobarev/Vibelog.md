@@ -260,7 +260,18 @@ function runPull(flags: FlagValues, cwd: string): void {
         console.log(`      severity: ${report.severity || '—'}  area: ${report.area || '—'}`);
       }
     }
-    console.log(colorize('Подтвердить: vibelog upstream ack <report_id> --as <ID задачи>', colors.dim));
+    console.log(
+      colorize(
+        'Подтвердить: vibelog upstream ack <report_id> --as <PREFIX-N>',
+        colors.dim,
+      ),
+    );
+    console.log(
+      colorize(
+        '  report_id — полный или первые 8 символов из списка выше (префикс не короче 4 символов)',
+        colors.dim,
+      ),
+    );
   } catch (err) {
     fail(err);
   }

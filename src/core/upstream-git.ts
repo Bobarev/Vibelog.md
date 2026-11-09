@@ -65,11 +65,18 @@ export const REPORT_FIELDS = [
 ] as const;
 
 /** Вид ошибки git-транспорта (от него зависит код выхода CLI). */
-export type UpstreamGitErrorKind = 'config' | 'network' | 'auth' | 'conflict' | 'git';
+export type UpstreamGitErrorKind = 'config' | 'usage' | 'network' | 'auth' | 'conflict' | 'git';
 
-/** Код выхода CLI по виду ошибки: 2 — конфиг, 3 — сеть/git (как у GitverseError). */
+/**
+ * Код выхода CLI по виду ошибки: 1 — ошибка использования аргументов
+ * (`--as` не по формату), 2 — конфиг, 3 — сеть/git (как у GitverseError).
+ *
+ * `usage` отделён от `config` (VL-388): неверный формат `--as` — это ошибка
+ * вызова, а не настройки проекта; AC5 требует код 1.
+ */
 const EXIT_CODES: Record<UpstreamGitErrorKind, number> = {
   config: 2,
+  usage: 1,
   network: 3,
   auth: 3,
   conflict: 3,
@@ -426,10 +433,41 @@ export function ensureInboxClone(cwd: string, cfg: UpstreamGitConfig): { path: s
   return { path: dir, created: true };
 }
 
-/** Находит путь файла отчёта по `report_id` (обход `reports/*​/*.md`). */
-function findReportById(cwd: string, id: string): string | undefined {
+/** Минимальная длина префикса `report_id` (git-стиль): короче — слишком много ложных совпадений. */
+export const MIN_REPORT_ID_PREFIX = 4;
+
+/**
+ * Находит путь файла отчёта по `report_id` или его префиксу.
+ *
+ * Принимает полный sha1 ИЛИ уникальный префикс (>= `MIN_REPORT_ID_PREFIX`
+ * символов, регистр hex не важен): `pull` печатает первые 8 символов и
+ * предлагает скопировать их в `ack` — значит `ack` обязан их принимать.
+ *
+ * Неоднозначный префикс — ошибка со списком кандидатов, а не «не найден» и не
+ * молчаливый выбор первого совпадения: иначе `ack` подтвердил бы не тот отчёт.
+ *
+ * `exact: true` — только точное сравнение (режим `writeReport`: идемпотентность
+ * не должна склеивать разные отчёты с общим префиксом id).
+ *
+ * @throws UpstreamGitError kind:'config' — префикс короче минимума или неоднозначен
+ */
+function findReportById(
+  cwd: string,
+  id: string,
+  opts: { exact?: boolean } = {},
+): string | undefined {
+  const needle = id.trim().toLowerCase();
+  if (needle === '') return undefined;
+  if (opts.exact !== true && needle.length < MIN_REPORT_ID_PREFIX) {
+    throw new UpstreamGitError(
+      `report_id «${id.trim()}» слишком короткий: нужно не меньше ${MIN_REPORT_ID_PREFIX} символов ` +
+        '(полный id или префикс из «vibelog upstream pull»)',
+      'config',
+    );
+  }
   const root = join(inboxPath(cwd), REPORTS_DIR);
   if (!existsSync(root)) return undefined;
+  const matches: Array<{ rel: string; report: UpstreamReport }> = [];
   for (const prefix of readdirSync(root, { withFileTypes: true })) {
     if (!prefix.isDirectory()) continue;
     const dir = join(root, prefix.name);
@@ -438,13 +476,23 @@ function findReportById(cwd: string, id: string): string | undefined {
       const rel = `${REPORTS_DIR}/${prefix.name}/${file.name}`;
       try {
         const parsed = parseReport(readFileSync(join(dir, file.name), 'utf-8'));
-        if (parsed.report_id === id) return rel;
+        const actual = parsed.report_id.toLowerCase();
+        if (opts.exact === true ? actual === needle : actual.startsWith(needle)) {
+          matches.push({ rel, report: parsed });
+        }
       } catch {
         // битый файл не должен ломать поиск по id
       }
     }
   }
-  return undefined;
+  if (matches.length === 0) return undefined;
+  if (matches.length === 1) return matches[0].rel;
+  // >1 совпадение возможно только для префикса: полный sha1 уникален по построению
+  throw new UpstreamGitError(
+    `report_id «${id.trim()}» совпал с ${matches.length} отчётами — уточни id: ` +
+      matches.map((m) => `${m.report.report_id} (${m.report.source_task})`).join(', '),
+    'config',
+  );
 }
 
 /** Путь отчёта в инбоксе: `reports/<prefix>/<дата>-<source_task>-<slug>.md`. */
@@ -508,7 +556,9 @@ export function writeReport(cwd: string, cfg: UpstreamGitConfig, input: NewRepor
   }
 
   ensureInboxClone(cwd, cfg);
-  const existing = findReportById(cwd, report.report_id);
+  // Только точное сравнение: префиксный поиск склеил бы разные отчёты с общим
+  // началом id и превратил бы идемпотентность в ложное «уже есть».
+  const existing = findReportById(cwd, report.report_id, { exact: true });
   if (existing !== undefined) return { created: false, path: existing };
 
   const rel = reportRelPath(report);
@@ -554,12 +604,46 @@ export function listIncoming(cwd: string, targetPrefix: string): UpstreamReport[
   return out;
 }
 
+/** Формат ID задачи получателя: `<PREFIX>-<число>`, регистр префикса не важен. */
+const ACCEPTED_AS_RE = /^[A-Za-z][A-Za-z0-9]*-[0-9]+$/;
+
+/**
+ * Валидирует и нормализует `--as`: префикс → верхний регистр, номер как есть.
+ *
+ * Существование задачи НЕ проверяется и не может проверяться: CLI работает в
+ * дочернем проекте и не имеет доступа к backlog получателя — это осознанное
+ * архитектурное ограничение (VL-388). Проверяется только формат, чтобы опечатка
+ * (`VL_388`, `VL388`, `vl 388`) не попала молча в `accepted_as` отчёта.
+ *
+ * @throws UpstreamGitError kind:'usage' — пустое значение или формат не `<PREFIX>-<число>`
+ */
+export function normalizeAcceptedAs(value: string): string {
+  const trimmed = (value ?? '').trim();
+  if (trimmed === '') {
+    throw new UpstreamGitError(
+      'не указан --as: укажи ID задачи получателя, например --as VL-367',
+      'usage',
+    );
+  }
+  if (!ACCEPTED_AS_RE.test(trimmed)) {
+    throw new UpstreamGitError(
+      `--as «${trimmed}»: ожидался ID задачи вида <PREFIX>-<номер>, например VL-367`,
+      'usage',
+    );
+  }
+  const [prefix, num] = trimmed.split('-');
+  return `${prefix.toUpperCase()}-${num}`;
+}
+
 /**
  * Подтверждает получение отчёта: правит ТОЛЬКО `status` и `accepted_as`.
  *
  * Правка построчная — остальной файл (включая порядок и форматирование
  * полей) остаётся байт-в-байт, чтобы CI-проверка «в чужих файлах меняются
  * только ack-поля» проходила.
+ *
+ * @throws UpstreamGitError kind:'usage' — неверный формат `--as`
+ * @throws UpstreamGitError kind:'config' — отчёт не найден
  */
 export function ackReport(
   cwd: string,
@@ -569,19 +653,17 @@ export function ackReport(
   if (id.trim() === '') {
     throw new UpstreamGitError('не указан report_id — передай id отчёта из «vibelog upstream pull»', 'config');
   }
-  if (acceptedAs.trim() === '') {
-    throw new UpstreamGitError('не указан --as: укажи ID задачи получателя, например --as VL-367', 'config');
-  }
+  const normalized = normalizeAcceptedAs(acceptedAs);
   const rel = findReportById(cwd, id.trim());
   if (rel === undefined) {
     throw new UpstreamGitError(`отчёт с report_id «${id.trim()}» не найден в инбоксе`, 'config');
   }
   const abs = join(inboxPath(cwd), rel);
   const text = readFileSync(abs, 'utf-8');
-  const updated = replaceAckFields(text, acceptedAs.trim());
+  const updated = replaceAckFields(text, normalized);
   const report = parseReport(updated);
   writeFileSync(abs, updated, 'utf-8');
-  commitAndPush(cwd, rel, `ack(${report.source_prefix}): ${id.trim()} → ${acceptedAs.trim()}`);
+  commitAndPush(cwd, rel, `ack(${report.source_prefix}): ${report.report_id} → ${normalized}`);
   return { path: rel, report };
 }
 
