@@ -17,24 +17,46 @@
  * общий с Issues-клиентом. Здесь остаётся только семантика реестра: какие
  * статусы означают «не найдено», какой текст подсказать и что скачать.
  *
- * Авторизация: анонимные запросы GitVerse жёстко лимитируются (первый реальный
- * `vb install` упал на 429 с HTML-страницей), поэтому при наличии
- * `GITVERSE_TOKEN` (shell env → `.env`, читается `readToken`) уходит
- * `Authorization: Bearer`. Токен необязателен: без него запрос идёт анонимно,
- * как раньше.
+ * VL-382 — ДВЕ СХЕМЫ ДОСТУПА. Замеры 2026-11-09 (curl, один и тот же URL
+ * `gitverse.ru/api/repos/Vibelog-md/ui/raw/branch/master/public/r/base.json`,
+ * интервал минуты, три разных IP):
+ * - БЕЗ токена → **200** `text/plain` с полным JSON элемента;
+ * - с `Authorization: Bearer <token>` → **429** «Unauthenticated requests
+ *   rate-limit exceeded» (всегда, при любом валидном токене);
+ * - через прокси (2 разных IP) → 429, прямой IP через 6 минут → 200.
+ *
+ * Вывод: raw-эндпоинт GitVerse НЕ принимает `Authorization`. Ранний 429 без
+ * токена был временным IP-лимитом и сбросился. Поэтому:
+ * - токена нет → raw, ТОЛЬКО `accept`, анонимно;
+ * - токен есть → Публичный API (`api.gitverse.ru`): `Authorization: Bearer`
+ *   + `Accept: application/vnd.gitverse.object+json;version=1`, содержимое
+ *   файла приходит JSON-конвертом с `content` в base64 и декодируется здесь.
+ *
+ * НЕ «УЛУЧШАТЬ» raw добавлением `Authorization` — дефект уже был (VL-380
+ * добавила туда Bearer и `vb install` в проекте с токеном падал всегда).
+ * Защита: тест-регрессия «в raw-запросе нет заголовка authorization» и эта
+ * шапка с датой и кодами.
  *
  * Жёсткие инварианты:
  * - только GET (никаких HEAD — тест-страховка в registry-fetch.test.mjs);
- * - тело читается чанками с подсчётом байт: лимит 5 МБ — реальная защита от
- *   подмены реестра, а не проверка `content-length` (его может не быть);
- * - базовый URL приходит параметром или из `VIBELOG_REGISTRY_BASE_URL`;
- *   домен gitverse.ru захардкожен ровно один раз — в `DEFAULT_REGISTRY_BASE`;
+ * - тело читается чанками с подсчётом байт: лимит 5 МБ (8 МБ для contents —
+ *   base64 удваивает размер) — реальная защита от подмены реестра, а не
+ *   проверка `content-length` (его может не быть);
+ * - базовый URL приходит параметром или из env (`VIBELOG_REGISTRY_BASE_URL`
+ *   для raw, `VIBELOG_GITVERSE_API_BASE` для Contents API, алиас
+ *   `GITVERSE_REGISTRY_BASE_URL` подменяет оба) — домены захардкожены в
+ *   `gitverse-http.ts`, не здесь;
  * - токен не попадает в тексты ошибок: `mask` из `gitverse-http` вырезает его
- *   из каждого сообщения.
+ *   из каждого сообщения;
+ * - оба транспорта возвращают один и тот же `string` (текст файла), поэтому
+ *   классификация статусов, ретраи, маскирование и разбор JSON — одни.
  */
 
 import { readToken, maskToken } from './gitverse-auth.js';
 import {
+  ACCEPT,
+  API_BASE_ENV,
+  DEFAULT_API_BASE,
   DEFAULT_RETRY_DELAYS_MS,
   DEFAULT_RATE_LIMIT_DELAYS_MS,
   DEFAULT_TIMEOUT_MS,
@@ -49,20 +71,52 @@ import {
 } from './gitverse-http.js';
 
 /**
- * База реестра по умолчанию. Единственное место, где встречается домен:
- * всё остальное получает базу параметром (иначе e2e и юнит-тесты
- * невозможны — кэша нет, а шаблон URL зашит).
+ * База raw-эндпоинтов реестра по умолчанию (веб-хост, не `api.`).
+ *
+ * Единственное место, где встречается домен `gitverse.ru`: всё остальное
+ * получает базу параметром (иначе e2e и юнит-тесты невозможны — кэша нет, а
+ * шаблон URL зашит). Имя оставлено ради существующих импортёров; смысл —
+ * именно raw-база (VL-382).
  */
 export const DEFAULT_REGISTRY_BASE = 'https://gitverse.ru';
 
-/** Переменная окружения, подменяющая базу целиком (только для тестов). */
+/** Явный алиас: смысл тот же, что у `DEFAULT_REGISTRY_BASE` (VL-382). */
+export const REGISTRY_RAW_BASE = DEFAULT_REGISTRY_BASE;
+
+/** Переменная окружения, подменяющая raw-базу целиком (только для тестов). */
 export const REGISTRY_BASE_ENV = 'VIBELOG_REGISTRY_BASE_URL';
+
+/**
+ * Имя переменной, которым raw-базу подменяют снаружи (VL-382, AC9).
+ *
+ * `GITVERSE_REGISTRY_BASE_URL` — новое имя (одно семейство с
+ * `GITVERSE_TOKEN`), `VIBELOG_REGISTRY_BASE_URL` поддержано как алиас: оно
+ * уже используется тестами install и не должно сломаться.
+ */
+export const REGISTRY_BASE_ENV_ALIAS = 'GITVERSE_REGISTRY_BASE_URL';
+
+/** Переменная окружения с базой Публичного API (contents-транспорт). */
+export const REGISTRY_API_BASE_ENV = API_BASE_ENV;
+
+/**
+ * Re-export базы Публичного API: реестру она нужна как `API_BASE` (VL-382).
+ * Само значение живёт в `gitverse-http.ts` — второй копии домена нет.
+ */
+export { DEFAULT_API_BASE, DEFAULT_API_BASE as API_BASE } from './gitverse-http.js';
 
 /** Таймаут одного запроса, мс. */
 export const REQUEST_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
 
-/** Максимальный размер тела ответа, байт (5 МБ). */
+/** Максимальный размер тела ответа, байт (5 МБ) для raw-транспорта. */
 export const MAX_BODY_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Лимит тела для contents-транспорта, байт (8 МБ).
+ *
+ * Base64 удваивает размер: файл 2.6 МБ в конверте занимает ~3.5 МБ, а 5 МБ
+ * могло бы отсечь легитимный компонент (риск из плана VL-382).
+ */
+export const CONTENTS_MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 /** Паузы между повторами: до двух повторов, только 5xx и сетевые ошибки. */
 export const RETRY_DELAYS_MS: readonly number[] = DEFAULT_RETRY_DELAYS_MS;
@@ -92,6 +146,7 @@ export type RegistryFetchErrorKind =
   | 'not_found'
   | 'unauthorized'
   | 'forbidden'
+  | 'bad_accept'
   | 'rate_limited'
   | 'bad_request'
   | 'timeout'
@@ -145,9 +200,34 @@ export interface RegistryItem {
   files: RegistryFileEntry[];
 }
 
+/** Схема доступа к реестру (VL-382): анонимный raw либо Contents API. */
+export type RegistryTransportKind = 'raw' | 'contents';
+
+/** Выбранная схема доступа: вид, токен и база. */
+export interface RegistryTransport {
+  kind: RegistryTransportKind;
+  /** Токен (пустая строка для raw — raw всегда анонимный). */
+  token: string;
+  baseUrl: string;
+}
+
+/** Опции выбора схемы доступа (VL-382). */
+export interface ResolveRegistryTransportOptions {
+  /** Явная база (тесты/фикстуры): переопределяет env-резолв. */
+  baseUrl?: string;
+  /** Готовый токен (приоритетнее `cwd`). */
+  token?: string;
+  /** Каталог проекта для чтения токена из `.env` (shell env → `.env`). */
+  cwd?: string;
+  /** Окружение (по умолчанию `process.env`). */
+  env?: NodeJS.ProcessEnv;
+  /** Явный транспорт (тесты/отладка): переопределяет выбор по токену. */
+  transport?: RegistryTransportKind;
+}
+
 /** Общие опции сетевых запросов реестра. */
 interface RegistryFetchCommonOptions {
-  /** База реестра; по умолчанию — `resolveRegistryBase()`. */
+  /** База; по умолчанию — резолв по схеме доступа (VL-382). */
   baseUrl?: string;
   owner: string;
   repo: string;
@@ -163,15 +243,17 @@ interface RegistryFetchCommonOptions {
   rateLimitDelaysMs?: readonly number[];
   /** Суммарный бюджет ожидания на 429, мс (инъекция для тестов). */
   rateLimitBudgetMs?: number;
-  /** Окружение для `resolveRegistryBase` (по умолчанию `process.env`). */
+  /** Окружение для резолва баз (по умолчанию `process.env`). */
   env?: NodeJS.ProcessEnv;
   /**
    * Каталог проекта для чтения токена из `.env` (VL-380). Токен необязателен:
-   * нет каталога/токена — запрос уходит анонимно.
+   * нет каталога/токена — запрос уходит анонимно через raw (VL-382).
    */
   cwd?: string;
   /** Готовый токен (инъекция для тестов; приоритетнее `cwd`). */
   token?: string;
+  /** Явная схема доступа (тесты/отладка): переопределяет выбор по токену. */
+  transport?: RegistryTransportKind;
 }
 
 /** Опции загрузки элемента. */
@@ -202,19 +284,73 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Резолвит базу реестра.
+ * Резолвит raw-базу реестра.
  *
- * `VIBELOG_REGISTRY_BASE_URL` подменяет `https://gitverse.ru` целиком
- * (схема + хост + порт). Значение проверяется: молча ходить не туда хуже,
- * чем упасть в тесте. Трейлинг `/` снимается, чтобы не получить `//api`.
+ * Подменяют два имени (VL-382, AC9): `GITVERSE_REGISTRY_BASE_URL` (новое
+ * семейство `GITVERSE_*`) и `VIBELOG_REGISTRY_BASE_URL` (историческое, его
+ * используют тесты install). Приоритет у нового; если оба заданы — берётся
+ * новое, чтобы поведение было предсказуемым. Значение проверяется: молча
+ * ходить не туда хуже, чем упасть в тесте. Трейлинг `/` снимается, чтобы не
+ * получить `//api`.
  */
 export function resolveRegistryBase(env: NodeJS.ProcessEnv = process.env): string {
+  const aliasValue = env[REGISTRY_BASE_ENV_ALIAS];
+  const envName =
+    typeof aliasValue === 'string' && aliasValue.trim() !== ''
+      ? REGISTRY_BASE_ENV_ALIAS
+      : REGISTRY_BASE_ENV;
   return resolveBase(env, {
-    envName: REGISTRY_BASE_ENV,
+    envName,
     defaultBase: DEFAULT_REGISTRY_BASE,
     // Для реестра битая база — сетевая/данные-ошибка (код 3), как и раньше.
     fail: (message, url) => new RegistryFetchError(message, 'network', url),
   });
+}
+
+/**
+ * Резолвит базу Публичного API (contents-транспорт, VL-382).
+ *
+ * Подмены: `GITVERSE_REGISTRY_BASE_URL` (общая для обеих схем) →
+ * `VIBELOG_GITVERSE_API_BASE` (историческая, её использует Issues-клиент) →
+ * `https://api.gitverse.ru`.
+ */
+export function resolveRegistryApiBase(env: NodeJS.ProcessEnv = process.env): string {
+  const registryOverride = env[REGISTRY_BASE_ENV_ALIAS];
+  if (typeof registryOverride === 'string' && registryOverride.trim() !== '') {
+    return resolveBase(env, {
+      envName: REGISTRY_BASE_ENV_ALIAS,
+      defaultBase: DEFAULT_API_BASE,
+      fail: (message, url) => new RegistryFetchError(message, 'network', url),
+    });
+  }
+  return resolveBase(env, {
+    envName: REGISTRY_API_BASE_ENV,
+    defaultBase: DEFAULT_API_BASE,
+    fail: (message, url) => new RegistryFetchError(message, 'network', url),
+  });
+}
+
+/**
+ * Выбирает схему доступа (VL-382).
+ *
+ * Правило простое и не подлежит «оптимизации»: нет токена → raw (единственный
+ * режим, в котором raw работает), есть токен → Contents API (raw с
+ * `Authorization` отвечает 429 всегда). `transport` в опциях переопределяет
+ * выбор — нужен тестам и отладке.
+ *
+ * Явный `baseUrl` переопределяет базу выбранной схемы (фикстуры тестов).
+ */
+export function resolveRegistryTransport(
+  options: ResolveRegistryTransportOptions = {},
+): RegistryTransport {
+  const env = options.env ?? process.env;
+  const token =
+    options.token !== undefined ? options.token.trim() : options.cwd !== undefined ? readToken(options.cwd) : '';
+  const kind: RegistryTransportKind = options.transport ?? (token === '' ? 'raw' : 'contents');
+  const baseUrl =
+    options.baseUrl ??
+    (kind === 'raw' ? resolveRegistryBase(env) : resolveRegistryApiBase(env));
+  return { kind, token: kind === 'raw' ? '' : token, baseUrl };
 }
 
 /**
@@ -240,7 +376,7 @@ export function buildRawUrl(
   return `${baseUrl}/api/repos/${encoded(owner)}/${encoded(repo)}/raw/branch/${encoded(branch)}/${cleanPath}`;
 }
 
-/** Собирает URL JSON элемента реестра. */
+/** Собирает URL JSON элемента реестра (raw-транспорт, VL-335). */
 export function buildRegistryItemUrl(
   base: string,
   owner: string,
@@ -252,6 +388,33 @@ export function buildRegistryItemUrl(
 }
 
 /**
+ * Собирает URL файла через Публичный API GitVerse (VL-382).
+ *
+ * `GET {api}/repos/{owner}/{repo}/contents/{path}?ref={branch}` — контракт из
+ * ref-32. Сегменты пути кодируются по одному, `/` сохраняется (это путь в
+ * репозитории). `scope=full` — не «для красоты»: при `fast` сервер может
+ * отдать метаданные без содержимого, а нам нужен именно `content`.
+ */
+export function buildContentsUrl(
+  base: string,
+  owner: string,
+  repo: string,
+  branch: string,
+  path: string,
+): string {
+  const cleanPath = path
+    .replace(/^\/+/, '')
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  const baseUrl = base.replace(/\/+$/, '');
+  return (
+    `${baseUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${cleanPath}` +
+    `?ref=${encodeURIComponent(branch)}&scope=full`
+  );
+}
+
+/**
  * Достаёт `message` из тела ошибки GitVerse (`{"code":4305,"message":"..."}`).
  *
  * Реэкспорт общего `extractErrorMessage` из `gitverse-http` — оставлен ради
@@ -260,20 +423,15 @@ export function buildRegistryItemUrl(
  */
 export { extractErrorMessage };
 
-/** Токен реестра: явный параметр либо `readToken(cwd)`; пустая строка — аноним. */
-function resolveToken(options: RegistryFetchCommonOptions): string {
-  if (options.token !== undefined) return options.token.trim();
-  if (options.cwd !== undefined) return readToken(options.cwd);
-  return '';
-}
-
 /**
- * Семантика статусов реестра (VL-380).
+ * Семантика статусов реестра (VL-380, VL-382 — два транспорта).
  *
- * Отличия от Issues-API: `400` здесь штатный ответ GitVerse на отсутствующий
- * файл (спайк, doc-25 §10), `404` принимаем тоже — на других хостах «не
- * найдено» выглядит привычно. `429` — ретраибельно (пауза из `Retry-After`),
- * `401`/`403` — отдельные виды с подсказкой про токен.
+ * Семантика РАЗНАЯ у двух схем доступа, поэтому `transport` — параметр:
+ * - raw (веб-хост): `400`/`404` = «нет файла», `429` — анонимный IP-лимит
+ *   (подсказка «задай GITVERSE_TOKEN, пойдёшь через API»);
+ * - contents (Публичный API): `401` — токен отвергнут, `403` — нет прав,
+ *   `404` — нет файла/ветки, `415` — неверный `Accept` (дефект CLI, а не
+ *   пользователя), `429` — лимит API (ретраи по `Retry-After`).
  */
 function classifyRegistryStatus(
   status: number,
@@ -281,14 +439,18 @@ function classifyRegistryStatus(
   what: string,
   branch: string,
   url: string,
+  transport: RegistryTransportKind,
 ): StatusClassification {
   const detail = extractErrorMessage(text);
   const suffix = detail ? `: ${detail}` : '';
+  const contents = transport === 'contents';
 
   if (status === 400 || status === 404) {
     return {
       kind: 'not_found',
-      message: `${what} не найден${suffix} (${url}); проверьте имя и ветку «${branch}»`,
+      message: contents
+        ? `${what} не найден${suffix} (${url}); проверьте имя элемента и ветку «${branch}» (нет файла или ветки)`
+        : `${what} не найден${suffix} (${url}); проверьте имя и ветку «${branch}»`,
       retryable: false,
     };
   }
@@ -296,9 +458,12 @@ function classifyRegistryStatus(
   if (status === 401) {
     return {
       kind: 'unauthorized',
-      message:
-        `GitVerse отклонил токен (HTTP 401)${suffix} (${url}); ` +
-        'проверьте GITVERSE_TOKEN в .env или уберите его, чтобы запрос шёл анонимно',
+      message: contents
+        ? `GitVerse не принял токен (HTTP 401)${suffix} (${url}); проверьте GITVERSE_TOKEN в .env ` +
+          `и права «Чтение» на репозиторий реестра (${DEFAULT_REGISTRY_BASE}/settings/tokens); ` +
+          'либо убери токен из .env, чтобы запрос шёл анонимно через raw'
+        : `GitVerse отклонил токен (HTTP 401)${suffix} (${url}); ` +
+          'проверьте GITVERSE_TOKEN в .env',
       retryable: false,
     };
   }
@@ -306,9 +471,21 @@ function classifyRegistryStatus(
   if (status === 403) {
     return {
       kind: 'forbidden',
+      message: contents
+        ? `GitVerse запретил доступ (HTTP 403)${suffix} (${url}); у токена нет прав «Чтение» ` +
+          'на репозиторий реестра — проверьте GITVERSE_TOKEN'
+        : `GitVerse запретил доступ (HTTP 403)${suffix} (${url}); ` +
+          'проверьте GITVERSE_TOKEN в .env',
+      retryable: false,
+    };
+  }
+
+  if (status === 415) {
+    return {
+      kind: 'bad_accept',
       message:
-        `GitVerse запретил доступ (HTTP 403)${suffix} (${url}); ` +
-        'проверьте GITVERSE_TOKEN в .env — у токена нет прав на репозиторий реестра',
+        `GitVerse не принял тип ответа (HTTP 415)${suffix} (${url}); ` +
+        `Публичный API требует Accept: ${ACCEPT} — это дефект CLI, сообщите о нём`,
       retryable: false,
     };
   }
@@ -320,9 +497,13 @@ function classifyRegistryStatus(
       retryable: true,
       retryHint: (nextDelayMs) => {
         const seconds = Math.round((nextDelayMs ?? 60_000) / 1000);
+        if (contents) {
+          return `следующая попытка через ${seconds} с; лимит Публичного API исчерпан — повтори позже`;
+        }
         return (
-          `следующая попытка через ${seconds} с; задай GITVERSE_TOKEN в .env — ` +
-          `авторизованные запросы лимитируются выше (${DEFAULT_REGISTRY_BASE}/settings/tokens)`
+          `следующая попытка через ${seconds} с; GitVerse ограничил анонимные запросы — ` +
+          `задай GITVERSE_TOKEN в .env, тогда запросы пойдут через API с более высоким лимитом ` +
+          `(${DEFAULT_REGISTRY_BASE}/settings/tokens)`
         );
       },
     };
@@ -358,6 +539,7 @@ async function fetchTextWithRetries(
   what: string,
   branch: string,
   settings: {
+    kind: RegistryTransportKind;
     timeoutMs: number;
     maxBodyBytes: number;
     retryDelaysMs: readonly number[];
@@ -373,12 +555,16 @@ async function fetchTextWithRetries(
     mask: (text: string) => maskToken(text, settings.token),
   };
 
-  const headers: Record<string, string> = {
-    // content-type намеренно игнорируется: GitVerse отдаёт JSON как text/plain.
-    accept: 'application/json, text/plain, */*',
-  };
-  // Только при непустом токене: без него запрос идёт анонимно, как раньше.
-  if (settings.token !== '') headers.authorization = `Bearer ${settings.token}`;
+  // Две схемы — два набора заголовков. В raw `authorization` НЕ добавляется
+  // ни при каких условиях: raw с Bearer отвечает 429 всегда (замеры
+  // 2026-11-09, см. шапку модуля). Токен идёт только в Публичный API.
+  const headers: Record<string, string> =
+    settings.kind === 'contents'
+      ? { accept: ACCEPT, authorization: `Bearer ${settings.token}` }
+      : {
+          // content-type намеренно игнорируется: GitVerse отдаёт JSON как text/plain.
+          accept: 'application/json, text/plain, */*',
+        };
 
   const response = await requestWithRetries({
     ...ctx,
@@ -393,9 +579,69 @@ async function fetchTextWithRetries(
       ? { rateLimitBudgetMs: settings.rateLimitBudgetMs }
       : {}),
     ...(sleepFn !== undefined ? { sleepFn } : {}),
-    classify: (status, text) => classifyRegistryStatus(status, text, what, branch, url),
+    classify: (status, text) =>
+      classifyRegistryStatus(status, text, what, branch, url, settings.kind),
   });
-  return response.text;
+
+  if (settings.kind === 'raw') return response.text;
+  return decodeContentsPayload(response.text, url, what);
+}
+
+/**
+ * Достаёт текст файла из ответа Contents API (VL-382).
+ *
+ * Контракт (ref-32): `{type, encoding, content, size, sha, …}`, где `content` —
+ * base64. Директория приходит МАССИВОМ без обёртки — это ошибка запроса, а не
+ * «пустой файл»: сообщение должно прямо говорить, что получена директория.
+ *
+ * Валидация жёсткая: молча отдать пустую строку значит записать компонент из
+ * нуля байт. Битый base64 ловится проверкой алфавита и длины — Node декодирует
+ * мусор без исключения и вернул бы «текст с символами замены».
+ */
+export function decodeContentsPayload(text: string, url: string, what: string): string {
+  const fail = (message: string): never => {
+    throw new RegistryFetchError(
+      `${what}: ${message} (${url}); проверьте реестр и ветку`,
+      'invalid_schema',
+      url,
+    );
+  };
+
+  if (text.trim().startsWith('[')) {
+    fail('ответ Contents API — массив (директория), ожидался файл');
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return fail('ответ Contents API не является корректным JSON');
+  }
+
+  if (!isPlainObject(parsed)) {
+    return fail('ответ Contents API не является JSON-объектом файла');
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  const type = obj.type;
+  if (type !== undefined && type !== 'file') {
+    return fail(`ожидался файл (type: "file"), получено type: «${String(type)}»`);
+  }
+  const encoding = obj.encoding;
+  if (encoding !== 'base64') {
+    return fail(`ожидалась кодировка base64 (encoding: "base64"), получено «${String(encoding)}»`);
+  }
+  const content = obj.content;
+  if (typeof content !== 'string' || content.trim() === '') {
+    return fail('поле content пустое — сервер не отдал содержимое файла');
+  }
+
+  // Переводы строк в base64 допустимы (сервер может резать строку) — убираем.
+  const base64 = content.replace(/\s+/g, '');
+  if (base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) {
+    return fail('поле content не является корректным base64');
+  }
+  return Buffer.from(base64, 'base64').toString('utf8');
 }
 
 /** Валидирует форму элемента реестра (doc-25 §3.3). */
@@ -512,28 +758,54 @@ export async function fetchRegistryFile(
     path,
     branch = DEFAULT_REGISTRY_BRANCH,
     timeoutMs = REQUEST_TIMEOUT_MS,
-    maxBodyBytes = MAX_BODY_BYTES,
     retryDelaysMs = RETRY_DELAYS_MS,
     rateLimitDelaysMs = RATE_LIMIT_DELAYS_MS,
     rateLimitBudgetMs,
     env,
   } = options;
-  const baseUrl = options.baseUrl ?? resolveRegistryBase(env);
-  const url = buildRawUrl(baseUrl, owner, repo, branch, path);
+  const transport = resolveTransportFor(options);
+  const maxBodyBytes =
+    options.maxBodyBytes ?? (transport.kind === 'contents' ? CONTENTS_MAX_BODY_BYTES : MAX_BODY_BYTES);
+  const url = buildTransportUrl(transport, owner, repo, branch, path);
   return fetchTextWithRetries(
     url,
     path,
     branch,
     {
+      kind: transport.kind,
       timeoutMs,
       maxBodyBytes,
       retryDelaysMs,
       rateLimitDelaysMs,
       ...(rateLimitBudgetMs !== undefined ? { rateLimitBudgetMs } : {}),
-      token: resolveToken(options),
+      token: transport.token,
     },
     options.sleepFn,
   );
+}
+
+/** Решение по схеме доступа для конкретного вызова (VL-382). */
+function resolveTransportFor(options: RegistryFetchCommonOptions): RegistryTransport {
+  return resolveRegistryTransport({
+    ...(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {}),
+    ...(options.token !== undefined ? { token: options.token } : {}),
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(options.env !== undefined ? { env: options.env } : {}),
+    ...(options.transport !== undefined ? { transport: options.transport } : {}),
+  });
+}
+
+/** URL файла по выбранной схеме доступа. */
+function buildTransportUrl(
+  transport: RegistryTransport,
+  owner: string,
+  repo: string,
+  branch: string,
+  path: string,
+): string {
+  return transport.kind === 'contents'
+    ? buildContentsUrl(transport.baseUrl, owner, repo, branch, path)
+    : buildRawUrl(transport.baseUrl, owner, repo, branch, path);
 }
 
 /**
@@ -554,21 +826,22 @@ export async function fetchRegistryItem(
     name,
     branch = DEFAULT_REGISTRY_BRANCH,
     timeoutMs = REQUEST_TIMEOUT_MS,
-    maxBodyBytes = MAX_BODY_BYTES,
     retryDelaysMs = RETRY_DELAYS_MS,
     rateLimitDelaysMs = RATE_LIMIT_DELAYS_MS,
     rateLimitBudgetMs,
-    env,
     sleepFn,
   } = options;
-  const baseUrl = options.baseUrl ?? resolveRegistryBase(env);
-  const url = buildRegistryItemUrl(baseUrl, owner, repo, branch, name);
-  const token = resolveToken(options);
+  const transport = resolveTransportFor(options);
+  const maxBodyBytes =
+    options.maxBodyBytes ?? (transport.kind === 'contents' ? CONTENTS_MAX_BODY_BYTES : MAX_BODY_BYTES);
+  const token = transport.token;
+  const url = buildTransportUrl(transport, owner, repo, branch, `public/r/${name}.json`);
   const text = await fetchTextWithRetries(
     url,
     `элемент реестра «${name}»`,
     branch,
     {
+      kind: transport.kind,
       timeoutMs,
       maxBodyBytes,
       retryDelaysMs,
