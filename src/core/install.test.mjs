@@ -274,6 +274,37 @@ describe('vb install', () => {
     assert.equal(entry.files['src/lib/components/ui/button.svelte'].sourceVersion, '1.0.0');
   });
 
+  it('VL-383: элемент registry:lib с target "../utils.ts" устанавливается', async () => {
+    freshProject();
+    const item = {
+      name: 'base',
+      type: 'registry:lib',
+      version: '1.0.0',
+      dependencies: ['clsx', 'tailwind-merge'],
+      registryDependencies: [],
+      files: [
+        { path: 'src/lib/utils.ts', target: '../utils.ts', type: 'registry:lib' },
+        { path: 'src/lib/theme.css', target: '../theme.css', type: 'registry:lib' },
+      ],
+    };
+    const utilsContent = 'export const cn = (...a: string[]) => a.join(" ");\n';
+    const themeContent = ':root { --x: 1; }\n';
+    seedItem(item, {
+      'src/lib/utils.ts': utilsContent,
+      'src/lib/theme.css': themeContent,
+    });
+
+    const { out, code } = await runCli('install', 'vibelog.md/ui/base', '--yes');
+    assert.equal(code, 0, out);
+    // Оба файла — registry:lib → алиас utils, база — каталог алиаса src/lib,
+    // значит "../utils.ts" и "../theme.css" ложатся в src/lib/ (AC2 VL-383).
+    assert.equal(readFileSync(join(testDir, 'src/lib/utils.ts'), 'utf-8'), utilsContent);
+    assert.equal(readFileSync(join(testDir, 'src/lib/theme.css'), 'utf-8'), themeContent);
+    const files = readLockFile().components.base.files;
+    assert.equal(files['src/lib/utils.ts'].hash, hashContent(utilsContent));
+    assert.equal(files['src/lib/theme.css'].hash, hashContent(themeContent));
+  });
+
   it('устанавливает мультифайловый элемент целиком', async () => {
     freshProject();
     const item = {

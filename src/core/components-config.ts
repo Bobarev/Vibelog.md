@@ -338,16 +338,38 @@ export function resolveAliasPath(
       'target',
     );
   }
-  if ((alias === 'utils' || alias === 'css') && target.includes('/')) {
-    throw new ComponentsConfigError(
-      `поле target для алиаса ${alias}: «${target}» — это файл, путь с «/» недопустим`,
-      3,
-      'target',
-    );
-  }
-  // `..` в target — выход за пределы каталога алиаса: target приходит из
-  // манифеста реестра (сеть), доверять переходам вверх нельзя
-  if (target.split(/[\\/]/).includes('..')) {
+  // Разделение «файл vs каталог» (VL-383, doc-25 §3.3/§3.4).
+  //
+  // Алиасы-ФАЙЛЫ (utils, css). База — каталог файла-алиаса
+  // (`dirname(aliases.utils)`), поэтому `../<file>` легален: корневой элемент
+  // `base` объявляет `target: "../utils.ts"`, читая его как «путь относительно
+  // файла-алиаса». Форма строгая — ровно один уровень вверх и только имя файла:
+  // `../sub/x.ts` (вложенность) и `../../evil.ts` (глубина) отклоняются, иначе
+  // `..` превратился бы в произвольный обход дерева.
+  //
+  // Алиасы-КАТАЛОГИ (ui, components). База — сам каталог, переход вверх запрещён
+  // полностью: компонент не должен выбираться из каталога на уровень выше.
+  const isFileAlias = alias === 'utils' || alias === 'css';
+  const hasUp = target.split(/[\\/]/).includes('..');
+  if (isFileAlias) {
+    if (hasUp) {
+      const legalPrefix = target.startsWith('../') || target.startsWith('..\\');
+      const rest = legalPrefix ? target.slice(3) : '';
+      if (!legalPrefix || rest === '' || rest.includes('/') || rest.includes('\\')) {
+        throw new ComponentsConfigError(
+          `поле target для алиаса ${alias}: «${target}» — допустим ровно один переход вверх и только имя файла («../<file>»)`,
+          3,
+          'target',
+        );
+      }
+    } else if (target.includes('/') || target.includes('\\')) {
+      throw new ComponentsConfigError(
+        `поле target для алиаса ${alias}: «${target}» — это файл, путь с «/» недопустим`,
+        3,
+        'target',
+      );
+    }
+  } else if (hasUp) {
     throw new ComponentsConfigError(
       `поле target для алиаса ${alias}: «${target}» содержит переход вверх («..»)`,
       3,
@@ -356,10 +378,14 @@ export function resolveAliasPath(
   }
 
   const root = resolve(cwd);
-  // Для utils/css алиас — путь к ФАЙЛУ: target кладётся рядом с ним
-  // (dirname), иначе получилось бы «utils.ts/helpers.ts».
+  // Для utils/css алиас — путь к ФАЙЛУ. Обычный target кладётся рядом с ним
+  // (dirname), иначе получилось бы «utils.ts/helpers.ts». Но target с ведущим
+  // «../» читается относительно самого файла-алиаса (doc-25 §3.4): тогда
+  // `../utils.ts` при aliases.utils = 'src/lib/utils.ts' даёт ровно
+  // возглавляемый алиасом файл — src/lib/utils.ts (VL-383, AC2).
   const baseAbs = resolve(root, base);
-  const baseDir = alias === 'utils' || alias === 'css' ? dirname(baseAbs) : baseAbs;
+  const isFileAliasBase = alias === 'utils' || alias === 'css';
+  const baseDir = isFileAliasBase && !hasUp ? dirname(baseAbs) : baseAbs;
   const abs = resolve(baseDir, target);
   const rel = relative(root, abs);
   if (rel.startsWith('..') || isAbsolute(rel)) {
