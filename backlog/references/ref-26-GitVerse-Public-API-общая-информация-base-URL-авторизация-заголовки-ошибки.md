@@ -15,6 +15,7 @@ created_date: 2026-11-07
 linked_tasks:
   - VL-363
   - VL-365
+  - VL-382
 cached_path: references/cache/ref-26.md
 cached_at: '2026-11-07T16:54:34.344Z'
 source_hash: db4137b92fa8b937be84078201cf188a82ce1458254389ae14191f34542c913b
