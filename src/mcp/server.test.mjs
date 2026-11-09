@@ -171,6 +171,30 @@ describe('MCP-сервер', () => {
     assert.ok(responses[0].result.capabilities.tools);
   });
 
+  // VL-395: поле `instructions` — ориентир для «нулевого хода» агента.
+  // Проверяем не дословный текст (он может меняться), а инварианты: непустое,
+  // укладывается в лимит, называет фазы/конфиг/справочник, и протокольные
+  // поля ответа остались на месте (старые клиенты не ломаются).
+  it('initialize — отдаёт instructions с ориентиром по workflow (VL-395)', async () => {
+    const responses = await callMcp([
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+    ]);
+    const result = responses[0].result;
+    assert.equal(typeof result.instructions, 'string', 'instructions — строка');
+    assert.ok(result.instructions.length > 0, 'instructions непустой');
+    assert.ok(result.instructions.length <= 2000, `instructions ≤ 2000 символов (${result.instructions.length})`);
+    for (const needle of ['workflows', 'settings.json', 'capabilities', 'DEFAULT_WORKFLOW', 'reject']) {
+      assert.ok(result.instructions.includes(needle), `instructions упоминает ${needle}`);
+    }
+    for (const phase of ['spec', 'plan', 'code', 'close']) {
+      assert.ok(result.instructions.includes(phase), `instructions называет фазу ${phase}`);
+    }
+    // Протокол не нарушен: остальные поля на месте
+    assert.equal(result.protocolVersion, '2024-11-05');
+    assert.ok(result.capabilities.tools);
+    assert.equal(result.serverInfo.name, 'vibelog-md');
+  });
+
   it('tools/list — возвращает 49 инструментов', async () => {
     const responses = await callMcp([
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
