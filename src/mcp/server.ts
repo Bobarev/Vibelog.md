@@ -161,6 +161,33 @@ export function startMcpServer(cwd: string): void {
 }
 
 /**
+ * Текст-ориентир для поля `instructions` ответа MCP `initialize` (VL-395).
+ *
+ * Почему именно `instructions`, а не AGENTS.md и не шаблоны фаз:
+ * - `instructions` — штатное место протокола MCP для «нулевого хода» агента:
+ *   клиент (qwen, opencode, claude) получает его в handshake, без чтения файлов
+ *   и без догадки «что тут надо прочитать»;
+ * - AGENTS.md — место под правила конкретного проекта, и он режется лимитом
+ *   `AGENTS_MD_MAX_CHARS = 8000` (src/agent/system-prompt.ts:29);
+ * - шаблоны фаз (templates/phases/*.md) агент видит только при запуске фазы,
+ *   а в новом проекте схемы workflow в файлах нет вообще — она дефолт в коде,
+ *   и поиск «где лежит workflow» стоил инцидентных ~250k токенов.
+ *
+ * Текст статичен и НЕ читает settings.json: ориентир не должен разъезжаться с
+ * протоколом при битом конфиге. Намеренно без перечня MCP-инструментов (они в
+ * `tools/list`) и без шаблонов фаз — только ориентир, ≤ 2000 символов.
+ */
+export const MCP_INSTRUCTIONS = `Vibelog.md — markdown-нативный таск-менеджер для git-репозиториев. Задачи — markdown-файлы в backlog/tasks/; читай и правь их через MCP-инструменты (backlog_*), а не через edit/write_file.
+
+Фазы workflow по умолчанию: To Do --spec--> Spec --plan--> Planned --code--> Review --close--> Done. Ветки: reject --> Rejected (из To Do, Spec, Planned, In Progress, Review) и fix-цикл Review --code--> Review. Служебные фазы вне workflow (статус не меняют): comment, prompt, analyze, resume.
+
+Это ДЕФОЛТ В КОДЕ (DEFAULT_WORKFLOW, src/core/workflow.ts). Секции \`workflows\` в .vibelog/settings.json может не быть — её отсутствие нормально и означает «работает дефолт». Переопределение — ключ \`workflows.default\` (плюс \`task_workflows\`: тип задачи → имя workflow).
+
+Доступ: чтение (list/view/search/status/map) — сразу; запись (create/update/delete/complete/trigger_phase/commit) — через подтверждение пользователя Allow/Deny.
+
+Полный справочник, генерируемый из кода: \`vibelog capabilities\` (--json — машиночитаемо) и \`vibelog instructions\`; карта кода — \`vibelog map\`.`;
+
+/**
  * Обрабатывает метод initialize.
  *
  * Возвращает capabilities сервера и информацию о продукте.
@@ -178,6 +205,9 @@ function handleInitialize(id: RpcId, params: Record<string, unknown> | undefined
       name: 'vibelog-md',
       version: packageJson.version,
     },
+    // VL-395: ориентир для «нулевого хода» агента. Поле необязательное по
+    // спецификации MCP — клиенты, которые его не знают, просто игнорируют.
+    instructions: MCP_INSTRUCTIONS,
   });
 }
 
