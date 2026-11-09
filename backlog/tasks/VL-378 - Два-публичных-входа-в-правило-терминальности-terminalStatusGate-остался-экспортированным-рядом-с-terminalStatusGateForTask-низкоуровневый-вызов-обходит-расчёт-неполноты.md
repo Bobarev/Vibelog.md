@@ -5,11 +5,11 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-08 16:04'
-updated_date: '2026-11-08 19:08'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels: []
 dependencies: []
-milestone: ''
+milestone: v1.13
 references: []
 priority: medium
 type: bug

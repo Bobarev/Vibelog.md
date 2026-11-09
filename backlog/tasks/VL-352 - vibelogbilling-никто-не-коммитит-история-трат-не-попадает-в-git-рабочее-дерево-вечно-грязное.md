@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-07 14:03'
-updated_date: '2026-11-07 15:04'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - infra
@@ -13,7 +13,7 @@ labels:
   - billing
   - bug
 dependencies: []
-milestone: ''
+milestone: v1.13
 references: []
 priority: medium
 type: bug

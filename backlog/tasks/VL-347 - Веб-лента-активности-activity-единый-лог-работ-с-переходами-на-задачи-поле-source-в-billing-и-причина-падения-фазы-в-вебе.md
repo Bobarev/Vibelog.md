@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-05 19:14'
-updated_date: '2026-11-07 11:55'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - web
@@ -14,7 +14,7 @@ labels:
   - observability
   - feature
 dependencies: []
-milestone: ''
+milestone: v1.13
 references: []
 priority: high
 type: feature

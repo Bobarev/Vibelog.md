@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-07 22:30'
-updated_date: '2026-11-08 01:03'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - upstream
@@ -13,7 +13,7 @@ labels:
   - bug
   - api
 dependencies: []
-milestone: ''
+milestone: v1.13
 references:
   - ref-27
 priority: high

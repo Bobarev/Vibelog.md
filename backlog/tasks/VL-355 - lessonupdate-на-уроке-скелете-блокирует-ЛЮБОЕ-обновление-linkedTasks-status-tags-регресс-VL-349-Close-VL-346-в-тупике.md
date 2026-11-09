@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-07 15:11'
-updated_date: '2026-11-07 15:39'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - mcp
@@ -13,7 +13,7 @@ labels:
   - regression
   - bug
 dependencies: []
-milestone: ''
+milestone: v1.13
 references: []
 priority: high
 type: bug

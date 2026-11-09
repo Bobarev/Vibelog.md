@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-09 10:57'
-updated_date: '2026-11-09 12:43'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - gitverse
@@ -15,7 +15,7 @@ labels:
   - blocker
 dependencies:
   - VL-380
-milestone: ''
+milestone: v1.13
 references:
   - ref-32
   - ref-26

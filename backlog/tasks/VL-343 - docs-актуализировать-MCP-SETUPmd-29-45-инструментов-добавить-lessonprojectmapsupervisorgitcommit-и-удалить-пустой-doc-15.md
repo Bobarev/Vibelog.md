@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-05 13:23'
-updated_date: '2026-11-07 11:31'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - docs
   - mcp
   - repo-hygiene
 dependencies: []
-milestone: ''
+milestone: v1.13
 references: []
 priority: ''
 type: docs

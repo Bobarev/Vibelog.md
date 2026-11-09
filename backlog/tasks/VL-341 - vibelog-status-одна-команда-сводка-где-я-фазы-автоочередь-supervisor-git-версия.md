@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-05 13:21'
-updated_date: '2026-11-05 16:34'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - cli
   - ux
   - infra
 dependencies: []
-milestone: ''
+milestone: v1.13
 references: []
 priority: low
 type: feature

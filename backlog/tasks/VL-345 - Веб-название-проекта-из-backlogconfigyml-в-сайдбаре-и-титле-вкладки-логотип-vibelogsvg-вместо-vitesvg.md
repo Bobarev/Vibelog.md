@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-05 16:30'
-updated_date: '2026-11-05 19:13'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - web
   - ui
   - ux
 dependencies: []
-milestone: ''
+milestone: v1.13
 references: []
 priority: medium
 type: feature

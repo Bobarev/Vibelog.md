@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-07 17:03'
-updated_date: '2026-11-07 19:06'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - agent
@@ -15,7 +15,7 @@ labels:
   - tool-ack
   - vl-357
 dependencies: []
-milestone: ''
+milestone: v1.13
 references: []
 priority: medium
 type: task

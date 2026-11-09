@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-08 00:27'
-updated_date: '2026-11-08 00:44'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - close
@@ -14,7 +14,7 @@ labels:
   - activity
   - repeat-cap
 dependencies: []
-milestone: ''
+milestone: v1.13
 references: []
 priority: high
 type: bug

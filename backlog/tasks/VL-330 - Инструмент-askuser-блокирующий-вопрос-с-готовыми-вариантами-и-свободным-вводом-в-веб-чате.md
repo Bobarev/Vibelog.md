@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-04 01:15'
-updated_date: '2026-11-04 12:09'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - web-chat
@@ -13,7 +13,7 @@ labels:
   - ux
   - ai
 dependencies: []
-milestone: ''
+milestone: v1.13
 references: []
 priority: high
 type: feature

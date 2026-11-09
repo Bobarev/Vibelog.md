@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-05 01:56'
-updated_date: '2026-11-05 03:14'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - vb-cli
@@ -14,7 +14,7 @@ labels:
   - cli
 dependencies:
   - VL-333
-milestone: ''
+milestone: v1.13
 references: []
 priority: high
 type: feature

@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-04 00:42'
-updated_date: '2026-11-04 01:54'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - infra
@@ -13,7 +13,7 @@ labels:
   - repo-hygiene
   - breaking-change
 dependencies: []
-milestone: ''
+milestone: v1.13
 references: []
 priority: high
 type: feature

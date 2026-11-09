@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-09 18:51'
-updated_date: '2026-11-09 19:20'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - vb-cli
@@ -14,7 +14,7 @@ labels:
   - ux
   - bug
 dependencies: []
-milestone: ''
+milestone: v1.13
 references: []
 priority: medium
 type: bug

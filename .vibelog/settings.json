@@ -75,7 +75,7 @@
     }
   },
   "models": {
-    "default": "routerai/deepseek/deepseek-v4.1-flash@morph",
+    "default": "selectel/deepseek/deepseek-v4.1-flash",
     "available": {
       "routerai/xiaomi/mimo-v2.6-flash@makora": {
         "label": "makora.rai/mimo-v2.6-flash",
@@ -187,8 +187,14 @@
     "offline": "allow"
   },
   "upstream": {
+    "mode": "git",
+    "inbox": "git@gitverse.ru:Vibelog-md/upstream-reports.git",
+    "prefix": "vl",
     "repo": "bobarev/Vibelog.md",
-    "labels": ["upstream", "from-vl"],
+    "labels": [
+      "upstream",
+      "from-vl"
+    ],
     "type": "bug"
   }
 }

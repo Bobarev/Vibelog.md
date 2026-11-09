@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-07 20:11'
-updated_date: '2026-11-07 21:43'
+updated_date: '2026-11-09 21:42'
 due_date: ''
 labels:
   - gitverse
@@ -14,7 +14,7 @@ labels:
   - cli
   - bug-report
 dependencies: []
-milestone: ''
+milestone: v1.13
 references:
   - ref-26
   - ref-27
