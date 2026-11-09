@@ -32,6 +32,7 @@ import type { SetupAnswers, SetupMode } from '../../core/setup.js';
 import { answersFromFlags, runWizard } from './init-wizard.js';
 import { PromptCancelledError } from '../prompt.js';
 import { checkAgentBinary, checkTelegramToken, pingLlm } from '../../core/setup-check.js';
+import { readCreateContext } from '../../core/env-markers.js';
 
 /**
  * Выполняет команду init.
@@ -56,6 +57,12 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
 
   const existing = findBacklogDir(cwd);
   const force = flags.force === true;
+
+  // VL-389: `init` вызван из `scripts.postCreate` внутри `vb create`?
+  // Читаем один раз на входе: дальше по коду это влияет на две вещи —
+  // предупреждение о git (репозиторий создаст сам `create`) и финальную
+  // подсказку «Дальше: …» (её печатает итоговый блок `create`).
+  const createContext = readCreateContext();
 
   // VL-336: --components и --no-components взаимоисключающие. Тихая победа
   // одного из них означала бы, что пользователь получил не то, что просил.
@@ -182,7 +189,17 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
     }
   }
   for (const path of result.written) printSuccess(`Записано: ${path}`);
-  for (const path of result.skipped) printInfo(`Пропущено: ${path}`);
+  for (const path of result.skipped) {
+    // VL-389: в контексте `vb create` «Пропущено: AGENTS.md (уже существует)»
+    // читается как «что-то не сделалось», хотя шаблон просто принёс свой
+    // AGENTS.md и перезаписывать его нельзя. Говорим нейтрально; прямой
+    // запуск `init` сохраняет прежний текст (на него опирается VL-348).
+    if (createContext.fromCreate && path.startsWith('AGENTS.md')) {
+      printInfo('AGENTS.md из шаблона сохранён (существующий файл не перезаписывали)');
+      continue;
+    }
+    printInfo(`Пропущено: ${path}`);
+  }
   for (const warning of result.warnings) printError(warning);
   for (const path of result.written) {
     if (path === '.qwen/settings.json' || path === '.opencode/settings.json') {
@@ -193,7 +210,12 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
 
   // VL-348: проект вне git и репозиторий не создавали — предупреждаем, что
   // `.env` с секретами ничем не защищён (AC10: код выхода при этом 0).
-  if (!state.git.inRepo && answers.git?.init !== true) {
+  //
+  // VL-389: внутри `vb create` предупреждение ложно — репозиторий создаст сам
+  // `create` сразу после `postCreate`. Подавляем только когда git действительно
+  // будет: при `--no-git` (маркер `no-git`) пользователь правда остаётся без
+  // репозитория, и предупреждение честное.
+  if (!state.git.inRepo && answers.git?.init !== true && !createContext.gitWillBeInitialized) {
     printError(
       'Проект не в git: .env с секретами не защищён. Запустите vibelog init --git-init или git init вручную',
     );
@@ -202,7 +224,12 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
   // --- Проверки (шаг 7) ---
   await runChecks(cwd, answers, flags);
 
-  printInfo('Дальше: vibelog task create "Название" — или vibelog browser для веб-интерфейса');
+  // VL-389: финальную подсказку в контексте `postCreate` не печатаем — сразу за
+  // ней идёт итоговый блок `vb create` со своим «Дальше: cd …». Две разные
+  // «дальнейшие инструкции» подряд читаются как противоречие.
+  if (!createContext.fromCreate) {
+    printInfo('Дальше: vibelog task create "Название" — или vibelog browser для веб-интерфейса');
+  }
 }
 
 /**
