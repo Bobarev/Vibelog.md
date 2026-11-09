@@ -127,6 +127,45 @@ beforeEach(async () => {
   registryFiles = {};
   server = createServer((req, res) => {
     const url = req.url ?? '';
+
+    // VL-382: две схемы доступа. Без токена CLI идёт на raw-маршрут
+    // (`/api/repos/.../raw/branch/<branch>/<path>`), с токеном — на Contents
+    // API (`/repos/<owner>/<repo>/contents/<path>?ref=<branch>`). Фикстура
+    // должна уметь оба, иначе тест с `GITVERSE_TOKEN` в `.env` упирается в
+    // 401 и проверяет не то, что задумано.
+    const contentsMarker = '/contents/';
+    const contentsIdx = url.indexOf(contentsMarker);
+    if (contentsIdx !== -1) {
+      // Оба маршрута живут на одном локальном сервере: `?ref=…&scope=full`
+      // отрезаем (ветка одна), путь декодируем по сегментам.
+      const rawPath = url.slice(contentsIdx + contentsMarker.length).split('?')[0] ?? '';
+      const path = rawPath
+        .split('/')
+        .map((segment) => decodeURIComponent(segment))
+        .join('/');
+      const body = registryFiles[path];
+      if (body === undefined) {
+        res.writeHead(404, { 'content-type': 'application/json;charset=utf-8' });
+        res.end(
+          JSON.stringify({
+            error: { code: 'not_found', message: `File: ${path} not found`, status: 404 },
+          }),
+        );
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json;charset=utf-8' });
+      res.end(
+        JSON.stringify({
+          type: 'file',
+          encoding: 'base64',
+          content: Buffer.from(body, 'utf8').toString('base64'),
+          size: Buffer.byteLength(body, 'utf8'),
+          sha: 'fixture',
+        }),
+      );
+      return;
+    }
+
     const marker = '/raw/branch/';
     const idx = url.indexOf(marker);
     if (idx === -1) {
@@ -142,6 +181,8 @@ beforeEach(async () => {
       res.end(JSON.stringify({ code: 4305, message: `File: ${path} not found` }));
       return;
     }
+    // Raw-эндпоинт отдаёт текст как `text/plain` — заголовок ответа намеренно
+    // такой же, как у настоящего GitVerse.
     res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
     res.end(body);
   });
@@ -203,7 +244,15 @@ function seedButton() {
 
 /** Запуск CLI: stdout и stderr собираются РАЗДЕЛЬНО (в этом смысл задачи). */
 function runCli(args, extraEnv = {}) {
-  const env = testSpawnEnv({ VIBELOG_REGISTRY_BASE_URL: baseUrl, ...extraEnv });
+  // Оба маршрута подменяются на один локальный сервер: без токена CLI ходит
+  // на raw (`VIBELOG_REGISTRY_BASE_URL`), с токеном — на Contents API
+  // (`VIBELOG_GITVERSE_API_BASE`, VL-382). Без второй подмены тест с токеном
+  // уходил бы на настоящий `api.gitverse.ru`.
+  const env = testSpawnEnv({
+    VIBELOG_REGISTRY_BASE_URL: baseUrl,
+    VIBELOG_GITVERSE_API_BASE: baseUrl,
+    ...extraEnv,
+  });
   // Токен из окружения агентской сессии не должен попадать в тест.
   delete env.GITVERSE_TOKEN;
   return new Promise((resolve) => {
