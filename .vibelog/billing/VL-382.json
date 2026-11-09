@@ -114,6 +114,82 @@
       "model": "deepseek/deepseek-v4.1-flash",
       "agent": "vb",
       "source": "web"
+    },
+    {
+      "sessionId": "agent-1794216374131",
+      "phase": "code",
+      "startedAt": "2026-11-09T09:26:13.987Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-09T09:33:58.841Z",
+      "durationMs": 460652,
+      "usage": {
+        "input": 1505883,
+        "output": 9310,
+        "cache": 1298432,
+        "total": 1515193,
+        "requests": 28,
+        "reasoning": 4816
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794216374131",
+      "phase": "code",
+      "startedAt": "2026-11-09T09:26:13.987Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-09T09:33:58.869Z",
+      "durationMs": 460652,
+      "usage": {
+        "input": 1505883,
+        "output": 9310,
+        "cache": 1298432,
+        "total": 1515193,
+        "requests": 28,
+        "reasoning": 4816
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794216900654",
+      "phase": "close",
+      "startedAt": "2026-11-09T09:35:00.538Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-09T09:43:35.292Z",
+      "durationMs": 511679,
+      "usage": {
+        "input": 2629231,
+        "output": 14424,
+        "cache": 2378752,
+        "total": 2643655,
+        "requests": 50,
+        "reasoning": 4867
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794216900654",
+      "phase": "close",
+      "startedAt": "2026-11-09T09:35:00.538Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-09T09:43:35.424Z",
+      "durationMs": 511679,
+      "usage": {
+        "input": 2629231,
+        "output": 14424,
+        "cache": 2378752,
+        "total": 2643655,
+        "requests": 50,
+        "reasoning": 4867
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
     }
   ]
 }
