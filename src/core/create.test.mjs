@@ -20,18 +20,24 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
 import {
   CreateError,
   copyDir,
   createProject,
+  installTemplateComponents,
+  makeBinShim,
   parseTemplatePath,
+  postCreateEnv,
   readTemplateManifest,
+  selfBinPath,
   validateProjectName,
 } from '../../dist/core/create.js';
 
@@ -138,10 +144,18 @@ function mockRunner(status = 0) {
   return {
     calls,
     runner: (command, args, options) => {
-      calls.push({ command, args, cwd: options.cwd });
+      calls.push({ command, args, cwd: options.cwd, env: options.env });
       return { status };
     },
   };
+}
+
+/** Путь к существующему файлу-фикстуре (для `selfBin`). */
+function fakeBin(dir, name = 'vibelog.mjs') {
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, name);
+  writeFileSync(path, '// энтрипоинт CLI\n', 'utf-8');
+  return path;
 }
 
 beforeEach(() => {
@@ -440,7 +454,8 @@ describe('createProject', () => {
     assert.equal(existsSync(join(testDir, 'myapp', 'src', 'app.txt')), true);
   });
 
-  it('временный каталог удаляется после успеха и после ошибки', async () => {    const leftovers = () => readdirSync(tmpRoot).filter((n) => n.startsWith('vb-create-'));
+  it('временный каталог удаляется после успеха и после ошибки', async () => {
+    const leftovers = () => readdirSync(tmpRoot).filter((n) => n.startsWith('vb-create-'));
     await createProject({
       cwd: testDir,
       name: 'ok-app',
@@ -600,5 +615,212 @@ describe('резолв owner из registries (VL-385)', () => {
       noGit: true,
     });
     assert.equal(second.branch, 'dev');
+  });
+});
+
+describe('VIBELOG_BIN и верификация postCreate (VL-386)', () => {
+  // macOS: /var и /tmp — симлинки на /private/...; realpathSync разворачивает их,
+  // поэтому ожидание тоже нормализуется (так тест не зависит от платформы).
+  const real = (path) => realpathSync(path);
+
+  it('selfBinPath: абсолютный путь существующего файла', () => {
+    const bin = fakeBin(join(testDir, 'bin'));
+    assert.equal(selfBinPath(bin), real(bin));
+  });
+
+  it('selfBinPath: пустой или несуществующий путь — null', () => {
+    assert.equal(selfBinPath(null), null);
+    assert.equal(selfBinPath(''), null);
+    assert.equal(selfBinPath(join(testDir, 'no-such-vibelog.mjs')), null);
+  });
+
+  it('selfBinPath: относительный путь разрешается от cwd', () => {
+    const bin = fakeBin(join(testDir, 'bin'));
+    assert.equal(selfBinPath(relative(process.cwd(), bin)), real(bin));
+  });
+
+  it('postCreateEnv: VIBELOG_BIN поверх process.env, существующие переменные не затёрты', () => {
+    const bin = fakeBin(join(testDir, 'bin'));
+    const env = postCreateEnv(bin);
+    assert.equal(env.VIBELOG_BIN, bin);
+    assert.equal(env.PATH, process.env.PATH);
+    assert.equal(env.HOME, process.env.HOME);
+  });
+
+  it('postCreateEnv: каталог-шим встаёт в начало PATH, хвост PATH сохранён', () => {
+    const env = postCreateEnv('vibelog.mjs', '/shim/dir');
+    assert.equal(env.PATH, `/shim/dir${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`);
+    assert.ok(env.PATH.endsWith(process.env.PATH));
+  });
+
+  it('makeBinShim создаёт исполняемые vb и vibelog, запускающие этот CLI', () => {
+    const bin = fakeBin(join(testDir, 'bin'));
+    const shim = makeBinShim(bin, tmpRoot);
+    if (shim === null) {
+      // Windows: shell-шим не поддерживается — проверять нечего.
+      assert.equal(process.platform, 'win32');
+      return;
+    }
+    try {
+      for (const name of ['vb', 'vibelog']) {
+        const shimPath = join(shim, name);
+        assert.equal(existsSync(shimPath), true, name);
+        const body = readFileSync(shimPath, 'utf-8');
+        assert.match(body, /^#!\/bin\/sh/);
+        assert.match(body, /exec /);
+        assert.ok(body.includes(bin), body);
+        assert.ok((statSync(shimPath).mode & 0o111) !== 0, `${name} не исполняемый`);
+      }
+    } finally {
+      rmSync(shim, { recursive: true, force: true });
+    }
+  });
+
+  it('makeBinShim: без энтрипоинта шим не создаётся', () => {
+    assert.equal(makeBinShim(null, tmpRoot), null);
+  });
+
+  it('postCreateEnv: переменные агентской фазы не протекают в чужой проект', () => {
+    process.env.VIBELOG_PHASE_NAME = 'code';
+    process.env.VIBELOG_RUN_ID = 'run-1';
+    try {
+      const env = postCreateEnv('vibelog.mjs');
+      assert.equal(env.VIBELOG_PHASE_NAME, undefined);
+      assert.equal(env.VIBELOG_RUN_ID, undefined);
+      assert.equal(env.VIBELOG_BIN, 'vibelog.mjs');
+    } finally {
+      delete process.env.VIBELOG_PHASE_NAME;
+      delete process.env.VIBELOG_RUN_ID;
+    }
+  });
+
+  it('postCreateEnv: без энтрипоинта VIBELOG_BIN не задаётся', () => {
+    const env = postCreateEnv(null);
+    assert.equal(env.VIBELOG_BIN, undefined);
+    assert.equal(env.PATH, process.env.PATH);
+  });
+
+  it('VIBELOG_BIN передаётся в env раннера postCreate, install — без env', async () => {
+    const bin = fakeBin(join(testDir, 'bin'));
+    const deps = mockRunner();
+    const result = await createProject({
+      cwd: testDir,
+      name: 'myapp',
+      template: 'vibelog.md/templates/svelte-minimal',
+      cloneUrl: fixtureRepo,
+      tmpRoot,
+      depsRunner: deps.runner,
+      selfBin: bin,
+      noGit: true,
+    });
+    const post = deps.calls.find((call) => call.args[0] === 'run');
+    assert.ok(post, 'postCreate не запускался');
+    assert.equal(post.env.VIBELOG_BIN, real(bin));
+    // PATH наследован целиком (npm-скрипту нужны node и tsc), но с шимом
+    // впереди: так даже шаблон, зовущий «vb» по имени, получит нашу версию.
+    assert.ok(post.env.PATH.endsWith(process.env.PATH), post.env.PATH);
+    if (process.platform !== 'win32') {
+      assert.notEqual(post.env.PATH, process.env.PATH);
+    }
+    // install пакетов в окружении не нуждается — env не передаётся вовсе.
+    const install = deps.calls.find((call) => call.args[0] === 'install');
+    assert.equal(install.env, undefined);
+    // Компонентов у шаблона нет — предупреждения о секции нет
+    // (единственное возможное — про дефолтный реестр).
+    assert.equal(
+      result.warnings.some((w) => /VIBELOG_BIN|components/.test(w)),
+      false,
+    );
+  });
+
+  it('нет энтрипоинта: VIBELOG_BIN не передан, есть предупреждение', async () => {
+    const deps = mockRunner();
+    const result = await createProject({
+      cwd: testDir,
+      name: 'myapp',
+      template: 'vibelog.md/templates/svelte-minimal',
+      cloneUrl: fixtureRepo,
+      tmpRoot,
+      depsRunner: deps.runner,
+      selfBin: null,
+      noGit: true,
+    });
+    const post = deps.calls.find((call) => call.args[0] === 'run');
+    assert.equal(post.env.VIBELOG_BIN, undefined);
+    // Шима тоже нет: подменять PATH нечем, шаблон уйдёт в глобальный vb.
+    assert.equal(post.env.PATH, process.env.PATH);
+    const hints = result.warnings.filter((w) => /VIBELOG_BIN/.test(w));
+    assert.equal(hints.length, 1, result.warnings.join(' | '));
+  });
+
+  it('postCreate не создал секцию components при непустом vibelog.components — предупреждение', async () => {
+    const repo = join(testDir, 'fixture-components');
+    makeFixtureRepo(
+      repo,
+      templateManifest({ vibelog: { type: 'template', components: ['vibelog.md/ui/button'] } }),
+    );
+    const result = await createProject({
+      cwd: testDir,
+      name: 'myapp',
+      template: 'vibelog.md/templates/svelte-minimal',
+      cloneUrl: repo,
+      tmpRoot,
+      selfBin: fakeBin(join(testDir, 'bin')),
+      depsRunner: mockRunner().runner,
+      noGit: true,
+      installComponents: async (paths) => ({
+        installed: [],
+        failed: paths.map((path) => ({ path, error: 'секция components не найдена' })),
+      }),
+    });
+    const stale = result.warnings.find((w) => /устаревший/.test(w));
+    assert.ok(stale, `нет предупреждения про устаревший CLI: ${result.warnings.join(' | ')}`);
+    assert.match(stale, /components/);
+    assert.match(stale, /VIBELOG_BIN/);
+    assert.deepEqual(
+      result.failedComponents.map((f) => f.path),
+      ['vibelog.md/ui/button'],
+    );
+  });
+
+  it('postCreate создал секцию components — предупреждения нет', async () => {
+    const repo = join(testDir, 'fixture-components');
+    makeFixtureRepo(
+      repo,
+      templateManifest({ vibelog: { type: 'template', components: ['vibelog.md/ui/button'] } }),
+    );
+    const deps = mockRunner();
+    // Эмулируем настоящий postCreate: секция появляется в каталоге проекта.
+    const runner = (command, args, options) => {
+      const status = deps.runner(command, args, options).status;
+      if (args[0] === 'run') writeSettings(options.cwd, componentsConfig());
+      return { status };
+    };
+    const result = await createProject({
+      cwd: testDir,
+      name: 'myapp',
+      template: 'vibelog.md/templates/svelte-minimal',
+      cloneUrl: repo,
+      tmpRoot,
+      selfBin: fakeBin(join(testDir, 'bin')),
+      depsRunner: runner,
+      noGit: true,
+      installComponents: async (paths) => ({ installed: paths, failed: [] }),
+    });
+    assert.equal(
+      result.warnings.some((w) => /устаревший/.test(w)),
+      false,
+    );
+    assert.deepEqual(result.installedComponents, ['vibelog.md/ui/button']);
+  });
+
+  it('installTemplateComponents: отсутствие секции подсказывает про VIBELOG_BIN', async () => {
+    const dir = join(testDir, 'no-config');
+    mkdirSync(dir, { recursive: true });
+    const outcome = await installTemplateComponents(['vibelog.md/ui/button'], dir);
+    assert.deepEqual(outcome.installed, []);
+    assert.equal(outcome.failed.length, 1);
+    assert.match(outcome.failed[0].error, /components/);
+    assert.match(outcome.failed[0].error, /VIBELOG_BIN/);
   });
 });
