@@ -45,7 +45,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { commitMessageArgs } from './commit-trailer.js';
-import { CREATE_MARKER_ENV, createMarkerValue } from './env-markers.js';
+import { CREATE_MARKER_ENV, CREATE_MARKER_INTERACTIVE_ENV, createInteractiveMarkerValue, createMarkerValue } from './env-markers.js';
 import {
   ComponentsConfigError,
   defaultComponentsConfig,
@@ -132,6 +132,13 @@ export interface CreateResult {
   scriptsRun: string[];
   /** Состояние git: инициализирован, пропущен флагом или git недоступен. */
   git: 'initialized' | 'skipped' | 'unavailable';
+  /**
+   * Полная настройка была запущена, но пользователь её отменил (Ctrl+C в
+   * wizard-е `vb init`, код 5). Проект при этом создан и рабочий — это не
+   * ошибка клонирования: CLI печатает «настройка отменена» и подсказывает
+   * `vibelog init`, код выхода 5 (VL-392).
+   */
+  setupCancelled: boolean;
   warnings: string[];
 }
 
@@ -171,6 +178,15 @@ export interface CreateProjectOptions {
   resolvePackageManager?: (templateDir: string) => Promise<PackageManager> | PackageManager;
   noInstall?: boolean;
   noGit?: boolean;
+  /**
+   * Полная настройка проекта (VL-392): `vb create` запущен в TTY без `--yes`.
+   *
+   * Значение вычисляет CLI (`isInteractive() && !--yes`), а не ядро: TTY —
+   * свойство терминала, а ядро должно оставаться тестируемым без него.
+   * Результат уезжает в `postCreate` маркером `VIBELOG_CREATE_INTERACTIVE`:
+   * шаблонный runner тогда зовёт `vb init --components` без `--yes`.
+   */
+  interactive?: boolean;
   gitRunner?: GitRunner;
   depsRunner?: DepsRunner;
   installComponents?: ComponentsInstaller;
@@ -270,11 +286,15 @@ export function selfBinPath(argvEntry: string | null | undefined = process.argv[
  *
  * @param noGit — `vb create` запущен с `--no-git`: `init` не должен подавлять
  *   предупреждение о git, репозитория действительно не будет
+ * @param interactive — `vb create` запущен в TTY без `--yes` (VL-392): маркер
+ *   `VIBELOG_CREATE_INTERACTIVE=1` говорит шаблонному runner-у звать
+ *   `vb init --components` без `--yes`, то есть провести полную настройку
  */
 export function postCreateEnv(
   selfEntry: string | null,
   shimDir: string | null = null,
   noGit = false,
+  interactive = false,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -290,6 +310,10 @@ export function postCreateEnv(
   }
   if (selfEntry !== null) env.VIBELOG_BIN = selfEntry;
   env[CREATE_MARKER_ENV] = createMarkerValue(noGit);
+  // VL-392: режим настройки. Отдельная переменная (а не значение
+  // VIBELOG_CREATE) — см. `env-markers.ts`. Шаблонный runner читает её и
+  // решает, добавлять ли `--yes` к `vb init --components`.
+  env[CREATE_MARKER_INTERACTIVE_ENV] = createInteractiveMarkerValue(interactive);
   if (shimDir !== null) {
     const separator = process.platform === 'win32' ? ';' : ':';
     env.PATH = env.PATH === undefined ? shimDir : `${shimDir}${separator}${env.PATH}`;
@@ -870,6 +894,7 @@ export async function createProject(options: CreateProjectOptions): Promise<Crea
     failedComponents: [],
     scriptsRun: [],
     git: 'skipped',
+    setupCancelled: false,
     warnings,
   };
 
@@ -917,12 +942,22 @@ export async function createProject(options: CreateProjectOptions): Promise<Crea
     try {
       post = depsRunner(pm, ['run', 'postCreate'], {
         cwd: targetDir,
-        env: postCreateEnv(selfEntry, shimDir, options.noGit === true),
+        env: postCreateEnv(selfEntry, shimDir, options.noGit === true, options.interactive === true),
       });
     } finally {
       if (shimDir !== null) rmSync(shimDir, { recursive: true, force: true });
     }
     if (post.error || post.status !== 0) {
+      // VL-392: `vb init` внутри postCreate вернул 5 — пользователь прервал
+      // wizard (Ctrl+C). Это НЕ ошибка клонирования: проект уже скопирован,
+      // зависимости стоят, а настройку можно повторить вручную. Отмена
+      // случается до applySetup, поэтому ни .env, ни .gitignore ещё не
+      // написаны — первый коммит ниже не утащит секреты (VL-348).
+      if (post.status === 5 && options.interactive === true) {
+        result.setupCancelled = true;
+        result.scriptsRun.push('postCreate');
+        return finishGit(result, options, git, ref, warn);
+      }
       // doc-25 §8 п.5: каталог НЕ удаляется — в нём уже лежит рабочий код,
       // и повторная установка зависимостей дороже ручной правки скрипта.
       const reason = post.error ? post.error.message : `код ${post.status ?? 'неизвестно'}`;

@@ -35,6 +35,34 @@ export const CREATE_MARKER_GIT = '1';
 export const CREATE_MARKER_NO_GIT = 'no-git';
 
 /**
+ * Имя переменной-маркера режима настройки (VL-392).
+ *
+ * Отдельная переменная, а не ещё одно значение `VIBELOG_CREATE`: там уже
+ * закодировано «git будет / git не будет» (`1` / `no-git`), и добавление
+ * третьей оси в то же значение дало бы комбинаторику значений, которую
+ * пришлось бы разбирать строкой. Две переменные описывают две независимые
+ * вещи: «откуда вызван init» и «какой режим настройки выбран».
+ */
+export const CREATE_MARKER_INTERACTIVE_ENV = 'VIBELOG_CREATE_INTERACTIVE';
+
+/** Полная настройка: шаблонный runner обязан звать `vb init --components` БЕЗ `--yes`. */
+export const CREATE_MARKER_INTERACTIVE = '1';
+
+/** Прежнее минимальное поведение (`--yes` или не-TTY): runner зовёт `init` с `--yes`. */
+export const CREATE_MARKER_DEFAULTS = 'yes';
+
+/**
+ * Значение маркера режима: `'1'` — полный wizard, `'yes'` — дефолты.
+ *
+ * Выставляется всегда (а не только в интерактивном режиме): шаблонный runner
+ * проверяет ровно `'1'`, но пустая переменная и «переменной нет» — разные
+ * состояния, и разбирать их в каждом шаблоне не нужно.
+ */
+export function createInteractiveMarkerValue(interactive: boolean): string {
+  return interactive ? CREATE_MARKER_INTERACTIVE : CREATE_MARKER_DEFAULTS;
+}
+
+/**
  * Значение маркера для запуска `postCreate`.
  *
  * Одна форма на оба случая: `'1'` — git будет инициализирован, `'no-git'` —
@@ -51,6 +79,13 @@ export interface CreateContext {
   fromCreate: boolean;
   /** `vb create` сам создаст git-репозиторий после `postCreate`. */
   gitWillBeInitialized: boolean;
+  /**
+   * `vb create` запущен в TTY без `--yes` (VL-392): настройка должна быть
+   * полной. Флаг решающий, а не производный от TTY внутри `init`: `postCreate`
+   * идёт через `npm run`, и если npm перенаправит stdio, `init` увидел бы
+   * не-TTY и молча ушёл в дефолты, хотя `create` обещал wizard.
+   */
+  forceInteractive: boolean;
 }
 
 /**
@@ -65,5 +100,6 @@ export function readCreateContext(env: NodeJS.ProcessEnv = process.env): CreateC
   return {
     fromCreate,
     gitWillBeInitialized: fromCreate && raw === CREATE_MARKER_GIT,
+    forceInteractive: env[CREATE_MARKER_INTERACTIVE_ENV] === CREATE_MARKER_INTERACTIVE,
   };
 }
