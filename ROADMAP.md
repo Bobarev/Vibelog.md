@@ -1,8 +1,8 @@
 # Roadmap — Vibelog.md
 
-**Текущая версия:** 1.11.0
-**Активный горизонт:** v1.12.0 — v1.14.0
-**Последнее обновление:** 2026-11-03 (добавлен горизонт UI Kit / `vb` CLI)
+**Текущая версия:** 1.13.0
+**Активный горизонт:** v1.13.0 — v1.15.0
+**Последнее обновление:** 2026-11-09 (релиз 1.13.0: закрыт v1.12)
 **Связанные документы:** CHANGELOG.md, backlog/ (задачи), doc-6 (настройки), doc-21 (спецификация экспериментов), doc-25 (спецификация `vb` CLI, реестра UI и шаблонов), decisions decision-6…decision-11
 
 ## Как читать этот roadmap
@@ -15,6 +15,8 @@
 
 - **v1.10 закрыт** (VL-188…VL-208): веб-чат, Responses API, billing, auto-runner, transient In Progress, references cache, investigation-workflow.
 - **v1.11 закрыт** (VL-209…VL-290): супервизор и авто-лечение фаз, стабильный env тестов, guard повторов, инструменты агента (search_files, project_map, read_file на директориях), веб-чат и global search, релиз 1.11.0.
+- **v1.12 закрыт** (VL-291…VL-392, релиз 2026-11-03): веб-чат с Responses API и учёт токенов, каталог моделей и сверка цены вендора, TUI агента на `@clack`, веха v1.12.
+- **v1.13 закрыт** (VL-324…VL-393, релиз 2026-11-09): `vb create` запускает полную настройку проекта в TTY, единый гейт терминальности фаз и защита от рецидивов, MCP-уроки без `content`, detached-ходы веб-чата, веха v1.13.
 - **Эпик A/B-экспериментов:** спецификация VL-293 Done (doc-21), MVP VL-294–VL-298 Done (артефакт `backlog/experiments/`, dataset JSONL, manual runner + record, report/compare, LLM-judge). Осталось v2 — VL-299, VL-300, VL-301.
 - **Открытые задачи:** VL-210 (init wizard, Spec), VL-299/VL-300 (Planned), VL-301 (Spec), VL-124 (To Do).
 - **Новое направление:** UI Kit для Svelte и `vb` CLI — спецификация doc-25 готова, ADR decision-6…decision-11 приняты, задачи ещё не созданы.
