@@ -170,6 +170,44 @@ describe('валидация путей алиасов (VL-333)', () => {
     expectError(() => resolveAliasPath(dir, config, 'ui', '../x.svelte'), 3, 'target');
   });
 
+  it('VL-383: алиас-файл utils + "../utils.ts" → каталог файла-алиаса', () => {
+    const dir = makeProject(testRoot, 'alias-file-dotdot-utils');
+    const resolved = resolveAliasPath(dir, validConfig(), 'utils', '../utils.ts');
+    // aliases.utils = 'src/lib/utils.ts' → база dirname = src/lib
+    assert.equal(resolved, join(dir, 'src', 'lib', 'utils.ts'));
+  });
+
+  it('VL-383: алиас-файл css + "../theme.css" → относительно самого файла-алиаса', () => {
+    const dir = makeProject(testRoot, 'alias-file-dotdot-css');
+    const resolved = resolveAliasPath(dir, validConfig(), 'css', '../theme.css');
+    // aliases.css = 'src/app.css' → ../theme.css от файла = src/theme.css
+    assert.equal(resolved, join(dir, 'src', 'theme.css'));
+  });
+
+  it('VL-383: алиас-файл utils — глубина и вложенность отклоняются', () => {
+    const dir = makeProject(testRoot, 'alias-file-dotdot-bad');
+    const config = validConfig();
+    expectError(() => resolveAliasPath(dir, config, 'utils', '../../../evil.ts'), 3, 'target');
+    expectError(() => resolveAliasPath(dir, config, 'utils', '../../evil.ts'), 3, 'target');
+    expectError(() => resolveAliasPath(dir, config, 'utils', '../sub/x.ts'), 3, 'target');
+    expectError(() => resolveAliasPath(dir, config, 'utils', '../'), 3, 'target');
+  });
+
+  it('VL-383: алиас-каталог ui — "../" запрещён, вложенный каталог разрешён', () => {
+    const dir = makeProject(testRoot, 'alias-dir-dotdot');
+    const config = validConfig();
+    expectError(() => resolveAliasPath(dir, config, 'ui', '../x.svelte'), 3, 'target');
+    expectError(() => resolveAliasPath(dir, config, 'components', '../x.svelte'), 3, 'target');
+    assert.equal(
+      resolveAliasPath(dir, config, 'ui', 'button.svelte'),
+      join(dir, 'src', 'lib', 'components', 'ui', 'button.svelte'),
+    );
+    assert.equal(
+      resolveAliasPath(dir, config, 'ui', 'card/card.svelte'),
+      join(dir, 'src', 'lib', 'components', 'ui', 'card', 'card.svelte'),
+    );
+  });
+
   it('target абсолютный → код 3', () => {
     const dir = makeProject(testRoot, 'alias-target-abs');
     expectError(() => resolveAliasPath(dir, validConfig(), 'ui', '/etc/passwd'), 3, 'target');

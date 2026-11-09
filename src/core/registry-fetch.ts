@@ -33,6 +33,8 @@
  *   из каждого сообщения.
  */
 
+import { isAbsolute } from 'node:path';
+
 import { readToken, maskToken } from './gitverse-auth.js';
 import {
   DEFAULT_RETRY_DELAYS_MS,
@@ -398,7 +400,18 @@ async function fetchTextWithRetries(
   return response.text;
 }
 
-/** Валидирует форму элемента реестра (doc-25 §3.3). */
+/**
+ * Валидирует форму элемента реестра (doc-25 §3.3).
+ *
+ * Проверяются только типы полей и абсолютность путей. Переходы вверх («..»)
+ * здесь намеренно НЕ проверяются (VL-383): легальность `..` зависит от типа
+ * алиаса (для алиасов-файлов `utils`/`css` база — каталог файла, поэтому
+ * `../utils.ts` законен; для алиасов-каталогов — запрещён). Алиас на этом
+ * слое неизвестен, поэтому единственное место такой проверки —
+ * `resolveAliasPath` в `components-config.ts`: там же есть финальная проверка
+ * «путь остался внутри корня проекта». Дублировать её в валидации формы
+ * нельзя — две проверки одного и того же расходятся (так и появился VL-383).
+ */
 export function validateRegistryItem(raw: unknown, expectedName?: string): RegistryItem {
   const failed: string[] = [];
 
@@ -464,10 +477,8 @@ export function validateRegistryItem(raw: unknown, expectedName?: string): Regis
       const target = file.target;
       if (typeof target !== 'string' || target.trim() === '') {
         failed.push(`files[${index}].target (ожидалась непустая строка)`);
-      } else if (target.startsWith('/') || /^[A-Za-z]:[\\/]/.test(target)) {
+      } else if (isAbsolute(target) || /^[A-Za-z]:[\\/]/.test(target) || target.startsWith('~')) {
         failed.push(`files[${index}].target («${target}» не должен быть абсолютным путём)`);
-      } else if (target.split(/[\\/]/).includes('..')) {
-        failed.push(`files[${index}].target («${target}» не должен содержать «..»)`);
       }
     });
   }

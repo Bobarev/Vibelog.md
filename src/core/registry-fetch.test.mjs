@@ -566,8 +566,24 @@ describe('VL-335: validateRegistryItem', () => {
     );
   });
 
-  it('отклоняет абсолютный target и target с «..»', () => {
-    for (const target of ['/etc/passwd', '../../outside.svelte', 'a/../../b.svelte']) {
+  it('VL-383: target с «..» больше не отклоняется формой (семантику проверяет resolveAliasPath)', () => {
+    const item = validateRegistryItem(
+      validItem({
+        name: 'base',
+        type: 'registry:lib',
+        files: [
+          { path: 'src/lib/utils.ts', target: '../utils.ts', type: 'registry:lib' },
+          { path: 'src/lib/theme.css', target: '../theme.css', type: 'registry:lib' },
+        ],
+      }),
+      'base',
+    );
+    assert.equal(item.files[0].target, '../utils.ts');
+    assert.equal(item.files[1].target, '../theme.css');
+  });
+
+  it('VL-383: абсолютный target, «~» и пустой target по-прежнему отклоняются', () => {
+    for (const target of ['/etc/x', 'C:\\x', '~/x', '']) {
       assert.throws(
         () =>
           validateRegistryItem(
