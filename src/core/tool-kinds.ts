@@ -54,6 +54,8 @@ export const TOOL_KINDS: Readonly<Record<string, ToolKind>> = {
   document_view: 'read',
   document_create: 'write',
   document_update: 'write',
+  // VL-399: точечная правка тела документа — запись (нужно подтверждение)
+  document_edit: 'write',
   document_search: 'read',
   // === Фазы ===
   backlog_finish_phase: 'write',

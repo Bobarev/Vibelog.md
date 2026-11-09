@@ -116,7 +116,7 @@ export interface EntitySpec<E> {
     base: Record<string, unknown>,
   ): Record<string, unknown>;
   /** Что попадает в `applied`: значения ИЗ СУЩНОСТИ после записи. */
-  applied(entity: E, keys: string[], via: 'applied' | 'partial' | 'noop'): Record<string, unknown>;
+  applied(entity: E, keys: string[], via: 'applied' | 'partial' | 'noop', previous?: E): Record<string, unknown>;
   /**
    * Чего не хватает в сущности (считается ОТ СОСТОЯНИЯ, а не от аргументов).
    * `ctx` добавлен в VL-370: неполнота зависит от workflow сущности и фазы.
@@ -237,7 +237,7 @@ export function runUpdate<E>(spec: EntitySpec<E>, args: UpdateArgs, cwd: string)
   if (keys.length === 0 || unchanged) {
     // «Менять нечего» — noop, а не отказ: неполнота сообщается полем missing.
     const missing = spec.completeness?.(current, ctx) ?? [];
-    const applied = spec.applied(current, keys, 'noop');
+    const applied = spec.applied(current, keys, 'noop', current);
     const next = missing.length > 0 ? (spec.next?.(current, missing) ?? {}) : {};
     const hint = spec.noopHint?.(current, keys, Object.keys(args), ctx) ?? next.hint;
     return ackNoopDetailed(
@@ -259,7 +259,8 @@ export function runUpdate<E>(spec: EntitySpec<E>, args: UpdateArgs, cwd: string)
   // 8. Исход: записали × полная ли сущность ПОСЛЕ записи.
   const missing = spec.completeness?.(written, ctx) ?? [];
   const via = missing.length > 0 ? 'partial' : 'applied';
-  const applied = spec.applied(written, keys, via);
+  // VL-399: прежнее состояние передаётся ради размеров тела до/после в applied
+  const applied = spec.applied(written, keys, via, current);
   const message = spec.message(written, keys, via);
   if (missing.length === 0) {
     return ackOk(message, applied, skipped);

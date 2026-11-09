@@ -53,6 +53,7 @@ const EXPECTED_MCP_TOOLS = [
   'backlog_update_task',
   'backlog_view_task',
   'document_create',
+  'document_edit',
   'document_list',
   'document_search',
   'document_update',

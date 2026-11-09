@@ -171,7 +171,7 @@ describe('MCP-сервер', () => {
     assert.ok(responses[0].result.capabilities.tools);
   });
 
-  it('tools/list — возвращает 48 инструментов', async () => {
+  it('tools/list — возвращает 49 инструментов', async () => {
     const responses = await callMcp([
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
       { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
@@ -181,7 +181,7 @@ describe('MCP-сервер', () => {
     // VL-375/VL-391: реестр целиком — listTools(); в проекте БЕЗ секции
     // upstream скрыты все три upstream-инструмента (fail-closed).
     const all = listTools();
-    assert.equal(all.length, 48, 'полный реестр — 48 инструментов');
+    assert.equal(all.length, 49, 'полный реестр — 49 инструментов');
     assert.equal(listResp.result.tools.length, all.length - 3);
     const names = listResp.result.tools.map(t => t.name);
     assert.ok(!names.includes('upstream_report_bug'), 'ненастроенный upstream скрыт в tools/list');

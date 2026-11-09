@@ -158,6 +158,8 @@ describe('VL-306 — все write-инструменты отвечают JSON-a
       'milestone_remove',
       'document_create',
       'document_update',
+      // VL-399: точечная правка тела документа
+      'document_edit',
       'reference_add',
       'reference_update',
       'reference_link',
@@ -261,6 +263,11 @@ const ACK_SCENARIOS = {
   document_update: async () => {
     const doc = writeDocument(backlogDir, { title: 'Ack-док 2', content: 'тело' });
     return handleToolCall('document_update', { id: doc.id, title: 'Ack-док 3' }, cwd);
+  },
+  // VL-399: точечная правка тела — JSON-ack как у всех write-инструментов
+  document_edit: async () => {
+    const doc = writeDocument(backlogDir, { title: 'Ack-док edit', content: 'старое тело' });
+    return handleToolCall('document_edit', { id: doc.id, old_string: 'старое', new_string: 'новое' }, cwd);
   },
   reference_add: async () => handleToolCall('reference_add', { title: 'Ack-ref', type: 'url', url: 'https://example.org' }, cwd),
   reference_update: async () => {
@@ -389,6 +396,13 @@ const NOOP_SCENARIOS = {
   document_update: async () => {
     const doc = writeDocument(backlogDir, { title: 'Noop-док контракта', type: 'guide' });
     return JSON.parse(await handleToolCall('document_update', { id: doc.id, type: 'guide' }, cwd));
+  },
+  // VL-399: замена текста на тот же самый — файл не переписывается, это noop
+  document_edit: async () => {
+    const doc = writeDocument(backlogDir, { title: 'Noop-док правки', content: 'тело документа' });
+    return JSON.parse(await handleToolCall('document_edit', {
+      id: doc.id, old_string: 'тело документа', new_string: 'тело документа',
+    }, cwd));
   },
   reference_update: async () => {
     const ref = writeReference(cwd, { title: 'Noop-ref контракта', type: 'url', url: 'https://example.net', tags: ['a'] });
@@ -574,6 +588,7 @@ const PARTIAL_EXEMPT = {
   milestone_remove: 'name обязателен',
   milestone_archive: 'name обязателен',
   document_update: 'обновление применяет переданные поля; тело документа отдельным полем необязательно',
+  document_edit: 'одноцелевая точечная операция: все аргументы (id/old_string/new_string) обязательны по смыслу — «неполного» применения не существует',
   reference_update: 'обновление применяет переданные поля',
   reference_remove: 'id обязателен',
   reference_link: 'referenceId/taskId обязательны: связь без одной из сторон не существует',

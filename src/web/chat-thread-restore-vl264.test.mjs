@@ -94,7 +94,7 @@ describe('isWriteTool — паритет с серверным isWriteOperation 
     'backlog_create_task', 'backlog_update_task', 'backlog_add_comment',
     'backlog_manage_ac', 'backlog_manage_dod', 'backlog_update_status',
     'backlog_update_dependencies', 'backlog_finish_phase', 'document_create',
-    'document_update', 'milestone_add', 'milestone_rename', 'milestone_remove',
+    'document_update', 'document_edit', 'milestone_add', 'milestone_rename', 'milestone_remove',
     'reference_add', 'reference_sync', 'lesson_create', 'lesson_update',
   ];
 
