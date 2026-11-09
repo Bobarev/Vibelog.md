@@ -14,7 +14,7 @@ tags:
 
 **Дата:** 2026-11-02
 **Статус:** решение принято — инструмент не заводим
-**Связанные:** doc-10 (§5 «Инструменты», §6 «Loop detection и лимиты»), VL-119 (intentStreak), VL-229/VL-254/VL-284 (guard повторов), VL-303/VL-304/VL-306/VL-309 (appliedSignatures, noop, авто-отчёт)
+**Связанные:** doc-31 (§5 «Защита от переполнения запроса», §4 «Loop detection и guard повторов»), VL-119 (intentStreak), VL-229/VL-254/VL-284 (guard повторов), VL-303/VL-304/VL-306/VL-309 (appliedSignatures, noop, авто-отчёт)
 
 ## Вопрос
 

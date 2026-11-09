@@ -783,7 +783,7 @@ vibelog agent analyze <session-ref> [комм.]  анализ сессии аг�
 vibelog agent run <фаза> <task-id> [флаги]   headless-запуск фазы (VL-305)
 ```
 
-`vibelog agent` без подкоманд — TUI-чат (VL-158); `vibelog agent analyze` — разбор сессии (VL-141/169). Оба пути требуют интерактивного терминала и описаны в doc-10.
+`vibelog agent` без подкоманд — TUI-чат (VL-158); `vibelog agent analyze` — разбор сессии (VL-141/169). Оба пути требуют интерактивного терминала и описаны в doc-31.
 
 **`vibelog agent run` (VL-305)** — запуск фазы без отдельного бинаря `vibelog-agent`: удобный UX-путь для человека, который «живёт» в `vibelog`. Команда делегирует вызов в `main()` из `dist/agent/cli.js`, то есть работает ровно так же, как `vibelog-agent <фаза> <task-id> [флаги]` (см. раздел `vibelog-agent` ниже), и возвращает его exit code.
 
