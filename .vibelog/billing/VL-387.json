@@ -1,0 +1,81 @@
+{
+  "taskId": "VL-387",
+  "sessions": [
+    {
+      "sessionId": "agent-1794237748235",
+      "phase": "code",
+      "startedAt": "2026-11-09T15:22:28.078Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-09T15:31:16.267Z",
+      "durationMs": 525074,
+      "usage": {
+        "input": 2824441,
+        "output": 27731,
+        "cache": 2521088,
+        "total": 2852172,
+        "requests": 54,
+        "reasoning": 13812
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794237748235",
+      "phase": "code",
+      "startedAt": "2026-11-09T15:22:28.078Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-09T15:31:16.294Z",
+      "durationMs": 525074,
+      "usage": {
+        "input": 2824441,
+        "output": 27731,
+        "cache": 2521088,
+        "total": 2852172,
+        "requests": 54,
+        "reasoning": 13812
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794238351679",
+      "phase": "close",
+      "startedAt": "2026-11-09T15:32:31.577Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-09T15:35:21.726Z",
+      "durationMs": 167349,
+      "usage": {
+        "input": 1545995,
+        "output": 14324,
+        "cache": 1300480,
+        "total": 1560319,
+        "requests": 31,
+        "reasoning": 9357
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794238351679",
+      "phase": "close",
+      "startedAt": "2026-11-09T15:32:31.577Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-09T15:35:21.834Z",
+      "durationMs": 167349,
+      "usage": {
+        "input": 1545995,
+        "output": 14324,
+        "cache": 1300480,
+        "total": 1560319,
+        "requests": 31,
+        "reasoning": 9357
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    }
+  ]
+}
