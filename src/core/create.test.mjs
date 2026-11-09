@@ -63,6 +63,62 @@ function makeFixtureRepo(dir, manifest) {
   git(['checkout', '-q', '-b', 'master'], dir);
   git(['-c', 'user.name=T', '-c', 'user.email=t@e', 'add', '-A'], dir);
   git(['-c', 'user.name=T', '-c', 'user.email=t@e', 'commit', '-qm', 'init'], dir);
+  // Ветка dev — для проверки `--branch` и `registries[alias].branch`.
+  git(['branch', 'dev'], dir);
+}
+
+/** Секция `components` как её создаёт `vb init --components`. */
+function componentsConfig(registries = { 'vibelog.md': { owner: 'Vibelog-md', branch: 'master' } }) {
+  return {
+    schemaVersion: 1,
+    registries,
+    aliases: {
+      components: 'src/lib/components',
+      ui: 'src/lib/components/ui',
+      utils: 'src/lib/utils.ts',
+      css: 'src/app.css',
+    },
+    lockFile: '.vibelog/installed.lock.json',
+  };
+}
+
+/** Пишет `.vibelog/settings.json` с секцией `components` в каталог проекта. */
+function writeSettings(dir, components) {
+  mkdirSync(join(dir, '.vibelog'), { recursive: true });
+  writeFileSync(
+    join(dir, '.vibelog', 'settings.json'),
+    `${JSON.stringify({ components }, null, 2)}\n`,
+    'utf-8',
+  );
+}
+
+/**
+ * Раннер git, который запоминает аргументы и подменяет сетевой URL на
+ * локальную фикстуру: так проверяется собранный URL без похода в сеть.
+ */
+function recordingGitRunner(fixture) {
+  const calls = [];
+  return {
+    calls,
+    runner: (args, cwd) => {
+      calls.push(args);
+      const patched = args.map((arg) => (/^https?:\/\//.test(arg) ? fixture : arg));
+      const res = spawnSync('git', patched, { cwd, encoding: 'utf-8' });
+      return {
+        status: res.status,
+        stdout: res.stdout ?? '',
+        stderr: res.stderr ?? '',
+        ...(res.error ? { error: res.error } : {}),
+      };
+    },
+  };
+}
+
+/** URL клонирования из записанных вызовов git. */
+function cloneUrlOf(calls) {
+  const clone = calls.find((args) => args[0] === 'clone');
+  assert.ok(clone, 'git clone не вызывался');
+  return clone.find((arg) => /^https?:\/\//.test(arg));
 }
 
 /** Манифест корректного шаблона. */
@@ -384,8 +440,7 @@ describe('createProject', () => {
     assert.equal(existsSync(join(testDir, 'myapp', 'src', 'app.txt')), true);
   });
 
-  it('временный каталог удаляется после успеха и после ошибки', async () => {
-    const leftovers = () => readdirSync(tmpRoot).filter((n) => n.startsWith('vb-create-'));
+  it('временный каталог удаляется после успеха и после ошибки', async () => {    const leftovers = () => readdirSync(tmpRoot).filter((n) => n.startsWith('vb-create-'));
     await createProject({
       cwd: testDir,
       name: 'ok-app',
@@ -408,5 +463,142 @@ describe('createProject', () => {
       }),
     );
     assert.deepEqual(leftovers(), []);
+  });
+});
+
+describe('резолв owner из registries (VL-385)', () => {
+  it('owner берётся из registries[alias].owner, регистр сохраняется', async () => {
+    writeSettings(testDir, componentsConfig());
+    const git = recordingGitRunner(fixtureRepo);
+    const result = await createProject({
+      cwd: testDir,
+      name: 'myapp',
+      template: 'vibelog.md/templates/svelte-minimal',
+      tmpRoot,
+      gitRunner: git.runner,
+      depsRunner: mockRunner().runner,
+      noGit: true,
+    });
+    // Регрессия VL-385: раньше в URL подставлялся alias «vibelog.md».
+    assert.equal(cloneUrlOf(git.calls), 'https://gitverse.ru/Vibelog-md/templates.git');
+    assert.equal(result.branch, 'master');
+    assert.deepEqual(result.warnings, []);
+  });
+
+  it('пустой каталог: дефолтная запись реестра (не хардкод, а defaultComponentsConfig)', async () => {
+    const git = recordingGitRunner(fixtureRepo);
+    const result = await createProject({
+      cwd: testDir,
+      name: 'myapp',
+      template: 'vibelog.md/templates/svelte-minimal',
+      tmpRoot,
+      gitRunner: git.runner,
+      depsRunner: mockRunner().runner,
+      noGit: true,
+    });
+    assert.equal(cloneUrlOf(git.calls), 'https://gitverse.ru/Vibelog-md/templates.git');
+    assert.match(cloneUrlOf(git.calls), /Vibelog-md\//);
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0], /дефолтн/);
+  });
+
+  it('неизвестный alias — код 2 со списком доступных и без git-вызовов', async () => {
+    writeSettings(testDir, componentsConfig());
+    const git = recordingGitRunner(fixtureRepo);
+    await assert.rejects(
+      createProject({
+        cwd: testDir,
+        name: 'myapp',
+        template: 'nope/templates/x',
+        tmpRoot,
+        gitRunner: git.runner,
+        depsRunner: mockRunner().runner,
+        noGit: true,
+      }),
+      (err) => {
+        assert.ok(err instanceof CreateError);
+        assert.equal(err.code, 2);
+        assert.match(err.message, /vibelog\.md/);
+        return true;
+      },
+    );
+    assert.equal(git.calls.length, 0);
+    assert.equal(existsSync(join(testDir, 'myapp')), false);
+  });
+
+  it('owner с точкой — код 2 с указанием ограничения GitVerse', async () => {
+    // readComponentsConfig отклонит домен в owner ещё на чтении секции.
+    writeSettings(
+      testDir,
+      componentsConfig({ 'vibelog.md': { owner: 'gitverse.ru', branch: 'master' } }),
+    );
+    await assert.rejects(
+      createProject({
+        cwd: testDir,
+        name: 'myapp',
+        template: 'vibelog.md/templates/svelte-minimal',
+        tmpRoot,
+        noGit: true,
+      }),
+      (err) => {
+        assert.ok(err instanceof CreateError);
+        assert.equal(err.code, 2);
+        assert.match(err.message, /точку/);
+        return true;
+      },
+    );
+  });
+
+  it('секция components без нужного alias — код 2 с подсказкой про vb init --components', async () => {
+    writeSettings(testDir, componentsConfig({ other: { owner: 'Someone', branch: 'main' } }));
+    await assert.rejects(
+      createProject({
+        cwd: testDir,
+        name: 'myapp',
+        template: 'vibelog.md/templates/svelte-minimal',
+        tmpRoot,
+        noGit: true,
+      }),
+      (err) => {
+        assert.ok(err instanceof CreateError);
+        assert.equal(err.code, 2);
+        assert.match(err.message, /other/);
+        assert.match(err.message, /vb init --components/);
+        return true;
+      },
+    );
+  });
+
+  it('--branch переопределяет ветку, без флага берётся registries[alias].branch', async () => {
+    writeSettings(
+      testDir,
+      componentsConfig({ 'vibelog.md': { owner: 'Vibelog-md', branch: 'dev' } }),
+    );
+    const withFlag = recordingGitRunner(fixtureRepo);
+    const result = await createProject({
+      cwd: testDir,
+      name: 'flagapp',
+      template: 'vibelog.md/templates/svelte-minimal',
+      branch: 'master',
+      tmpRoot,
+      gitRunner: withFlag.runner,
+      depsRunner: mockRunner().runner,
+      noGit: true,
+    });
+    assert.equal(result.branch, 'master');
+    const cloneWithFlag = withFlag.calls.find((args) => args[0] === 'clone');
+    assert.equal(cloneWithFlag[cloneWithFlag.indexOf('--branch') + 1], 'master');
+
+    const withoutFlag = recordingGitRunner(fixtureRepo);
+    const second = await createProject({
+      cwd: testDir,
+      name: 'regapp',
+      template: 'vibelog.md/templates/svelte-minimal',
+      tmpRoot,
+      gitRunner: withoutFlag.runner,
+      depsRunner: mockRunner().runner,
+      noGit: true,
+    });
+    assert.equal(second.branch, 'dev');
   });
 });

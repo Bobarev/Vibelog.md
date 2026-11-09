@@ -43,7 +43,12 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { commitMessageArgs } from './commit-trailer.js';
-import { readComponentsConfig, readLock } from './components-config.js';
+import {
+  ComponentsConfigError,
+  defaultComponentsConfig,
+  readComponentsConfig,
+  readLock,
+} from './components-config.js';
 import type { ComponentsConfig, LockFile, RegistryEntry } from './components-config.js';
 import { detectPackageManager } from './install-deps.js';
 import type { DepsRunner, PackageManager } from './install-deps.js';
@@ -248,24 +253,93 @@ export function validateProjectName(name: string): string | null {
 }
 
 /**
+ * Запись реестра, к которой привязан alias шаблона.
+ *
+ * `owner` — владелец репозитория-шаблона, `branch` — ветка по умолчанию,
+ * `isDefault` — взята ли запись из дефолтной конфигурации (секции `components`
+ * в проекте нет, `vb create` работает в пустом каталоге).
+ */
+export interface TemplateRegistry {
+  owner: string;
+  branch: string;
+  isDefault: boolean;
+}
+
+/**
+ * Резолвит alias шаблона в запись реестра — симметрично `vb install`
+ * (VL-385, doc-25 §3.1, §4.1 шаг 1).
+ *
+ * Ключевое различие, из-за которого ломалось клонирование: alias (`vibelog.md`)
+ * — ключ карты `registries`, а owner (`Vibelog-md`) — её значение; подставлять
+ * alias в URL нельзя. Порядок: секция `components` проекта → дефолтная запись
+ * (`defaultComponentsConfig`, тот же источник, что у `vb init --components`) →
+ * ошибка кодом 2 со списком доступных реестров.
+ */
+export function resolveTemplateRegistry(cwd: string, alias: string): TemplateRegistry {
+  let config: ComponentsConfig | null = null;
+  try {
+    config = readComponentsConfig(cwd);
+  } catch (err) {
+    if (err instanceof ComponentsConfigError) {
+      // Для `vb create` битая секция — ошибка конфигурации (код 2), а не
+      // «не удалось создать проект»: подсказка важнее кода. Отдельно
+      // поддерживается самая частая опечатка — домен вместо владельца.
+      const hint = err.field.endsWith('.owner')
+        ? '; owner в registries — имя владельца репозитория (например «Vibelog-md»), а не домен: точку GitVerse здесь не допускает'
+        : '';
+      throw new CreateError(`${err.message}${hint}`, 2);
+    }
+    throw err;
+  }
+
+  // Пустой каталог: секции нет, но `vb create` — основной способ завести
+  // проект с нуля, поэтому берём дефолтную запись реестра. Хардкода здесь нет:
+  // источник — та же функция, что создаёт секцию в `vb init --components`.
+  const entries: Record<string, RegistryEntry> =
+    config === null ? defaultComponentsConfig(cwd).registries : config.registries;
+  const entry: RegistryEntry | undefined = entries[alias];
+  if (!entry) {
+    const available = Object.keys(entries);
+    const list = available.length > 0 ? available.join(', ') : 'нет ни одного';
+    throw new CreateError(
+      config === null
+        ? `реестр «${alias}» не найден в дефолтной конфигурации (доступны: ${list}); выполните «vb init --components» и добавьте реестр «${alias}» в .vibelog/settings.json в секцию components.registries`
+        : `реестр «${alias}» не найден в registries (.vibelog/settings.json); доступны: ${list}. ` +
+            `Добавьте реестр: "${alias}": { "owner": "Vibelog-md", "branch": "master" }, либо выполните «vb init --components»`,
+      2,
+    );
+  }
+
+  // owner — имя владельца репозитория, а не домен: точка делает URL нерабочим
+  // (именно точка отличает alias от owner, doc-25 §3.1). Дополнительная проверка
+  // нужна и для дефолтной записи — она приходит не из валидированного файла.
+  const owner = String(entry.owner ?? '').trim();
+  if (owner === '') {
+    throw new CreateError(
+      `поле registries.${alias}.owner пустое: нужен владелец репозитория-шаблона (например Vibelog-md)`,
+      2,
+    );
+  }
+  if (owner.includes('.') || /\s/.test(owner)) {
+    throw new CreateError(
+      `поле registries.${alias}.owner: «${owner}» недопустимо — GitVerse: имя владельца не содержит точку и пробелов (нужно имя организации, а не домен)`,
+      2,
+    );
+  }
+
+  const branch = typeof entry.branch === 'string' && entry.branch.trim() !== '' ? entry.branch.trim() : 'master';
+  return { owner, branch, isDefault: config === null };
+}
+
+/**
  * Ветка шаблона: флаг → `registries[alias].branch` → `master`.
  *
- * Отсутствие секции `components` (команда запускается вне проекта) — не
- * ошибка: `vb create` работает и в пустом каталоге, где настроек ещё нет.
+ * Обёртка над `resolveTemplateRegistry`, чтобы порядок резолва ветки и owner
+ * оставался в одном месте (раньше конфиг читался дважды и по-разному).
  */
 export function resolveTemplateBranch(cwd: string, alias: string, flag?: string): string {
   if (flag !== undefined && flag.trim() !== '') return flag.trim();
-  try {
-    const config = readComponentsConfig(cwd);
-    const entry: RegistryEntry | undefined = config?.registries[alias];
-    if (entry && typeof entry.branch === 'string' && entry.branch.trim() !== '') {
-      return entry.branch.trim();
-    }
-  } catch {
-    // Битые настройки не должны мешать созданию проекта: ветка по умолчанию
-    // рабочая (в репозиториях GitVerse ветки `main` нет).
-  }
-  return 'master';
+  return resolveTemplateRegistry(cwd, alias).branch;
 }
 
 /**
@@ -571,7 +645,19 @@ export async function createProject(options: CreateProjectOptions): Promise<Crea
     );
   }
 
-  const branch = resolveTemplateBranch(options.cwd, alias, options.branch);
+  // Резолв реестра — ДО временного каталога и любых git-вызовов: при ошибке
+  // конфигурации пользователь должен увидеть подсказку, а не шум из
+  // `vb-create-*` (VL-385).
+  const registry = resolveTemplateRegistry(options.cwd, alias);
+  const branch =
+    options.branch !== undefined && options.branch.trim() !== ''
+      ? options.branch.trim()
+      : registry.branch;
+  if (registry.isDefault) {
+    warn(
+      `реестр не настроен в проекте — использую дефолтный ${alias} → ${registry.owner} (${branch})`,
+    );
+  }
   const ref = `${alias}/${repo}/${template}`;
   const git = options.gitRunner ?? defaultGitRunner;
   const depsRunner = options.depsRunner ?? defaultDepsRunner;
@@ -580,7 +666,7 @@ export async function createProject(options: CreateProjectOptions): Promise<Crea
   let manifest: TemplateManifest;
   try {
     const cloned = cloneTemplate({
-      owner: alias,
+      owner: registry.owner,
       repo,
       branch,
       template,
