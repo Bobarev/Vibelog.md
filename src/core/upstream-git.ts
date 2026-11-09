@@ -46,8 +46,13 @@ export const INBOX_DIR = '.vibelog/upstream-inbox';
 /** Каталог отчётов в инбоксе. */
 export const REPORTS_DIR = 'reports';
 
-/** Статусы отчёта: open → accepted → done. */
-export const REPORT_STATUSES = ['open', 'accepted', 'done'] as const;
+/**
+ * Статусы отчёта: open → accepted | rejected → done.
+ *
+ * `rejected` добавлен в VL-391: без него отказ нечем выразить — отчёт либо
+ * висит `open` вечно, либо помечается `accepted` без задачи.
+ */
+export const REPORT_STATUSES = ['open', 'accepted', 'rejected', 'done'] as const;
 
 /** Порядок полей фронтматтера — источник истины формата (README инбокса сверяется тестом). */
 export const REPORT_FIELDS = [
@@ -62,6 +67,9 @@ export const REPORT_FIELDS = [
   'created',
   'status',
   'accepted_as',
+  // VL-391: причина отказа — последним, чтобы старые отчёты без поля
+  // парсились как '' и дописывались только при reject.
+  'rejected_reason',
 ] as const;
 
 /** Вид ошибки git-транспорта (от него зависит код выхода CLI). */
@@ -129,6 +137,8 @@ export interface UpstreamReport {
   created: string;
   status: string;
   accepted_as: string;
+  /** Причина отказа (VL-391): пустая строка — отчёт не отклоняли. */
+  rejected_reason: string;
   body: string;
 }
 
@@ -358,6 +368,8 @@ export function parseReport(text: string): UpstreamReport {
     created: str('created'),
     status: str('status') || 'open',
     accepted_as: str('accepted_as'),
+    // VL-391: старые отчёты без поля парсятся как '' (совместимость формата)
+    rejected_reason: str('rejected_reason'),
     body,
   };
   if (report.report_id === '') {
@@ -549,6 +561,7 @@ export function writeReport(cwd: string, cfg: UpstreamGitConfig, input: NewRepor
     created: input.created ?? today(),
     status: 'open',
     accepted_as: '',
+    rejected_reason: '',
     body: input.body ?? '',
   };
   if (report.target.trim() === '') {
@@ -570,12 +583,20 @@ export function writeReport(cwd: string, cfg: UpstreamGitConfig, input: NewRepor
 }
 
 /**
- * Входящие отчёты для своего префикса: `target` совпадает и `status: open`.
+ * Входящие отчёты для своего префикса: `target` совпадает.
+ *
+ * По умолчанию — только `status: open` (то, что требует решения). VL-391:
+ * `includeResolved: true` добавляет `accepted`/`rejected` — чтобы получатель
+ * видел свою историю решений, а `done` остаётся скрытым (работа закрыта).
  *
  * Чтение идёт из уже склонированного инбокса (обновление — `ensureInboxClone`),
  * сортировка по `created` (старые первыми).
  */
-export function listIncoming(cwd: string, targetPrefix: string): UpstreamReport[] {
+export function listIncoming(
+  cwd: string,
+  targetPrefix: string,
+  opts: { includeResolved?: boolean } = {},
+): UpstreamReport[] {
   const root = join(inboxPath(cwd), REPORTS_DIR);
   if (!existsSync(root)) {
     throw new UpstreamGitError(
@@ -595,7 +616,8 @@ export function listIncoming(cwd: string, targetPrefix: string): UpstreamReport[
       } catch {
         continue; // битый файл пропускаем: один отчёт не должен ломать список
       }
-      if (report.status !== 'open') continue;
+      const resolved = report.status === 'accepted' || report.status === 'rejected';
+      if (report.status !== 'open' && !(opts.includeResolved === true && resolved)) continue;
       if (!targetMatches(report.target, targetPrefix)) continue;
       out.push(report);
     }
@@ -635,60 +657,120 @@ export function normalizeAcceptedAs(value: string): string {
   return `${prefix.toUpperCase()}-${num}`;
 }
 
+/** Решение по отчёту: принять (с задачей) либо отклонить (с причиной) — VL-391. */
+export type AckDecision =
+  | { action: 'accept'; taskId: string }
+  | { action: 'reject'; reason: string };
+
 /**
- * Подтверждает получение отчёта: правит ТОЛЬКО `status` и `accepted_as`.
+ * Подтверждает получение отчёта или отклоняет его.
+ *
+ * `accept` — `accepted_as` (ссылка на задачу-получателя) + `status: accepted`;
+ * `reject` — `rejected_reason` (причина, чтобы отправитель понял отказ) +
+ * `status: rejected`. Строковый аргумент (`'VL-367'`) оставлен как сокращение
+ * для `accept`: CLI `upstream ack --as` и старые вызовы не должны ломаться.
  *
  * Правка построчная — остальной файл (включая порядок и форматирование
  * полей) остаётся байт-в-байт, чтобы CI-проверка «в чужих файлах меняются
- * только ack-поля» проходила.
+ * только ack-поля» проходила. Единственное исключение — дописывание
+ * отсутствующего `rejected_reason` (см. `replaceAckFields`).
  *
- * @throws UpstreamGitError kind:'usage' — неверный формат `--as`
+ * @throws UpstreamGitError kind:'usage' — неверный формат `taskId`/пустая причина
  * @throws UpstreamGitError kind:'config' — отчёт не найден
  */
 export function ackReport(
   cwd: string,
   id: string,
-  acceptedAs: string,
+  decision: AckDecision | string,
 ): { path: string; report: UpstreamReport } {
   if (id.trim() === '') {
     throw new UpstreamGitError('не указан report_id — передай id отчёта из «vibelog upstream pull»', 'config');
   }
-  const normalized = normalizeAcceptedAs(acceptedAs);
+  // Нормализация решения: строка — сокращение «принять с этой задачей»
+  const normalized: AckDecision = typeof decision === 'string'
+    ? { action: 'accept', taskId: decision }
+    : decision;
+
+  let fields: AckFields;
+  let commitMessageSuffix: string;
+  if (normalized.action === 'accept') {
+    const taskId = normalizeAcceptedAs(normalized.taskId);
+    fields = { status: 'accepted', acceptedAs: taskId };
+    commitMessageSuffix = `→ ${taskId}`;
+  } else {
+    const reason = (normalized.reason ?? '').trim();
+    if (reason === '') {
+      throw new UpstreamGitError(
+        'не указана причина отказа: для reject нужен reason — отправитель должен понять, что делать',
+        'usage',
+      );
+    }
+    fields = { status: 'rejected', rejectedReason: reason };
+    // Однострочный суффикс коммита: перевод строки в причине ломает subject
+    commitMessageSuffix = `— ${reason.replace(/\s+/g, ' ').slice(0, 72)}`;
+  }
+
   const rel = findReportById(cwd, id.trim());
   if (rel === undefined) {
     throw new UpstreamGitError(`отчёт с report_id «${id.trim()}» не найден в инбоксе`, 'config');
   }
   const abs = join(inboxPath(cwd), rel);
   const text = readFileSync(abs, 'utf-8');
-  const updated = replaceAckFields(text, normalized);
+  const updated = replaceAckFields(text, fields);
   const report = parseReport(updated);
   writeFileSync(abs, updated, 'utf-8');
-  commitAndPush(cwd, rel, `ack(${report.source_prefix}): ${report.report_id} → ${normalized}`);
+  const verb = fields.status === 'accepted' ? 'ack' : 'reject';
+  commitAndPush(cwd, rel, `${verb}(${report.source_prefix}): ${report.report_id} ${commitMessageSuffix}`);
   return { path: rel, report };
 }
 
+/** Поля, которыми оперирует ack: статус + взаимоисключающие ссылка/причина. */
+export interface AckFields {
+  status: 'accepted' | 'rejected';
+  /** Задача-получатель (только для accept). */
+  acceptedAs?: string;
+  /** Причина отказа (только для reject). */
+  rejectedReason?: string;
+}
+
 /**
- * Заменяет во фронтматтере ровно две строки: `status` и `accepted_as`.
+ * Заменяет во фронтматтере ack-поля: `status`, `accepted_as`, `rejected_reason`.
  *
- * Чистая функция: тестируется без git. Обе строки обязаны существовать —
- * «дописать от себя» нельзя, иначе CI увидит изменение чужого файла за
- * пределами ack-полей.
+ * Чистая функция: тестируется без git. `status` и `accepted_as` обязаны
+ * существовать — «дописать от себя» нельзя, иначе CI увидит изменение чужого
+ * файла за пределами ack-полей. Исключение — `rejected_reason`: в старых
+ * отчётах его нет, а без него reject невозможен, поэтому строка ДОПИСЫВАЕТСЯ
+ * в конец фронтматтера (CI-whitelist расширен тем же коммитом, VL-391).
+ *
+ * Отчёт не может быть одновременно принят и отклонён: при `accept` строка
+ * `rejected_reason` очищается, при `reject` — `accepted_as`.
  */
-export function replaceAckFields(text: string, acceptedAs: string): string {
+export function replaceAckFields(text: string, fields: AckFields): string {
   const normalized = (text ?? '').replace(/\r\n/g, '\n');
   const { yaml } = splitFrontmatter(normalized);
   const lines = normalized.split('\n');
   // Первая строка фронтматтера — `---`, дальше ровно столько строк, сколько в yaml
   const yamlLineCount = yaml.split('\n').length;
+  const isAccept = fields.status === 'accepted';
+  const acceptedAs = isAccept ? (fields.acceptedAs ?? '') : '';
+  const rejectedReason = isAccept ? '' : (fields.rejectedReason ?? '');
   let statusDone = false;
   let ackDone = false;
+  let rejectedDone = false;
+  // Индекс закрывающего `---` — позиция вставки отсутствующего поля. Считать
+  // её по числу yaml-строк нельзя: yaml содержит завершающий перевод строки,
+  // и счётчик уходит на строку за пределы фронтматтера (VL-391).
+  const yamlEnd = lines.indexOf('---', 1);
   for (let i = 1; i <= yamlLineCount && i < lines.length; i += 1) {
     if (/^status:/.test(lines[i])) {
-      lines[i] = 'status: accepted';
+      lines[i] = `status: ${fields.status}`;
       statusDone = true;
     } else if (/^accepted_as:/.test(lines[i])) {
       lines[i] = `accepted_as: ${yamlValue(acceptedAs)}`;
       ackDone = true;
+    } else if (/^rejected_reason:/.test(lines[i])) {
+      lines[i] = `rejected_reason: ${yamlValue(rejectedReason)}`;
+      rejectedDone = true;
     }
   }
   if (!statusDone || !ackDone) {
@@ -696,6 +778,11 @@ export function replaceAckFields(text: string, acceptedAs: string): string {
       'во фронтматтере отчёта нет полей status/accepted_as — файл не по схеме инбокса',
       'git',
     );
+  }
+  if (!rejectedDone) {
+    // Старый отчёт без rejected_reason: дописываем в конец фронтматтера.
+    // Это единственная «вставка строки», разрешённая CI (VL-391).
+    lines.splice(yamlEnd, 0, `rejected_reason: ${yamlValue(rejectedReason)}`);
   }
   return lines.join('\n');
 }

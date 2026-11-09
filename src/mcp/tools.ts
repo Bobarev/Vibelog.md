@@ -17,7 +17,7 @@
 
 import {
   listTasks, getTask, createTaskFile,
-  updateTaskFile, completeTaskFile,
+  updateTaskFile, completeTaskFile, addComment,
 } from '../core/store.js';
 import { searchTasksRanked } from '../core/search.js';
 import { isReady, validateDeps } from '../core/deps.js';
@@ -81,8 +81,21 @@ import {
 import { SUPERVISOR_TOOL_DEFS, handleSupervisorTool } from './supervisor.js';
 import { commitFiles } from './git-commit.js';
 // VL-363: репорт бага в upstream через GitVerse Issues
-import { GitverseError, isUpstreamConfigured, reportBug, tokenHint } from '../core/gitverse-issues.js';
-import { UpstreamGitError } from '../core/upstream-git.js';
+import { GitverseError, isUpstreamConfigured, reportBug, tokenHint, resolveUpstreamConfig } from '../core/gitverse-issues.js';
+import {
+  MIN_REPORT_ID_PREFIX,
+  REPORTS_DIR,
+  UpstreamGitError,
+  ackReport,
+  ensureInboxClone,
+  inboxPath,
+  listIncoming,
+  parseReport,
+  targetMatches,
+} from '../core/upstream-git.js';
+import type { UpstreamReport } from '../core/upstream-git.js';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { loadSettings } from '../core/settings.js';
 
 // completeTaskFile импортирован для паритета с оригинальным модулем;
 // в текущей логике инструментов не вызывается (оставлено без изменений).
@@ -834,6 +847,42 @@ export function listTools(): ToolDefinition[] {
         required: ['title'],
       },
     },
+    // === GitVerse Issues: приём входящих отчётов (VL-391) ===
+    {
+      name: 'upstream_list_reports',
+      description:
+        'Входящие отчёты об ошибках от других проектов Vibelog (git-инбокс). ' +
+        'Без report_id — список отчётов для своего префикса (по умолчанию только open); ' +
+        'с report_id — полное тело одного отчёта. Виден только при настроенном upstream.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          report_id: { type: 'string', description: 'ID отчёта (полный или первые 8 символов) — вернуть тело' },
+          include_resolved: {
+            type: 'boolean',
+            description: 'Показать и accepted/rejected (по умолчанию только open)',
+          },
+        },
+      },
+    },
+    {
+      name: 'upstream_ack_report',
+      description:
+        'Принять или отклонить входящий отчёт. accept требует task_id (задача в ЭТОМ проекте, ' +
+        'проверяется на существование) и связывает отчёт с задачей: пишет accepted_as и добавляет ' +
+        'комментарий в задачу. reject требует reason — причина попадает в отчёт, чтобы отправитель ' +
+        'понял отказ. Виден только при настроенном upstream.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          report_id: { type: 'string', description: 'ID отчёта (полный или первые 8 символов)' },
+          action: { type: 'string', enum: ['accept', 'reject'], description: 'accept — принять, reject — отклонить' },
+          task_id: { type: 'string', description: 'ID задачи-получателя (обязателен для accept), например VL-391' },
+          reason: { type: 'string', description: 'Причина отказа (обязательна для reject)' },
+        },
+        required: ['report_id', 'action'],
+      },
+    },
     // === Супервизор: запуск фаз, очередь, прогон (VL-268) ===
     ...SUPERVISOR_TOOL_DEFS,
   ];
@@ -959,6 +1008,13 @@ export async function handleToolCall(
     // повторный вызов создаст второй issue — это осознанно: репорт уникален).
     case 'upstream_report_bug':
       return toolUpstreamReportBug(args, cwd);
+    // VL-391: приём входящих отчётов — чтение списка и решение accept/reject.
+    // Идемпотентность by-key не нужна (как у report_bug): повторный accept того
+    // же отчёта с тем же task_id даёт noop от replaceAckFields (значения уже такие).
+    case 'upstream_list_reports':
+      return toolUpstreamListReports(args, cwd);
+    case 'upstream_ack_report':
+      return toolUpstreamAckReport(args, cwd);
     // VL-268: инструменты супервизора (фазы, очередь, прогон). Идемпотентность
     // by-key здесь не применяется: они не пишут поля задачи, а запускают фазы
     // и прогоны (дедуп add-очереди и «фаза уже идёт» даёт ядро/оркестратор).
@@ -3426,6 +3482,249 @@ async function toolUpstreamReportBug(args: ToolArgs, cwd: string): Promise<strin
       }
       return ackError(err instanceof Error ? err.message : String(err));
     });
+}
+
+/** Подсказка «как настроить upstream» — общая для всех трёх upstream-инструментов (VL-391). */
+function upstreamConfigHint(): string {
+  return (
+    'добавь секцию upstream в .vibelog/settings.json: {"mode": "git", "inbox": ' +
+    '"git@gitverse.ru:owner/inbox.git", "prefix": "<префикс>"} либо {"mode": "api", "repo": "owner/name"}'
+  );
+}
+
+/**
+ * Проверка «upstream настроен и это git-транспорт» для инструментов приёма (VL-391).
+ *
+ * @returns текст ack-ошибки либо null, если можно продолжать
+ */
+function assertUpstreamGit(cwd: string, action: string): string | null {
+  if (!isUpstreamConfigured(cwd)) {
+    return ackErrorDetailed(`upstream не настроен — ${action} недоступен`, { hint: upstreamConfigHint() });
+  }
+  // Без настроенного config разрешать чтение бессмысленно, но и падать
+  // невнятной ошибкой нельзя: входящих отчётов в API-режиме не существует
+  // (API — отправка в чужой трекер), поэтому говорим об этом прямо.
+  if (resolveUpstreamMode(cwd) === 'api') {
+    return ackErrorDetailed(
+      `upstream.mode: "api" — ${action} доступен только в mode: "git" (входящих отчётов в API-режиме нет)`,
+      {
+        hint:
+          'git-инбокс — единственный транспорт приёма отчётов: переведи секцию upstream на ' +
+          '{"mode": "git", "inbox": "<URL репозитория-инбокса>", "prefix": "<префикс>"}',
+      },
+    );
+  }
+  return null;
+}
+
+/** Режим upstream из настроек (`'api'` только при явном mode: api, иначе git). */
+function resolveUpstreamMode(cwd: string): 'git' | 'api' {
+  try {
+    const raw = loadSettings(cwd).upstream;
+    if (raw !== null && typeof raw === 'object' && (raw as Record<string, unknown>).mode === 'api') return 'api';
+  } catch {
+    // битые настройки — считаем git (ошибку всё равно отдаст resolveUpstreamConfig)
+  }
+  return 'git';
+}
+
+/** Краткое представление отчёта для списка (полное тело — по report_id). */
+function reportSummary(report: UpstreamReport): Record<string, unknown> {
+  return {
+    report_id: report.report_id,
+    source_project: report.source_project,
+    source_task: report.source_task,
+    title: report.title,
+    target: report.target,
+    severity: report.severity,
+    area: report.area,
+    created: report.created,
+    status: report.status,
+    ...(report.accepted_as !== '' ? { accepted_as: report.accepted_as } : {}),
+    ...(report.rejected_reason !== '' ? { rejected_reason: report.rejected_reason } : {}),
+  };
+}
+
+/**
+ * Входящие отчёты об ошибках от других проектов (VL-391).
+ *
+ * Без `report_id` — список для своего префикса (только `open`, если не передан
+ * `include_resolved`); с `report_id` — полное тело одного отчёта.
+ */
+async function toolUpstreamListReports(args: ToolArgs, cwd: string): Promise<string> {
+  const denied = assertUpstreamGit(cwd, 'список входящих отчётов');
+  if (denied !== null) return denied;
+  try {
+    const cfg = resolveUpstreamConfig(cwd);
+    if (cfg.mode !== 'git') {
+      // Двойная страховка: assertUpstreamGit уже отсекает api-режим
+      return ackErrorDetailed('список входящих доступен только в mode: "git"');
+    }
+    ensureInboxClone(cwd, cfg);
+    const id = typeof args.report_id === 'string' ? args.report_id.trim() : '';
+    if (id !== '') {
+      const found = findIncomingReport(cwd, cfg.prefix, id);
+      if (found === null) {
+        return ackErrorDetailed(`отчёт с report_id «${id}» не найден в инбоксе`, {
+          hint: 'вызови upstream_list_reports без report_id — полный список входящих даёт точный id',
+        });
+      }
+      return ackRead(`Отчёт ${found.report.report_id.slice(0, 8)} — ${found.report.title}`, {
+        report: { ...reportSummary(found.report), body: found.report.body },
+        path: found.path,
+      });
+    }
+    const includeResolved = args.include_resolved === true;
+    const reports = listIncoming(cwd, cfg.prefix, includeResolved ? { includeResolved } : {});
+    const message = reports.length === 0
+      ? `Входящих отчётов для «${cfg.prefix}» нет${includeResolved ? '' : ' (показаны только open)'}`
+      : `Входящих отчётов: ${reports.length}`;
+    return ackRead(message, { prefix: cfg.prefix, count: reports.length, reports: reports.map(reportSummary) });
+  } catch (err) {
+    return upstreamErrorAck(err);
+  }
+}
+
+/** Находит отчёт по id/префиксу среди входящих своего префикса (для чтения тела). */
+function findIncomingReport(
+  cwd: string,
+  prefix: string,
+  id: string,
+): { path: string; report: UpstreamReport } | null {
+  const needle = id.toLowerCase();
+  if (needle.length < MIN_REPORT_ID_PREFIX) {
+    throw new UpstreamGitError(
+      `report_id «${id}» слишком короткий: нужно не меньше ${MIN_REPORT_ID_PREFIX} символов`,
+      'config',
+    );
+  }
+  const root = join(inboxPath(cwd), REPORTS_DIR);
+  const matches: Array<{ path: string; report: UpstreamReport }> = [];
+  if (!existsSync(root)) return null;
+  for (const dirEntry of readdirSync(root, { withFileTypes: true })) {
+    if (!dirEntry.isDirectory()) continue;
+    const dir = join(root, dirEntry.name);
+    for (const file of readdirSync(dir, { withFileTypes: true })) {
+      if (!file.isFile() || !file.name.endsWith('.md')) continue;
+      try {
+        const report = parseReport(readFileSync(join(dir, file.name), 'utf-8'));
+        if (!targetMatches(report.target, prefix)) continue;
+        if (report.report_id.toLowerCase().startsWith(needle)) {
+          matches.push({ path: `${REPORTS_DIR}/${dirEntry.name}/${file.name}`, report });
+        }
+      } catch {
+        // битый файл не должен ломать чтение по id
+      }
+    }
+  }
+  if (matches.length === 0) return null;
+  if (matches.length > 1) {
+    throw new UpstreamGitError(
+      `report_id «${id}» совпал с ${matches.length} отчётами — уточни id: ` +
+        matches.map((m) => `${m.report.report_id} (${m.report.source_task})`).join(', '),
+      'config',
+    );
+  }
+  return matches[0]!;
+}
+
+/** Единый разбор ошибок upstream в JSON-ack для инструментов приёма. */
+function upstreamErrorAck(err: unknown): string {
+  if (err instanceof UpstreamGitError) {
+    return ackErrorDetailed(err.message, {
+      hint: err.kind === 'auth' ? 'проверь права на репозиторий-инбокс' : undefined,
+    });
+  }
+  if (err instanceof GitverseError) {
+    return ackErrorDetailed(err.message, { hint: err.kind === 'no_token' ? tokenHint() : undefined });
+  }
+  return ackError(err instanceof Error ? err.message : String(err));
+}
+
+/**
+ * Приём или отклонение входящего отчёта (VL-391).
+ *
+ * Автосоздания задач НЕТ — принципиально: решение принимает человек в диалоге,
+ * инструмент только фиксирует. `accept` требует СУЩЕСТВУЮЩУЮ задачу в этом
+ * проекте (`getTask`), закрывая класс дефекта VL-388 для MCP-пути.
+ */
+async function toolUpstreamAckReport(args: ToolArgs, cwd: string): Promise<string> {
+  const denied = assertUpstreamGit(cwd, 'приём отчётов');
+  if (denied !== null) return denied;
+  const id = typeof args.report_id === 'string' ? args.report_id.trim() : '';
+  if (id === '') {
+    return ackErrorDetailed('поле report_id обязательно', {
+      hint: 'вызови upstream_list_reports — он вернёт report_id входящих отчётов',
+    });
+  }
+  const action = typeof args.action === 'string' ? args.action.trim() : '';
+  if (action !== 'accept' && action !== 'reject') {
+    return ackErrorDetailed('поле action: ожидалось "accept" или "reject"', {
+      hint: 'accept — принять отчёт со ссылкой на задачу (task_id), reject — отклонить с причиной (reason)',
+    });
+  }
+
+  try {
+    const cfg = resolveUpstreamConfig(cwd);
+    if (cfg.mode !== 'git') {
+      return ackErrorDetailed('приём отчётов доступен только в mode: "git" (в API-режиме входящих нет)');
+    }
+
+    if (action === 'accept') {
+      const taskId = typeof args.task_id === 'string' ? args.task_id.trim() : '';
+      if (taskId === '') {
+        return ackErrorDetailed('для action: "accept" обязателен task_id — ID задачи в этом проекте', {
+          hint: 'создай задачу через backlog_create_task и передай её ID, либо свяжи отчёт с уже существующей',
+        });
+      }
+      // VL-391 AC3: существование задачи проверяется ДО записи — иначе в отчёт
+      // уедет ссылка на несуществующую задачу (класс дефекта VL-388).
+      const task = getTask(cwd, taskId);
+      if (task === null) {
+        return ackErrorDetailed(`задача ${taskId} не найдена в этом проекте — отчёт не изменён`, {
+          hint: 'создай задачу через backlog_create_task и передай её ID в task_id',
+          missing: [{ field: 'task_id', reason: 'задача не существует в backlog получателя' }],
+        });
+      }
+      ensureInboxClone(cwd, cfg);
+      const result = ackReport(cwd, id, { action: 'accept', taskId });
+      // Обратная ссылка: задача узнаёт, какой отчёт она закрывает (иначе связь
+      // живёт только в инбоксе, и задача остаётся без контекста).
+      addComment(
+        cwd,
+        task.id,
+        `Принят отчёт ${result.report.report_id.slice(0, 8)} из проекта ${result.report.source_project} ` +
+          `(задача ${result.report.source_task}). Файл: ${result.path}`,
+      );
+      return ackOk(
+        `Отчёт ${result.report.report_id.slice(0, 8)} принят и связан с задачей ${task.id}`,
+        {
+          report_id: result.report.report_id,
+          path: result.path,
+          status: result.report.status,
+          accepted_as: result.report.accepted_as,
+          task_id: task.id,
+        },
+      );
+    }
+
+    const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
+    if (reason === '') {
+      return ackErrorDetailed('для action: "reject" обязателен reason — причина отказа', {
+        hint: 'причина попадает в отчёт: без неё отправитель не поймёт, что делать',
+      });
+    }
+    ensureInboxClone(cwd, cfg);
+    const result = ackReport(cwd, id, { action: 'reject', reason });
+    return ackOk(`Отчёт ${result.report.report_id.slice(0, 8)} отклонён: ${reason}`, {
+      report_id: result.report.report_id,
+      path: result.path,
+      status: result.report.status,
+      rejected_reason: result.report.rejected_reason,
+    });
+  } catch (err) {
+    return upstreamErrorAck(err);
+  }
 }
 
 function toolProjectMap(args: ToolArgs, cwd: string): string {
