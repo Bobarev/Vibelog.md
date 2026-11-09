@@ -449,8 +449,13 @@ describe('vb install: registryDependencies и зависимости npm', () =>
     const lock = readLockFile();
     assert.ok(lock.components.base);
     assert.ok(lock.components.button);
-    // base напечатан раньше button
-    assert.ok(out.indexOf('vibelog.md/ui/base') < out.indexOf('vibelog.md/ui/button'), out);
+    // base напечатан раньше button. Сравниваем строки ПЛАНА: с VL-381 в выводе
+    // (stderr) есть прогресс «→ скачиваю vibelog.md/ui/button…», который по
+    // определению идёт первым и не относится к порядку установки.
+    assert.ok(
+      out.indexOf('vibelog.md/ui/base v1.0.0') < out.indexOf('vibelog.md/ui/button v1.0.0'),
+      out,
+    );
   });
 
   it('повторный запуск ничего не переустанавливает', async () => {

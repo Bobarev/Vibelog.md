@@ -62,6 +62,7 @@ import type {
 } from './components-config.js';
 import { fetchRegistryFile, fetchRegistryItem } from './registry-fetch.js';
 import type { RegistryItem } from './registry-fetch.js';
+import type { ProgressCallback } from './gitverse-http.js';
 import { findGitRoot } from './git.js';
 import { ensureTmpDir } from './tmp.js';
 
@@ -195,6 +196,11 @@ export interface InstallFetchOptions {
   /** Готовый токен GitVerse (иначе читается из `ctx.root`: shell env → .env). */
   token?: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Подписка на прогресс сетевых операций (VL-381). Печать — забота CLI:
+   * ядро само ничего не пишет, оно только пробрасывает хук в транспорт.
+   */
+  onProgress?: ProgressCallback;
 }
 
 /** Соответствие типа файла реестра алиасу проекта (doc-25 §4.3 шаг 7). */
