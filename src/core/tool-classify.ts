@@ -69,6 +69,20 @@ const INTERACTIVE_TOOLS: ReadonlySet<string> = new Set(['ask_user']);
 const REVERSIBLE_WRITE_TOOLS: ReadonlySet<string> = new Set(['memory_remember']);
 
 /**
+ * Инструменты без побочных эффектов, которых нет в декларации (VL-409).
+ *
+ * `ask_persona` — консультация другой роли: сервер делает вложенный запрос к
+ * модели и возвращает текст. Файлы и данные проекта он не меняет, поэтому
+ * Allow/Deny на него бессмыслен (карточка «разрешить спросить мнение» только
+ * мешала бы). В `TOOL_KINDS` его нет: инструмент живёт только в веб-чате и не
+ * входит в MCP-реестр `listTools()`, который эта таблица описывает.
+ *
+ * Решение закреплено тестом (`src/web/chat-subagent.test.mjs`): если правка
+ * классификатора вернёт `ask_persona` в write, тест упадёт.
+ */
+const SIDE_EFFECT_FREE_TOOLS: ReadonlySet<string> = new Set(['ask_persona']);
+
+/**
  * Вид локальных файловых инструментов агента (VL-357, VL-359).
  *
  * Они не входят в MCP-реестр (`listTools()`), поэтому не могут объявить вид
@@ -169,6 +183,9 @@ export function isWriteOperation(name: string, args?: Record<string, unknown>): 
   // VL-402: обратимая запись (memory_remember) — тоже не write: результат
   // виден в ленте и отменяется кнопкой «Убрать» (см. REVERSIBLE_WRITE_TOOLS).
   if (REVERSIBLE_WRITE_TOOLS.has(name)) return false;
+  // VL-409: консультация другой роли (ask_persona) — не write: вложенный
+  // запрос к модели, файлы проекта не меняются (см. SIDE_EFFECT_FREE_TOOLS).
+  if (SIDE_EFFECT_FREE_TOOLS.has(name)) return false;
   const kind = declaredToolKind(name);
   if (kind === 'read') return false;
   if (kind === 'write') return true;
