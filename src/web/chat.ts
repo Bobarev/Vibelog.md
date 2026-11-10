@@ -227,6 +227,8 @@ export type ChatEvent =
       question: string;
       answer: string;
       tokens: { input: number; output: number; total: number };
+      /** VL-409: как показывать в ленте (`inline` — раскрываемый вызов, `widget` — карточка). */
+      display: 'inline' | 'widget';
     }
   /**
    * VL-313: расход токенов треда после очередного вызова модели. Клиент
@@ -1527,7 +1529,7 @@ async function produce(
         recordSubagentUsage(cwd, threadId, personaId, usage);
       },
       onEvent: event => {
-        queue.push({ type: 'subagent', ...event });
+        queue.push({ type: 'subagent', ...event, display: subagentSettings.display });
       },
     });
     localHandlers.set(ASK_PERSONA_TOOL, askPersona);

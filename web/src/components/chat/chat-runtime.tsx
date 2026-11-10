@@ -84,6 +84,19 @@ type ChatEvent =
       entry: { index: number; text: string; date: string }
       personaId: string
     }
+  /**
+   * VL-409: консультация другой роли (`ask_persona`) завершена. display
+   * определяет вид в ленте: inline — раскрываемый tool-call, widget — карточка.
+   */
+  | {
+      type: "subagent"
+      personaId: string
+      personaLabel: string
+      question: string
+      answer: string
+      tokens: { input: number; output: number; total: number }
+      display?: "inline" | "widget"
+    }
   /** VL-313: расход токенов треда после очередного вызова модели. */
   | { type: "usage"; usage: ThreadUsageView }
   /**
@@ -152,6 +165,13 @@ export const CHAT_PRICING_PART = "chat-pricing"
  * убрана (набор отмен приходит с сервера, `setMemoryRemovals`).
  */
 export const CHAT_MEMORY_PART = "chat-memory"
+
+/**
+ * Имя data-части «консультация другой роли» (VL-409): карточка с вопросом и
+ * ответом консультанта. Используется при `subagents.display: widget`; при
+ * `inline` (дефолт) консультация рендерится обычным tool-call'ом с раскрытием.
+ */
+export const CHAT_SUBAGENT_PART = "chat-subagent"
 
 /**
  * Текущий threadId (VL-207: id приходит из hash при восстановлении,
@@ -622,6 +642,25 @@ function applyEvent(
       // VL-313: расход треда — обновляем module-state панели (AC1). В content
       // сообщения ничего не кладём: это метаданные треда, а не часть ответа.
       setActiveUsage(ev.usage)
+      return false
+    case "subagent":
+      // VL-409: консультация уже выполнена сервером. При display: widget
+      // показываем карточку (data-часть переживает F5); при inline (дефолт)
+      // ничего не добавляем — вопрос и ответ уже видны в tool-call части
+      // ask_persona (её args/result приходят событиями tool_start/tool_end).
+      if (ev.display === "widget") {
+        parts.push({
+          type: "data",
+          name: CHAT_SUBAGENT_PART,
+          data: {
+            personaId: ev.personaId,
+            personaLabel: ev.personaLabel,
+            question: ev.question,
+            answer: ev.answer,
+            tokens: ev.tokens,
+          },
+        })
+      }
       return false
     case "truncated": {
       // VL-269: ход остановлен лимитом, история сохранена. Плашку с причиной
