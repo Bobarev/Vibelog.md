@@ -1,11 +1,11 @@
 ---
 id: VL-411
 title: Повтор noop-вызова блокирует инструмент в ране вместо счёта до трёх
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-10 16:59'
-updated_date: '2026-11-10 18:44'
+updated_date: '2026-11-10 18:51'
 due_date: ''
 labels:
   - agent
@@ -29,15 +29,16 @@ modified_files:
   - src/agent/directive-size-property.test.mjs
   - src/agent/loop-properties.mjs
   - src/mcp/tool-outcome-trace.test.mjs
-lessons: []
+lessons:
+  - lesson-285
 token_usage:
-  input: 6544937
-  output: 49926
-  cache: 6401536
-  total: 6594863
-  requests: 74
-  duration_ms: 1581830
-  reasoning: 28497
+  input: 7982083
+  output: 56536
+  cache: 7806464
+  total: 8038619
+  requests: 105
+  duration_ms: 1935149
+  reasoning: 30638
   by_phase:
     code:
       input: 6136467
@@ -45,10 +46,10 @@ token_usage:
       cache: 6013952
       requests: 63
     close:
-      input: 408470
-      output: 2478
-      cache: 387584
-      requests: 11
+      input: 1845616
+      output: 9088
+      cache: 1792512
+      requests: 42
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -76,7 +77,7 @@ token_usage:
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -157,5 +158,13 @@ DoD не отмечены (1): 2. Документация обновлена
 Фрагмент плана: ## Файлы и правки **`src/agent/loop.ts`** — эскалация noop-повтора: - рядом с `noopSignatures`/`noopRepeatCount` (`:540`) добавить `blockedTools = new Set<string>()` — имена инструментов, заблокированных в ране; - в `blockAndPush` (`:1195`) в ветке `noopSignatures.has(signature)`: при `noopRepeatCou…
 Отчёт собран сервером автоматически (VL-253): модель не передала comment.
 Статус не изменён: терминальный «Done» при неотмеченных пунктах (DoD: #2) возможен только через backlog_finish_phase с dodOverride или aborted (VL-248/VL-309). Задача оставлена в «Review».
+---
+author: @agent
+created: 2026-11-10 18:50
+---
+Фаза Close выполнена. Ветка vb/vl-411 уже была слита в master (merge-коммит 3c768a0, 1 коммит кода 30cef3a) — повторный merge не требовался. Worktree .vibelog/worktrees/vl-411 удалена (force: единственный untracked-путь — симлинк backlog/references/data от оркестратора), ветка vb/vl-411 удалена (была 30cef3a).
+Проверка после merge: `pnpm build` — успешно; ранний точечный прогон затронутых diff'ом наборов (loop-repeat-cap, loop, repeat-tracker, directive-size-property, tool-outcome-trace) — 179 тестов зелёные; полный `pnpm test` — 221 файл, 4278 passed, 4 skipped, падений нет. Параллельного vitest в других worktree не было.
+DoD: #1 «Тесты проходят» — полный прогон зелёный; #2 «Документация обновлена» — doc-31 §4 дополнен пунктом «Повтор noop-вызова блокирует инструмент в ране» (порог noopBlockAfter, исход rejected/tool_blocked, per-name и только на дословном повторе, текст fail() с именем фазы, явная фиксация что write-ack не считается работой), в CHANGELOG.md (Unreleased → Исправлено) добавлена запись VL-411; #3 «Нет регрессий» — полный прогон без падений.
+Lessons: создан lesson-285 «Эскалируй повтор блокировкой инструмента в ране, а не увеличением числа попыток» (sourceTasks/linkedTasks VL-411), закоммичен в be3b266. Документация — коммит 6e3ac7d.
 ---
 <!-- COMMENTS:END -->
