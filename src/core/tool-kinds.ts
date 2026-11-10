@@ -98,6 +98,11 @@ export const TOOL_KINDS: Readonly<Record<string, ToolKind>> = {
   // === Конструктор workflow (VL-398) ===
   workflow_get: 'read',
   workflow_apply: 'write',
+  // === Архитектурные решения / ADR (VL-412) ===
+  decision_list: 'read',
+  decision_view: 'read',
+  decision_create: 'write',
+  decision_update: 'write',
 };
 
 /**

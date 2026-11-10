@@ -86,6 +86,8 @@ import {
 import { SUPERVISOR_TOOL_DEFS, handleSupervisorTool } from './supervisor.js';
 // VL-398: конструктор workflow — отдельный домен (как supervisor)
 import { WORKFLOW_TOOL_DEFS, handleWorkflowTool } from './workflow-tools.js';
+// VL-412: архитектурные решения (ADR) — отдельный домен, как supervisor/workflow
+import { DECISION_TOOL_DEFS, handleDecisionTool } from './decision-tools.js';
 import { commitFiles } from './git-commit.js';
 // VL-363: репорт бага в upstream через GitVerse Issues
 import { GitverseError, isUpstreamConfigured, reportBug, tokenHint, resolveUpstreamConfig } from '../core/gitverse-issues.js';
@@ -954,6 +956,8 @@ export function listTools(): ToolDefinition[] {
     ...SUPERVISOR_TOOL_DEFS,
     // VL-398: конструктор workflow (workflow_get / workflow_apply)
     ...WORKFLOW_TOOL_DEFS,
+    // VL-412: архитектурные решения (decision_list/view/create/update)
+    ...DECISION_TOOL_DEFS,
   ];
 }
 
@@ -1103,6 +1107,14 @@ export async function handleToolCall(
     case 'workflow_get':
     case 'workflow_apply':
       return handleWorkflowTool(name, args, cwd);
+    // VL-412: архитектурные решения. Идемпотентность by-key — у write-веток
+    // (create/update): повтор после таймаута не создаёт второе решение.
+    case 'decision_list':
+    case 'decision_view':
+      return handleDecisionTool(name, args, cwd);
+    case 'decision_create':
+    case 'decision_update':
+      return withIdempotency(cwd, name, args.idempotencyKey, () => handleDecisionTool(name, args, cwd));
     default:
       throw new Error(`Неизвестный инструмент: ${name}`);
   }

@@ -180,6 +180,9 @@ describe('VL-306 — все write-инструменты отвечают JSON-a
       'upstream_ack_report',
       // VL-398: workflow_apply отвечает JSON-ack (applied/noop/error)
       'workflow_apply',
+      // VL-412: решения (ADR) — create/update отвечают JSON-ack
+      'decision_create',
+      'decision_update',
     ]);
     // Явные исключения с причиной: инструменты супервизора/очереди (VL-268)
     // управляют прогоном фаз, а не данными backlog; их ответ — карточка
@@ -318,6 +321,16 @@ const ACK_SCENARIOS = {
       },
     },
   }, cwd),
+  // VL-412: решения (ADR) — создание и точечная правка
+  decision_create: async () => handleToolCall('decision_create', {
+    title: 'Ack-решение', context: 'контекст',
+  }, cwd),
+  decision_update: async () => {
+    const created = JSON.parse(await handleToolCall('decision_create', {
+      title: 'Ack-решение update', context: 'контекст',
+    }, cwd));
+    return handleToolCall('decision_update', { id: created.applied.id, status: 'accepted' }, cwd);
+  },
 };
 
 /**
@@ -474,6 +487,15 @@ const NOOP_SCENARIOS = {
       paths: ['gitcommit-noop.txt'], message: 'feat: noop-коммит контракта',
     }, cwd));
   },
+  // VL-412: повтор той же точечной правки решения — noop (сравнение секций)
+  decision_update: async () => {
+    const created = JSON.parse(await handleToolCall('decision_create', {
+      title: 'Noop-решение контракта', context: 'контекст',
+    }, cwd));
+    const id = created.applied.id;
+    await handleToolCall('decision_update', { id, status: 'accepted' }, cwd);
+    return JSON.parse(await handleToolCall('decision_update', { id, status: 'accepted' }, cwd));
+  },
 };
 
 /**
@@ -500,6 +522,8 @@ const NOOP_NOT_APPLICABLE = {
   write_file: 'запись файла: сравнение содержимого вне домена backlog (отдельный инструмент)',
   upstream_report_bug: 'создание issue во внешней системе: каждый вызов даёт новый номер (дедуп — номер issue, а не сравнение полей)',
   upstream_ack_report: 'ack не идемпотентен по ключу: повторный accept с тем же task_id перезаписывает те же значения (не noop-ответ, а повторная запись того же файла); решение по отчёту — не «поле задачи», сравнение снимков неприменимо',
+  // VL-412: создание решения — каждый вызов даёт новый decision-N
+  decision_create: 'создание решения: каждый вызов даёт новый decision-N (id = max+1), состояние «до» не существует',
 };
 
 describe('VL-310 — инвариант «каждый write-инструмент умеет noop»', () => {  it('AC2: каждый noop-способный инструмент отвечает {ok:false, noop:true} на повторной идентичной записи', async () => {
@@ -639,6 +663,11 @@ const PARTIAL_EXEMPT = {
   // VL-398: patch обязателен по смыслу — без него менять нечего; dryRun/
   // syncStatuses — модификаторы поведения, а не «незаполненные поля».
   workflow_apply: 'patch обязателен: без конфигурации применять нечего; dryRun/syncStatuses — модификаторы, а не поля сущности',
+  // VL-412: title — единственное обязательное поле решения; ADR-секции
+  // дополняются позже через decision_update, их отсутствие не делает решение
+  // неполным (решение может быть зафиксировано одним заголовком).
+  decision_create: 'title обязателен: решение без заголовка не существует; ADR-секции (context/decision/consequences/alternatives) — дополнение, которое пишется отдельным decision_update',
+  decision_update: 'обновление применяет переданные поля; «необязательных по смыслу» полей нет — правка точечная по секциям',
 };
 
 describe('VL-357 — отсутствие необязательного по смыслу поля даёт partial, а не rejected', () => {

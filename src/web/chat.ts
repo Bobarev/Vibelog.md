@@ -923,9 +923,12 @@ function buildSystemPrompt(cwd: string, history: ChatMessage[], persona: Persona
       tasks: hits.tasks.slice(0, 5),
       references: hits.references.slice(0, 3),
       documents: hits.documents.slice(0, 3),
+      // VL-412: архитектурные решения — чтобы агент не предлагал отвергнутое
+      decisions: hits.decisions.slice(0, 3),
     };
     const hasContext =
-      context.tasks.length || context.references.length || context.documents.length;
+      context.tasks.length || context.references.length || context.documents.length ||
+      context.decisions.length;
     if (hasContext) {
       parts.push(
         'Контекст проекта по текущему сообщению (результаты поиска, не выдумывай данные сверх них):\n' +

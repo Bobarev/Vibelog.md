@@ -86,6 +86,11 @@ const EXPECTED_MCP_TOOLS = [
   // VL-398: конструктор workflow
   'workflow_apply',
   'workflow_get',
+  // VL-412: архитектурные решения (ADR)
+  'decision_create',
+  'decision_list',
+  'decision_update',
+  'decision_view',
 ];
 
 // Читаем версию динамически из package.json, чтобы тесты не ломались при бампе
@@ -459,5 +464,71 @@ describe('Диагностика — незакоммиченные billing/sett
       assert.equal(check.ok, true, `${name} не падает вне git`);
       assert.equal(check.value, 'не git-репозиторий');
     }
+  });
+});
+
+/**
+ * VL-412: дубли id в `backlog/decisions/`.
+ *
+ * В проекте реально лежат два файла с `id: decision-10` (устаревшая версия
+ * про `manifest.json` и актуальная про `installed.lock.json`). `getDecision`
+ * вернёт первый попавшийся, поэтому doctor обязан предупредить — но не
+ * блокировать: какая версия актуальна, решает человек.
+ */
+describe('Диагностика — дубли id решений (VL-412)', () => {
+  const dirs = [];
+
+  function makeDecisionsFixture(files) {
+    const dir = mkdtempSync(join(tmpdir(), 'vibelog-doctor-decisions-'));
+    dirs.push(dir);
+    mkdirSync(join(dir, 'backlog', 'tasks'), { recursive: true });
+    mkdirSync(join(dir, 'backlog', 'decisions'), { recursive: true });
+    writeFileSync(join(dir, 'backlog', 'config.yml'), [
+      'project_name: Decisions Doctor',
+      'task_prefix: dd',
+      'default_status: To Do',
+      'statuses:',
+      '  - To Do',
+      '  - Done',
+      'definition_of_done: []',
+      '',
+    ].join('\n'), 'utf-8');
+    for (const [name, id] of files) {
+      writeFileSync(join(dir, 'backlog', 'decisions', name),
+        `---\nid: ${id}\ntitle: ${name}\ndate: 2026-01-01\nstatus: proposed\n---\n## Context\n\nтело\n`, 'utf-8');
+    }
+    return dir;
+  }
+
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('два файла с одним id → decision_duplicates не ok, doctor остаётся ok', () => {
+    const dir = makeDecisionsFixture([
+      ['decision-10-manifest.md', 'decision-10'],
+      ['decision-10-lock.md', 'decision-10'],
+    ]);
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    const check = json.checks.find(c => c.name === 'decision_duplicates');
+    assert.ok(check, 'проверка decision_duplicates присутствует');
+    assert.equal(check.ok, false, 'дубль id — проверка не ok');
+    assert.equal(check.value.count, 1);
+    assert.equal(check.value.duplicates[0].id, 'decision-10');
+    assert.equal(check.value.duplicates[0].files.length, 2, 'перечислены оба файла');
+    assert.equal(json.ok, true, 'проверка не блокирующая: doctor остаётся ok');
+  });
+
+  it('уникальные id → decision_duplicates ok', () => {
+    const dir = makeDecisionsFixture([
+      ['decision-1-a.md', 'decision-1'],
+      ['decision-2-b.md', 'decision-2'],
+    ]);
+    const out = runCli(['doctor', '--json'], { cwd: dir });
+    const json = extractJson(out);
+    const check = json.checks.find(c => c.name === 'decision_duplicates');
+    assert.equal(check.ok, true);
+    assert.equal(check.value.count, 0);
   });
 });
