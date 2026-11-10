@@ -89,17 +89,28 @@ describe('VL-357 — директивы повторов: один словар�
     assert.match(noopRepeatDirective('backlog_update_task'), /Изменений нет/);
   });
 
-  // VL-368: директива называет конкретный следующий шаг фазы, а не общую фразу
-  it('VL-368: appliedNoopDirective для close называет фазу и следующий инструмент', () => {
-    const parsed = JSON.parse(appliedNoopDirective('lesson_update', undefined, 'close'));
-    assert.match(parsed.message, /close/, 'имя фазы в тексте');
+  // VL-410: директива называет конкретный следующий шаг фазы, а не общую фразу.
+  // Текст шага приходит готовым из `phaseNextStep` (workflow + completeness) —
+  // имена фаз в директивах больше не сравниваются.
+  it('VL-410: appliedNoopDirective несёт готовый следующий шаг фазы', () => {
+    const step = 'Фаза close не завершена — вызови backlog_finish_phase.';
+    const parsed = JSON.parse(appliedNoopDirective('lesson_update', undefined, step, 'close'));
     assert.match(parsed.message, /backlog_finish_phase/, 'имя следующего инструмента');
-    assert.match(parsed.message, /backlog_manage_ac|backlog_manage_dod/, 'шаг отметки AC/DoD');
     assert.equal(parsed.phase, 'close', 'фаза проброшена машиночитаемо');
-    // Без фазы — прежняя общая формулировка (обратная совместимость)
+    // Без шага — прежняя общая формулировка (обратная совместимость)
     const plain = JSON.parse(appliedNoopDirective('lesson_update'));
     assert.match(plain.message, /Переходи к следующему пункту фазы/);
     assert.equal(plain.phase, undefined);
+  });
+
+  it('VL-410: noopRepeatDirective несёт готовый следующий шаг фазы', () => {
+    const step = 'Фаза spec не завершена — вызови backlog_finish_phase. Сначала передай в этом же вызове: acceptanceCriteria.';
+    const parsed = JSON.parse(noopRepeatDirective('backlog_update_task', undefined, step));
+    assert.match(parsed.message, /backlog_finish_phase/);
+    assert.match(parsed.message, /acceptanceCriteria/);
+    // Без шага — прежняя общая формулировка
+    const plain = JSON.parse(noopRepeatDirective('backlog_update_task'));
+    assert.match(plain.message, /прочитай состояние или смени аргумент/);
   });
 
   it('VL-361: директивы цикла — валидный JSON с outcome noop и флагом причины', () => {

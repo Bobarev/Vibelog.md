@@ -88,6 +88,9 @@ export {
 } from './repeat-tracker.js';
 import { buildRunProgress, type RunProgress, type RunProgressReason } from './run-progress.js';
 import { createIdleGuard } from './idle-guard.js';
+// VL-410: следующий шаг фазы — из данных workflow/completeness, не из имён фаз.
+import { phaseNextStep } from '../core/workflow.js';
+import type { Task } from '../core/task.js';
 
 /** Лимиты цикла; дефолты — 100 tool-calls и 900 секунд wall-time. */
 export interface LoopLimits {
@@ -276,6 +279,13 @@ export interface RunLoopOptions {
    * работы (правка/коммит/shell) сам по себе не доказывает завершение фазы.
    */
   phase?: string;
+  /**
+   * VL-410: каталог проекта и задача рана — вход `phaseNextStep`
+   * (`src/core/workflow.ts`), который вычисляет следующий шаг фазы из workflow
+   * и `completeness`. Без них (тесты, веб-чат) директива отдаёт общую фразу.
+   */
+  cwd?: string;
+  task?: Task;
   /** Стриминг финального/промежуточного текста (TUI/CLI). */
   onToken?: (token: string) => void;
   /** Хуки карточек tool calls (TUI): старт и завершение выполнения. */
@@ -348,16 +358,19 @@ function isReportWritingTool(name: string): boolean {
 }
 
 /**
- * VL-368: фазы, в которых отчёт `backlog_finish_phase` ОБЯЗАТЕЛЕН.
+ * VL-410: следующий шаг фазы вычисляется из workflow и `completeness`
+ * (`phaseNextStep` в `src/core/workflow.ts`), а не из списка имён фаз в коде.
  *
- * В Close работа идёт через shell/коммиты, и след работы сам по себе не
- * означает, что фаза завершена: без отчёта статус не двигается, AC/DoD не
- * отмечаются, а `finalizePhaseStatus`/авто-отчёт остаются единственными
- * писателями статуса. Поэтому для этих фаз `runHasProgress()` требует
- * `reportWritten`, иначе кап повторов даёт честный `fail()` (is_error:true →
- * оркестратор откатит статус и запустит авто-resume).
+ * До VL-410 здесь стоял `REPORT_REQUIRED_PHASES = new Set(['close'])`: «нужен
+ * отчёт» было захардкожено для одной фазы, и директива повтора для любой
+ * другой фазы (включая кастомные `investigate`/`materialize`) не называла
+ * модели следующего шага — она повторяла вызов дословно до капа
+ * `MAX_NOOP_REPEATS_PER_RUN` (сессия agent-1794313856082, spec VL-408).
+ *
+ * Теперь признак «нужен отчёт» = «у фазы есть переход из статуса до фазы»
+ * (данные workflow), а текст шага называет неполные поля из `completeness`.
+ * Вычисляется ОДИН раз за ран: `phaseNextStep` читает диск.
  */
-const REPORT_REQUIRED_PHASES = new Set(['close']);
 
 /**
  * VL-357 (шаг 5): вызовы, чей УСПЕШНЫЙ результат — фактический след работы.
@@ -575,8 +588,18 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // случае повтор уже применённого вызова завершает ран штатно: терять
   // нечего, отчёт на месте (guard по образцу src/agent/auto-report.ts).
   let reportWritten = false;
-  // VL-368: фаза рана требует отчёта (close) — см. REPORT_REQUIRED_PHASES.
-  const reportRequired = REPORT_REQUIRED_PHASES.has(options.phase ?? '');
+  // VL-410: следующий шаг фазы и признак «нужен отчёт» — из workflow и
+  // completeness (данные конфигурации), а не из списка имён фаз в коде.
+  // Вычисляется ОДИН раз за ран: `phaseNextStep` читает диск.
+  const nextStepInfo =
+    options.phase !== undefined && options.cwd !== undefined && options.task !== undefined
+      ? phaseNextStep(options.cwd, options.task, options.phase)
+      : null;
+  // VL-410: без cwd/task (тесты, веб-чат) шаг не вычисляется — директивы
+  // отдают свои прежние общие формулировки (обратная совместимость).
+  const nextStepText = nextStepInfo?.text;
+  // VL-368: фаза рана требует отчёта — теперь по данным workflow (VL-410).
+  const reportRequired = nextStepInfo?.required ?? false;
   // Лимит guard'а зацикливания намерений (VL-119): N ходов подряд с одним
   // промежуточным текстом → fail штатным путём (контракт resume VL-103).
   const intentRepeatLimit = options.limits?.intentLoopRepeat ?? INTENT_LOOP_REPEAT_DEFAULT;
@@ -1208,7 +1231,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           await pushMessage({
             role: 'tool',
             tool_call_id: call.id,
-            content: noopRepeatDirective(call.name, lastAckBySignature.get(signature)),
+            content: noopRepeatDirective(call.name, lastAckBySignature.get(signature), nextStepText),
           });
           console.error(`[vibelog-agent] повтор noop-вызова: ${call.name}`);
           return;
@@ -1228,7 +1251,12 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           await pushMessage({
             role: 'tool',
             tool_call_id: call.id,
-            content: appliedNoopDirective(call.name, lastAckBySignature.get(signature), options.phase),
+            content: appliedNoopDirective(
+              call.name,
+              lastAckBySignature.get(signature),
+              nextStepText,
+              options.phase,
+            ),
           });
           console.error(`[vibelog-agent] повтор применённого вызова: ${call.name}`);
           return;

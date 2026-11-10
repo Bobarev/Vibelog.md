@@ -50,6 +50,13 @@
  */
 
 import { loadSettings } from './settings.js';
+// VL-410: «статус до фазы» нужен для вычисления следующего шага фазы — во
+// время рана задача временно в In Progress (VL-196), и переход надо искать от
+// ИСХОДНОГО статуса, иначе `getStatusAfterPhase` не найдёт его и любая фаза
+// выглядела бы «не двигающей статус». Циклический импорт безопасен: оба
+// модуля обращаются к функциям друг друга только внутри тел функций, а не на
+// этапе инициализации модуля.
+import { getPhaseTransientStatus } from './phase-transient.js';
 import type { Task } from './task.js';
 
 /**
@@ -98,7 +105,12 @@ export type CompletenessMap = Record<string, Record<string, Record<string, strin
  */
 export const DEFAULT_COMPLETENESS: CompletenessMap = {
   default: {
-    spec: { task: ['description'] },
+    // VL-410: AC обязательны в spec — шаблон фазы (templates/phases/phase-spec.md,
+    // шаг 6) объявляет их обязательными, а гейт неполноты требовал только
+    // описание. Из-за расхождения задача с заполненным описанием считалась
+    // полной, и директива повтора не называла модели ни одного следующего шага
+    // (сессия agent-1794313856082: 4 дословных повтора → кап → fail).
+    spec: { task: ['description', 'acceptanceCriteria'] },
     plan: { task: ['implementationPlan'] },
     close: { task: ['acceptanceCriteria', 'definitionOfDone'] },
     '*': { task: ['description'], lesson: ['content'] },
@@ -578,6 +590,81 @@ export function getCompletenessRules(
   return {
     task: getCompletenessFields(cwd, name, phase, 'task'),
     lesson: getCompletenessFields(cwd, name, phase, 'lesson'),
+  };
+}
+
+/**
+ * Следующий шаг фазы — из ДАННЫХ workflow и `completeness`, а не из имён фаз (VL-410).
+ *
+ * Зачем: директивы цикла (`noopRepeatDirective`/`appliedNoopDirective`) раньше
+ * знали единственный конкретный шаг — хардкод `phase === 'close'` (VL-368).
+ * Для любой другой фазы, включая кастомные (`investigate`, `materialize`,
+ * `analyze` из `workflows` в settings), модель получала общую фразу «переходи
+ * к следующему пункту» и повторяла вызов дословно до капа
+ * `MAX_NOOP_REPEATS_PER_RUN` (сессия agent-1794313856082, фаза spec VL-408).
+ *
+ * Правило вычисляется из конфигурации:
+ * - служебная фаза (`SERVICE_PHASES`) статуса не меняет → отчёт не нужен;
+ * - у фазы нет перехода из статуса до фазы (`getStatusAfterPhase === null`) →
+ *   отчёт не нужен (фаза не двигает статус);
+ * - иначе отчёт обязателен, и если задача неполна по `completeness` — текст
+ *   называет КОНКРЕТНЫЕ поля, которые надо передать в том же вызове.
+ *
+ * `prevStatus` берётся из транзиент-кэша (во время рана задача в In Progress,
+ * VL-196) с fallback на текущий статус задачи — как в `auto-report.ts`.
+ *
+ * Функция читает диск (`getWorkflowForTask`/`getPhaseTransientStatus`), поэтому
+ * вызывается ОДИН раз за ран, а не в цикле.
+ *
+ * @param cwd — каталог проекта (источник workflow/completeness)
+ * @param task — задача рана
+ * @param phase — фаза рана
+ * @returns `required` — обязателен ли `backlog_finish_phase`; `text` — готовый
+ *   следующий шаг для директивы; `missing` — неполные поля задачи
+ */
+export function phaseNextStep(
+  cwd: string,
+  task: Task,
+  phase: string
+): { required: boolean; text: string; missing: string[] } {
+  if (SERVICE_PHASES.includes(phase)) {
+    return {
+      required: false,
+      text: 'Служебная фаза: отчёт не требуется, заверши работу текстом.',
+      missing: [],
+    };
+  }
+  const workflow = getWorkflowForTask(cwd, task);
+  const prevStatus = getPhaseTransientStatus(cwd, task.id, phase) ?? task.status;
+  if (getStatusAfterPhase(workflow, prevStatus, phase) === null) {
+    return {
+      required: false,
+      text: 'Фаза не двигает статус задачи: заверши работу текстом.',
+      missing: [],
+    };
+  }
+  const rules = getCompletenessRules(cwd, task, phase);
+  const missing = taskCompletenessMissing(task, rules.task).map((m) => m.field);
+  // VL-410: пустой чеклист в `taskCompletenessMissing` считается полным (это
+  // верно для гейта терминальности: отмечать нечего). Но для СЛЕДУЮЩЕГО ШАГА
+  // фазы, которая объявляет AC обязательными (spec), пустой список — это
+  // «критериев ещё нет»: именно так выглядела задача VL-408, и директива
+  // молчала о поле. Поэтому здесь пустой чеклист из правил фазы считается
+  // неполнотой — локально, не меняя семантику гейта.
+  const record = task as unknown as Record<string, unknown>;
+  for (const field of rules.task) {
+    if (!CHECKLIST_FIELDS.includes(field) || missing.includes(field)) continue;
+    const list = (record[field] as unknown[] | undefined) ?? [];
+    if (list.length === 0) missing.push(field);
+  }
+  const base = `Фаза ${phase} не завершена — вызови backlog_finish_phase.`;
+  return {
+    required: true,
+    text:
+      missing.length > 0
+        ? `${base} Сначала передай в этом же вызове: ${missing.join(', ')}.`
+        : base,
+    missing,
   };
 }
 

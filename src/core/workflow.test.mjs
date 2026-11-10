@@ -34,6 +34,7 @@ import {
   canMoveTo,
   phaseStatusTransitionError,
   isTerminalStatus,
+  phaseNextStep,
 } from '../../dist/core/workflow.js';
 import { pickAutoPhase } from '../../dist/bot/auto-runner.js';
 import { settingsPath } from '../../dist/core/settings.js';
@@ -537,8 +538,13 @@ describe('getCompletenessRules и taskCompletenessMissing (VL-370)', () => {
     assert.deepEqual(getCompletenessRules(emptyDir, task('feature'), null).task, ['description']);
   });
 
-  it('AC3: default — spec→description, plan→implementationPlan, close→AC/DoD', () => {
-    assert.deepEqual(getCompletenessRules(emptyDir, task('feature'), 'spec').task, ['description']);
+  it('AC3: default — spec→description+AC, plan→implementationPlan, close→AC/DoD', () => {
+    // VL-410: spec требует и AC — шаблон фазы (phase-spec.md, шаг 6) объявляет
+    // критерии приёмки обязательными, гейт неполноты обязан говорить то же.
+    assert.deepEqual(getCompletenessRules(emptyDir, task('feature'), 'spec').task, [
+      'description',
+      'acceptanceCriteria',
+    ]);
     assert.ok(getCompletenessRules(emptyDir, task('feature'), 'plan').task.includes('implementationPlan'));
     const close = getCompletenessRules(emptyDir, task('feature'), 'close').task;
     assert.ok(close.includes('acceptanceCriteria') && close.includes('definitionOfDone'));
@@ -764,5 +770,101 @@ describe('validateCompleteness (VL-377)', () => {
 
     assert.deepEqual([...COMPLETENESS_ENTITIES], ['task', 'lesson']);
     assert.deepEqual([...KNOWN_LESSON_FIELDS], ['content']);
+  });
+});
+
+/**
+ * VL-410 — следующий шаг фазы из данных workflow/completeness.
+ *
+ * Директивы цикла раньше знали единственный конкретный шаг — хардкод
+ * `phase === 'close'` (VL-368). Для остальных фаз, включая кастомные, модель
+ * получала общую фразу и повторяла вызов дословно до капа (сессия
+ * agent-1794313856082, spec VL-408).
+ */
+describe('phaseNextStep (VL-410)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibelog-nextstep-'));
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function project(name, settings) {
+    const dir = join(root, name);
+    mkdirSync(join(dir, '.vibelog'), { recursive: true });
+    writeFileSync(settingsPath(dir), JSON.stringify(settings, null, 2), 'utf-8');
+    return dir;
+  }
+
+  const emptyDir = project('empty', {});
+  const investigationDir = project('investigation', {
+    workflows: {
+      investigation: {
+        initial_status: 'To Do',
+        transitions: [{ status: 'To Do', phase: 'investigate', produces_status: 'Spec' }],
+      },
+    },
+    task_workflows: { investigation: 'investigation' },
+  });
+
+  it('AC1: служебная фаза — отчёт не требуется', () => {
+    for (const phase of SERVICE_PHASES) {
+      const step = phaseNextStep(emptyDir, { id: 'VL-1', type: 'task', status: 'To Do' }, phase);
+      assert.equal(step.required, false, `${phase}: служебная фаза не требует отчёта`);
+      assert.match(step.text, /отчёт не требуется/);
+      assert.deepEqual(step.missing, []);
+    }
+  });
+
+  it('AC1: фаза без перехода — отчёт не требуется', () => {
+    // Из Done исходящих фаз нет: spec там недопустим.
+    const step = phaseNextStep(emptyDir, { id: 'VL-1', type: 'task', status: 'Done' }, 'spec');
+    assert.equal(step.required, false);
+    assert.match(step.text, /не двигает статус/);
+  });
+
+  it('AC1: spec с заполненным описанием, но без AC — называет backlog_finish_phase и acceptanceCriteria', () => {
+    const step = phaseNextStep(
+      emptyDir,
+      { id: 'VL-1', type: 'task', status: 'To Do', description: 'есть' },
+      'spec',
+    );
+    assert.equal(step.required, true);
+    assert.match(step.text, /backlog_finish_phase/);
+    assert.match(step.text, /acceptanceCriteria/);
+    assert.deepEqual(step.missing, ['acceptanceCriteria']);
+  });
+
+  it('AC1: полная задача — шаг без перечисления полей', () => {
+    const step = phaseNextStep(
+      emptyDir,
+      {
+        id: 'VL-1',
+        type: 'task',
+        status: 'To Do',
+        description: 'есть',
+        acceptanceCriteria: [{ text: 'a', checked: true }],
+      },
+      'spec',
+    );
+    assert.equal(step.required, true);
+    assert.match(step.text, /backlog_finish_phase/);
+    assert.doesNotMatch(step.text, /Сначала передай/);
+    assert.deepEqual(step.missing, []);
+  });
+
+  it('AC1: close — отчёт обязателен (переход Review + close → Done)', () => {
+    const step = phaseNextStep(emptyDir, { id: 'VL-1', type: 'task', status: 'Review' }, 'close');
+    assert.equal(step.required, true);
+    assert.match(step.text, /backlog_finish_phase/);
+  });
+
+  it('AC1/AC6: кастомная фаза investigate — отчёт обязателен, имя фазы в тексте', () => {
+    const step = phaseNextStep(
+      investigationDir,
+      { id: 'VL-2', type: 'investigation', status: 'To Do' },
+      'investigate',
+    );
+    assert.equal(step.required, true);
+    assert.match(step.text, /investigate/);
+    assert.match(step.text, /backlog_finish_phase/);
   });
 });

@@ -5,10 +5,14 @@
  * detection, оба лимита, ошибка handler (loop продолжает), ошибка llm.
  */
 
-import { describe, it } from 'vitest';
+import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { runLoop, compactWireMessages } from '../../dist/agent/loop.js';
+import { settingsPath } from '../../dist/core/settings.js';
 import { zeroUsage, MAX_PAYLOAD_BYTES, PAYLOAD_WARN_BYTES, PAYLOAD_COMPACT_TOOL_CHARS } from '../../dist/agent/llm.js';
 import { TOOL_OUTPUT_MAX_CHARS } from '../../dist/agent/tools.js';
 import { REPEAT_BLOCK_MAX_PER_RUN } from '../../dist/agent/repeat-tracker.js';
@@ -3088,6 +3092,120 @@ describe('VL-362 — директива повтора несёт missing/retryW
     for (const d of directives) {
       assert.equal(d.missing[0].field, 'content', 'каждая директива называет content');
       assert.match(String(d.retryWith?.content), /## Проблема/, 'каждая директива несёт каркас');
+    }
+  });
+});
+
+/**
+ * VL-410: следующий шаг фазы — из workflow и completeness, не из имён фаз.
+ *
+ * Регресс сессии `agent-1794313856082` (фаза spec VL-408): модель сделала три
+ * отдельных `backlog_update_task` (applied), затем четыре дословных повтора
+ * `{id, type}` → noop → кап `MAX_NOOP_REPEATS_PER_RUN` → fail(). Корень —
+ * директива noop-повтора не называла следующий шаг: «прочитай состояние или
+ * смени аргумент» читалось моделью как «попробуй ещё раз».
+ *
+ * Теперь текст шага вычисляет `phaseNextStep` (workflow + completeness):
+ * в spec задача без AC неполна, поэтому директива обязана назвать и
+ * `backlog_finish_phase`, и `acceptanceCriteria`.
+ */
+describe('VL-410 — директива повтора называет следующий шаг фазы', () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'vibelog-loop-vl410-'));
+  afterAll(() => {
+    rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  /** Проект с заданным settings.json (workflow/completeness). */
+  function project(name, settings) {
+    const dir = join(projectDir, name);
+    mkdirSync(join(dir, '.vibelog'), { recursive: true });
+    writeFileSync(settingsPath(dir), JSON.stringify(settings, null, 2), 'utf-8');
+    return dir;
+  }
+
+  /** Заглушка write-инструмента: первый вызов applied, дальше noop. */
+  function updateSpec() {
+    const state = { calls: 0 };
+    const spec = {
+      name: 'backlog_update_task',
+      description: 'обновление задачи',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' }, type: { type: 'string' } } },
+      handler: async () => {
+        state.calls++;
+        return state.calls === 1
+          ? JSON.stringify({ ok: true, message: 'обновлено', applied: { type: 'bug' }, skipped: [] })
+          : JSON.stringify({ ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [] });
+      },
+    };
+    return { spec, state };
+  }
+
+  /** Сценарий: один applied-вызов, затем N дословных повторов, затем финал. */
+  function repeatScript(args, repeats) {
+    const script = [{ text: '', toolCalls: [{ id: 'c0', name: 'backlog_update_task', arguments: args }] }];
+    for (let i = 1; i <= repeats; i++) {
+      script.push({ text: '', toolCalls: [{ id: `c${i}`, name: 'backlog_update_task', arguments: args }] });
+    }
+    script.push({ text: 'Готово' });
+    return script;
+  }
+
+  /** Директивы повтора из истории рана. */
+  function directivesOf(res) {
+    return res.messages
+      .filter((m) => m.role === 'tool' && String(m.content).includes('noop_repeat'))
+      .map((m) => JSON.parse(String(m.content)));
+  }
+
+  it('AC5: регресс agent-1794313856082 — spec называет backlog_finish_phase и acceptanceCriteria', async () => {
+    const dir = project('spec', {});
+    // Описание заполнено, AC нет — ровно состояние VL-408.
+    const task = { id: 'VL-1', type: 'bug', status: 'To Do', description: 'есть описание' };
+    const { spec } = updateSpec();
+    const { llm } = fakeLlm(repeatScript({ id: 'VL-1', type: 'bug' }, 4));
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [spec],
+      phase: 'spec',
+      cwd: dir,
+      task,
+    });
+    const directives = directivesOf(res);
+    assert.ok(directives.length > 0, 'директивы повтора выданы');
+    for (const d of directives) {
+      assert.match(d.message, /backlog_finish_phase/, `шаг называет инструмент отчёта: ${d.message}`);
+      assert.match(d.message, /acceptanceCriteria/, `шаг называет неполное поле: ${d.message}`);
+      assert.doesNotMatch(d.message, /прочитай состояние или смени аргумент/, 'общей фразы больше нет');
+    }
+  });
+
+  it('AC6: кастомная фаза investigate — директива называет backlog_finish_phase', async () => {
+    const dir = project('investigation', {
+      workflows: {
+        investigation: {
+          initial_status: 'To Do',
+          transitions: [{ status: 'To Do', phase: 'investigate', produces_status: 'Spec' }],
+        },
+      },
+      task_workflows: { investigation: 'investigation' },
+    });
+    const task = { id: 'VL-2', type: 'investigation', status: 'To Do', description: 'есть описание' };
+    const { spec } = updateSpec();
+    const { llm } = fakeLlm(repeatScript({ id: 'VL-2', type: 'bug' }, 4));
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [spec],
+      phase: 'investigate',
+      cwd: dir,
+      task,
+    });
+    const directives = directivesOf(res);
+    assert.ok(directives.length > 0, 'директивы повтора выданы');
+    for (const d of directives) {
+      assert.match(d.message, /backlog_finish_phase/, `кастомная фаза тоже называет шаг: ${d.message}`);
+      assert.doesNotMatch(d.message, /прочитай состояние или смени аргумент/, 'общей фразы больше нет');
     }
   });
 });
