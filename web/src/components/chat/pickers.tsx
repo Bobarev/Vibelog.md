@@ -43,6 +43,7 @@ import {
   ScanSearch,
   Sparkles,
   Telescope,
+  Workflow,
 } from "lucide-react"
 
 const TRIGGER_CLASS =

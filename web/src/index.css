@@ -143,6 +143,28 @@
   }
 }
 
+/*
+ * Индикатор активного хода (VL-406): три точки, пульсирующие по очереди.
+ *
+ * Почему точки, а не спиннер-кольцо: кольцо читается как «загрузка страницы»,
+ * а здесь важно «ассистент работает». Почему не шиммер по тексту (как было):
+ * шиммер привязан к строке, и в паузах между tool-вызовами лента выглядела
+ * пустой — со стороны это выглядело как обрыв хода.
+ *
+ * Анимация — только opacity (без translateY): соседние элементы не прыгают,
+ * высота строки не меняется, плашка исхода встаёт на то же место.
+ */
+@keyframes vl-typing-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.25;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
 @layer utilities {
   /*
    * Раскрытие панелей чата (VL-271): ToolCall (Request/Result) и ToolGroup.
@@ -200,6 +222,31 @@
   }
   to {
     grid-template-rows: 0fr;
+  }
+}
+
+@layer utilities {
+  /*
+   * Три пульсирующие точки индикатора хода (VL-406).
+   *
+   * `animation-delay` 0 / 0.15 / 0.3 с даёт «бегущую волну». При
+   * `prefers-reduced-motion: reduce` анимация выключается целиком — точки
+   * остаются статичными (доступность, AC12), текст-подпись рядом читается.
+   */
+  .typing-dot {
+    animation: vl-typing-dot 1.2s ease-in-out infinite;
+  }
+  .typing-dot:nth-child(2) {
+    animation-delay: 0.15s;
+  }
+  .typing-dot:nth-child(3) {
+    animation-delay: 0.3s;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .typing-dot {
+      animation: none;
+      opacity: 0.6;
+    }
   }
 }
 

@@ -63,12 +63,11 @@ import { useChatThreadId } from "@/lib/use-hash-route"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { ApprovalCard } from "./approval-card"
 import { QuestionCard } from "./question-card"
-import { CHAT_ERROR_PART, CHAT_MEMORY_PART, CHAT_PRICING_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider, getActivePersonaId, setMemoryRemovals } from "./chat-runtime"
+import { CHAT_ERROR_PART, CHAT_MEMORY_PART, CHAT_PRICING_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider, getActivePersonaId, requestRetryLastTurn, setMemoryRemovals } from "./chat-runtime"
 import { MemoryCard, type MemoryPartData } from "./memory-card"
 import { PricingDriftCard } from "./pricing-drift-card"
 import { ChatErrorState } from "./error-state"
 import { ModelPicker, PersonaBadge, PersonaPicker } from "./pickers"
-import { ShimmerLabel } from "./surfaces"
 import { StoppedRun } from "./stopped-run"
 import { ToolCall, ToolGroup, type ToolPart } from "./tool-call"
 import { isWriteTool } from "./tool-meta"
@@ -101,10 +100,16 @@ interface ThreadHistoryResponse {
 
 /** Состояние хода треда (зеркало `TurnState` из `src/web/chat-runs.ts`). */
 interface TurnRunState {
-  status: "running" | "done" | "error" | "cancelled" | "interrupted"
+  /**
+   * VL-406: `empty` — ход завершился, но модель не вернула ни текста, ни
+   * tool-вызовов. Раньше такой ход был неотличим от «ничего не было».
+   */
+  status: "running" | "done" | "empty" | "error" | "cancelled" | "interrupted"
   startedAt: string
   finishedAt?: string
   error?: string
+  /** VL-406: время последнего события хода (сторож зависших прогонов). */
+  lastEventAt?: string
 }
 
 /**
@@ -534,16 +539,47 @@ function AssistantMessage() {
   )
 }
 
-/** Композер: Send, либо Cancel во время стриминга (ref-22: ComposerPrimaryAction). */
+/**
+ * Композер: Send, либо Cancel во время хода (ref-22: ComposerPrimaryAction).
+ *
+ * VL-406 (AC5): кнопка отражает СЕРВЕРНОЕ состояние хода, а не только
+ * клиентский рантайм. Пока `turn.json` в статусе `running`, показываем
+ * «Стоп» — даже если локальный стрим уже не читается (пользователь вернулся
+ * в тред, F5, ход идёт в фоне). Иначе кнопка «Отправить» выглядела как
+ * приглашение отправить второй раз, хотя ход на сервере ещё идёт.
+ */
 function Composer({
   placeholder,
   personaId,
+  threadId,
+  serverRunning = false,
 }: {
   placeholder: string
   /** id роли, зафиксированной за тредом (VL-283); null/undefined — новый тред. */
   personaId?: string | null
+  /** id треда — для явной отмены хода на сервере (VL-406). */
+  threadId?: string
+  /** VL-406: ход идёт по данным сервера (`turn.json` → `running`). */
+  serverRunning?: boolean
 }) {
   const { textareaRef, onKeyDown } = useCtrlEnterNewline()
+  const runtimeRunning = useAuiState(s => s.thread.isRunning)
+  const running = serverRunning || runtimeRunning
+
+  /**
+   * Отмена хода (VL-406): локальный рантайм абортим сразу (кнопка реагирует
+   * мгновенно), а серверный прогон гасим явным POST — иначе `turn.json`
+   * остался бы `running` и индикатор висел бы до сторожа.
+   */
+  const cancelServerRun = React.useCallback(() => {
+    if (!threadId) return
+    void fetch(`/api/chat/threads/${encodeURIComponent(threadId)}/cancel`, {
+      method: "POST",
+    }).catch(() => {
+      // сеть моргнула — сторож зависших ходов всё равно переведёт ход
+    })
+  }, [threadId])
+
   return (
     // VL-265: две строки — ввод сверху, нижняя строка с пикерами роли (слева)
     // и модели + Send (справа), как в ref-22 (perplexity.tsx). Высота каркаса
@@ -565,23 +601,23 @@ function Composer({
         <div className="flex items-center gap-1">
           <ModelPicker />
           <div className="relative size-8 shrink-0">
-            {/* Стриминг: кнопка-квадрат отменяет текущий run */}
-            <ThreadPrimitive.If running>
+            {/* Ход идёт (по серверу или по рантайму): кнопка-квадрат отменяет */}
+            {running ? (
               <ComposerPrimitive.Cancel
+                onClick={cancelServerRun}
                 className="absolute inset-0 flex size-8 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90"
                 aria-label="Остановить"
               >
                 <Square className="size-3.5 fill-current" />
               </ComposerPrimitive.Cancel>
-            </ThreadPrimitive.If>
-            {/* Покой: отправка (disabled при пустом вводе — логика Send) */}
-            <ThreadPrimitive.If running={false}>
+            ) : (
+              /* Покой: отправка (disabled при пустом вводе — логика Send) */
               <ComposerPrimitive.Send asChild>
                 <Button size="icon" className="size-8 rounded-full" aria-label="Отправить">
                   <ArrowUp className="size-4" />
                 </Button>
               </ComposerPrimitive.Send>
-            </ThreadPrimitive.If>
+            )}
           </div>
         </div>
       </div>
@@ -628,6 +664,30 @@ function CompactionBanner({ compaction }: { compaction: CompactionState | null }
 }
 
 /**
+ * VL-406: наблюдатель за локальным ходом.
+ *
+ * Пока рантайм стримит, `load.run` (состояние с сервера на момент загрузки
+ * треда) не обновляется — после завершения локального хода плашку исхода
+ * взять неоткуда. По переходу «работал → перестал» перечитываем состояние
+ * хода с сервера: `empty`/`error`/`interrupted` дадут плашку с «Повторить»,
+ * `done` — ничего (ответ уже в ленте).
+ */
+function RunStateWatcher({ onSettled }: { onSettled: () => void }) {
+  const running = useAuiState(s => s.thread.isRunning)
+  const wasRunning = React.useRef(false)
+  React.useEffect(() => {
+    if (running) {
+      wasRunning.current = true
+      return
+    }
+    if (!wasRunning.current) return
+    wasRunning.current = false
+    onSettled()
+  }, [running, onSettled])
+  return null
+}
+
+/**
  * Тред: сообщения + композер. Высота — h-full (скролл внутри viewport).
  *
  * `--thread-max-width: 40rem` (VL-264, ref perplexity.tsx): ширина ленты, к
@@ -644,6 +704,7 @@ function ChatThread({
   threadId,
   compaction,
   run,
+  onRunSettled,
 }: {
   threadPersona: string | null
   /** id треда — resetKey панели расхода (VL-313). */
@@ -652,12 +713,15 @@ function ChatThread({
   compaction?: CompactionState | null
   /** VL-332: состояние хода треда (индикатор «выполняется»). */
   run?: TurnRunState | null
+  /** VL-406: локальный ход завершился — перечитать состояние с сервера. */
+  onRunSettled?: () => void
 }) {
   return (
     <ThreadPrimitive.Root
       className="flex h-full min-h-0 flex-col"
       style={{ ["--thread-max-width" as string]: "40rem" }}
     >
+      {onRunSettled ? <RunStateWatcher onSettled={onRunSettled} /> : null}
       <ThreadPrimitive.If empty>
         <EmptyState />
       </ThreadPrimitive.If>
@@ -698,6 +762,8 @@ function ChatThread({
               <Composer
                 placeholder="Спросите по проекту… (Enter — отправить, Ctrl+Enter — перенос строки)"
                 personaId={threadPersona ?? getActivePersonaId()}
+                threadId={threadId}
+                serverRunning={run?.status === "running"}
               />
             </div>
           </ThreadPrimitive.ViewportFooter>
@@ -708,34 +774,103 @@ function ChatThread({
 }
 
 /**
- * VL-332: индикатор фонового хода.
+ * VL-406: три горизонтальные пульсирующие точки — индикатор активного хода.
+ *
+ * Показывается, пока ход идёт (статус `running` в `turn.json`), а не только
+ * во время стриминга текста: в паузах между tool-вызовами лента иначе
+ * выглядела пустой, и со стороны это читалось как обрыв хода (AC9/AC10).
+ * Анимация — только opacity, поэтому вёрстка не прыгает; при
+ * `prefers-reduced-motion: reduce` точки статичны (AC12).
+ */
+function TypingDots() {
+  return (
+    <span className="inline-flex items-center gap-1" aria-hidden="true">
+      <span className="typing-dot size-1.5 rounded-full bg-current" />
+      <span className="typing-dot size-1.5 rounded-full bg-current" />
+      <span className="typing-dot size-1.5 rounded-full bg-current" />
+    </span>
+  )
+}
+
+/**
+ * VL-332/VL-406: индикатор и исход хода в ленте.
  *
  * Сообщение отправлено, пользователь переключился на другой тред — ход на
  * сервере продолжается и дописывает jsonl. Возвращаясь, человек видит не
- * «зависшее» сообщение без ответа, а явное «Ассистент отвечает…» (AC3).
- * Статусы `error`/`interrupted` показывают причину с кнопкой обновления.
+ * «зависшее» сообщение без ответа, а явный индикатор работы (AC3).
+ *
+ * VL-406: любое завершение, кроме `done`, называется явно и даёт кнопку
+ * «Повторить» — включая `empty` (модель вернула пустой ответ). Раньше такой
+ * ход был неотличим от «ничего не было»: индикатор гас, ответа в jsonl нет,
+ * ошибки нет. Плашка рендерится в той же позиции, что и индикатор, — без
+ * скачка вёрстки (AC11).
  */
 function RunInProgressIndicator({ run }: { run: TurnRunState | null }) {
-  if (run === null || run.status === "done") return null
-  if (run.status === "running") {
+  // VL-406: ход идёт, если так говорит сервер (`turn.json`) ИЛИ локальный
+  // рантайм (только что отправленное сообщение). Второе условие важно для
+  // первого хода в новом треде: `run` там ещё null, а стрим уже идёт.
+  const runtimeRunning = useAuiState(s => s.thread.isRunning)
+  const running = run?.status === "running" || runtimeRunning
+  if (running) {
     return (
-      <div className="mx-4 mt-2 flex max-w-(--thread-max-width) items-center gap-2 self-center rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
-        <ShimmerLabel className="inline-block leading-none">Ассистент отвечает…</ShimmerLabel>
-        <span className="text-xs opacity-70">
-          ход выполняется в фоне — ответ появится в этом треде
-        </span>
+      <div
+        className="mx-4 mt-2 flex max-w-(--thread-max-width) items-center gap-2 self-center rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground"
+        role="status"
+        aria-live="polite"
+      >
+        <TypingDots />
+        <span className="text-xs opacity-70">Ассистент отвечает…</span>
       </div>
     )
   }
-  const message =
-    run.status === "interrupted"
-      ? "Ход был прерван перезапуском сервера. Ответ не сохранён — отправьте сообщение ещё раз."
-      : run.status === "cancelled"
-        ? "Ход остановлен."
-        : `Ход завершился ошибкой: ${run.error ?? "неизвестная причина"}`
+  if (run === null || run.status === "done") return null
+  return <RunOutcomeBanner run={run} />
+}
+
+/**
+ * VL-406: плашка исхода хода с кнопкой «Повторить».
+ *
+ * Тексты различают причины (AC2): пустой ответ модели, ошибка провайдера,
+ * прерванный ход, отмена пользователем. Кнопка перезапускает ход по уже
+ * накопленной истории (`requestRetryLastTurn` → POST с `retry: true`), а не
+ * отправляет текст заново — иначе в jsonl появился бы дубль user-сообщения
+ * (AC3). Тот же путь, что у плашки лимита VL-269 (`aui.message.reload()`),
+ * но без создания sibling-сообщения: здесь нет message-контекста.
+ */
+function RunOutcomeBanner({ run }: { run: TurnRunState }) {
+  const [hidden, setHidden] = React.useState(false)
+  if (hidden) return null
+
+  const text =
+    run.status === "empty"
+      ? "Модель вернула пустой ответ — в тред ничего не записано."
+      : run.status === "interrupted"
+        ? `Ход прерван: ${run.error ?? "сервер перезапустился во время хода"}.`
+        : run.status === "cancelled"
+          ? "Ход остановлен."
+          : `Ход завершился ошибкой: ${run.error ?? "неизвестная причина"}`
+
   return (
-    <div className="mx-4 mt-2 flex max-w-(--thread-max-width) items-center gap-2 self-center rounded-lg border border-dashed px-3 py-2 text-sm text-destructive">
-      {message}
+    <div
+      className="mx-4 mt-2 flex max-w-(--thread-max-width) flex-wrap items-center gap-2 self-center rounded-lg border border-dashed px-3 py-2 text-sm text-destructive"
+      role="status"
+    >
+      <span className="min-w-0 flex-1">{text}</span>
+      <button
+        type="button"
+        onClick={() => requestRetryLastTurn()}
+        className="flex h-7 shrink-0 items-center gap-1 rounded-full px-2.5 text-xs font-medium text-foreground/70 transition-[background-color,color,scale] duration-150 hover:bg-foreground/[0.06] hover:text-foreground/95 active:scale-[0.96]"
+      >
+        Повторить
+        <RefreshCw className="size-3" />
+      </button>
+      <button
+        type="button"
+        onClick={() => setHidden(true)}
+        className="flex h-7 shrink-0 items-center rounded-full px-2.5 text-xs font-medium text-muted-foreground transition-[background-color,color,scale] duration-150 hover:bg-foreground/[0.06] hover:text-foreground/90 active:scale-[0.96]"
+      >
+        Скрыть
+      </button>
     </div>
   )
 }
@@ -924,6 +1059,10 @@ export function ChatPage() {
    * VL-332: ход, оставшийся в фоне. Если в треде идёт ход (`run.status ===
    * "running"`), опрашиваем состояние каждые 2 с; когда ход завершился —
    * перезагружаем историю, чтобы готовый ответ появился без F5 (AC1/AC4).
+   *
+   * VL-406: перезагрузка нужна и при переходе в `empty` — иначе плашка
+   * «модель вернула пустой ответ» появилась бы только после F5 (AC1).
+   * Условие `!== "running"` покрывает все исходы, включая `empty`.
    */
   React.useEffect(() => {
     if (load.status !== "ready" || load.run?.status !== "running") return
@@ -950,6 +1089,37 @@ export function ChatPage() {
       clearInterval(timer)
     }
   }, [load.status, load.run?.status, load.runtimeThreadId])
+
+  /**
+   * VL-406: ход, запущенный в ЭТОЙ вкладке, тоже должен оставить исход.
+   *
+   * Пока стрим идёт, `load.run` не обновляется (это состояние с сервера на
+   * момент загрузки треда), поэтому после завершения локального хода плашку
+   * исхода взять неоткуда. По переходу «рантайм работал → перестал»
+   * перечитываем состояние хода с сервера: `empty`/`error`/`interrupted`
+   * дадут плашку с «Повторить», `done` — ничего (ответ уже в ленте).
+   */
+  const refreshRunState = React.useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`/api/chat/threads/${encodeURIComponent(id)}`)
+      if (!res.ok) return
+      const data = (await res.json()) as ThreadHistoryResponse
+      setLoad(prev => ({ ...prev, run: data.run ?? null }))
+    } catch {
+      // сеть моргнула — состояние хода останется прежним
+    }
+  }, [])
+
+  /**
+   * VL-406: локальный ход завершился — перечитываем состояние хода с сервера.
+   * Так плашка исхода (пустой ответ / ошибка / прерывание) появляется сразу,
+   * без F5 и без ожидания опроса (AC1/AC11).
+   */
+  const handleRunSettled = React.useCallback(() => {
+    const id = load.runtimeThreadId
+    if (!id) return
+    void refreshRunState(id)
+  }, [load.runtimeThreadId, refreshRunState])
 
   /**
    * Сервер создал новый тред → hash на #/chat/<id> без пересоздания
@@ -1026,6 +1196,7 @@ export function ChatPage() {
                 threadId={load.runtimeThreadId}
                 compaction={load.compaction ?? null}
                 run={load.run ?? null}
+                onRunSettled={handleRunSettled}
               />
             </ChatRuntimeProvider>
           )}
