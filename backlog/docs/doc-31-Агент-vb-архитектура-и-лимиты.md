@@ -113,6 +113,17 @@ vibelog agent run <фаза> <task-id>       # то же, что vibelog-agent <
 
 Блок `## Правила проекта` (VL-405) — **ссылка, а не вставка**: `describeAgentsMd(cwd)` в `src/web/chat.ts` делает `statSync` корневого `AGENTS.md` и возвращает короткую строку с числом символов и императивом «Прочитай его через read_file, если вопрос касается правил проекта. В промпт он не вставлен». Файла нет (`ENOENT`) — блока нет; прочие ошибки (`EACCES`, `EISDIR`) — `null` + `console.error`, чат не падает. Сам текст `AGENTS.md` в чат-промпт не попадает: чат интерактивный, модель читает файл через `read_file` только когда вопрос действительно про правила (вставка 8000 символов в каждый ход — дорого). В отличие от TUI-агента и headless-фаз, где `src/agent/system-prompt.ts` вставляет `AGENTS.md` целиком с капом `AGENTS_MD_MAX_CHARS = 8000` — там ничего не меняется (инвариант закреплён тестом от обратного). Блок идёт после уроков и до контекста поиска: контекст поиска всегда последний, он рантаймовый и меняется каждый ход.
 
+### Вложенный запрос консультации (VL-409)
+
+Инструмент `ask_persona` (только веб-чат) запускает **отдельный** LLM-запрос внутри хода основной роли — `src/web/chat-subagent.ts`, `makeAskPersonaTool(deps)`.
+
+- **Промпт консультанта** собирается независимо от промпта основного чата: `loadPersonaPrompt` + `loadPersonaMemory` + `selectLessonsForText(question)` (блоки как в основном чате, но без `## Текущая роль` — консультант знает, кто он). Истории треда нет: только `question` плюс опциональный `context`.
+- **Инструменты консультанта** — `chatToolDefs(cwd, consultant)` с фильтром по `consultant.allowTools ?? DEFAULT_CONSULTANT_TOOLS` (по умолчанию только чтение), **минус** `ask_persona` (глубина 1) и **минус** `memory_remember` (консультация не пишет в память).
+- **Мини-цикл** — `streamChat` до 3 итераций (консультант может прочитать файл и ответить), `maxTokens` из `subagents.max_tokens`, `AbortController` с `subagents.timeout_ms`. Таймаут — не исключение, а tool-результат «консультант не ответил за N мс»: ход продолжается.
+- **Учёт токенов** — sidecar `<threadId>.subagents.json` (`src/web/chat-subagent-usage.ts`) с пометкой `persona: <id>`; токены консультации не смешиваются с токенами основного хода.
+- **Настройки** — секция `subagents` в `.vibelog/settings.json` (`readSubagentSettings` в `src/core/subagents.ts`): `enabled`, `display`, `max_calls_per_turn`, `max_depth` (только 1), `timeout_ms`, `max_tokens`, `on_missing_persona`. Битые значения → дефолт + сообщение в `errors`; неизвестный `on_missing_persona` → `error` + сообщение (не молчаливое приведение).
+- **В headless-фазы и TUI не протекает:** инструмент объявляется только в `chatToolDefs` веб-чата, в MCP-реестре имени нет (инвариант закреплён тестом).
+
 ## 9. Headless-контракт
 
 Headless — единственная строка JSON в stdout (`type: "result"` + текст результата, `is_error`, число ходов, длительность, tool-calls, `session_id`, usage). Прогресс, логи и предупреждения идут в stderr: stdout зарезервирован под результат и читается оркестратором.
