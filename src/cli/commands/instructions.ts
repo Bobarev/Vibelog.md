@@ -113,7 +113,7 @@ export const MCP_GROUPS: readonly { title: string; names: readonly string[] }[] 
   },
   {
     title: 'Код и git',
-    names: ['project_map', 'git_commit'],
+    names: ['project_map', 'git_commit', 'git_status'],
   },
   {
     // VL-398: конструктор workflow — чтение схемы и запись конфигурации

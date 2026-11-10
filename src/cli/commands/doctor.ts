@@ -280,6 +280,8 @@ const MCP_TOOL_PREFIXES = [
   'lesson_',
   'project_map',
   'git_commit',
+  // VL-416: read-only снимок рабочего дерева
+  'git_status',
   // VL-363: репорт бага в upstream через GitVerse Issues
   'upstream_',
   // VL-398: конструктор workflow (workflow_get / workflow_apply)

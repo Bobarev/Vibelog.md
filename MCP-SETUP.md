@@ -33,7 +33,7 @@ Vibelog.md реализует MCP-сервер поверх stdio (JSON-RPC 2.0)
 | `reference_update` | Обновить теги/описание/набор ссылок reference (полная замена) |
 | `reference_link` | Двусторонняя связь reference ↔ задача (linked_tasks ↔ task.references) |
 | `reference_sync` | Доклонировать отсутствующие репозитории (type=repo) |
-| `document_list` | Список документов (`backlog/docs/`) с текстовым фильтром по id/title/tags/телу |
+| `document_list` | Список документов (`backlog/docs/`): текстовый фильтр по id/title/tags/телу, точный фильтр `tags` (AND, case-insensitive) и `excerpt: N` — первые N символов тела |
 | `document_view` | Показать документ по id (frontmatter + содержимое) |
 | `document_create` | Создать документ (readme / guide / specification / other) |
 | `document_update` | Обновить документ (только переданные поля; `content` — полная замена) |
@@ -49,6 +49,7 @@ Vibelog.md реализует MCP-сервер поверх stdio (JSON-RPC 2.0)
 | `lesson_classify` | Классификация lessons (rule/workaround/fact/stale) и черновики задач техдолга; opt-in, по умолчанию ничего не пишет |
 | `project_map` | Карта проекта: модули `src/` — путь, назначение, экспорты; `query` — узкая выборка по символу |
 | `git_commit` | Коммит явными путями с трейлером Co-authored-by (массовый add отклоняется) |
+| `git_status` | Read-only состояние рабочего дерева: ветка, changed/untracked, ahead/behind; `paths` сужает вывод до явных путей |
 | `backlog_trigger_phase` | Запустить фазу задачи (spec/plan/code/close/comment и др.) через оркестратор фаз |
 | `backlog_phase_status` | Состояние запуска фазы: running, phase, pid, exitCode, logTail, result, repeat_stats |
 | `backlog_finish_phase` | Завершение фазы одним вызовом: статус + отчёт + modifiedFiles + батч-отметки AC/DoD |

@@ -59,6 +59,8 @@ const EXPECTED_MCP_TOOLS = [
   'document_update',
   'document_view',
   'git_commit',
+  // VL-416: read-only снимок рабочего дерева
+  'git_status',
   'lesson_audit',
   'lesson_classify',
   'lesson_consolidate',
