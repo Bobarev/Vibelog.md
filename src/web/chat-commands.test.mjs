@@ -131,9 +131,9 @@ function longHistory(pairs = 40) {
 }
 
 describe('реестр команд и /help (AC1, AC2, AC3)', () => {
-  it('реестр содержит help, trim, compact с usage и описанием', () => {
+  it('реестр содержит help, trim, compact, memory с usage и описанием', () => {
     const names = CHAT_COMMANDS.map(c => c.name);
-    assert.deepEqual(names, ['help', 'trim', 'compact']);
+    assert.deepEqual(names, ['help', 'trim', 'compact', 'memory']);
     for (const c of CHAT_COMMANDS) {
       assert.ok(c.description.length > 0, `${c.name}: пустое описание`);
       assert.ok(c.usage.startsWith('/'), `${c.name}: usage без слэша`);

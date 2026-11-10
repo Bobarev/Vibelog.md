@@ -74,6 +74,16 @@ type ChatEvent =
     }
   | { type: "done" }
   | { type: "error"; message: string }
+  /**
+   * VL-402: модель записала предпочтение пользователя в память роли. Запись
+   * уже применена (Allow/Deny не спрашивали — она обратима), поэтому в ленте
+   * появляется строка «Запомнил: …» с кнопкой «Убрать».
+   */
+  | {
+      type: "memory"
+      entry: { index: number; text: string; date: string }
+      personaId: string
+    }
   /** VL-313: расход токенов треда после очередного вызова модели. */
   | { type: "usage"; usage: ThreadUsageView }
   /**
@@ -134,6 +144,14 @@ export const CHAT_ERROR_PART = "chat-error"
  * в ленте (AC7).
  */
 export const CHAT_PRICING_PART = "chat-pricing"
+
+/**
+ * Имя data-части «запись в память персоны» (VL-402): строка «Запомнил: …» с
+ * кнопкой «Убрать». Живёт в content сообщения (как pricing/truncated), поэтому
+ * после F5 восстанавливается из jsonl — но кнопка неактивна, если запись уже
+ * убрана (набор отмен приходит с сервера, `setMemoryRemovals`).
+ */
+export const CHAT_MEMORY_PART = "chat-memory"
 
 /**
  * Текущий threadId (VL-207: id приходит из hash при восстановлении,
@@ -198,6 +216,32 @@ export function removeAlwaysAllowed(tool: string): void {
 export function setAlwaysAllowed(tools: readonly string[] | undefined): void {
   alwaysAllowed.clear()
   for (const tool of tools ?? []) alwaysAllowed.add(tool)
+}
+
+/**
+ * VL-402: отменённые записи памяти активного треда (тексты).
+ *
+ * Заполняется при восстановлении истории (`data.memoryRemovals`) и при
+ * нажатии «Убрать» — карточка «Запомнил: …» после F5 показывает, что запись
+ * уже убрана, а не предлагает удалить её второй раз. Сбрасывается при смене
+ * треда (как allow-list).
+ */
+const memoryRemovals = new Set<string>()
+
+/** Убрана ли запись памяти в активном треде (по тексту записи). */
+export function isMemoryRemoved(text: string): boolean {
+  return memoryRemovals.has(text)
+}
+
+/** Локальная пометка «запись убрана» (после успешного POST /memory/remove). */
+export function markMemoryRemoved(text: string): void {
+  memoryRemovals.add(text)
+}
+
+/** Замена набора отменённых записей при загрузке треда с сервера. */
+export function setMemoryRemovals(texts: readonly string[] | undefined): void {
+  memoryRemovals.clear()
+  for (const text of texts ?? []) memoryRemovals.add(text)
 }
 
 /**
@@ -536,6 +580,20 @@ function applyEvent(
       })
       return false
     case "done":
+      return false
+    case "memory":
+      // VL-402: запись памяти уже применена сервером — показываем её в ленте
+      // data-частью (как pricing/truncated), чтобы строка пережила F5.
+      parts.push({
+        type: "data",
+        name: CHAT_MEMORY_PART,
+        data: {
+          index: ev.entry.index,
+          text: ev.entry.text,
+          date: ev.entry.date,
+          personaId: ev.personaId,
+        },
+      })
       return false
     case "usage":
       // VL-313: расход треда — обновляем module-state панели (AC1). В content

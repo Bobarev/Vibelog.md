@@ -100,7 +100,9 @@ import {
   listCatalogVendors,
   normalizePricing,
 } from '../core/provider-catalog.js';
-import { DEFAULT_PERSONA_ID, listPersonas } from './personas.js';
+import { DEFAULT_PERSONA_ID, listPersonas, resolvePersona } from './personas.js';
+// VL-402: отмена записи памяти персоны из ленты чата (кнопка «Убрать»)
+import { loadMemoryRemovals, removeMemoryByEvent } from './chat-memory.js';
 import { CHAT_SECTION_KEYS, loadBotSettings, saveBotSettings } from '../bot/settings.js';
 import { PRICING_GUARD_KEYS } from '../core/pricing-guard.js';
 import type { BotSettings } from '../bot/settings.js';
@@ -249,6 +251,34 @@ export function handleApi(
       return { status: 405, body: { error: 'Метод не поддерживается' } };
     }
 
+    // /api/chat/threads/:id/memory/remove — отмена записи памяти персоны
+    // (VL-402, AC2): кнопка «Убрать» в ленте. Тело {index?, text?} — текст
+    // приоритетнее (номера сдвигаются после удаления соседней записи).
+    // Роль берётся из треда (AC6): чужую память через этот роут не тронуть.
+    const chatMemoryRemoveMatch = url.match(/^\/api\/chat\/threads\/([^/]+)\/memory\/remove$/);
+    if (chatMemoryRemoveMatch) {
+      if (method !== 'POST') return { status: 405, body: { error: 'Метод не поддерживается' } };
+      const memThreadId = chatMemoryRemoveMatch[1]!;
+      const personaId = effectiveThreadPersona(cwd, memThreadId);
+      const persona = personaId === null ? null : resolvePersona(cwd, personaId);
+      if (persona === null) {
+        return { status: 404, body: { error: 'Роль треда не определена — память недоступна' } };
+      }
+      const result = removeMemoryByEvent(cwd, memThreadId, persona, {
+        index: body?.index,
+        text: body?.text,
+      });
+      if (!result.ok) return { status: 404, body: { error: result.error } };
+      return {
+        status: 200,
+        body: {
+          removed: { index: result.removed.index, text: result.removed.text, date: result.removed.date },
+          chars: result.chars,
+          limit: result.limit,
+        },
+      };
+    }
+
     // GET /api/chat/threads/:id — история треда (VL-207): клиент подгружает
     // её при навигации в существующий тред (AC1). Валидация threadId —
     // внутри getChatThread (тот же THREAD_ID_RE, что и в runChat): мусор или
@@ -278,6 +308,10 @@ export function handleApi(
           // клиент показывает «выполняется» вместо «зависшего» сообщения без
           // ответа (AC3/AC4). null — ходов ещё не было.
           run: readTurnState(cwd, chatThreadMatch[1]),
+          // VL-402: отменённые записи памяти — после F5 карточка «Запомнил: …»
+          // восстанавливается из jsonl, и кнопка «Убрать» должна быть
+          // неактивна, если запись уже удалена (AC2).
+          memoryRemovals: loadMemoryRemovals(cwd, chatThreadMatch[1]),
         },
       };
     }

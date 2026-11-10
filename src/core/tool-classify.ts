@@ -52,6 +52,23 @@ const MIXED_READ_ACTIONS: Readonly<Record<string, readonly string[]>> = {
 const INTERACTIVE_TOOLS: ReadonlySet<string> = new Set(['ask_user']);
 
 /**
+ * Обратимые записи (VL-402): инструменты, которые ПИШУТ, но не требуют
+ * Allow/Deny, потому что их результат виден в ленте и отменяется одной
+ * кнопкой.
+ *
+ * `memory_remember` — запись в память персоны (`.memory.md`). Почему не write:
+ * карточка Allow/Deny на каждую запись превратила бы разговор в тыканье, а
+ * смысл памяти — в том, что она копится по ходу беседы. Контроль при этом не
+ * теряется: запись применяется сразу, но появляется в ленте событием `memory`
+ * с кнопкой «Убрать» (AC2 VL-402). Это принципиально отличается от
+ * `write_file`/`edit`: там откат — ручная правка файла, здесь — одно нажатие.
+ *
+ * Решение закреплено тестом (`src/web/chat-memory.test.mjs`): если следующая
+ * правка классификатора вернёт `memory_remember` в write, тест упадёт.
+ */
+const REVERSIBLE_WRITE_TOOLS: ReadonlySet<string> = new Set(['memory_remember']);
+
+/**
  * Вид локальных файловых инструментов агента (VL-357, VL-359).
  *
  * Они не входят в MCP-реестр (`listTools()`), поэтому не могут объявить вид
@@ -149,6 +166,9 @@ export function isWriteOperation(name: string, args?: Record<string, unknown>): 
   // VL-330: интерактивный инструмент (ask_user) — не write: пауза хода, а не
   // побочный эффект. Проверяется ДО декларации и до fail-safe.
   if (isInteractiveTool(name)) return false;
+  // VL-402: обратимая запись (memory_remember) — тоже не write: результат
+  // виден в ленте и отменяется кнопкой «Убрать» (см. REVERSIBLE_WRITE_TOOLS).
+  if (REVERSIBLE_WRITE_TOOLS.has(name)) return false;
   const kind = declaredToolKind(name);
   if (kind === 'read') return false;
   if (kind === 'write') return true;

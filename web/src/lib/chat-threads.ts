@@ -32,6 +32,21 @@ export interface HistoryMessage {
 /** Тип parts assistant-сообщения ThreadMessageLike (нужен для приведения). */
 type AssistantParts = Extract<ThreadMessageLike, { role: "assistant" }>["content"];
 
+/**
+ * VL-402: успешный ответ `memory_remember` (`{ok:true, entry:{index,text,date}}`).
+ * По нему восстановление истории рисует карточку «Запомнил: …» вместо строки
+ * инструмента — так лента после F5 совпадает с живой.
+ */
+function isMemoryAck(
+  value: unknown,
+): value is { ok: true; entry: { index: number; text: string; date: string } } {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as { ok?: unknown; entry?: unknown };
+  if (obj.ok !== true) return false;
+  const entry = obj.entry as { text?: unknown } | undefined;
+  return typeof entry?.text === "string";
+}
+
 /** id треда из хеша `#/chat/<id>`; null — тред не выбран, 'new' — новый. */
 export function parseChatThreadId(hash: string): string | null {
   const match = hash.match(/^#\/chat\/([^/]+)$/);
@@ -103,6 +118,22 @@ export function historyToMessages(
           parsed = JSON.parse(raw);
         } catch {
           // не-JSON результат (текст ошибки) оставляем строкой
+        }
+        // VL-402: успешная запись памяти — не строка инструмента, а карточка
+        // «Запомнил: …» с кнопкой «Убрать». Синтезируем ту же data-часть, что
+        // приходит живым событием `memory`, чтобы после F5 лента выглядела
+        // одинаково (иначе строка исчезала бы при перезагрузке).
+        if (tc.name === "memory_remember" && isMemoryAck(parsed)) {
+          parts.push({
+            type: "data",
+            name: "chat-memory",
+            data: {
+              index: parsed.entry.index,
+              text: parsed.entry.text,
+              date: parsed.entry.date,
+            },
+          });
+          continue;
         }
         part.result = parsed;
         // {"error": ...} — отказ/ошибка инструмента без отдельного флага isError;

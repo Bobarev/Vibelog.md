@@ -32,28 +32,22 @@ import { fileURLToPath } from 'node:url';
 import { loadSettings } from '../core/settings.js';
 import { loadConfig } from '../core/config.js';
 import { listTools } from '../mcp/tools.js';
+// VL-402: путь/суффикс/лимит памяти персоны переехали в core — их использует
+// и запись (src/core/persona-memory.ts), а две копии разъехались бы
+// (lesson-37). Публичный API этого модуля сохранён реэкспортом.
+import {
+  PROJECT_PERSONAS_DIR,
+  PERSONA_MEMORY_SUFFIX,
+  PERSONA_MEMORY_DEFAULT_MAX_CHARS,
+  readPersonaMemoryLimit,
+} from '../core/persona-memory.js';
 
-/** Каталог проектных переопределений промптов ролей (относительно cwd). */
-export const PROJECT_PERSONAS_DIR = join('.vibelog', 'prompts', 'personas');
-
-/**
- * Суффикс файла памяти персоны (VL-401): память лежит рядом с промптом роли —
- * `.vibelog/prompts/personas/<prompt>.memory.md`.
- *
- * Только проектный путь: у встроенных шаблонов памяти нет (память — всегда
- * пользовательские данные о человеке, а не часть пакета). Для встроенных
- * ролей файл просто создаётся в проектном каталоге — отдельной логики не нужно.
- */
-export const PERSONA_MEMORY_SUFFIX = '.memory.md';
-
-/**
- * Дефолтный лимит памяти персоны в символах (VL-401).
- *
- * 2500 символов ≈ 600–800 токенов: память подставляется в КАЖДЫЙ ход чата,
- * поэтому дефолт подобран так, чтобы не раздувать промпт. Переопределяется
- * секцией `persona_memory` в `.vibelog/settings.json` (ключ `max_chars`).
- */
-export const PERSONA_MEMORY_DEFAULT_MAX_CHARS = 2500;
+export {
+  PROJECT_PERSONAS_DIR,
+  PERSONA_MEMORY_SUFFIX,
+  PERSONA_MEMORY_DEFAULT_MAX_CHARS,
+  readPersonaMemoryLimit,
+};
 
 /** Роль по умолчанию при старте чата (AC14: всегда helper, без localStorage). */
 export const DEFAULT_PERSONA_ID = 'helper';
@@ -347,40 +341,6 @@ export function validatePersonasConfig(cwd: string): string[] {
  */
 export function resolveDefaultStatus(persona: PersonaConfig | null | undefined): string {
   return persona?.defaultStatus || FALLBACK_DEFAULT_STATUS;
-}
-
-/**
- * Лимит памяти персоны из `.vibelog/settings.json` (VL-401).
- *
- * Секция `persona_memory`, ключ `max_chars`; дефолт
- * `PERSONA_MEMORY_DEFAULT_MAX_CHARS`. Битое/нечисловое/≤0 значение не роняет
- * чат (паттерн readLessonSettings): берётся дефолт, а в `errors` попадает
- * понятное сообщение — настройка не должна ломать подстановку памяти.
- *
- * @param errors — необязательный аккумулятор предупреждений (реестр ролей)
- */
-export function readPersonaMemoryLimit(cwd: string, errors?: string[]): number {
-  let raw: unknown;
-  try {
-    raw = loadSettings(cwd).persona_memory;
-  } catch {
-    return PERSONA_MEMORY_DEFAULT_MAX_CHARS;
-  }
-  if (raw === undefined) return PERSONA_MEMORY_DEFAULT_MAX_CHARS;
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-    errors?.push('settings.json: секция persona_memory должна быть объектом {max_chars: число}');
-    return PERSONA_MEMORY_DEFAULT_MAX_CHARS;
-  }
-  const value = (raw as Record<string, unknown>).max_chars;
-  if (value === undefined) return PERSONA_MEMORY_DEFAULT_MAX_CHARS;
-  const num = Number(value);
-  if (!Number.isFinite(num) || num <= 0) {
-    errors?.push(
-      `settings.json: persona_memory.max_chars должен быть положительным числом (получено ${JSON.stringify(value)}) — используется дефолт ${PERSONA_MEMORY_DEFAULT_MAX_CHARS}`,
-    );
-    return PERSONA_MEMORY_DEFAULT_MAX_CHARS;
-  }
-  return Math.floor(num);
 }
 
 /**
