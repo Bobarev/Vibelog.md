@@ -449,6 +449,28 @@ vibelog config <subcommand> [опции]
 
 ---
 
+## workflow
+
+```
+vibelog workflow <subcommand> [опции]
+
+  show [--json]                          Эффективный workflow и его источник
+  validate [--json]                      Диагностика конфигурации
+  apply <file|-> [--dry-run] [--sync-statuses]   Записать секции в settings.json
+```
+
+Конструктор кастомного workflow (VL-398). Работает с теми же секциями, что читает исполнение: `workflows`, `task_workflows`, `completeness` в `.vibelog/settings.json` и `statuses` в `backlog/config.yml`.
+
+- `show` — имя workflow, **источник** («дефолт из кода (`DEFAULT_WORKFLOW`)» либо «из settings.json: `<имя>`»), `initial_status`, переходы по одному в строке (`To Do --spec--> Spec`), `task_workflows`, `completeness`, статусы из `config.yml`. `--json` — `{schemaVersion: 1, kind: 'workflow', data}`.
+- `validate` — переходы и фазы: статус вне `config.statuses` (warning с подсказкой `--sync-statuses`), недостижимый статус (warning; статусы, объявленные в `config.statuses`, недостижимыми не считаются — в них переводят вручную), фаза не из `PHASES` или без шаблона в `templates/phases`/`.vibelog/prompts/phases` (error), висячие ссылки `task_workflows` и ошибки `completeness` (warning, та же проверка `validateCompleteness`, что в `vibelog doctor`). Код выхода 1 при наличии error, warning прогон не роняет.
+- `apply <file|->` — принимает JSON или YAML-фрагмент с ключами `workflows`/`task_workflows`/`completeness` (`-` — stdin), **валидирует до записи**: при ошибке файл не трогается. Остальные ключи фрагмента игнорируются и перечисляются в `skipped`. Запись — read-modify-write, чужие ключи `settings.json` сохраняются. Повтор того же фрагмента — noop (файл не меняется); нечитаемый `settings.json` — отказ без записи (файл не затирается).
+- `--dry-run` — показать, что было бы записано, ничего не писать.
+- `--sync-statuses` — статусы из `transitions`/`initial_status`, отсутствующие в `config.yml`, дописать в конец `statuses` (без флага — только предупреждение).
+
+Тот же путь доступен агенту без shell: MCP-инструменты `workflow_get` (read) и `workflow_apply` (write, с подтверждением). Обсудить и собрать workflow под проект помогает встроенная роль `workflow-designer` в веб-чате.
+
+---
+
 ## model
 
 ```

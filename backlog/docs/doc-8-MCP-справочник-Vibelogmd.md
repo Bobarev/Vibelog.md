@@ -760,6 +760,35 @@ src/core/reference-cache.ts — Локальный markdown-кэш references (V
 
 ---
 
+## Workflow (конструктор, VL-398)
+
+Две тонкие обёртки над ядром `src/core/workflow-config.ts` — тот же код, что у `vibelog workflow show|validate|apply`. Нужны, чтобы агент в новом проекте мог получить схему workflow и провалидировать правку без shell и без `write_file` в конфиг.
+
+### workflow_get — эффективный workflow + диагностика (read)
+
+Без аргументов. Возвращает `describeWorkflow` (имя, источник — «дефолт из кода `DEFAULT_WORKFLOW`» либо «из settings.json», `initial_status`, `transitions`, `task_workflows`, `completeness`, `statuses` из `backlog/config.yml`) и `validateWorkflowConfig` (findings с `severity`). Подтверждения не требует.
+
+### workflow_apply — запись секций в `.vibelog/settings.json` (write)
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `patch` | object | да | Фрагмент с ключами `workflows` / `task_workflows` / `completeness`; прочие ключи попадают в `skipped` |
+| `dryRun` | boolean | | Показать, что было бы записано, ничего не писать |
+| `syncStatuses` | boolean | | Дописать статусы из `transitions` в `backlog/config.yml` `statuses` |
+| `idempotencyKey` | string | | Повтор с тем же ключом не применяет изменение второй раз |
+
+Валидация выполняется **до записи**: при `severity: 'error'` возвращается `{ok: false}` и файл не меняется. Повтор того же патча — `noop` (файл не трогается); нечитаемый `settings.json` — отказ без записи (файл не затирается). Ответ — JSON-ack `{ok, applied, skipped}`; write-инструмент, требует подтверждения Allow/Deny.
+
+```
+workflow_apply {"patch": {"workflows": {"default": {"initial_status": "To Do",
+  "transitions": [{"status": "To Do", "phase": "spec", "produces_status": "Spec"},
+                  {"status": "Spec", "phase": "code", "produces_status": "Done"},
+                  {"status": "Done", "phase": null, "produces_status": null}]}}},
+  "syncStatuses": true}
+```
+
+---
+
 ## Примеры вызовов
 
 ```json
