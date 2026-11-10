@@ -87,6 +87,7 @@ import {
 import { analyzeToolRepeats, type RepeatStats } from '../agent/repeat-tracker.js';
 import {
   DEFAULT_PERSONA_ID,
+  loadPersonaMemory,
   loadPersonaPrompt,
   resolveDefaultStatus,
   resolvePersona,
@@ -692,14 +693,26 @@ function lastUserText(history: ChatMessage[]): string {
  * System-сообщение: статическая часть из шаблона (VL-219: переопределение
  * .vibelog/prompts/chat-system.md → templates/prompts/chat-system.md,
  * fail-closed) + блок роли (VL-265: общая часть не дублируется в файлах
- * ролей, роль идёт отдельным блоком) + динамический контекст globalSearch
- * по последнему сообщению (всегда последним — он рантаймовый).
+ * ролей, роль идёт отдельным блоком) + память персоны (VL-401) +
+ * динамический контекст globalSearch по последнему сообщению (всегда
+ * последним — он рантаймовый).
+ *
+ * VL-401: память читается ТОЛЬКО здесь, в чат-сборке. Headless-фазы и
+ * TUI-агент собирают промпт через src/agent/system-prompt.ts и памяти не
+ * видят (инвариант закреплён тестом от обратного, как VL-238/lesson-134).
  */
 function buildSystemPrompt(cwd: string, lastUser: string, persona: PersonaConfig): string {
   const parts: string[] = [
     loadChatSystemTemplate(cwd),
     `## Текущая роль: ${persona.label}\n\n${loadPersonaPrompt(cwd, persona)}`,
   ];
+  // Пустая/отсутствующая память — блок не добавляется вовсе: «(пусто)» в
+  // каждом ходе было бы лишним шумом. Ошибки чтения/лимита уже собраны
+  // реестром ролей (GET /api/personas) — здесь они не нужны.
+  const memory = loadPersonaMemory(cwd, persona);
+  if (memory.text) {
+    parts.push(`## Память персоны\n\n${memory.text}`);
+  }
   if (lastUser.trim()) {
     const hits = globalSearch(cwd, lastUser.trim());
     const context = {

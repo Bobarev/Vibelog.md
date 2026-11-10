@@ -36,6 +36,25 @@ import { listTools } from '../mcp/tools.js';
 /** Каталог проектных переопределений промптов ролей (относительно cwd). */
 export const PROJECT_PERSONAS_DIR = join('.vibelog', 'prompts', 'personas');
 
+/**
+ * Суффикс файла памяти персоны (VL-401): память лежит рядом с промптом роли —
+ * `.vibelog/prompts/personas/<prompt>.memory.md`.
+ *
+ * Только проектный путь: у встроенных шаблонов памяти нет (память — всегда
+ * пользовательские данные о человеке, а не часть пакета). Для встроенных
+ * ролей файл просто создаётся в проектном каталоге — отдельной логики не нужно.
+ */
+export const PERSONA_MEMORY_SUFFIX = '.memory.md';
+
+/**
+ * Дефолтный лимит памяти персоны в символах (VL-401).
+ *
+ * 2500 символов ≈ 600–800 токенов: память подставляется в КАЖДЫЙ ход чата,
+ * поэтому дефолт подобран так, чтобы не раздувать промпт. Переопределяется
+ * секцией `persona_memory` в `.vibelog/settings.json` (ключ `max_chars`).
+ */
+export const PERSONA_MEMORY_DEFAULT_MAX_CHARS = 2500;
+
 /** Роль по умолчанию при старте чата (AC14: всегда helper, без localStorage). */
 export const DEFAULT_PERSONA_ID = 'helper';
 
@@ -74,6 +93,33 @@ export interface PersonaSummary {
   id: string;
   label: string;
   description?: string;
+  /**
+   * VL-401: состояние памяти персоны — БЕЗ текста (как и промпт, память
+   * остаётся на сервере: там могут быть личные заметки о пользователе).
+   */
+  memory: PersonaMemoryInfo;
+}
+
+/** Состояние памяти персоны для GET /api/personas (VL-401). */
+export interface PersonaMemoryInfo {
+  /** Файл памяти существует и прочитан. */
+  exists: boolean;
+  /** Размер памяти в символах (0 — файла нет). */
+  chars: number;
+  /** Память превысила лимит и была обрезана по границе строки. */
+  truncated: boolean;
+}
+
+/** Результат чтения памяти персоны (VL-401). */
+export interface PersonaMemory {
+  /** Текст памяти, готовый к подстановке ('' — файла нет). */
+  text: string;
+  /** Полный размер файла в символах (до обрезки). */
+  chars: number;
+  /** Текст обрезан по лимиту (в `text` уже стоит пометка). */
+  truncated: boolean;
+  /** Файл памяти существует. */
+  exists: boolean;
 }
 
 /**
@@ -270,11 +316,15 @@ function parseDefaultStatus(
 export function listPersonas(cwd: string): { personas: PersonaSummary[]; errors: string[] } {
   const { personas, errors } = loadPersonas(cwd);
   return {
-    personas: personas.map(p => ({
-      id: p.id,
-      label: p.label,
-      ...(p.description ? { description: p.description } : {}),
-    })),
+    personas: personas.map(p => {
+      const memory = loadPersonaMemory(cwd, p, errors);
+      return {
+        id: p.id,
+        label: p.label,
+        ...(p.description ? { description: p.description } : {}),
+        memory: { exists: memory.exists, chars: memory.chars, truncated: memory.truncated },
+      };
+    }),
     errors,
   };
 }
@@ -297,6 +347,91 @@ export function validatePersonasConfig(cwd: string): string[] {
  */
 export function resolveDefaultStatus(persona: PersonaConfig | null | undefined): string {
   return persona?.defaultStatus || FALLBACK_DEFAULT_STATUS;
+}
+
+/**
+ * Лимит памяти персоны из `.vibelog/settings.json` (VL-401).
+ *
+ * Секция `persona_memory`, ключ `max_chars`; дефолт
+ * `PERSONA_MEMORY_DEFAULT_MAX_CHARS`. Битое/нечисловое/≤0 значение не роняет
+ * чат (паттерн readLessonSettings): берётся дефолт, а в `errors` попадает
+ * понятное сообщение — настройка не должна ломать подстановку памяти.
+ *
+ * @param errors — необязательный аккумулятор предупреждений (реестр ролей)
+ */
+export function readPersonaMemoryLimit(cwd: string, errors?: string[]): number {
+  let raw: unknown;
+  try {
+    raw = loadSettings(cwd).persona_memory;
+  } catch {
+    return PERSONA_MEMORY_DEFAULT_MAX_CHARS;
+  }
+  if (raw === undefined) return PERSONA_MEMORY_DEFAULT_MAX_CHARS;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    errors?.push('settings.json: секция persona_memory должна быть объектом {max_chars: число}');
+    return PERSONA_MEMORY_DEFAULT_MAX_CHARS;
+  }
+  const value = (raw as Record<string, unknown>).max_chars;
+  if (value === undefined) return PERSONA_MEMORY_DEFAULT_MAX_CHARS;
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) {
+    errors?.push(
+      `settings.json: persona_memory.max_chars должен быть положительным числом (получено ${JSON.stringify(value)}) — используется дефолт ${PERSONA_MEMORY_DEFAULT_MAX_CHARS}`,
+    );
+    return PERSONA_MEMORY_DEFAULT_MAX_CHARS;
+  }
+  return Math.floor(num);
+}
+
+/**
+ * Читает память персоны: `<cwd>/.vibelog/prompts/personas/<prompt>.memory.md`
+ * (VL-401). Имя файла берётся из поля `prompt` роли — как у промпта роли.
+ *
+ * Отсутствие файла — норма (память необязательна): `exists: false`, пустой
+ * текст, блок в промпт не добавляется. Ошибка чтения (EACCES и т.п.) тоже не
+ * роняет чат: `exists: false` + сообщение в `errors`.
+ *
+ * При превышении лимита текст НЕ обрезается молча: режется по границе строки
+ * (обрубок записи хуже её отсутствия) и в конец блока добавляется явная
+ * пометка о превышении лимита.
+ *
+ * @param errors — необязательный аккумулятор предупреждений (реестр ролей)
+ */
+export function loadPersonaMemory(
+  cwd: string,
+  persona: PersonaConfig,
+  errors?: string[],
+): PersonaMemory {
+  const rel = join(PROJECT_PERSONAS_DIR, `${persona.prompt}${PERSONA_MEMORY_SUFFIX}`);
+  let raw: string;
+  try {
+    raw = readFileSync(join(cwd, rel), 'utf8');
+  } catch (err) {
+    // ENOENT — штатное «памяти нет»; прочие ошибки (права, каталог) сообщаем
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT') {
+      errors?.push(`память роли "${persona.id}" не прочитана (${rel}): ${(err as Error).message}`);
+    }
+    return { text: '', chars: 0, truncated: false, exists: false };
+  }
+  const text = raw.trim();
+  if (text === '') return { text: '', chars: 0, truncated: false, exists: false };
+
+  const maxChars = readPersonaMemoryLimit(cwd, errors);
+  if (text.length <= maxChars) {
+    return { text, chars: text.length, truncated: false, exists: true };
+  }
+
+  // Обрезка по границе строки: последний перевод строки в пределах лимита.
+  // Нет ни одного перевода строки — режем по символу (иначе блок пустой).
+  const head = text.slice(0, maxChars);
+  const cut = head.lastIndexOf('\n');
+  const kept = (cut > 0 ? head.slice(0, cut) : head).trimEnd();
+  const note = `[память обрезана: показано ${kept.length} из ${text.length} символов — почистите файл]`;
+  errors?.push(
+    `память роли "${persona.id}" превышает лимит ${maxChars} символов (${text.length}) — показаны первые ${kept.length}`,
+  );
+  return { text: `${kept}\n\n${note}`, chars: text.length, truncated: true, exists: true };
 }
 
 /**
