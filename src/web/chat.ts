@@ -31,6 +31,7 @@ import { createLlmClient } from '../agent/llm.js';
 import { loadApiMode } from '../agent/llm-env.js';
 import { loadModels, resolveModelById, validateModelsConfig } from '../core/models.js';
 import { globalSearch } from '../core/search.js';
+import { formatLessonLine, readChatLessonSettings, readLessonSettings, selectLessonsForText } from '../core/lesson.js';
 import { truncateToolOutput } from '../agent/tools.js';
 import { handleToolCall } from '../mcp/tools.js';
 import { ackDenied, isNoopAck } from '../mcp/tool-result.js';
@@ -689,19 +690,67 @@ function lastUserText(history: ChatMessage[]): string {
   return '';
 }
 
+/** Предел текста разговора для recall уроков (VL-404): ~2000 символов. */
+const CONVERSATION_TEXT_MAX_CHARS = 2000;
+
+/**
+ * Минимальный score урока для блока `## Уроки проекта` (VL-404).
+ *
+ * 3 = одно совпадение в title (вес title в `scoreLessonForTask`). Без порога
+ * `scoreLessonForTask` без И-логики цепляет урок по одному общему слову
+ * («файл», «тест») — на 270+ уроках это шум в каждом ходе чата.
+ */
+const CHAT_LESSON_MIN_SCORE = 3;
+
+/**
+ * Склеивает последние user-сообщения треда в текст-запрос для recall уроков
+ * (VL-404).
+ *
+ * Берутся только сообщения пользователя: вопрос — сигнал о теме, ответ
+ * модели — шум (в нём уже пересказаны найденные уроки, и recall начал бы
+ * подкреплять сам себя). Порядок — от старых к новым, чтобы при обрезке по
+ * длине осталось самое свежее.
+ *
+ * @param history — история треда
+ * @param maxMessages — сколько последних user-сообщений брать
+ */
+export function recentConversationText(history: ChatMessage[], maxMessages: number): string {
+  const limit = Math.max(0, Math.floor(maxMessages));
+  if (limit === 0) return '';
+  const picked: string[] = [];
+  for (let i = history.length - 1; i >= 0 && picked.length < limit; i--) {
+    const m = history[i]!;
+    if (m.role !== 'user') continue;
+    const text = String(m.content || '').trim();
+    if (text) picked.push(text);
+  }
+  // Обрезка по длине: иначе токенов в запросе больше, чем в самом уроке.
+  // Режем с начала (старое), сохраняя хвост — свежий вопрос важнее.
+  const joined = picked.reverse().join(' ');
+  return joined.length > CONVERSATION_TEXT_MAX_CHARS
+    ? joined.slice(joined.length - CONVERSATION_TEXT_MAX_CHARS)
+    : joined;
+}
+
 /**
  * System-сообщение: статическая часть из шаблона (VL-219: переопределение
  * .vibelog/prompts/chat-system.md → templates/prompts/chat-system.md,
  * fail-closed) + блок роли (VL-265: общая часть не дублируется в файлах
- * ролей, роль идёт отдельным блоком) + память персоны (VL-401) +
- * динамический контекст globalSearch по последнему сообщению (всегда
- * последним — он рантаймовый).
+ * ролей, роль идёт отдельным блоком) + память персоны (VL-401) + уроки
+ * проекта по смыслу разговора (VL-404) + динамический контекст globalSearch
+ * по последнему сообщению (всегда последним — он рантаймовый).
  *
  * VL-401: память читается ТОЛЬКО здесь, в чат-сборке. Headless-фазы и
  * TUI-агент собирают промпт через src/agent/system-prompt.ts и памяти не
  * видят (инвариант закреплён тестом от обратного, как VL-238/lesson-134).
+ *
+ * VL-404: блок `## Уроки проекта` — тоже только здесь. Уроки подбираются
+ * `selectLessonsForText` по последним user-сообщениям треда (recall по
+ * смыслу, VL-400), а не подстрочным поиском по одному сообщению: вопрос
+ * «почему падает сборка фронта» находит урок про `pnpm install` в `web/`,
+ * хотя слова «pnpm» в вопросе нет.
  */
-function buildSystemPrompt(cwd: string, lastUser: string, persona: PersonaConfig): string {
+function buildSystemPrompt(cwd: string, history: ChatMessage[], persona: PersonaConfig): string {
   const parts: string[] = [
     loadChatSystemTemplate(cwd),
     `## Текущая роль: ${persona.label}\n\n${loadPersonaPrompt(cwd, persona)}`,
@@ -713,16 +762,41 @@ function buildSystemPrompt(cwd: string, lastUser: string, persona: PersonaConfig
   if (memory.text) {
     parts.push(`## Память персоны\n\n${memory.text}`);
   }
+  // VL-404: уроки проекта по смыслу разговора. Пустой результат — блока нет
+  // (как и у памяти): заголовок без строк только занимает промпт.
+  const chatLessons = readChatLessonSettings(cwd);
+  if (chatLessons.enabled) {
+    const conversation = recentConversationText(history, chatLessons.maxMessages);
+    if (conversation) {
+      // AC2: кап — `lessons.prompt_limit` (общий бюджет подстановки уроков),
+      // но не больше `chat_lessons.limit`: у чата свой, более узкий бюджет
+      // промпта (память персоны + контекст поиска). Берём минимум из двух.
+      const promptLimit = readLessonSettings(cwd).promptLimit;
+      const lessons = selectLessonsForText(cwd, conversation, {
+        limit: Math.min(chatLessons.limit, promptLimit),
+        // Порог: одно общее слово («файл», «тест») не должно вытаскивать
+        // нерелевантный урок — на 270+ уроках это шум в каждом ходе.
+        minScore: CHAT_LESSON_MIN_SCORE,
+      });
+      if (lessons.length) {
+        parts.push(`## Уроки проекта\n\n${lessons.map(formatLessonLine).join('\n')}`);
+      }
+    }
+  }
+  const lastUser = lastUserText(history);
   if (lastUser.trim()) {
     const hits = globalSearch(cwd, lastUser.trim());
+    // VL-404: уроки из globalSearch убраны намеренно — они уже пришли блоком
+    // `## Уроки проекта` (recall по смыслу разговора). Оставлять оба
+    // представления нельзя: модель получила бы один урок дважды, разными
+    // формулировками, и не поняла бы, какому верить.
     const context = {
       tasks: hits.tasks.slice(0, 5),
-      lessons: hits.lessons.slice(0, 3),
       references: hits.references.slice(0, 3),
       documents: hits.documents.slice(0, 3),
     };
     const hasContext =
-      context.tasks.length || context.lessons.length || context.references.length || context.documents.length;
+      context.tasks.length || context.references.length || context.documents.length;
     if (hasContext) {
       parts.push(
         'Контекст проекта по текущему сообщению (результаты поиска, не выдумывай данные сверх них):\n' +
@@ -1502,7 +1576,7 @@ async function produce(
 
     const system: ChatMessage = {
       role: 'system',
-      content: buildSystemPrompt(cwd, lastUserText(history), activePersona),
+      content: buildSystemPrompt(cwd, history, activePersona),
     };
 
     let resp;
