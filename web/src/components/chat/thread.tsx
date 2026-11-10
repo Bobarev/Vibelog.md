@@ -69,6 +69,7 @@ import { SubagentCard, type SubagentPartData } from "./subagent-card"
 import { PricingDriftCard } from "./pricing-drift-card"
 import { ChatErrorState } from "./error-state"
 import { ModelPicker, PersonaBadge, PersonaPicker } from "./pickers"
+import { ChatMenu } from "./chat-menu"
 import { StoppedRun } from "./stopped-run"
 import { ToolCall, ToolGroup, type ToolPart } from "./tool-call"
 import { isWriteTool } from "./tool-meta"
@@ -605,6 +606,8 @@ function Composer({
         {personaId ? <PersonaBadge personaId={personaId} /> : <PersonaPicker />}
         <div className="flex items-center gap-1">
           <ModelPicker />
+          {/* VL-408: меню чата — копирование команды /chat <id> для бота */}
+          <ChatMenu threadId={threadId} />
           <div className="relative size-8 shrink-0">
             {/* Ход идёт (по серверу или по рантайму): кнопка-квадрат отменяет */}
             {running ? (
