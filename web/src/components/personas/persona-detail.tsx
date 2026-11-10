@@ -264,7 +264,10 @@ export function PersonaDetail({ id }: { id: string }) {
           <div className="grid gap-1.5">
             <Label>Разрешённые инструменты</Label>
             <p className="text-xs text-muted-foreground">
-              Пусто — роль видит все инструменты чата. Отметьте, чтобы ограничить.
+              Пусто — роль получает все инструменты чата. Отметьте хотя бы один, чтобы
+              ограничить набор: невыбранные инструменты модель не увидит, а вызов вне
+              списка получит отказ. <code>memory_remember</code> доступен всегда — это
+              память самой роли, а не инструмент проекта.
             </p>
             <div className="flex max-h-48 flex-wrap gap-1.5 overflow-y-auto rounded-md border p-2">
               {data.tools.map((tool) => {

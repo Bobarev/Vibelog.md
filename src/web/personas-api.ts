@@ -50,6 +50,8 @@ import {
   resolvePersona,
 } from './personas.js';
 import type { PersonaConfig } from './personas.js';
+// VL-407: имя служебного инструмента памяти — для предупреждения о вырожденном allow_tools
+import { MEMORY_REMEMBER_TOOL } from './chat-memory.js';
 import type { ApiResponse } from './api.js';
 
 /**
@@ -118,8 +120,27 @@ function readTextOrEmpty(path: string): string {
   }
 }
 
-/** Тело GET /api/personas/:id — полные данные роли. */
-function personaDetail(cwd: string, persona: PersonaConfig): Record<string, unknown> {
+/**
+ * VL-407: предупреждение о вырожденном `allow_tools`.
+ *
+ * Если список непустой и состоит только из `memory_remember`, роль фактически
+ * остаётся без инструментов проекта: `memory_remember` добавляется всегда
+ * (это механизм памяти роли, а не инструмент проекта). Не блокируем — это
+ * может быть осознанным «роль только разговаривает», но пользователь должен
+ * увидеть, что ограничение получилось жёстче ожидаемого.
+ *
+ * @returns текст предупреждения либо null — список осмысленный
+ */
+function allowToolsWarning(tools: string[] | undefined): string | null {
+  if (tools === undefined || tools.length === 0) return null;
+  if (!tools.every(t => t === MEMORY_REMEMBER_TOOL)) return null;
+  return (
+    'allow_tools содержит только memory_remember — роль фактически без инструментов проекта ' +
+    '(memory_remember доступен всегда как механизм памяти роли)'
+  );
+}
+
+/** Тело GET /api/personas/:id — полные данные роли. */function personaDetail(cwd: string, persona: PersonaConfig): Record<string, unknown> {
   const promptPath = promptRelPath(persona.prompt);
   const memoryPath = memoryRelPath(persona.prompt);
   const memory = loadPersonaMemory(cwd, persona);
@@ -362,10 +383,11 @@ export function handlePersonasApi(
     });
 
     const created = resolvePersona(cwd, id);
+    const warning = allowToolsWarning(created?.allowTools);
     return {
       status: 201,
       body: created
-        ? personaDetail(cwd, created)
+        ? { ...personaDetail(cwd, created), ...(warning !== null ? { warning } : {}) }
         : { persona: { id, label: patch.label, prompt: id, builtin: false } },
     };
   }
@@ -414,7 +436,11 @@ export function handlePersonasApi(
     });
 
     const updated = resolvePersona(cwd, id) ?? persona;
-    return { status: 200, body: personaDetail(cwd, updated) };
+    const warning = allowToolsWarning(updated.allowTools);
+    return {
+      status: 200,
+      body: { ...personaDetail(cwd, updated), ...(warning !== null ? { warning } : {}) },
+    };
   }
 
   // DELETE /api/personas/:id — только проектные роли (AC5/AC6)
