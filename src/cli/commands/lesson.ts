@@ -28,6 +28,9 @@ import {
 import {
   auditLessons, applyLessonAudit, formatLessonAuditMarkdown,
 } from '../../core/lesson-audit.js';
+import {
+  buildConsolidationPlan, applyConsolidation, formatConsolidationMarkdown,
+} from '../../core/lesson-consolidate.js';
 
 /**
  * Выполняет команду lesson.
@@ -65,9 +68,11 @@ export async function runLesson(
       return lessonSupersede(positional, cwd);
     case 'audit':
       return lessonAudit(flags, cwd);
+    case 'consolidate':
+      return lessonConsolidate(flags, cwd);
     default:
       printError(`Неизвестная подкоманда: ${subcommand}`);
-      printInfo('Доступные: list, create, view, search, link, supersede, audit');
+      printInfo('Доступные: list, create, view, search, link, supersede, audit, consolidate');
   }
 }
 
@@ -280,6 +285,68 @@ function lessonAudit(flags: FlagValues, cwd: string): void {
         printError(`Не найдены: ${applied.notFound.join(', ')}`);
         process.exitCode = 1;
       }
+    }
+  } catch (err) {
+    printError((err as Error).message);
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * `vibelog lesson consolidate` — консолидация корпуса (VL-400).
+ *
+ * Без флагов — только план в stdout (read-only): кластеры правил с
+ * предлагаемой строкой для AGENTS.md, пары дублей с предложением supersede,
+ * уроки с пустым телом. `--json` — машиночитаемый план.
+ *
+ * Запись — ТОЛЬКО явными списками (паттерн `lesson audit`, lesson-147):
+ * `--apply-supersede id,…` (канон кластера или урок-дубль) и
+ * `--apply-agents "строка,…"` (дописать в секцию-маркер AGENTS.md).
+ * Флага «применить всё» нет намеренно: порог дублей 0.35 даёт ложные пары,
+ * а AGENTS.md читается в каждый ход агента.
+ */
+function lessonConsolidate(flags: FlagValues, cwd: string): void {
+  const thresholdRaw = getFlag(flags, 'threshold', '');
+  const threshold = thresholdRaw ? Number(thresholdRaw) : undefined;
+  if (threshold !== undefined && (!Number.isFinite(threshold) || threshold <= 0 || threshold > 1)) {
+    printError('--threshold должен быть числом в диапазоне (0, 1].');
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    const plan = buildConsolidationPlan(cwd, {
+      ...(threshold !== undefined ? { duplicateThreshold: threshold } : {}),
+    });
+
+    if (hasFlag(flags, 'json')) {
+      console.log(JSON.stringify(plan, null, 2));
+    } else {
+      console.log(`\n${formatConsolidationMarkdown(plan)}\n`);
+    }
+
+    const supersedeIds = getFlagArray(flags, 'apply-supersede')
+      .flatMap(v => v.split(',')).map(s => s.trim()).filter(Boolean);
+    const agentsLines = getFlagArray(flags, 'apply-agents')
+      .flatMap(v => v.split('\n')).map(s => s.trim()).filter(Boolean);
+    if (supersedeIds.length === 0 && agentsLines.length === 0) return;
+
+    const applied = applyConsolidation(cwd, {
+      ...(supersedeIds.length > 0 ? { supersede: supersedeIds } : {}),
+      ...(agentsLines.length > 0 ? { appendAgentsMd: agentsLines } : {}),
+    });
+    for (const item of applied.superseded) {
+      printSuccess(`${item.oldId} → superseded (заменён ${item.newId}).`);
+    }
+    if (applied.appendedLines.length > 0) {
+      printSuccess(`AGENTS.md: добавлено строк — ${applied.appendedLines.length} (${applied.agentsMdPath}).`);
+    }
+    if (applied.skippedLines.length > 0) {
+      printInfo(`AGENTS.md: уже были (дедуп) — ${applied.skippedLines.length}.`);
+    }
+    if (applied.notFound.length > 0) {
+      printError(`Не найдены в плане: ${applied.notFound.join(', ')}`);
+      process.exitCode = 1;
     }
   } catch (err) {
     printError((err as Error).message);

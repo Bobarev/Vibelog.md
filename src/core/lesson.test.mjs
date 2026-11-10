@@ -256,6 +256,95 @@ describe('VL-153 — loadLessonsForTask', () => {
   });
 });
 
+// ── VL-400: recall по смыслу задачи ──
+
+describe('VL-400 — loadLessonsForTask: recall по смыслу, а не по labels', () => {
+  async function makeTaskFull(id, fields) {
+    const { createTaskFile } = await import('../../dist/core/store.js');
+    createTaskFile(testRoot, { id, ...fields });
+  }
+
+  it('задача БЕЗ labels получает релевантный урок по title/description', async () => {
+    await makeTaskFull('VL-600', {
+      title: 'Починить сборку фронта в worktree',
+      description: 'Сборка падает: не установлены dev-зависимости Vite',
+    });
+    createLessonFile(testRoot, {
+      id: 'lesson-60', title: 'Выполняй pnpm install внутри web перед сборкой', status: 'active',
+      tags: ['build'], content: '## Проблема\n\nсборка фронта падает\n',
+    });
+    createLessonFile(testRoot, {
+      id: 'lesson-61', title: 'Совсем про другое — телеграм-бот', status: 'active',
+      tags: ['bot'], content: '## Проблема\n\nбот не отвечает\n',
+    });
+    const res = loadLessonsForTask(testRoot, 'VL-600');
+    assert.ok(res.some(r => r.includes('lesson-60')), `релевантный урок подставлен: ${res.join(' | ')}`);
+    assert.ok(!res.some(r => r.includes('lesson-61')), 'нерелевантный урок не подставлен');
+  });
+
+  it('ранжирование по релевантности: совпадение в title весит больше, чем в теле', async () => {
+    await makeTaskFull('VL-601', { title: 'Проверка git-политики в worktree' });
+    createLessonFile(testRoot, {
+      id: 'lesson-62', title: 'Проверяй git-политику по факту индексации', status: 'active',
+      tags: ['git'], content: '## Проблема\n\nшум\n',
+    });
+    createLessonFile(testRoot, {
+      id: 'lesson-63', title: 'Совсем другой заголовок', status: 'active',
+      tags: ['misc'], content: '## Проблема\n\ngit-политику worktree проверяй индексацией\n',
+    });
+    const res = loadLessonsForTask(testRoot, 'VL-601');
+    assert.ok(res.length >= 2, `оба урока релевантны: ${res.join(' | ')}`);
+    assert.ok(res[0].includes('lesson-62'), `title-совпадение первым: ${res.join(' | ')}`);
+  });
+
+  it('кап promptLimit сохранён при recall по смыслу', async () => {
+    await makeTaskFull('VL-602', { title: 'Очень общая задача про тесты и сборку' });
+    for (let i = 0; i < 8; i += 1) {
+      createLessonFile(testRoot, {
+        id: `lesson-7${i}0`, title: `Тесты и сборка, вариант ${i}`, status: 'active',
+        tags: ['tests'], content: '## Проблема\n\nтесты сборка\n',
+      });
+    }
+    const res = loadLessonsForTask(testRoot, 'VL-602');
+    assert.ok(res.length <= 5, `кап top-5 соблюдён (${res.length})`);
+  });
+
+  it('applies_to не пересекается с путями задачи → урок понижается, но не отбрасывается', async () => {
+    await makeTaskFull('VL-603', {
+      title: 'Правка веб-слоя',
+      description: 'Меняем src/web/phase-prompt.ts',
+    });
+    createLessonFile(testRoot, {
+      id: 'lesson-64', title: 'Правка веб-слоя: проверяй шаблоны фаз', status: 'active',
+      tags: ['web'], applies_to: ['src/core/lesson.ts'], content: '## Проблема\n\nшум\n',
+    });
+    createLessonFile(testRoot, {
+      id: 'lesson-65', title: 'Правка веб-слоя: проверяй шаблоны фаз', status: 'active',
+      tags: ['web'], applies_to: ['src/web/*.ts'], content: '## Проблема\n\nшум\n',
+    });
+    const res = loadLessonsForTask(testRoot, 'VL-603');
+    assert.ok(res.some(r => r.includes('lesson-64')), 'урок с чужим applies_to не отброшен');
+    assert.ok(res[0].includes('lesson-65'), `пересечение applies_to — выше: ${res.join(' | ')}`);
+  });
+
+  it('формат строки: kind в скобках, у неквалифицированного урока скобок нет', async () => {
+    await makeTaskFull('VL-604', { title: 'Классификация ответов инструментов' });
+    createLessonFile(testRoot, {
+      id: 'lesson-66', title: 'Классифицируй ответ инструмента по трём исходам', status: 'active',
+      tags: ['tools'], kind: 'rule', content: '## Проблема\n\nшум\n',
+    });
+    createLessonFile(testRoot, {
+      id: 'lesson-67', title: 'Классифицируй ответ инструмента иначе', status: 'active',
+      tags: ['tools'], content: '## Проблема\n\nшум\n',
+    });
+    const res = loadLessonsForTask(testRoot, 'VL-604');
+    assert.ok(res.some(r => r === '- [lesson-66] Классифицируй ответ инструмента по трём исходам (rule)'),
+      `kind в скобках: ${res.join(' | ')}`);
+    assert.ok(res.some(r => r === '- [lesson-67] Классифицируй ответ инструмента иначе'),
+      `без kind скобок нет: ${res.join(' | ')}`);
+  });
+});
+
 // ── frontmatter: supersedes и полный набор полей ──
 
 describe('VL-153 — frontmatter поля', () => {

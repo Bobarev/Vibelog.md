@@ -61,6 +61,7 @@ const EXPECTED_MCP_TOOLS = [
   'git_commit',
   'lesson_audit',
   'lesson_classify',
+  'lesson_consolidate',
   'lesson_create',
   'lesson_link',
   'lesson_list',

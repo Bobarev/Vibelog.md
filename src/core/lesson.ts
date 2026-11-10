@@ -29,6 +29,12 @@ import { parseFrontmatter, serializeFrontmatter } from './frontmatter.js';
 import { findBacklogDir, lessonsDir } from './paths.js';
 import { getTask, updateTaskFile } from './store.js';
 import { loadSettings } from './settings.js';
+// VL-400: recall по смыслу задачи переиспользует токенизацию и минимальную
+// морфологию поиска задач (tokenizeQuery/stemToken) — вторая копия правил
+// разъехалась бы с searchTasksRanked (lesson-37: общий модуль вместо копий).
+// Циклический импорт безопасен: search.ts тянет из lesson.ts только функцию
+// searchLessons, а обе стороны объявлены function-декларациями (hoisted).
+import { tokenizeQuery, stemToken } from './search.js';
 
 /** Допустимые статусы lesson. */
 export const LESSON_STATUSES = ['active', 'needs-review', 'outdated', 'superseded'];
@@ -543,22 +549,139 @@ export function supersedeLesson(cwd: string, oldId: string, newId: string): void
 }
 
 /**
- * Подбирает lessons для подстановки в промпт Plan/Code (VL-153, VL-279).
+ * Веса полей при оценке релевантности урока задаче (VL-400).
  *
- * Читает tags задачи и находит уроки с теми же tags (case-insensitive,
- * любое пересечение). Возвращает компактные строки `- [lesson-N] <title>`.
+ * И-логика (как в `searchTasksRanked`) здесь не нужна: урок про «worktree»
+ * полезен задаче про worktree даже без совпадения всех токенов. Поэтому —
+ * сумма весов, а не фильтр. title/applies_to весят больше тела: заголовок
+ * урока и есть сформулированное правило.
+ */
+const LESSON_FIELD_WEIGHTS = {
+  title: 3,
+  tags: 2,
+  appliesTo: 2,
+  body: 1,
+} as const;
+
+/**
+ * Множитель score для урока, чей `applies_to` не пересекается с путями задачи
+ * (VL-400). Не 0 и не отбрасывание: на фазе Plan план ещё пуст, и жёсткий
+ * фильтр выкинул бы все уроки с applies_to.
+ */
+const APPLIES_TO_MISMATCH_FACTOR = 0.5;
+
+/** Префиксы путей репозитория, которые имеет смысл искать в тексте задачи. */
+const TASK_PATH_RE = /(?:^|[\s(`"'])((?:src|templates|backlog|scripts|test|tests|docs|bin|web|refs)\/[^\s)`"'»,;]+)/g;
+
+/**
+ * Достаёт из текста задачи пути репозитория (план + modified_files).
+ *
+ * Нужно для сверки с `applies_to` урока: если урок привязан к `src/core/*.ts`,
+ * а задача трогает `src/web/`, урок менее релевантен.
+ *
+ * @param text — склеенный текст (implementationPlan + modified_files)
+ */
+export function extractTaskPaths(text: string): string[] {
+  const found = new Set<string>();
+  for (const m of String(text || '').matchAll(TASK_PATH_RE)) {
+    const path = m[1].replace(/[.,;:!?)\]»"']+$/, '');
+    if (path) found.add(path);
+  }
+  return [...found];
+}
+
+/**
+ * Проверяет, пересекается ли glob урока с путём задачи.
+ *
+ * Минимальный матчер без зависимостей: `**` → любая последовательность,
+ * `*` → всё кроме `/`, `?` → один символ. Glob без wildcard'ов сравнивается
+ * как префикс пути (урок про `src/core/lesson.ts` релевантен задаче, которая
+ * правит `src/core/lesson.ts`).
+ *
+ * @param glob — шаблон из applies_to
+ * @param path — путь из плана/описания задачи
+ */
+export function globMatchesPath(glob: string, path: string): boolean {
+  const pattern = String(glob || '').trim();
+  const target = String(path || '').trim();
+  if (!pattern || !target) return false;
+  if (!/[*?]/.test(pattern)) {
+    return target === pattern || target.startsWith(`${pattern}/`) || pattern.startsWith(`${target}/`);
+  }
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '\u0000')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\u0000/g, '.*')
+    .replace(/\?/g, '.');
+  try {
+    return new RegExp(`^${escaped}$`).test(target);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Считает релевантность урока задаче (VL-400) — чистая функция, экспорт для тестов.
+ *
+ * Сумма весов полей: title 3, tags 2, applies_to 2, body 1. Каждое поле даёт
+ * вес не более одного раза за токен (повтор слова в теле не накачивает score).
+ * Токены приходят уже усечёнными (`stemToken`), сравнение — подстрокой.
+ *
+ * @param lesson — урок
+ * @param tokens — токены задачи (нижний регистр, после stemToken)
+ * @param body — тело урока (для веса body; необязательно)
+ * @returns score >= 0 (0 — ни одного совпадения)
+ */
+export function scoreLessonForTask(
+  lesson: Lesson,
+  tokens: string[],
+  body = '',
+): number {
+  if (tokens.length === 0) return 0;
+  const title = String(lesson.title || '').toLowerCase();
+  const tags = (lesson.tags || []).map(t => String(t).toLowerCase());
+  const appliesTo = (lesson.applies_to || []).map(t => String(t).toLowerCase());
+  const bodyText = String(body || '').toLowerCase();
+
+  let score = 0;
+  for (const token of tokens) {
+    // Токены с дефисом сравниваем целиком (как в searchTasksRanked): усечение
+    // основы сделало бы «findme-desc» → «findm» и цепляло соседние метки.
+    const needle = token.includes('-') ? token : stemToken(token);
+    if (title.includes(needle)) score += LESSON_FIELD_WEIGHTS.title;
+    if (tags.some(t => t.includes(needle))) score += LESSON_FIELD_WEIGHTS.tags;
+    if (appliesTo.some(t => t.includes(needle))) score += LESSON_FIELD_WEIGHTS.appliesTo;
+    if (bodyText.includes(needle)) score += LESSON_FIELD_WEIGHTS.body;
+  }
+  return score;
+}
+
+/**
+ * Подбирает lessons для подстановки в промпт Plan/Code (VL-153, VL-279, VL-400).
+ *
+ * VL-400 — recall по СМЫСЛУ задачи, а не только по labels:
+ * - токены берутся из title + description + labels задачи и усекаются
+ *   `stemToken` (та же морфология, что у поиска задач);
+ * - уроки ранжируются по `scoreLessonForTask` (title/tags/applies_to/body),
+ *   свежесть — tie-breaker; кап `promptLimit` сохранён;
+ * - урок с непустым `applies_to`, не пересекающимся с путями из плана/
+ *   modified_files задачи, получает множитель 0.5 (не отбрасывается: на фазе
+ *   Plan план ещё пуст).
  *
  * VL-279 — фильтры «не подставлять устаревшее»:
  * - только status='active' (needs-review/outdated/superseded отбрасываются:
  *   урок под вопросом или заменённый — неверная инструкция модели);
  * - дата актуальности (last_verified, иначе updated_date) не старше
  *   staleDays дней — урок, не проверявшийся полгода, мог описывать уже
- *   несуществующий API;
- * - явный кап top-N (promptLimit), чтобы промпт не разбухал на задаче с
- *   популярными tags.
+ *   несуществующий API.
+ *
+ * Формат строки: `- [lesson-N] <title> (kind)` — kind помогает модели
+ * отличить правило от воркэраунда; у неквалифицированных уроков скобок нет.
  *
  * Пороги — секция `lessons` settings.json, дефолты — LESSON_DEFAULTS.
- * Если у задачи нет tags, совпадений нет или задача не найдена — [].
+ * Пустой результат — задача не найдена либо у неё нет ни title, ни description,
+ * ни labels (токенов для recall нет).
  *
  * @param cwd — рабочая директория
  * @param taskId — ID задачи (VL-N)
@@ -571,16 +694,33 @@ export function loadLessonsForTask(cwd: string, taskId: string): string[] {
     return [];
   }
   if (!task) return [];
-  const taskTags = (task.labels || []).map(t => String(t).toLowerCase());
-  if (taskTags.length === 0) return [];
+
+  const taskText = [
+    task.title || '',
+    String(task.description || ''),
+    (task.labels || []).join(' '),
+  ].join(' ');
+  const taskLabels = (task.labels || []).map(l => String(l).toLowerCase());
+  // Токены короче 3 символов отбрасываем: «с», «в», «и» — предлоги, и
+  // подстрочный матч по ним дал бы score > 0 почти каждому уроку (recall
+  // превратился бы в «подставь первые 5 по свежести»). Короткие labels
+  // («ci», «ui») сохраняем: они несут смысл и приходят явно.
+  const tokens = tokenizeQuery(taskText)
+    .filter(t => t.length >= 3 || taskLabels.includes(t));
+  // Нет токенов вовсе (пустые title+description+labels) — подбирать нечего.
+  if (tokens.length === 0) return [];
+
+  const taskPaths = extractTaskPaths([
+    String(task.implementationPlan || ''),
+    (task.modified_files || []).join(' '),
+  ].join(' '));
 
   const settings = readLessonSettings(cwd);
   const now = Date.now();
   const maxAgeMs = settings.staleDays * 24 * 60 * 60 * 1000;
 
-  return listLessons(cwd)
+  const scored = listLessons(cwd)
     .filter(e => e.lesson.status === 'active')
-    .filter(e => e.lesson.tags.some(t => taskTags.includes(String(t).toLowerCase())))
     .filter(e => {
       // Дата проверки: явный last_verified приоритетнее updated_date; нет
       // обеих дат — урок считается актуальным (нечего протухать).
@@ -590,13 +730,28 @@ export function loadLessonsForTask(cwd: string, taskId: string): string[] {
       if (Number.isNaN(time)) return true;
       return now - time <= maxAgeMs;
     })
-    // Свежие вперёд: при капе top-N в промпт попадают проверенные уроки,
-    // а не случайные первые по алфавиту файлов.
+    .map(e => {
+      let score = scoreLessonForTask(e.lesson, tokens, e.body);
+      const appliesTo = (e.lesson.applies_to || []).map(p => String(p).trim()).filter(Boolean);
+      if (appliesTo.length > 0 && taskPaths.length > 0) {
+        const intersects = appliesTo.some(glob => taskPaths.some(path => globMatchesPath(glob, path)));
+        if (!intersects) score *= APPLIES_TO_MISMATCH_FACTOR;
+      }
+      return { entry: e, score };
+    })
+    // Релевантность вперёд, свежесть — tie-breaker: при капе top-N в промпт
+    // попадают уроки «про эту задачу», а не просто недавно проверенные.
+    .filter(item => item.score > 0)
     .sort((a, b) => {
-      const ta = Date.parse(a.lesson.last_verified || a.lesson.updated_date || '') || 0;
-      const tb = Date.parse(b.lesson.last_verified || b.lesson.updated_date || '') || 0;
+      if (b.score !== a.score) return b.score - a.score;
+      const ta = Date.parse(a.entry.lesson.last_verified || a.entry.lesson.updated_date || '') || 0;
+      const tb = Date.parse(b.entry.lesson.last_verified || b.entry.lesson.updated_date || '') || 0;
       return tb - ta;
     })
-    .slice(0, settings.promptLimit)
-    .map(e => `- [${e.lesson.id}] ${e.lesson.title}`);
+    .slice(0, settings.promptLimit);
+
+  return scored.map(({ entry }) => {
+    const kind = entry.lesson.kind ? ` (${entry.lesson.kind})` : '';
+    return `- [${entry.lesson.id}] ${entry.lesson.title}${kind}`;
+  });
 }
