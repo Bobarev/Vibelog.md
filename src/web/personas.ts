@@ -36,6 +36,7 @@ import { listTools } from '../mcp/tools.js';
 // список в валидаторе и список в chatToolDefs не должны разъезжаться.
 import { ASK_USER_TOOL } from './chat-question.js';
 import { MEMORY_REMEMBER_TOOL } from './chat-memory.js';
+import { ASK_PERSONA_TOOL } from '../core/subagents.js';
 // VL-402: путь/суффикс/лимит памяти персоны переехали в core — их использует
 // и запись (src/core/persona-memory.ts), а две копии разъехались бы
 // (lesson-37). Публичный API этого модуля сохранён реэкспортом.
@@ -68,7 +69,7 @@ const FALLBACK_DEFAULT_STATUS = 'Spec';
  * Без этого роль нельзя было бы ограничить «только чтением» с сохранением
  * права задавать вопросы, а имя memory_remember отклонялось бы как опечатка.
  */
-const LOCAL_CHAT_TOOLS = ['read_file', 'write_file', 'edit', 'search_files', ASK_USER_TOOL, MEMORY_REMEMBER_TOOL] as const;
+const LOCAL_CHAT_TOOLS = ['read_file', 'write_file', 'edit', 'search_files', ASK_USER_TOOL, MEMORY_REMEMBER_TOOL, ASK_PERSONA_TOOL] as const;
 
 /**
  * Все имена инструментов, допустимые в `allow_tools` (VL-403): MCP-реестр

@@ -127,6 +127,13 @@ export interface StreamChatOptions {
   onToken?: (token: string) => void;
   /** Отмена: прокидывается в fetch и таймеры пауз между ретраями. */
   signal?: AbortSignal;
+  /**
+   * VL-409: лимит токенов ответа (max_tokens / max_output_tokens). Нужен
+   * вложенному запросу консультанта (`ask_persona`): его ответ — короткая
+   * реплика, а не ход агента, и стоимость должна быть предсказуемой.
+   * Не задан — поле в тело запроса не уходит (поведение провайдера по умолчанию).
+   */
+  maxTokens?: number;
 }
 
 /** Опции создания клиента. */
@@ -957,6 +964,15 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
       const providerField = vendor
         ? { provider: { order: [vendor], allow_fallbacks: false } }
         : {};
+      // VL-409: лимит токенов ответа — только если задан явно (вложенный
+      // запрос консультанта). Имена полей у режимов разные: chat-режим ждёт
+      // max_tokens, Responses API — max_output_tokens.
+      const maxTokensField =
+        typeof opts.maxTokens === 'number' && opts.maxTokens > 0
+          ? apiMode === 'responses'
+            ? { max_output_tokens: Math.floor(opts.maxTokens) }
+            : { max_tokens: Math.floor(opts.maxTokens) }
+          : {};
       return apiMode === 'responses'
         ? {
             model,
@@ -965,12 +981,14 @@ export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
             // session_id в теле (VL-205, ref-18): приоритет тела над заголовком
             ...(sessionId ? { session_id: sessionId } : {}),
             ...providerField,
+            ...maxTokensField,
           }
         : {
             model,
             messages: toWireMessages(msgs),
             ...(tools && tools.length > 0 ? { tools: toWireTools(tools) } : {}),
             ...providerField,
+            ...maxTokensField,
           };
     };
 

@@ -63,8 +63,9 @@ import { useChatThreadId } from "@/lib/use-hash-route"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { ApprovalCard } from "./approval-card"
 import { QuestionCard } from "./question-card"
-import { CHAT_ERROR_PART, CHAT_MEMORY_PART, CHAT_PRICING_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider, getActivePersonaId, requestRetryLastTurn, setMemoryRemovals } from "./chat-runtime"
+import { CHAT_ERROR_PART, CHAT_MEMORY_PART, CHAT_PRICING_PART, CHAT_SUBAGENT_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider, getActivePersonaId, requestRetryLastTurn, setMemoryRemovals } from "./chat-runtime"
 import { MemoryCard, type MemoryPartData } from "./memory-card"
+import { SubagentCard, type SubagentPartData } from "./subagent-card"
 import { PricingDriftCard } from "./pricing-drift-card"
 import { ChatErrorState } from "./error-state"
 import { ModelPicker, PersonaBadge, PersonaPicker } from "./pickers"
@@ -245,6 +246,10 @@ function PartView({ part }: { part: GroupedPartLike }) {
   if (part.type === "data" && part.name === CHAT_MEMORY_PART) {
     // VL-402: запись в память персоны — «Запомнил: …» с кнопкой «Убрать»
     return <MemoryCard data={part.data as MemoryPartData | undefined} />
+  }
+  if (part.type === "data" && part.name === CHAT_SUBAGENT_PART) {
+    // VL-409: консультация другой роли — карточка (режим display: widget)
+    return <SubagentCard data={part.data as SubagentPartData | undefined} />
   }
   if (part.type === "data" && part.name === CHAT_TRUNCATED_PART) {
     // VL-269 (AC9/AC10): авто-продолжения исчерпаны — вместо них явная

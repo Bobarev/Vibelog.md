@@ -35,6 +35,7 @@ import { isUpstreamConfigured } from '../core/gitverse-issues.js';
 import { UPSTREAM_TOOLS } from '../mcp/server.js';
 import { ASK_USER_TOOL, MAX_OPTIONS, MIN_OPTIONS } from './chat-question.js';
 import { makeMemoryRememberTool, MEMORY_REMEMBER_TOOL } from './chat-memory.js';
+import { ASK_PERSONA_TOOL, readSubagentSettings } from '../core/subagents.js';
 import type { PersonaConfig } from './personas.js';
 
 /** Локальный инструмент чата: ToolDef + handler (ToolDef из llm.ts без handler — wire-описание). */
@@ -298,6 +299,49 @@ export function makeAskUserTool(): ToolDef {
 }
 
 /**
+ * Инструмент `ask_persona` (VL-409): консультация другой роли проекта.
+ *
+ * Объявление живёт здесь, а не в `chat-subagent.ts`, чтобы не было цикла
+ * импортов: `chat-subagent.ts` уже импортирует `chatToolDefs` из этого модуля.
+ * Handler собирается в `chat.ts` (там есть LLM-клиент, счётчик хода и очередь
+ * событий) — как у `ask_user`, у ToolDef нет handler'а.
+ *
+ * В список попадает ТОЛЬКО через `chatToolDefs()` при известной роли и
+ * включённых субагентах: в MCP-реестре `listTools()` имени нет, поэтому
+ * headless-фазы и TUI инструмент не видят (AC1).
+ */
+export function askPersonaToolDef(): ToolDef {
+  return {
+    name: ASK_PERSONA_TOOL,
+    description:
+      'Спрашивает мнение ДРУГОЙ роли проекта (консультанта) и получает её ответ. ' +
+      'Используй, когда вопрос выходит за твою экспертизу, а в проекте есть подходящая роль ' +
+      '(например «Психолог», «Бизнес-наставник»). Консультант видит только переданный вопрос ' +
+      'и контекст — не историю разговора, поэтому формулируй вопрос самодостаточно. ' +
+      'Не вызывай без нужды и не вызывай одну роль дважды за ход: консультация стоит ' +
+      'отдельного запроса к модели.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        persona: {
+          type: 'string',
+          description: 'id роли-консультанта из реестра ролей проекта (например "psychologist")',
+        },
+        question: {
+          type: 'string',
+          description: 'Вопрос консультанту — самодостаточный, без отсылок к «предыдущему сообщению»',
+        },
+        context: {
+          type: 'string',
+          description: 'Необязательный контекст: факты из разговора, которые нужны консультанту',
+        },
+      },
+      required: ['persona', 'question'],
+    },
+  };
+}
+
+/**
  * Инструменты модели чата: все MCP-инструменты (кроме
  * CHAT_DISALLOWED_TOOLS) + локальные read_file/write_file/edit/search_files +
  * интерактивный ask_user (VL-330) + memory_remember (VL-402). Схемы совпадают
@@ -323,6 +367,12 @@ export function chatToolDefs(cwd: string, persona?: PersonaConfig | null): (Tool
   // VL-402: запись памяти персоны — тоже только в веб-чате (в MCP-реестре
   // имени нет, поэтому агентская петля его не видит)
   if (persona) defs.push(makeMemoryRememberTool(cwd, persona));
+  // VL-409: консультация другой роли (`ask_persona`) — только веб-чат и только
+  // при включённых субагентах. Handler собирается в chat.ts (там есть
+  // LLM-клиент, счётчик хода и очередь событий), здесь — объявление для модели.
+  // Глубина 1: консультант этот инструмент не получает (см. consultantTools в
+  // chat-subagent.ts — там имя отфильтровано).
+  if (persona && readSubagentSettings(cwd).enabled) defs.push(askPersonaToolDef());
   // VL-407: allow_tools роли РЕАЛЬНО ограничивает набор инструментов.
   // Фильтр применяется к ИТОГОВОМУ списку, а не к listTools(): локальные
   // read_file/write_file/edit/search_files и ask_user тоже должны отсекаться,

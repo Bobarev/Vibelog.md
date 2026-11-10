@@ -35,6 +35,14 @@ const READ_MARKERS = [
 /** Интерактивные инструменты (VL-330): не read и не write — пауза хода. */
 const INTERACTIVE_TOOLS = ["ask_user"]
 
+/**
+ * Инструменты без побочных эффектов, которых нет в серверной декларации
+ * (VL-409): `ask_persona` — вложенный запрос к модели, файлы не меняются.
+ * Без этой строки fallback-классификатор (неизвестное имя → write) показал бы
+ * консультацию карточкой Allow/Deny.
+ */
+const SIDE_EFFECT_FREE_TOOLS = ["ask_persona"]
+
 /** Токенизация имени инструмента: lowercase + split по не-буквенно-цифровым. */
 function tokenize(name: string): string[] {
   return name.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
@@ -48,6 +56,8 @@ function tokenize(name: string): string[] {
 export function isWriteTool(name: string): boolean {
   // VL-330: интерактивный вопрос — не write (иначе попал бы под Allow/Deny)
   if (INTERACTIVE_TOOLS.includes(name)) return false
+  // VL-409: консультация другой роли — не write (вложенный запрос к модели)
+  if (SIDE_EFFECT_FREE_TOOLS.includes(name)) return false
   const tokens = tokenize(name)
   if (tokens.includes("write") || tokens.includes("edit") || tokens.includes("run")) return true
   if (tokens.includes("read") || tokens.includes("grep") || tokens.includes("glob")) return false
@@ -99,6 +109,9 @@ const TOOL_LABELS: Record<string, [string, string]> = {
   // VL-330: интерактивный вопрос (карточку рендерит QuestionCard; подпись —
   // для восстановленных тредов и на случай fallback-рендера строкой)
   ask_user: ["Задал вопрос", "Задаю вопрос"],
+  // VL-409: консультация другой роли (карточку/раскрытие рендерит ToolCall
+  // или SubagentCard; подпись — для свёрнутой строки)
+  ask_persona: ["Спросил консультанта", "Спрашиваю консультанта"],
 }
 
 /** Завершённое действие инструмента (для свёрнутой строки). */
@@ -112,7 +125,7 @@ export function toolActiveLabel(name: string): string {
 }
 
 /** Порядок ключей «ключевого аргумента» — по ним строится mono-чип. */
-const PRIMARY_ARG_KEYS = ["query", "path", "id", "title", "name", "q", "action", "tool"] as const
+const PRIMARY_ARG_KEYS = ["query", "persona", "path", "id", "title", "name", "q", "action", "tool"] as const
 
 /** Обрезка строки с многоточием (по символам, не по байтам). */
 function clip(text: string, max: number): string {
@@ -157,6 +170,12 @@ export function formatResult(result: unknown): string {
   if (typeof result === "string") return clip(result, 4000)
   if (typeof result === "object" && result !== null) {
     const obj = result as Record<string, unknown>
+    // VL-409: ответ консультанта (ask_persona) — показываем текст ответа, а не
+    // JSON-обёртку: пользователю нужен ответ роли, а не служебные поля.
+    if (typeof obj.answer === "string" && obj.ok === true) {
+      const label = typeof obj.personaLabel === "string" ? `${obj.personaLabel}: ` : ""
+      return clip(`${label}${obj.answer}`, 4000)
+    }
     if (typeof obj.error === "string") return clip(obj.error, 3000)
     if (obj.ok === false) {
       const reason = typeof obj.message === "string" ? obj.message : typeof obj.denied === "boolean" && obj.denied ? "Отклонено" : "Не применено"

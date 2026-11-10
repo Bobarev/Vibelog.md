@@ -51,6 +51,10 @@ import {
 import { createCallGuard, formatChatLimitsErrors, resolveChatLimits } from './chat-limits.js';
 // VL-402: запись памяти персоны — инструмент memory_remember и команда /memory
 import { MEMORY_REMEMBER_TOOL, runMemoryCommand } from './chat-memory.js';
+// VL-409: консультация другой роли — инструмент ask_persona
+import { ASK_PERSONA_TOOL, makeAskPersonaTool } from './chat-subagent.js';
+import { recordSubagentUsage } from './chat-subagent-usage.js';
+import { readSubagentSettings } from '../core/subagents.js';
 import {
   acceptDrift,
   checkPricingDrift,
@@ -210,6 +214,21 @@ export type ChatEvent =
       entry: { index: number; text: string; date: string };
       /** id роли, в чью память записали (AC6: только роль треда). */
       personaId: string;
+    }
+  /**
+   * VL-409: консультация другой роли (`ask_persona`) завершена. Клиент
+   * рендерит её как обычный tool-call с раскрытием (display: inline) либо
+   * карточкой (display: widget).
+   */
+  | {
+      type: 'subagent';
+      personaId: string;
+      personaLabel: string;
+      question: string;
+      answer: string;
+      tokens: { input: number; output: number; total: number };
+      /** VL-409: как показывать в ленте (`inline` — раскрываемый вызов, `widget` — карточка). */
+      display: 'inline' | 'widget';
     }
   /**
    * VL-313: расход токенов треда после очередного вызова модели. Клиент
@@ -1479,11 +1498,42 @@ async function produce(
   void driftAcceptedPercent;
 
   const tools = chatToolDefs(cwd, activePersona);
+  // VL-409: консультации другой роли. Счётчик живёт в пределах хода (лимит
+  // `subagents.max_calls_per_turn`), настройки читаются один раз — битые
+  // значения дают дефолты и сообщение в лог сервера, чат не падает (AC7).
+  const subagentErrors: string[] = [];
+  const subagentSettings = readSubagentSettings(cwd, subagentErrors);
+  if (subagentErrors.length > 0) {
+    console.error(`[subagents] конфигурация: ${subagentErrors.join('; ')}`);
+  }
+  const subagentCounter = { calls: 0 };
   // Локальные инструменты (read_file/write_file) имеют handler в chat-tool
   // (их нет в MCP-реестре) — карта для маршрутизации ниже (VL-219)
   const localHandlers = new Map<string, ChatLocalTool>(
     tools.filter((t): t is ChatLocalTool => 'handler' in t).map(t => [t.name, t]),
   );
+  // VL-409: handler `ask_persona` собирается здесь, а не в chatToolDefs: ему
+  // нужны LLM-клиент, счётчик хода и очередь событий. Объявление (ToolDef)
+  // уже в списке — заменяем его на версию с handler'ом.
+  if (tools.some(t => t.name === ASK_PERSONA_TOOL)) {
+    const askPersona = makeAskPersonaTool({
+      cwd,
+      persona: activePersona,
+      settings: subagentSettings,
+      llm: llm!,
+      counter: subagentCounter,
+      onUsage: (personaId, usage) => {
+        // AC10: токены консультации — в учёт треда с пометкой роли. Отдельная
+        // запись `byModel` не годится (модель та же), поэтому пишем в
+        // диагностику треда: сумма видна, но не смешивается с ходом.
+        recordSubagentUsage(cwd, threadId, personaId, usage);
+      },
+      onEvent: event => {
+        queue.push({ type: 'subagent', ...event, display: subagentSettings.display });
+      },
+    });
+    localHandlers.set(ASK_PERSONA_TOOL, askPersona);
+  }
   /**
    * Исполняет инструмент: локальный (read_file/write_file) — его handler,
    * остальные — MCP-реестр handleToolCall. Единая точка капа вывода

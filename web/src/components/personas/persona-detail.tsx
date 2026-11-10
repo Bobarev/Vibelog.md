@@ -269,6 +269,13 @@ export function PersonaDetail({ id }: { id: string }) {
               списка получит отказ. <code>memory_remember</code> доступен всегда — это
               память самой роли, а не инструмент проекта.
             </p>
+            <p className="text-xs text-muted-foreground">
+              Эта роль может быть консультантом: другая роль вызовет её через{" "}
+              <code>ask_persona</code> и получит её мнение. Во время консультации роль
+              работает по этому же списку, но только с read-инструментами — писать файлы
+              и задачи консультант не может (подтверждать запись внутри вложенного
+              запроса некому). Память роли консультант читает, но не пишет.
+            </p>
             <div className="flex max-h-48 flex-wrap gap-1.5 overflow-y-auto rounded-md border p-2">
               {data.tools.map((tool) => {
                 const active = allowTools.includes(tool);
