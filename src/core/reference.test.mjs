@@ -18,6 +18,7 @@ import {
   listReferences, getReference, writeReference, updateReference,
   removeReference, searchReferences, findByPath, findByTask,
   cloneReferenceRepo, syncReferenceRepos, linkReferenceTask,
+  pullReferenceRepo, diffReferenceClone, referenceCloneDir,
   referenceUrls,
 } from '../../dist/core/reference.js';
 import { parseFrontmatter } from '../../dist/core/frontmatter.js';
@@ -363,6 +364,182 @@ describe('VL-291 — несколько URL у reference', () => {
     writeReference(testRoot, { id: 'ref-96', title: 'Searchable', type: 'url', url: 'https://a/1', urls: ['https://unique-host-96.example/x'] });
     const found = searchReferences(testRoot, 'unique-host-96');
     assert.ok(found.some(e => e.reference.id === 'ref-96'), JSON.stringify(found.map(e => e.reference.id)));
+  });
+});
+
+// ── VL-417: pull существующего клона + diff ──
+
+describe('VL-417 — pullReferenceRepo / diffReferenceClone', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibelog-reference-pull-'));
+  const bl = join(root, 'backlog');
+  const bare = join(root, 'remote-bare.git');
+  const work = join(root, 'upstream-work');
+
+  /** git в каталоге; падение — ошибка теста. */
+  const git = (args, cwd) => {
+    const res = spawnSync('git', args, { cwd, encoding: 'utf-8', env: gitEnv });
+    assert.equal(res.status, 0, `git ${args.join(' ')}: ${res.stderr}`);
+    return res.stdout ?? '';
+  };
+
+  /** Коммит + push в bare из рабочего репозитория upstream. */
+  const commitAndPush = (message) => {
+    git(['add', '-A'], work);
+    git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', message, '--no-gpg-sign'], work);
+    git(['push', 'origin', 'HEAD:master'], work);
+  };
+
+  const taskFile = (id, status) => [
+    '---',
+    `id: ${id}`,
+    `title: Задача ${id}`,
+    `status: ${status}`,
+    'created_date: 2026-01-01',
+    '---',
+    '',
+    'Описание.',
+    '',
+  ].join('\n');
+
+  beforeAll(() => {
+    mkdirSync(join(bl, 'tasks'), { recursive: true });
+    writeFileSync(join(bl, 'config.yml'), stringifyYaml({
+      project_name: 'Pull', task_prefix: 'vl', default_status: 'To Do',
+      statuses: ['To Do', 'In Progress', 'Done'], definition_of_done: [],
+    }), 'utf-8');
+
+    // bare-«удалённый» + рабочий upstream с задачами/документами/решениями
+    mkdirSync(bare, { recursive: true });
+    git(['init', '-q', '--bare'], bare);
+    mkdirSync(work, { recursive: true });
+    git(['init', '-q'], work);
+    git(['checkout', '-q', '-b', 'master'], work);
+    mkdirSync(join(work, 'backlog', 'tasks'), { recursive: true });
+    mkdirSync(join(work, 'backlog', 'docs'), { recursive: true });
+    mkdirSync(join(work, 'backlog', 'decisions'), { recursive: true });
+    writeFileSync(join(work, 'backlog', 'tasks', 'VL-1 - one.md'), taskFile('VL-1', 'To Do'), 'utf-8');
+    writeFileSync(join(work, 'backlog', 'docs', 'doc-1-guide.md'), '# Гайд\n', 'utf-8');
+    writeFileSync(join(work, 'backlog', 'decisions', 'decision-1-x.md'), '# ADR\n', 'utf-8');
+    git(['remote', 'add', 'origin', bare], work);
+    commitAndPush('init');
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('первый sync = клон; повторный pull без изменений → changed: false', () => {
+    const ref = writeReference(root, {
+      id: 'ref-70', title: 'Pull repo', type: 'repo',
+      url: 'file://' + bare, path: 'data/pull-src',
+    });
+    const first = pullReferenceRepo(root, ref, gitEnv);
+    assert.equal(first.pulled, true, first.message);
+    assert.equal(first.changed, true, first.message);
+
+    const second = pullReferenceRepo(root, ref, gitEnv);
+    assert.equal(second.pulled, true, second.message);
+    assert.equal(second.changed, false, second.message);
+    assert.match(second.message, /без изменений/);
+  });
+
+  it('pull с изменениями: changed: true, diff видит новую задачу и документ', () => {
+    const ref = getReference(root, 'ref-70').reference;
+    const dir = referenceCloneDir(root, ref);
+    const before = spawnSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf-8', env: gitEnv }).stdout.trim();
+
+    writeFileSync(join(work, 'backlog', 'tasks', 'VL-2 - two.md'), taskFile('VL-2', 'To Do'), 'utf-8');
+    writeFileSync(join(work, 'backlog', 'docs', 'doc-2-new.md'), '# Новый\n', 'utf-8');
+    commitAndPush('add task and doc');
+
+    const res = pullReferenceRepo(root, ref, gitEnv);
+    assert.equal(res.pulled, true, res.message);
+    assert.equal(res.changed, true, res.message);
+
+    const after = spawnSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf-8', env: gitEnv }).stdout.trim();
+    const diff = diffReferenceClone(dir, before, after);
+    assert.deepEqual(diff.tasks.added, ['VL-2'], JSON.stringify(diff));
+    assert.deepEqual(diff.documents.added, ['doc-2'], JSON.stringify(diff));
+    assert.deepEqual(diff.tasks.removed, []);
+  });
+
+  it('diff: смена статуса задачи (from/to) и удалённая задача', () => {
+    const ref = getReference(root, 'ref-70').reference;
+    const dir = referenceCloneDir(root, ref);
+    const before = spawnSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf-8', env: gitEnv }).stdout.trim();
+
+    writeFileSync(join(work, 'backlog', 'tasks', 'VL-1 - one.md'), taskFile('VL-1', 'Done'), 'utf-8');
+    rmSync(join(work, 'backlog', 'tasks', 'VL-2 - two.md'));
+    commitAndPush('status change and removal');
+
+    const res = pullReferenceRepo(root, ref, gitEnv);
+    assert.equal(res.changed, true, res.message);
+    const after = spawnSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf-8', env: gitEnv }).stdout.trim();
+    const diff = diffReferenceClone(dir, before, after);
+    assert.deepEqual(diff.tasks.statusChanged, [{ id: 'VL-1', from: 'To Do', to: 'Done' }], JSON.stringify(diff));
+    assert.deepEqual(diff.tasks.removed, ['VL-2'], JSON.stringify(diff));
+  });
+
+  it('diff: пустой diff (before === after) — все массивы пусты', () => {
+    const ref = getReference(root, 'ref-70').reference;
+    const dir = referenceCloneDir(root, ref);
+    const head = spawnSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf-8', env: gitEnv }).stdout.trim();
+    const diff = diffReferenceClone(dir, head, head);
+    assert.deepEqual(diff, {
+      tasks: { added: [], removed: [], statusChanged: [] },
+      documents: { added: [], removed: [] },
+      decisions: { added: [], removed: [] },
+    });
+  });
+
+  it('локальные незакоммиченные правки → pull падает, текст git проброшен, правки целы', () => {
+    const ref = getReference(root, 'ref-70').reference;
+    const dir = referenceCloneDir(root, ref);
+    const localPath = join(dir, 'backlog', 'tasks', 'VL-1 - one.md');
+    writeFileSync(localPath, taskFile('VL-1', 'In Progress'), 'utf-8');
+
+    // В upstream меняем тот же файл — pull --ff-only обязан упасть
+    writeFileSync(
+      join(work, 'backlog', 'tasks', 'VL-1 - one.md'),
+      taskFile('VL-1', 'Done') + '\nДополнительная строка upstream.\n',
+      'utf-8',
+    );
+    commitAndPush('conflicting change');
+
+    const res = pullReferenceRepo(root, ref, gitEnv);
+    assert.equal(res.pulled, false, res.message);
+    assert.equal(res.changed, false);
+    assert.match(res.message, /git pull --ff-only/);
+    assert.match(res.message, /удалите каталог клона/);
+    // Локальная правка не потеряна (никакого reset/checkout)
+    assert.match(readFileSync(localPath, 'utf-8'), /In Progress/);
+  });
+
+  it('каталог без .git → failed с подсказкой, каталог не удаляется', () => {
+    const ref = writeReference(root, {
+      id: 'ref-71', title: 'Not a repo', type: 'repo',
+      url: 'file://' + bare, path: 'data/not-git',
+    });
+    const dir = referenceCloneDir(root, ref);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'keep.txt'), 'x', 'utf-8');
+
+    const res = pullReferenceRepo(root, ref, gitEnv);
+    assert.equal(res.pulled, false);
+    assert.match(res.message, /не git-репозиторий/);
+    assert.match(res.message, /удалите/);
+    assert.ok(existsSync(join(dir, 'keep.txt')), 'каталог не удалён');
+  });
+
+  it('syncReferenceRepos: updated/skipped/failed и diffs', () => {
+    // ref-70 с локальной правкой → failed; ref-71 без .git → failed
+    const res = syncReferenceRepos(root, gitEnv);
+    const failedIds = res.failed.map(f => f.id);
+    assert.ok(failedIds.includes('ref-70'), JSON.stringify(res));
+    assert.ok(failedIds.includes('ref-71'), JSON.stringify(res));
+    assert.ok(Array.isArray(res.updated));
+    assert.ok(Array.isArray(res.skipped));
+    assert.equal(typeof res.diffs, 'object');
   });
 });
 });

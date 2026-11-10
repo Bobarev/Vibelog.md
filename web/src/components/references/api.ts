@@ -54,8 +54,23 @@ export interface CacheSyncResult {
 export interface SyncResult {
   cloned: string[];
   skipped: string[];
+  /** VL-417: клоны, обновлённые pull'ом (аддитивное поле). */
+  updated?: string[];
   failed: { id: string; error: string }[];
+  /** VL-417: что изменилось в каждом обновлённом клоне (id → diff). */
+  diffs?: Record<string, CloneDiff>;
   cache?: CacheSyncResult;
+}
+
+/** Разница содержимого клона до/после pull (VL-417, зеркало core CloneDiff). */
+export interface CloneDiff {
+  tasks: {
+    added: string[];
+    removed: string[];
+    statusChanged: { id: string; from: string; to: string }[];
+  };
+  documents: { added: string[]; removed: string[] };
+  decisions: { added: string[]; removed: string[] };
 }
 
 /** Итог поштучного sync одного reference (POST /api/references/:id/sync). */

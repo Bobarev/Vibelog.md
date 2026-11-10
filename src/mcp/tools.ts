@@ -38,7 +38,7 @@ import {
   referenceUrls, REFERENCE_TYPES,
 } from '../core/reference.js';
 import type { UpdateReferenceInput } from '../core/reference.js';
-import type { Reference } from '../core/reference.js';
+import type { Reference, SyncResult } from '../core/reference.js';
 import {
   cacheReference, refreshReferenceCache, readReferenceCache, syncReferenceCaches,
 } from '../core/reference-cache.js';
@@ -3112,8 +3112,8 @@ function toolReferenceLink(args: ToolArgs, cwd: string): string {
 }
 
 async function toolReferenceSync(args: ToolArgs, cwd: string): Promise<string> {
-  // Без аргументов — прежнее поведение (только клоны, VL-152);
-  // id — кэш одного; all — клоны + кэши url/doc/spec (VL-194)
+  // Без аргументов — клоны + pull существующих (VL-152, VL-417);
+  // id — кэш одного; all — клоны/pull + кэши url/doc/spec (VL-194)
   const cloneResult = syncReferenceRepos(cwd);
   if (args.id === undefined && args.all !== true) {
     return JSON.stringify(cloneResult, null, 2);
@@ -3133,7 +3133,47 @@ async function toolReferenceSync(args: ToolArgs, cwd: string): Promise<string> {
   } else {
     cacheResult = await syncReferenceCaches(cwd, { all: true });
   }
-  return JSON.stringify({ ...cloneResult, ...cacheResult }, null, 2);
+  // VL-417: у клонов и кэшей общий ключ `updated` — разводим по секциям,
+  // чтобы отчёт не терял ни то, ни другое. Корень сохраняет прежнюю форму
+  // (cloned клонов + поля кэша), клоны/pull и diff — в секции repos.
+  return JSON.stringify({
+    ...cacheResult,
+    cloned: cloneResult.cloned,
+    repos: {
+      cloned: cloneResult.cloned,
+      updated: cloneResult.updated,
+      skipped: cloneResult.skipped,
+      failed: cloneResult.failed,
+      diff: cloneResult.diffs,
+    },
+    message: describeSyncResult(cloneResult),
+  }, null, 2);
+}
+
+/**
+ * Человекочитаемая сводка sync репозиториев (VL-417).
+ *
+ * «обновлено: N (ref-1: +3 задачи, −1 задача, 2 смены статуса; …),
+ *  без изменений: M, ошибок: K» — чтобы агент видел, что реально изменилось.
+ */
+export function describeSyncResult(res: SyncResult): string {
+  const parts: string[] = [];
+  for (const id of res.updated) {
+    const d = res.diffs[id];
+    const bits: string[] = [];
+    if (d) {
+      if (d.tasks.added.length) bits.push(`+${d.tasks.added.length} задач`);
+      if (d.tasks.removed.length) bits.push(`−${d.tasks.removed.length} задач`);
+      if (d.tasks.statusChanged.length) bits.push(`${d.tasks.statusChanged.length} смен статуса`);
+      if (d.documents.added.length) bits.push(`+${d.documents.added.length} документов`);
+      if (d.documents.removed.length) bits.push(`−${d.documents.removed.length} документов`);
+      if (d.decisions.added.length) bits.push(`+${d.decisions.added.length} решений`);
+      if (d.decisions.removed.length) bits.push(`−${d.decisions.removed.length} решений`);
+    }
+    parts.push(bits.length ? `${id}: ${bits.join(', ')}` : `${id}: изменения без задач/документов`);
+  }
+  const updatedText = parts.length ? `обновлено: ${parts.length} (${parts.join('; ')})` : 'обновлено: 0';
+  return `${updatedText}, без изменений: ${res.skipped.length}, ошибок: ${res.failed.length}`;
 }
 
 // ============================================================

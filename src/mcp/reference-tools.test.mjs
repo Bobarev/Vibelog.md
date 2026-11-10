@@ -140,6 +140,33 @@ describe('VL-152 — reference_add clone и reference_sync', () => {
     assert.ok(res.skipped.includes('ref-4'), JSON.stringify(res)); // ref-4 = Local repo
     assert.ok(existsSync(join(backlogDir, 'references', 'data', 'no-clone-repo', 'file.txt')));
   });
+
+  it('VL-417: sync обновляет клон pull\'ом и отдаёт updated + diff', async () => {
+    // Коммит в upstream: новая задача + документ
+    mkdirSync(join(remoteDir, 'backlog', 'tasks'), { recursive: true });
+    mkdirSync(join(remoteDir, 'backlog', 'docs'), { recursive: true });
+    writeFileSync(join(remoteDir, 'backlog', 'tasks', 'VL-9 - new.md'), [
+      '---', 'id: VL-9', 'title: Новая', 'status: To Do', 'created_date: 2026-01-01', '---', '', 'Описание.', '',
+    ].join('\n'), 'utf-8');
+    writeFileSync(join(remoteDir, 'backlog', 'docs', 'doc-9-new.md'), '# Док\n', 'utf-8');
+    const git = (args) => {
+      const res = spawnSync('git', args, { cwd: remoteDir, encoding: 'utf-8', env: gitEnv });
+      assert.equal(res.status, 0, `git ${args.join(' ')}: ${res.stderr}`);
+    };
+    git(['add', '-A']);
+    git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'add task', '--no-gpg-sign']);
+
+    const res = JSON.parse(await handleToolCall('reference_sync', {}, testRoot));
+    assert.ok(res.updated.includes('ref-4'), JSON.stringify(res));
+    assert.ok(!res.skipped.includes('ref-4'), 'обновлённый клон не в skipped');
+    assert.deepEqual(res.diffs['ref-4'].tasks.added, ['VL-9'], JSON.stringify(res.diffs));
+    assert.deepEqual(res.diffs['ref-4'].documents.added, ['doc-9'], JSON.stringify(res.diffs));
+    assert.ok(existsSync(join(backlogDir, 'references', 'data', 'local-repo', 'backlog', 'tasks', 'VL-9 - new.md')));
+
+    // Повторный sync без изменений → skipped
+    const res2 = JSON.parse(await handleToolCall('reference_sync', {}, testRoot));
+    assert.ok(res2.skipped.includes('ref-4'), JSON.stringify(res2));
+  });
 });
 
 describe('VL-152 — reference_link (двусторонняя связь) и backlog_update_task references', () => {
@@ -314,14 +341,23 @@ describe('VL-194 — MCP кэш: reference_add{cache}, reference_view, reference
     assert.ok(Array.isArray(res.cloned), JSON.stringify(res));
     assert.ok(Array.isArray(res.updated), JSON.stringify(res));
     assert.ok(Array.isArray(res.failed), JSON.stringify(res));
+    // VL-417: секция repos несёт итоги pull'а и diff по обновлённым клонам
+    assert.ok(res.repos, JSON.stringify(Object.keys(res)));
+    assert.ok(Array.isArray(res.repos.updated), JSON.stringify(res.repos));
+    assert.ok(Array.isArray(res.repos.skipped), JSON.stringify(res.repos));
+    assert.equal(typeof res.repos.diff, 'object');
+    assert.match(res.message, /обновлено: \d+, без изменений: \d+, ошибок: \d+/, res.message);
     // Хэши уже синхронизированы предыдущими тестами → skipped или updated
     assert.ok(res.updated.length + res.skipped.length > 0, JSON.stringify(res));
   });
 
-  it('reference_sync без аргументов — прежнее поведение (только клон-поля)', async () => {
+  it('reference_sync без аргументов — только клон-поля (VL-417: + updated/diffs)', async () => {
     const res = JSON.parse(await handleToolCall('reference_sync', {}, testRoot));
     assert.ok('cloned' in res, JSON.stringify(Object.keys(res)));
-    assert.ok(!('updated' in res), 'без аргументов полей кэша нет');
+    // VL-417: у клонов появились updated/diffs, полей кэша по-прежнему нет
+    assert.ok(Array.isArray(res.updated), JSON.stringify(res));
+    assert.equal(typeof res.diffs, 'object');
+    assert.ok(!('cache' in res), 'без аргументов полей кэша нет');
   });
 });
 

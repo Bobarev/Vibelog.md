@@ -23,6 +23,7 @@ import { spawnSync } from 'node:child_process';
 import { parseFrontmatter, serializeFrontmatter } from './frontmatter.js';
 import { findBacklogDir, referencesDir, referencesDataDir, referencesCacheDir } from './paths.js';
 import { getTask, updateTaskFile } from './store.js';
+import { markdownToTask } from './task.js';
 
 /** Типы референсов. `experiment` (VL-294) позволяет ссылаться на карточку
  * эксперимента backlog/experiments/exp-<id>.md без изменения схемы lesson. */
@@ -70,11 +71,36 @@ export interface ReferenceEntry {
   path: string;
 }
 
-/** Результат syncReferenceRepos: что клонировано/пропущено/упало. */
+/** Результат syncReferenceRepos: что клонировано/обновлено/пропущено/упало. */
 export interface SyncResult {
   cloned: string[];
+  /** Клон актуален — pull не принёс изменений (VL-417: раньше означало «не трогали»). */
   skipped: string[];
+  /** VL-417: pull принёс изменения (аддитивное поле). */
+  updated: string[];
   failed: { id: string; error: string }[];
+  /** VL-417: что изменилось в каждом обновлённом клоне (id → diff). */
+  diffs: Record<string, CloneDiff>;
+}
+
+/** Разница содержимого клона до/после pull (VL-417). */
+export interface CloneDiff {
+  tasks: {
+    added: string[];
+    removed: string[];
+    statusChanged: { id: string; from: string; to: string }[];
+  };
+  documents: { added: string[]; removed: string[] };
+  decisions: { added: string[]; removed: string[] };
+}
+
+/** Пустой diff — «изменений нет» (не null, чтобы потребителю не нужны проверки). */
+function emptyCloneDiff(): CloneDiff {
+  return {
+    tasks: { added: [], removed: [], statusChanged: [] },
+    documents: { added: [], removed: [] },
+    decisions: { added: [], removed: [] },
+  };
 }
 
 /**
@@ -517,6 +543,172 @@ export function cloneReferenceRepo(
 }
 
 /**
+ * Обновляет существующий клон репозитория reference (VL-417).
+ *
+ * Раньше sync для type=repo только клонировал отсутствующее: существующий
+ * каталог считался «уже клонирован, пропуск», и клон застывал навсегда —
+ * агент читал устаревшую копию и не знал об этом. Теперь делается
+ * `git pull --ff-only` и сообщается, изменился ли HEAD.
+ *
+ * Почему `--ff-only`: в клоне могут быть локальные правки (агент поправил
+ * руками). Обычный pull создал бы merge-коммит, а reset/checkout молча
+ * потерял бы чужие правки — недопустимо. `--ff-only` падает, текст git
+ * пробрасывается как есть (там и «local changes would be overwritten»,
+ * и «not possible to fast-forward»).
+ *
+ * Каталог без `.git` НЕ удаляется автоматически — только подсказка.
+ *
+ * @returns {pulled, changed, message} — message всегда заполнен
+ */
+export function pullReferenceRepo(
+  cwd: string,
+  ref: Reference,
+  env: NodeJS.ProcessEnv = process.env
+): { pulled: boolean; changed: boolean; message: string } {
+  if (ref.type !== 'repo') {
+    return { pulled: false, changed: false, message: `Reference ${ref.id}: обновление только для type=repo (сейчас ${ref.type})` };
+  }
+  let target: string;
+  try {
+    target = referenceCloneDir(cwd, ref);
+  } catch (e) {
+    return { pulled: false, changed: false, message: (e as Error).message };
+  }
+  // Первый sync = клон: делегируем, чтобы не дублировать логику клонирования
+  if (!existsSync(target)) {
+    const res = cloneReferenceRepo(cwd, ref, env);
+    return { pulled: res.cloned, changed: res.cloned, message: res.message };
+  }
+  if (!existsSync(join(target, '.git'))) {
+    return {
+      pulled: false,
+      changed: false,
+      message: `Reference ${ref.id}: каталог ${target} не git-репозиторий — удалите его и повторите sync`,
+    };
+  }
+  // -C <dir> вместо cwd: не меняем процессный cwd (spawnSync без shell)
+  const before = gitHead(target, env);
+  const pull = spawnSync('git', ['-C', target, 'pull', '--ff-only'], {
+    encoding: 'utf-8',
+    env,
+    timeout: 15_000,
+  });
+  if (pull.error || pull.status !== 0) {
+    const detail = ((pull.stderr ?? '') + (pull.error?.message ?? '')).trim();
+    return {
+      pulled: false,
+      changed: false,
+      message: `Reference ${ref.id}: ошибка git pull --ff-only: ${detail}. ` +
+        `Если конфликт не разрешить — удалите каталог клона ${target} и повторите sync`,
+    };
+  }
+  const after = gitHead(target, env);
+  const changed = Boolean(before && after && before !== after);
+  return {
+    pulled: true,
+    changed,
+    message: changed
+      ? `Reference ${ref.id}: обновлён (${before.slice(0, 7)} → ${after.slice(0, 7)})`
+      : `Reference ${ref.id}: без изменений (${after.slice(0, 7)})`,
+  };
+}
+
+/** HEAD клона (полный sha) или '' — если git не смог его прочитать. */
+function gitHead(dir: string, env: NodeJS.ProcessEnv): string {
+  const res = spawnSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf-8', env, timeout: 15_000 });
+  if (res.error || res.status !== 0) return '';
+  return (res.stdout ?? '').trim();
+}
+
+/** ID задачи из имени файла `<ID> - <slug>.md` (имя стабильнее тела). */
+function taskIdFromPath(path: string): string {
+  const base = path.split('/').pop() || path;
+  const m = base.match(/^([A-Za-z]+-\d+)/);
+  return m ? m[1] : base.replace(/\.md$/, '');
+}
+
+/** ID документа/решения из имени файла (`doc-6-...md` → `doc-6`). */
+function entityIdFromPath(path: string): string {
+  const base = path.split('/').pop() || path;
+  const m = base.match(/^([A-Za-z]+-\d+)/);
+  return m ? m[1] : base.replace(/\.md$/, '');
+}
+
+/**
+ * Считает разницу содержимого клона между двумя коммитами (VL-417).
+ *
+ * Один вызов `git diff --name-status <before> <after>` (без shell), затем
+ * классификация по префиксу пути: backlog/tasks/ → задачи, backlog/docs/ →
+ * документы, backlog/decisions/ → решения; остальное игнорируется.
+ *
+ * Для изменённых (`M`) задач статус «до» читается из `git show <before>:<path>`
+ * и парсится `markdownToTask`; при >50 изменённых задачах `from` не читается
+ * (ставится '?') — на больших репозиториях это десятки spawnSync.
+ *
+ * @param dir — каталог клона
+ * @param before — sha до pull
+ * @param after — sha после pull
+ */
+export function diffReferenceClone(dir: string, before: string, after: string): CloneDiff {
+  const diff = emptyCloneDiff();
+  if (!before || !after || before === after) return diff;
+  const res = spawnSync('git', ['-C', dir, 'diff', '--name-status', before, after], {
+    encoding: 'utf-8',
+    timeout: 15_000,
+  });
+  if (res.error || res.status !== 0) return diff;
+
+  const modifiedTasks: { id: string; path: string }[] = [];
+  for (const line of (res.stdout ?? '').split('\n')) {
+    const parts = line.split('\t');
+    if (parts.length < 2) continue;
+    const status = parts[0].trim();
+    const path = parts[parts.length - 1].trim();
+    if (!path) continue;
+    if (path.startsWith('backlog/tasks/')) {
+      const id = taskIdFromPath(path);
+      if (status === 'A') diff.tasks.added.push(id);
+      else if (status === 'D') diff.tasks.removed.push(id);
+      else if (status === 'M') modifiedTasks.push({ id, path });
+    } else if (path.startsWith('backlog/docs/')) {
+      const id = entityIdFromPath(path);
+      if (status === 'A') diff.documents.added.push(id);
+      else if (status === 'D') diff.documents.removed.push(id);
+    } else if (path.startsWith('backlog/decisions/')) {
+      const id = entityIdFromPath(path);
+      if (status === 'A') diff.decisions.added.push(id);
+      else if (status === 'D') diff.decisions.removed.push(id);
+    }
+  }
+
+  // Смены статуса: только для M в backlog/tasks/ и не более 50 файлов
+  if (modifiedTasks.length <= 50) {
+    for (const item of modifiedTasks) {
+      const from = taskStatusAt(dir, before, item.path);
+      const to = taskStatusAt(dir, after, item.path);
+      if (from && to && from !== to) {
+        diff.tasks.statusChanged.push({ id: item.id, from, to });
+      }
+    }
+  }
+  return diff;
+}
+
+/** Статус задачи из файла на коммите ('' — если не читается). */
+function taskStatusAt(dir: string, rev: string, path: string): string {
+  const res = spawnSync('git', ['-C', dir, 'show', `${rev}:${path}`], {
+    encoding: 'utf-8',
+    timeout: 15_000,
+  });
+  if (res.error || res.status !== 0) return '';
+  try {
+    return markdownToTask(res.stdout ?? '').status || '';
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Клонирует отсутствующие репозитории для всех references type=repo.
  *
  * Одна ошибка не прерывает общий запуск — собирается в failed.
@@ -524,17 +716,30 @@ export function cloneReferenceRepo(
  * @returns итоги: cloned/skipped/failed (id-шники reference)
  */
 export function syncReferenceRepos(cwd: string, env: NodeJS.ProcessEnv = process.env): SyncResult {
-  const result: SyncResult = { cloned: [], skipped: [], failed: [] };
+  const result: SyncResult = { cloned: [], skipped: [], updated: [], failed: [], diffs: {} };
   for (const entry of listReferences(cwd)) {
     const ref = entry.reference;
     if (ref.type !== 'repo') continue;
-    const res = cloneReferenceRepo(cwd, ref, env);
-    if (res.cloned) {
-      result.cloned.push(ref.id);
-    } else if (res.message.includes('уже клонирован')) {
-      result.skipped.push(ref.id);
-    } else {
+    let target: string;
+    try {
+      target = referenceCloneDir(cwd, ref);
+    } catch (e) {
+      result.failed.push({ id: ref.id, error: (e as Error).message });
+      continue;
+    }
+    const existed = existsSync(target);
+    const before = existed ? gitHead(target, env) : '';
+    const res = pullReferenceRepo(cwd, ref, env);
+    if (!res.pulled) {
+      // Клон не тронут: либо ошибка, либо каталог не git-репозиторий
       result.failed.push({ id: ref.id, error: res.message });
+    } else if (!existed) {
+      result.cloned.push(ref.id);
+    } else if (res.changed) {
+      result.updated.push(ref.id);
+      result.diffs[ref.id] = diffReferenceClone(target, before, gitHead(target, env));
+    } else {
+      result.skipped.push(ref.id);
     }
   }
   return result;
