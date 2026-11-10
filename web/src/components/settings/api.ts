@@ -157,6 +157,15 @@ export interface PersonaInfo {
   id: string;
   label: string;
   description?: string;
+  /**
+   * VL-401: состояние памяти персоны — без текста (память может содержать
+   * личные заметки о пользователе и остаётся на сервере).
+   */
+  memory?: {
+    exists: boolean;
+    chars: number;
+    truncated: boolean;
+  };
 }
 
 /** Ответ GET /api/personas. errors — проблемы секции chat_personas. */

@@ -271,7 +271,11 @@ describe('GET /api/personas (AC13)', () => {
 
   it('listPersonas отдаёт сводки без prompt/allowTools', () => {
     const { personas } = listPersonas(cwd);
-    assert.ok(personas.every(p => Object.keys(p).every(k => ['id', 'label', 'description'].includes(k))));
+    assert.ok(
+      personas.every(p => Object.keys(p).every(k => ['id', 'label', 'description', 'memory'].includes(k))),
+    );
+    // VL-401: память отдаётся только состоянием, без текста
+    assert.ok(personas.every(p => typeof p.memory.exists === 'boolean'));
   });
 });
 

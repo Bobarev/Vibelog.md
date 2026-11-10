@@ -122,6 +122,7 @@ describe('VL-348 — git-политика проекта', () => {
       '!settings.json',
       '!prompts/',
       '!prompts/**',
+      'prompts/personas/*.memory.md',
       '!billing/',
       '!billing/**',
     ]) {
