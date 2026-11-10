@@ -63,7 +63,8 @@ import { useChatThreadId } from "@/lib/use-hash-route"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { ApprovalCard } from "./approval-card"
 import { QuestionCard } from "./question-card"
-import { CHAT_ERROR_PART, CHAT_PRICING_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider, getActivePersonaId } from "./chat-runtime"
+import { CHAT_ERROR_PART, CHAT_MEMORY_PART, CHAT_PRICING_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider, getActivePersonaId, setMemoryRemovals } from "./chat-runtime"
+import { MemoryCard, type MemoryPartData } from "./memory-card"
 import { PricingDriftCard } from "./pricing-drift-card"
 import { ChatErrorState } from "./error-state"
 import { ModelPicker, PersonaBadge, PersonaPicker } from "./pickers"
@@ -91,6 +92,11 @@ interface ThreadHistoryResponse {
    * перезагружает историю, когда ход закончился (ответ уже в jsonl).
    */
   run?: TurnRunState | null
+  /**
+   * VL-402: отменённые записи памяти треда (тексты) — после F5 карточка
+   * «Запомнил: …» показывает, что запись уже убрана.
+   */
+  memoryRemovals?: { text: string; at: string }[]
 }
 
 /** Состояние хода треда (зеркало `TurnState` из `src/web/chat-runs.ts`). */
@@ -230,6 +236,10 @@ function PartView({ part }: { part: GroupedPartLike }) {
   if (part.type === "data" && part.name === CHAT_PRICING_PART) {
     // VL-317/VL-334: дрейф цены вендора — карточка (ask) или предупреждение (warn/auto)
     return <PricingPart part={part} />
+  }
+  if (part.type === "data" && part.name === CHAT_MEMORY_PART) {
+    // VL-402: запись в память персоны — «Запомнил: …» с кнопкой «Убрать»
+    return <MemoryCard data={part.data as MemoryPartData | undefined} />
   }
   if (part.type === "data" && part.name === CHAT_TRUNCATED_PART) {
     // VL-269 (AC9/AC10): авто-продолжения исчерпаны — вместо них явная
@@ -823,6 +833,8 @@ export function ChatPage() {
     // Явно новый пустой тред
     if (hashThreadId === "new") {
       loadedRef.current = "new"
+      // VL-402: отмены памяти относятся к прежнему треду — сбрасываем
+      setMemoryRemovals([])
       // Реакция на смену hash-входа: сброс треда до следующего рендера
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoad({ status: "ready", messages: [], runtimeThreadId: undefined })
@@ -881,6 +893,9 @@ export function ChatPage() {
         const data = (await res.json()) as ThreadHistoryResponse
         if (cancelled) return
         loadedRef.current = id
+        // VL-402: отменённые записи памяти — до рендера карточек, чтобы
+        // «Убрать» не была активна на уже удалённой записи
+        setMemoryRemovals((data.memoryRemovals ?? []).map(r => r.text))
         setLoad({
           status: "ready",
           messages: historyToMessages(data.messages, { allowList: data.allowList }),

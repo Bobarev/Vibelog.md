@@ -48,6 +48,8 @@ import {
   type AskUserArgs,
 } from './chat-question.js';
 import { createCallGuard, formatChatLimitsErrors, resolveChatLimits } from './chat-limits.js';
+// VL-402: запись памяти персоны — инструмент memory_remember и команда /memory
+import { MEMORY_REMEMBER_TOOL, runMemoryCommand } from './chat-memory.js';
 import {
   acceptDrift,
   checkPricingDrift,
@@ -162,6 +164,17 @@ export type ChatEvent =
     }
   | { type: 'done' }
   | { type: 'error'; message: string }
+  /**
+   * VL-402: модель записала предпочтение пользователя в память роли.
+   * Запись уже применена (Allow/Deny не спрашивали — она обратима), клиент
+   * показывает в ленте строку «Запомнил: …» с кнопкой «Убрать».
+   */
+  | {
+      type: 'memory';
+      entry: { index: number; text: string; date: string };
+      /** id роли, в чью память записали (AC6: только роль треда). */
+      personaId: string;
+    }
   /**
    * VL-313: расход токенов треда после очередного вызова модели. Клиент
    * обновляет панель без перезагрузки страницы; view — уже посчитанные
@@ -1149,6 +1162,7 @@ async function produce(
         cwd,
         threadId,
         history,
+        persona: activePersona,
         ensureLlm,
         usageModelId: typeof body.model === 'string' && body.model !== '' ? body.model : loadModels(cwd).default,
         queue,
@@ -1262,7 +1276,7 @@ async function produce(
   }
   void driftAcceptedPercent;
 
-  const tools = chatToolDefs(cwd);
+  const tools = chatToolDefs(cwd, activePersona);
   // Локальные инструменты (read_file/write_file) имеют handler в chat-tool
   // (их нет в MCP-реестре) — карта для маршрутизации ниже (VL-219)
   const localHandlers = new Map<string, ChatLocalTool>(
@@ -1307,6 +1321,16 @@ async function produce(
     if (grant.kind === 'error') return grantDeniedResult(grant.error, name);
     const local = localHandlers.get(name);
     const raw = local ? await local.handler(args) : await handleToolCall(name, args, cwd, { defaultStatus: resolveDefaultStatus(activePersona) });
+    // VL-402: успешная запись памяти — событие `memory` в ленту (AC2).
+    // Публикуется здесь, а не в цикле хода: executeTool — единая точка
+    // исполнения (обычный цикл, resume, advanceToNextApproval), иначе запись,
+    // сделанная на resume-пути, осталась бы невидимой.
+    if (name === MEMORY_REMEMBER_TOOL) {
+      const entry = memoryEntryOf(raw);
+      if (entry !== null) {
+        queue.push({ type: 'memory', entry, personaId: activePersona.id });
+      }
+    }
     // VL-326: noop-ответ («изменений нет») — не исполнение, а пустой круг:
     // он наращивает серию и не сбрасывает её. Проверяется ДО noteExecuted,
     // иначе сброс серии затрёт только что посчитанный noop.
@@ -1653,6 +1677,29 @@ async function produce(
 }
 
 /**
+ * VL-402: разбор успешного ответа `memory_remember` в запись для события
+ * `memory`. Отказ (`{ok:false}`) и мусор в ответе → null: событие не шлём,
+ * модель уже получила причину tool-результатом.
+ */
+function memoryEntryOf(raw: string): { index: number; text: string; date: string } | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const obj = parsed as { ok?: unknown; entry?: unknown };
+    if (obj.ok !== true) return null;
+    const entry = obj.entry as { index?: unknown; text?: unknown; date?: unknown } | undefined;
+    if (!entry || typeof entry.text !== 'string') return null;
+    return {
+      index: typeof entry.index === 'number' ? entry.index : 0,
+      text: entry.text,
+      date: typeof entry.date === 'string' ? entry.date : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Отказ в исполнении команды (AC4): во время стриминга и в approval-паузе
  * команды недоступны.
  *
@@ -1697,6 +1744,11 @@ interface CommandDeps {
   cwd: string;
   threadId: string;
   history: ChatMessage[];
+  /**
+   * VL-402: роль треда — нужна `/memory` (память пишется только в файл
+   * текущей роли, AC6). null — роль не определена (команда откажет).
+   */
+  persona: PersonaConfig | null;
   ensureLlm: () => { ok: true; client: Pick<LlmClient, 'streamChat'> } | { ok: false; error: string };
   /** id модели треда (для тарифа/окна в панели, VL-313). */
   usageModelId: string | undefined;
@@ -1721,6 +1773,19 @@ async function runChatCommand(
   const arg = (parsed.args[0] ?? '').toLowerCase();
 
   if (parsed.name === 'help') return { text: helpText() };
+
+  // VL-402: `/memory` — память роли треда. Обрабатывается ДО проверки
+  // настроек сжатия: команда не имеет отношения к /trim и /compact, и
+  // выключенное сжатие не должно её блокировать.
+  if (parsed.name === 'memory') {
+    if (deps.persona === null) {
+      return {
+        text: 'Память недоступна: роль треда не определена (тред пуст или роль удалена из реестра).',
+        isError: true,
+      };
+    }
+    return runMemoryCommand(parsed.args, cwd, deps.persona);
+  }
 
   const { settings, errors } = resolveChatCompaction(cwd);
   if (errors.length > 0) console.error(`[vibelog-chat] некорректные настройки сжатия: ${errors.join('; ')}`);

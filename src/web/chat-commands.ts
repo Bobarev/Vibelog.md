@@ -138,6 +138,18 @@ export const CHAT_COMMANDS: ChatCommand[] = [
     usage: '/compact [reset]',
     examples: ['/compact', '/compact reset'],
   },
+  {
+    // VL-402: память персоны — второй канал записи (первый — инструмент
+    // memory_remember, который модель вызывает сама). Пользователь решает,
+    // что разговор был содержательным, и просит обновить память по сессии.
+    name: 'memory',
+    description:
+      'Память текущей роли: что запомнено о стиле общения и предпочтениях. ' +
+      '`/memory add <текст>` — добавить, `/memory remove <N>` — удалить запись, ' +
+      '`/memory clear` — очистить (с подтверждением)',
+    usage: '/memory [add <текст> | remove <N> | clear]',
+    examples: ['/memory', '/memory add Не использовать англицизмы', '/memory remove 2', '/memory clear'],
+  },
 ];
 
 /** Найти команду по имени (регистр не важен); null — команды нет. */

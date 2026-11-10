@@ -34,6 +34,8 @@ import { listTools } from '../mcp/tools.js';
 import { isUpstreamConfigured } from '../core/gitverse-issues.js';
 import { UPSTREAM_TOOLS } from '../mcp/server.js';
 import { ASK_USER_TOOL, MAX_OPTIONS, MIN_OPTIONS } from './chat-question.js';
+import { makeMemoryRememberTool } from './chat-memory.js';
+import type { PersonaConfig } from './personas.js';
 
 /** Локальный инструмент чата: ToolDef + handler (ToolDef из llm.ts без handler — wire-описание). */
 export interface ChatLocalTool extends ToolDef {
@@ -298,10 +300,16 @@ export function makeAskUserTool(): ToolDef {
 /**
  * Инструменты модели чата: все MCP-инструменты (кроме
  * CHAT_DISALLOWED_TOOLS) + локальные read_file/write_file/edit/search_files +
- * интерактивный ask_user (VL-330). Схемы совпадают с реестром listTools() —
- * дублирования нет (Р2 плана VL-219).
+ * интерактивный ask_user (VL-330) + memory_remember (VL-402). Схемы совпадают
+ * с реестром listTools() — дублирования нет (Р2 плана VL-219).
+ *
+ * @param cwd — каталог проекта
+ * @param persona — роль ТРЕДА: нужна инструменту `memory_remember`, чтобы
+ *   писать в память именно этой роли (AC6 VL-402: модель не выбирает, в чью
+ *   память писать). Без роли инструмент не добавляется — так его нет в
+ *   headless-путях и в тестах, где роль не нужна.
  */
-export function chatToolDefs(cwd: string): (ToolDef | ChatLocalTool)[] {
+export function chatToolDefs(cwd: string, persona?: PersonaConfig | null): (ToolDef | ChatLocalTool)[] {
   const defs: (ToolDef | ChatLocalTool)[] = listTools()
     .filter(t => !CHAT_DISALLOWED_TOOLS.includes(t.name))
     // VL-375/VL-391: ненастроенный upstream в чате так же бессмысленен,
@@ -311,6 +319,9 @@ export function chatToolDefs(cwd: string): (ToolDef | ChatLocalTool)[] {
   defs.push(makeReadFileTool(cwd), makeWriteFileTool(cwd), makeEditTool(cwd), makeSearchFilesTool(cwd));
   // VL-330: интерактивный вопрос — только в веб-чате (в headless его нет)
   defs.push(makeAskUserTool());
+  // VL-402: запись памяти персоны — тоже только в веб-чате (в MCP-реестре
+  // имени нет, поэтому агентская петля его не видит)
+  if (persona) defs.push(makeMemoryRememberTool(cwd, persona));
   return defs;
 }
 
