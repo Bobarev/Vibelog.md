@@ -24,7 +24,7 @@
 import {
   getReference,
   syncReferenceRepos,
-  cloneReferenceRepo,
+  pullReferenceRepo,
 } from '../core/reference.js';
 import {
   refreshReferenceCache,
@@ -86,7 +86,8 @@ export async function handleReferencesSyncApi(
     // блокирует event loop; для локального инструмента это приемлемо (как CLI).
     const repos = syncReferenceRepos(cwd);
     const cache = humanizeCacheResult(await syncReferenceCaches(cwd, { all: true }, deps));
-    // cloned/skipped/failed остаются в корне — additive-совместимость с SyncResult
+    // cloned/skipped/failed остаются в корне — additive-совместимость с SyncResult;
+    // VL-417: updated и diff добавлены аддитивно (клон теперь обновляется pull'ом)
     return { status: 200, body: { ...repos, cache } };
   }
 
@@ -99,14 +100,17 @@ export async function handleReferencesSyncApi(
     const ref = entry.reference;
 
     if (ref.type === 'repo') {
-      const res = cloneReferenceRepo(cwd, ref);
+      // VL-417: существующий клон обновляется (git pull --ff-only), а не
+      // молча пропускается — иначе веб показывал «уже клонирован» навсегда
+      const res = pullReferenceRepo(cwd, ref);
       // Перечитываем: клон не меняет метаданные, но контракт ответа единый
       const updated = getReference(cwd, ref.id);
       return {
         status: 200,
         body: {
           reference: updated?.reference ?? ref,
-          cloned: { ok: res.cloned, message: res.message },
+          cloned: { ok: res.pulled, message: res.message },
+          updated: res.changed,
         },
       };
     }

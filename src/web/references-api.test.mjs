@@ -144,9 +144,11 @@ describe('PATCH /api/references/:id (VL-174)', () => {
   });
 });
 
-describe('POST /api/references/sync (VL-174, VL-358)', () => {
-  it('sync идёт ДО :id-роута → 200 со SyncResult; существующий клон — skipped', async () => {
-    // repo-референс с заранее созданным каталогом клона — без сети
+describe('POST /api/references/sync (VL-174, VL-358, VL-417)', () => {
+  it('sync идёт ДО :id-роута → 200 со SyncResult; каталог без .git — failed с подсказкой', async () => {
+    // repo-референс с заранее созданным каталогом клона — без сети.
+    // VL-417: существующий каталог больше не «пропуск» — sync пытается pull,
+    // а каталог без .git честно попадает в failed с подсказкой.
     const repoRef = writeReference(cwd, {
       title: 'Local Repo',
       type: 'repo',
@@ -163,8 +165,12 @@ describe('POST /api/references/sync (VL-174, VL-358)', () => {
     assert.ok(Array.isArray(res.body.cloned));
     assert.ok(Array.isArray(res.body.skipped));
     assert.ok(Array.isArray(res.body.failed));
-    // Существующий клон пропускается
-    assert.ok(res.body.skipped.includes(repoRef.id));
+    // VL-417: аддитивные поля на месте
+    assert.ok(Array.isArray(res.body.updated), 'updated в корне ответа');
+    assert.equal(typeof res.body.diffs, 'object', 'diffs в корне ответа');
+    const failed = res.body.failed.find(f => f.id === repoRef.id);
+    assert.ok(failed, `repo в failed: ${JSON.stringify(res.body.failed)}`);
+    assert.match(failed.error, /не git-репозиторий/);
     assert.ok(!res.body.cache.skipped.includes(repoRef.id), 'repo не участвует в кэше');
   });
 
@@ -205,7 +211,7 @@ describe('POST /api/references/:id/sync (VL-358)', () => {
     assert.ok(existsSync(join(cwd, 'backlog', 'references', 'cache', `${refId}.md`)), 'файл кэша записан');
   });
 
-  it('repo-референс: клон (существующий каталог → ok=false, «уже клонирован»)', async () => {
+  it('repo-референс: каталог без .git → ok=false с подсказкой (VL-417)', async () => {
     const repoRef = writeReference(cwd, {
       title: 'Second Local Repo',
       type: 'repo',
@@ -217,7 +223,8 @@ describe('POST /api/references/:id/sync (VL-358)', () => {
     assert.ok(res);
     assert.equal(res.status, 200);
     assert.equal(res.body.cloned.ok, false);
-    assert.match(res.body.cloned.message, /уже клонирован/);
+    assert.match(res.body.cloned.message, /не git-репозиторий/);
+    assert.equal(res.body.updated, false, 'изменений нет');
     assert.equal(res.body.cache, undefined, 'для repo итога кэша нет');
   });
 

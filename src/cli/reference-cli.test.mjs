@@ -145,7 +145,8 @@ describe('VL-152 CLI — clone (add --type repo) и sync', () => {
   it('sync доклонировал отсутствующий и пропустил существующий', () => {
     const sync = runCli(['reference', 'sync']);
     assert.equal(sync.status, 0, sync.stderr);
-    assert.match(sync.stdout, /Клонировано: 1, пропущено: 1, ошибок: 0/);
+    // VL-417: существующий клон теперь обновляется pull'ом — «без изменений»
+    assert.match(sync.stdout, /Клонировано: 1, обновлено: 0, без изменений: 1, ошибок: 0/);
     assert.ok(existsSync(join(backlogDir, 'references', 'data', 'cli-no-clone', 'data.txt')));
   });
 
@@ -362,5 +363,94 @@ describe('VL-291 CLI — несколько url в одном кэше', () => {
     const md = readFileSync(join(backlogDir, 'references', 'cache', `${id}.md`), 'utf-8');
     assert.doesNotMatch(md, /^## /m, 'одиночная ссылка — прежний формат без секции');
     assert.match(md, /Первый/);
+  });
+});
+
+// ── VL-417: sync обновляет существующий клон (git pull --ff-only) ──
+
+describe('VL-417 CLI — sync обновляет клон и печатает diff', () => {
+  const pullRoot = mkdtempSync(join(tmpdir(), 'vibelog-cli-ref-pull-'));
+  const pullBacklog = join(pullRoot, 'backlog');
+  const bare = join(pullRoot, 'remote-bare.git');
+  const work = join(pullRoot, 'upstream-work');
+
+  /** git в каталоге; падение — ошибка теста. */
+  const git = (args, cwd) => {
+    const res = spawnSync('git', args, { cwd, encoding: 'utf-8', env: gitEnv });
+    assert.equal(res.status, 0, `git ${args.join(' ')}: ${res.stderr}`);
+    return res.stdout ?? '';
+  };
+
+  /** CLI в pullRoot (свой backlog, не общий testRoot). */
+  const runPullCli = (args) => {
+    const res = spawnSync('node', [cliPath, ...args], {
+      cwd: pullRoot, encoding: 'utf-8', env: testSpawnEnv(gitEnv),
+    });
+    return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+  };
+
+  const taskMd = (id, title) => [
+    '---', `id: ${id}`, `title: ${title}`, 'status: To Do', 'created_date: 2026-01-01', '---', '', 'Описание.', '',
+  ].join('\n');
+
+  beforeAll(() => {
+    mkdirSync(join(pullBacklog, 'tasks'), { recursive: true });
+    writeFileSync(join(pullBacklog, 'config.yml'), stringifyYaml({
+      project_name: 'Pull', task_prefix: 'vl', default_status: 'To Do',
+      statuses: ['To Do', 'In Progress', 'Done'], definition_of_done: [],
+    }), 'utf-8');
+
+    mkdirSync(bare, { recursive: true });
+    git(['init', '-q', '--bare'], bare);
+    mkdirSync(work, { recursive: true });
+    git(['init', '-q'], work);
+    git(['checkout', '-q', '-b', 'master'], work);
+    mkdirSync(join(work, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(work, 'backlog', 'tasks', 'VL-1 - one.md'), taskMd('VL-1', 'Одна'), 'utf-8');
+    git(['remote', 'add', 'origin', bare], work);
+    git(['add', '-A'], work);
+    git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'init', '--no-gpg-sign'], work);
+    git(['push', 'origin', 'HEAD:master'], work);
+  });
+
+  afterAll(() => {
+    rmSync(pullRoot, { recursive: true, force: true });
+  });
+
+  it('первый sync клонирует, повторный — «Без изменений»', () => {
+    const add = runPullCli(['reference', 'add', 'Pull repo', '--type', 'repo', '--url', 'file://' + bare, '--path', 'data/pull-cli', '--no-clone']);
+    assert.equal(add.status, 0, add.stdout + add.stderr);
+
+    const first = runPullCli(['reference', 'sync']);
+    assert.equal(first.status, 0, first.stdout + first.stderr);
+    assert.match(first.stdout, /Клонировано: 1/, first.stdout);
+
+    const second = runPullCli(['reference', 'sync']);
+    assert.equal(second.status, 0, second.stdout + second.stderr);
+    assert.match(second.stdout, /Без изменений: ref-1/, second.stdout);
+    assert.match(second.stdout, /обновлено: 0, без изменений: 1, ошибок: 0/, second.stdout);
+  });
+
+  it('после коммита в upstream печатает «Обновлено: …» с diff-сводкой', () => {
+    writeFileSync(join(work, 'backlog', 'tasks', 'VL-2 - two.md'), taskMd('VL-2', 'Две'), 'utf-8');
+    git(['add', '-A'], work);
+    git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'add task', '--no-gpg-sign'], work);
+    git(['push', 'origin', 'HEAD:master'], work);
+
+    const res = runPullCli(['reference', 'sync']);
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /Обновлён: ref-1 — \+1 задач/, res.stdout);
+    assert.match(res.stdout, /Обновлено: ref-1 \(\+1 задач\)/, res.stdout);
+    assert.match(res.stdout, /обновлено: 1, без изменений: 0, ошибок: 0/, res.stdout);
+  });
+
+  it('--json отдаёт объект целиком (updated + diffs)', () => {
+    const res = runPullCli(['reference', 'sync', '--json']);
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    const json = JSON.parse(res.stdout.slice(res.stdout.indexOf('{')));
+    assert.ok(Array.isArray(json.updated), JSON.stringify(json));
+    assert.ok(Array.isArray(json.skipped));
+    assert.ok(Array.isArray(json.cloned));
+    assert.equal(typeof json.diffs, 'object');
   });
 });

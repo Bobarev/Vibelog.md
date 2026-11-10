@@ -24,6 +24,7 @@ import {
   cloneReferenceRepo, syncReferenceRepos, linkReferenceTask,
   REFERENCE_TYPES,
 } from '../../core/reference.js';
+import type { CloneDiff } from '../../core/reference.js';
 import {
   cacheReference, refreshReferenceCache, readReferenceCache, syncReferenceCaches,
 } from '../../core/reference-cache.js';
@@ -251,10 +252,12 @@ async function referenceSync(positional: string[], flags: FlagValues, cwd: strin
   const id = positional[0];
   const wantAll = hasFlag(flags, 'all');
 
-  // Клоны репозиториев: всегда (как и прежде), при --all — тоже
+  // Клоны репозиториев: всегда (как и прежде), при --all — тоже.
+  // VL-417: существующий клон обновляется через git pull --ff-only.
   const cloneResult = syncReferenceRepos(cwd);
   for (const cid of cloneResult.cloned) printSuccess(`Клонирован: ${cid}`);
-  for (const cid of cloneResult.skipped) printInfo(`Уже клонирован (пропуск): ${cid}`);
+  for (const cid of cloneResult.updated) printSuccess(`Обновлён: ${cid} — ${describeCloneDiff(cloneResult.diffs[cid])}`);
+  for (const cid of cloneResult.skipped) printInfo(`Без изменений: ${cid}`);
   for (const f of cloneResult.failed) printError(`Ошибка: ${f.id} — ${f.error}`);
 
   // Кэш (VL-194): id → один; --all → все url/doc/spec; иначе — ничего
@@ -278,11 +281,31 @@ async function referenceSync(positional: string[], flags: FlagValues, cwd: strin
     for (const f of cacheResult.failed) printError(`Ошибка кэша: ${f.id} — ${f.error}`);
   }
 
-  console.log(`\n  Клонировано: ${cloneResult.cloned.length}, пропущено: ${cloneResult.skipped.length}, ошибок: ${cloneResult.failed.length}`);
+  console.log(`\n  Клонировано: ${cloneResult.cloned.length}, обновлено: ${cloneResult.updated.length}, без изменений: ${cloneResult.skipped.length}, ошибок: ${cloneResult.failed.length}`);
+  if (cloneResult.updated.length > 0) {
+    console.log(`  Обновлено: ${cloneResult.updated.map(id => `${id} (${describeCloneDiff(cloneResult.diffs[id])})`).join('; ')}`);
+  }
   if (id || wantAll) {
     console.log(`  Кэш обновлено: ${cacheResult.updated.length}, без изменений: ${cacheResult.skipped.length}, ошибок: ${cacheResult.failed.length}`);
   }
+  if (hasFlag(flags, 'json')) {
+    console.log(JSON.stringify({ ...cloneResult, cache: cacheResult }, null, 2));
+  }
   if (cloneResult.failed.length > 0 || cacheResult.failed.length > 0) process.exitCode = 1;
+}
+
+/** Сводка diff клона одной строкой (VL-417): «+2 задачи, −1 задача, 1 смена статуса». */
+function describeCloneDiff(diff?: CloneDiff): string {
+  if (!diff) return 'изменения без задач/документов';
+  const bits: string[] = [];
+  if (diff.tasks.added.length) bits.push(`+${diff.tasks.added.length} задач`);
+  if (diff.tasks.removed.length) bits.push(`−${diff.tasks.removed.length} задач`);
+  if (diff.tasks.statusChanged.length) bits.push(`${diff.tasks.statusChanged.length} смен статуса`);
+  if (diff.documents.added.length) bits.push(`+${diff.documents.added.length} документов`);
+  if (diff.documents.removed.length) bits.push(`−${diff.documents.removed.length} документов`);
+  if (diff.decisions.added.length) bits.push(`+${diff.decisions.added.length} решений`);
+  if (diff.decisions.removed.length) bits.push(`−${diff.decisions.removed.length} решений`);
+  return bits.length ? bits.join(', ') : 'изменения без задач/документов';
 }
 
 export { REFERENCE_TYPES };

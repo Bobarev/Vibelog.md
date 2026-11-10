@@ -33,9 +33,11 @@ interface SyncSummary {
 
 /** Форматирует итог sync: клоны и кэш — разными строками (VL-358, AC3). */
 function formatSyncResult(result: SyncResult): SyncSummary {
+  // VL-417: клон теперь обновляется pull'ом — «обновлено» отдельно от «без изменений»
   const repos = [
     `Репозитории — клонировано: ${result.cloned.length}`,
-    `пропущено: ${result.skipped.length}`,
+    `обновлено: ${(result.updated ?? []).length}`,
+    `без изменений: ${result.skipped.length}`,
     `ошибок: ${result.failed.length}`,
   ].join(", ");
   const reposFailed = result.failed.map((f) => `${f.id}: ${f.error}`).join("; ");
