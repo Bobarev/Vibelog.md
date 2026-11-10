@@ -167,6 +167,29 @@ function takePricingDecision(): { ack: boolean; vendor?: string } | undefined {
 let activeThreadId: string | undefined
 
 /**
+ * VL-406: запрос повтора последнего хода.
+ *
+ * Кнопка «Повторить» у плашки исхода (пустой ответ / ошибка / прерванный ход)
+ * перезапускает ход по уже накопленной истории — нового user-сообщения быть не
+ * должно. Флаг живёт module-state (как `pricingDecision`): кнопка пишет,
+ * следующий POST адаптера читает и очищает, сервер по `retry: true` не
+ * дописывает user-сообщение в jsonl (иначе получился бы дубль).
+ */
+let retryRequested = false
+
+/** Пометить следующий ход как повтор последнего (VL-406). */
+export function requestRetryLastTurn(): void {
+  retryRequested = true
+}
+
+/** Забрать флаг повтора и очистить его (один POST = один повтор). */
+function takeRetryRequest(): boolean {
+  const value = retryRequested
+  retryRequested = false
+  return value
+}
+
+/**
  * Allow-list активного треда (VL-264): инструменты, разрешённые «Always
  * allow». Заполняется при восстановлении истории (data.allowList) и при
  * нажатии кнопки в карточке — карточки/строки помечаются «разрешено заранее»

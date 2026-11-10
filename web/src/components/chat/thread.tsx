@@ -95,10 +95,16 @@ interface ThreadHistoryResponse {
 
 /** Состояние хода треда (зеркало `TurnState` из `src/web/chat-runs.ts`). */
 interface TurnRunState {
-  status: "running" | "done" | "error" | "cancelled" | "interrupted"
+  /**
+   * VL-406: `empty` — ход завершился, но модель не вернула ни текста, ни
+   * tool-вызовов. Раньше такой ход был неотличим от «ничего не было».
+   */
+  status: "running" | "done" | "empty" | "error" | "cancelled" | "interrupted"
   startedAt: string
   finishedAt?: string
   error?: string
+  /** VL-406: время последнего события хода (сторож зависших прогонов). */
+  lastEventAt?: string
 }
 
 /**

@@ -75,13 +75,14 @@ import {
   addThreadAllow,
   removeThreadAllow,
   effectiveThreadPersona,
+  chatTurnState,
 } from './chat.js';
 // VL-313: расход токенов треда для панели (восстановление после перезагрузки)
 import { threadUsageView } from './chat-usage.js';
 // VL-314: реестр слэш-команд чата (GET /api/chat/commands) и точка сжатия
 import { commandsView } from './chat-commands.js';
 import { loadCompaction } from './chat-compaction.js';
-import { readTurnState } from './chat-runs.js';
+
 import { GRANTABLE_TOOLS, findActiveGrant, isValidRunId, latestGrantDraft, saveGrantDraft } from './supervisor-grant.js';
 import { resolveGitUserName } from '../core/project-settings.js';
 import { loadSettings, saveSettingsPatch } from '../core/settings.js';
@@ -277,7 +278,9 @@ export function handleApi(
           // VL-332: состояние хода треда — после возврата в тред/перезагрузки
           // клиент показывает «выполняется» вместо «зависшего» сообщения без
           // ответа (AC3/AC4). null — ходов ещё не было.
-          run: readTurnState(cwd, chatThreadMatch[1]),
+          // VL-406: чтение заодно лечит зависший `running` (сторож по
+          // lastEventAt) — клиент получает `interrupted` с причиной.
+          run: chatTurnState(cwd, chatThreadMatch[1]),
         },
       };
     }

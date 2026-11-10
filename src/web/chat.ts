@@ -103,8 +103,12 @@ import {
   getChatRun,
   pushChatRunEvent,
   readTurnState,
+  reapStaleChatRuns,
   resetOrphanedRuns,
+  STALE_RUN_ERROR,
+  STALE_RUN_IDLE_MS,
   subscribeChatRun,
+  writeTurnState,
   type ChatRun,
   type TurnStatus,
 } from './chat-runs.js';
@@ -113,14 +117,45 @@ import {
  * VL-332: «осиротевшие» ходы (сервер перезапустили посреди хода) — sidecar
  * остался `running`, живого прогона нет. Переводим в `interrupted`, чтобы UI
  * не показывал вечный индикатор. Вызывается при старте web-сервера.
+ *
+ * VL-406: тем же проходом лечим зависшие ходы, у которых давно не было
+ * событий (продюсер умер, не записав финал) — иначе `running` висел бы вечно.
  */
 export function resetOrphanedChatRuns(cwd: string): string[] {
-  return resetOrphanedRuns(cwd);
+  const fixed = resetOrphanedRuns(cwd);
+  const reaped = reapStaleChatRuns(cwd);
+  return [...new Set([...fixed, ...reaped])];
 }
 
-/** VL-332: состояние хода треда для `GET /api/chat/threads/:id`. */
+/**
+ * VL-332: состояние хода треда для `GET /api/chat/threads/:id`.
+ *
+ * VL-406: чтение — ещё и ленивая проверка сторожа. Живой процесс не имеет
+ * отдельного таймера, поэтому зависший `running` чинится именно здесь: клиент
+ * опрашивает этот роут каждые 2 с, и на первом же опросе после порога
+ * молчания получает `interrupted` с причиной «ход не отвечает» (AC4).
+ */
 export function chatTurnState(cwd: string, threadId: string): ReturnType<typeof readTurnState> {
-  return readTurnState(cwd, threadId);
+  const state = readTurnState(cwd, threadId);
+  if (state === null || state.status !== 'running') return state;
+  const now = Date.now();
+  const live = getChatRun(threadId);
+  if (live !== null && !live.done) {
+    // Прогон в реестре: свежесть берём из памяти (точнее, чем sidecar)
+    if (now - live.lastEventAt < STALE_RUN_IDLE_MS) return state;
+    finishChatRun(live, 'interrupted', STALE_RUN_ERROR);
+    return readTurnState(cwd, threadId);
+  }
+  const lastAt = Date.parse(state.lastEventAt ?? state.startedAt);
+  if (Number.isFinite(lastAt) && now - lastAt < STALE_RUN_IDLE_MS) return state;
+  const fixed = {
+    ...state,
+    status: 'interrupted' as const,
+    finishedAt: new Date(now).toISOString(),
+    error: STALE_RUN_ERROR,
+  };
+  writeTurnState(cwd, threadId, fixed);
+  return fixed;
 }
 
 
@@ -919,11 +954,33 @@ async function driveChat(
     .finally(() => queue.close());
 
   let lastError: string | undefined;
+  /**
+   * VL-406: был ли в ходе хоть какой-то видимый результат. Пустой ответ
+   * модели (ни текста, ни tool-вызовов) раньше завершался молчаливым `done`:
+   * индикатор гас, в jsonl ничего не появлялось, ошибки не было — со стороны
+   * это выглядело как «ничего не произошло». Теперь такой ход получает
+   * явный статус `empty`, и клиент показывает плашку с кнопкой повтора.
+   *
+   * Пауза на подтверждении/вопросе — тоже результат (карточка в ленте),
+   * поэтому `approval`/`question` считаются содержимым хода.
+   */
+  let hadContent = false;
   try {
     for (;;) {
       const ev = await queue.next();
       if (ev === null) break;
       if (ev.type === 'error') lastError = ev.message;
+      if (
+        (ev.type === 'text' && ev.delta.trim() !== '') ||
+        ev.type === 'tool_start' ||
+        ev.type === 'tool_end' ||
+        ev.type === 'approval' ||
+        ev.type === 'question' ||
+        ev.type === 'truncated' ||
+        ev.type === 'pricing'
+      ) {
+        hadContent = true;
+      }
       pushChatRunEvent(run, ev);
     }
   } finally {
@@ -933,8 +990,18 @@ async function driveChat(
       ? 'cancelled'
       : lastError !== undefined
         ? 'error'
-        : 'done';
-    finishChatRun(run, status, status === 'cancelled' ? 'Ход остановлен пользователем' : lastError);
+        : hadContent
+          ? 'done'
+          : 'empty';
+    finishChatRun(
+      run,
+      status,
+      status === 'cancelled'
+        ? 'Ход остановлен пользователем'
+        : status === 'empty'
+          ? 'модель вернула пустой ответ'
+          : lastError,
+    );
   }
 }
 
