@@ -163,7 +163,7 @@ try {
   check('шаблон agent-prompt.md (системный промпт vb) читается', existsSync(join(pkg, 'templates', 'agent-prompt.md')));
   check('шаблон agent-prompt-chat.md (блок чат-режима агента, VL-238) в пакете', existsSync(join(pkg, 'templates', 'agent-prompt-chat.md')));
   check('шаблон chat-system.md (системный промпт чата, VL-219) в пакете', existsSync(join(pkg, 'templates', 'prompts', 'chat-system.md')));
-  for (const persona of ['helper', 'architect', 'supervisor']) {
+  for (const persona of ['helper', 'architect', 'supervisor', 'workflow-designer']) {
     check(
       `шаблон роли ${persona}.md (chat_personas, VL-265) в пакете`,
       existsSync(join(pkg, 'templates', 'prompts', 'personas', `${persona}.md`)),

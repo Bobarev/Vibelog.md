@@ -103,6 +103,16 @@ export const BUILTIN_PERSONAS: readonly PersonaConfig[] = [
     prompt: 'supervisor',
     defaultStatus: 'Spec',
   },
+  {
+    // VL-398: конструктор workflow — обсуждает проект и собирает кастомный
+    // процесс. Встроенная (а не проектная) роль: доступна в любом проекте
+    // без настройки settings.json — ровно то, чего не хватало в новом проекте.
+    id: 'workflow-designer',
+    label: 'Конструктор workflow',
+    description: 'Обсуждает проект и собирает кастомный workflow: статусы, фазы, неполнота',
+    prompt: 'workflow-designer',
+    defaultStatus: 'Spec',
+  },
 ];
 
 /**

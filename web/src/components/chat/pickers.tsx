@@ -67,6 +67,8 @@ const PERSONA_ICONS: Record<string, React.ComponentType<{ className?: string }>>
   researcher: Telescope,
   auditor: ScanSearch,
   coder: Hammer,
+  // VL-398: конструктор workflow
+  'workflow-designer': Workflow,
 }
 
 /** Отрисовка иконки роли: компонент выбирается внутри, чтобы линтер не

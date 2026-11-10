@@ -277,6 +277,8 @@ const MCP_TOOL_PREFIXES = [
   'git_commit',
   // VL-363: репорт бага в upstream через GitVerse Issues
   'upstream_',
+  // VL-398: конструктор workflow (workflow_get / workflow_apply)
+  'workflow_',
 ];
 
 /**
@@ -689,7 +691,8 @@ function checkCompletenessConfig(cwd: string): CheckResult {
       hint: ok
         ? undefined
         : 'Ключи completeness в .vibelog/settings.json не совпадают с объявленными workflow/фазами/полями — ' +
-          'правило неполноты молча не применяется. Исправьте имена или удалите запись.',
+          'правило неполноты молча не применяется. Исправьте имена или удалите запись. ' +
+          'Подробнее: `vibelog workflow validate`.',
     };
   } catch (err) {
     return {

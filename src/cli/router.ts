@@ -36,6 +36,8 @@ import { runStatus } from './commands/status.js';
 import { runMilestone } from './commands/milestone.js';
 import { runDoc } from './commands/doc.js';
 import { runConfig } from './commands/config.js';
+// VL-398: конструктор workflow (show / validate / apply)
+import { runWorkflow } from './commands/workflow.js';
 import { runModel, runProvider } from './commands/model.js';
 import { runDraft } from './commands/draft.js';
 import { runDecision } from './commands/decision.js';
@@ -148,6 +150,9 @@ export async function route(args: string[]): Promise<void> {
       return runExperiment(subcommand, positional, flags, cwd);
     case 'config':
       return runConfig(subcommand, positional, flags, cwd);
+    // VL-398: конструктор workflow — show / validate / apply
+    case 'workflow':
+      return runWorkflow(subcommand, positional, flags, cwd);
     case 'model':
       return runModel(subcommand, positional, flags, cwd);
     case 'provider':
@@ -196,6 +201,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('lesson', colors.cyan)} list|create|...         Уроки из задач (lessons learned)
   ${colorize('experiment', colors.cyan)} create|list|dataset|run|record|report|judge|gc  Эксперименты (A/B): карточки, прогоны, judge, отчёт, git-политика
   ${colorize('config', colors.cyan)} get|set|list             Конфиг проекта
+  ${colorize('workflow', colors.cyan)} show|validate|apply      Workflow проекта: схема, диагностика, запись
   ${colorize('model', colors.cyan)} list|use|current          LLM-модели: список, переключение
   ${colorize('provider', colors.cyan)} list                   LLM-шлюзы (base_url, ключ); алиас: gateway
   ${colorize('draft', colors.cyan)} create|promote|...       Черновики задач

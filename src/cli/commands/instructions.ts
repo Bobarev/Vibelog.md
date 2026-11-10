@@ -116,6 +116,11 @@ export const MCP_GROUPS: readonly { title: string; names: readonly string[] }[] 
     names: ['project_map', 'git_commit'],
   },
   {
+    // VL-398: конструктор workflow — чтение схемы и запись конфигурации
+    title: 'Workflow (конструктор)',
+    names: ['workflow_get', 'workflow_apply'],
+  },
+  {
     title: 'Upstream (баг-репорты между проектами)',
     names: ['upstream_report_bug', 'upstream_list_reports', 'upstream_ack_report'],
   },
@@ -249,6 +254,7 @@ function overviewTopic(cwd: string): string {
   lines.push('- `vibelog instructions mcp` — MCP-инструменты по группам и правила их применения;');
   lines.push('- `vibelog instructions settings` — ключи `.vibelog/settings.json` и `backlog/config.yml`;');
   lines.push('- `vibelog capabilities` — полный справочник, собранный из кода (`--json` — машиночитаемо);');
+  lines.push('- `vibelog workflow show|validate|apply` — конструктор workflow (роль `workflow-designer`);');
   lines.push('- `vibelog map` — карта кода проекта; `vibelog status` — «где я».');
   lines.push('');
 
@@ -276,6 +282,24 @@ function workflowTopic(cwd: string): string {
   lines.push('```');
   lines.push('');
   lines.push('Служебные фазы вне workflow (статус не меняют): ' + SERVICE_PHASES.join(', ') + '.');
+  lines.push('');
+  lines.push('## Как настроить свой workflow (конструктор)');
+  lines.push('');
+  lines.push('Рекомендованный путь — не править `settings.json` руками:');
+  lines.push('');
+  lines.push('1. **Обсудить** проект с ролью `workflow-designer` в веб-чате: она проводит');
+  lines.push('   интервью (типы работ, нужен ли план/review, кто исполнители) и предлагает');
+  lines.push('   2–3 варианта с обоснованием.');
+  lines.push('2. **Посмотреть** действующую схему: `vibelog workflow show` (источник —');
+  lines.push('   «дефолт в коде» или «из settings.json»), `--json` — машиночитаемо.');
+  lines.push('3. **Применить**: `vibelog workflow apply <файл|->` (JSON или YAML) либо');
+  lines.push('   MCP-инструмент `workflow_apply {patch, syncStatuses}`. Валидация идёт ДО');
+  lines.push('   записи: при ошибке файл не меняется, повтор того же патча — noop.');
+  lines.push('   `--dry-run` показывает, что было бы записано; `--sync-statuses` дополняет');
+  lines.push('   `statuses` в `backlog/config.yml` статусами из переходов.');
+  lines.push('4. **Проверить**: `vibelog workflow validate` (или `workflow_get`) — статусы вне');
+  lines.push('   конфига, недостижимые статусы, фазы без шаблона, висячие ссылки');
+  lines.push('   `task_workflows`, ошибки `completeness`.');
   lines.push('');
   lines.push('## Ключи `.vibelog/settings.json`');
   lines.push('');

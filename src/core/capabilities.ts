@@ -142,9 +142,9 @@ const PHASE_PURPOSES: Record<string, string> = {
  * (VL-329) — секция `env` больше не читается.
  */
 const SETTINGS_KEYS: CapabilitiesSettingsKey[] = [
-  { key: 'workflows', summary: 'именованные workflow (default + свои); отсутствует — DEFAULT_WORKFLOW' },
-  { key: 'task_workflows', summary: 'тип задачи → имя workflow (bug → bugfix); неизвестный тип → default' },
-  { key: 'completeness', summary: 'неполнота сущности: workflow → фаза → entity → поля' },
+  { key: 'workflows', summary: 'именованные workflow (default + свои); отсутствует — DEFAULT_WORKFLOW; правится `vibelog workflow apply`' },
+  { key: 'task_workflows', summary: 'тип задачи → имя workflow (bug → bugfix); неизвестный тип → default; правится `vibelog workflow apply`' },
+  { key: 'completeness', summary: 'неполнота сущности: workflow → фаза → entity → поля; правится `vibelog workflow apply`' },
   { key: 'models', summary: 'реестр LLM-моделей и активная модель (default/available)' },
   { key: 'gateways', summary: 'шлюзы LLM: id, base_url, api_key_env (старое имя — providers)' },
   { key: 'api_mode', summary: 'chat | responses — режим LLM API по умолчанию' },
@@ -218,7 +218,7 @@ const ACCESS: CapabilitiesAccess = {
 /** Подсказки «что делать дальше» для нового проекта. */
 const NEXT_STEPS: string[] = [
   'Статусы из backlog/config.yml уже совпадают с дефолтным workflow — секцию `workflows` в settings.json писать НЕ обязательно: при отсутствии ключа работает DEFAULT_WORKFLOW.',
-  'Свой workflow — только если нужен другой граф фаз: добавь секцию `workflows.default` (см. пример выше) и при необходимости `task_workflows`.',
+  'Свой workflow — только если нужен другой граф фаз: обсуди проект с ролью `workflow-designer` в веб-чате или собери конфигурацию через `vibelog workflow apply` (MCP: `workflow_apply`); проверка — `vibelog workflow validate`.',
   'Промпт фазы переопределяется файлом .vibelog/prompts/phases/phase-<фаза>.md — правка пакета не нужна.',
   'Краткие азы для агента: `vibelog instructions`; карта кода: `vibelog map`; состояние проекта: `vibelog status`.',
 ];

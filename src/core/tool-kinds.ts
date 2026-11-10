@@ -93,6 +93,9 @@ export const TOOL_KINDS: Readonly<Record<string, ToolKind>> = {
   backlog_phase_status: 'read',
   backlog_auto_queue: 'write',
   backlog_supervisor: 'write',
+  // === Конструктор workflow (VL-398) ===
+  workflow_get: 'read',
+  workflow_apply: 'write',
 };
 
 /**
