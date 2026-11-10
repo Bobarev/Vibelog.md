@@ -92,6 +92,8 @@ import { WORKFLOW_TOOL_DEFS, handleWorkflowTool } from './workflow-tools.js';
 // VL-412: архитектурные решения (ADR) — отдельный домен, как supervisor/workflow
 import { DECISION_TOOL_DEFS, handleDecisionTool } from './decision-tools.js';
 import { commitFiles } from './git-commit.js';
+// VL-416: read-only снимок рабочего дерева (пара к git_commit)
+import { gitStatus } from './git-status.js';
 // VL-363: репорт бага в upstream через GitVerse Issues
 import { GitverseError, isUpstreamConfigured, reportBug, tokenHint, resolveUpstreamConfig } from '../core/gitverse-issues.js';
 import {
@@ -425,11 +427,24 @@ export function listTools(): ToolDefinition[] {
     // === Documents (v1.4) ===
     {
       name: 'document_list',
-      description: 'Список документов (docs/), с опциональным текстовым фильтром',
+      description:
+        'Список документов (docs/), с опциональным текстовым фильтром и точным фильтром по тегам. ' +
+        'tags — точное совпадение (case-insensitive, AND по нескольким): tags:["week"] НЕ матчит "weekly". ' +
+        'query и tags комбинируются через AND; tags:[] — без фильтра. ' +
+        'excerpt: N — первые N символов тела в ответе (по умолчанию 0 — тело не отдаётся).',
       inputSchema: {
         type: 'object',
         properties: {
           query: { type: 'string', description: 'Фильтр по id/title/tags/телу' },
+          tags: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Точный фильтр по тегам (AND, case-insensitive)',
+          },
+          excerpt: {
+            type: 'number',
+            description: 'Первые N символов тела документа в ответе (0/не передан — тело не отдаётся)',
+          },
         },
       },
     },
@@ -887,6 +902,26 @@ export function listTools(): ToolDefinition[] {
         required: ['paths', 'message'],
       },
     },
+    // === Git: read-only снимок рабочего дерева (VL-416) ===
+    {
+      name: 'git_status',
+      description:
+        'Read-only состояние рабочего дерева: ветка, число изменённых и неотслеживаемых файлов, ahead/behind. ' +
+        'Вне git-репозитория — git: null и ok: true (не ошибка); сбой git — ошибка с исходным текстом. ' +
+        'Аргумент paths (необязательный) сужает вывод до явных путей внутри проекта — ' +
+        'вопрос «грязен ли файл задачи перед коммитом». Используй вместо `git status` в run_shell_command.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          paths: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Явные пути внутри проекта — вернуть `git status --porcelain -- <paths>` (entries)',
+          },
+        },
+        required: [],
+      },
+    },
     // === GitVerse Issues: репорт бага в upstream-проект (VL-363) ===
     {
       name: 'upstream_report_bug',
@@ -1124,6 +1159,10 @@ async function handleToolCallInner(
         allowForeign: args.allowForeign === true,
         cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
       });
+    // VL-416: read-only снимок дерева — пара к git_commit (агент не видел
+    // незакоммиченного). Идемпотентность by-key не нужна: чтение.
+    case 'git_status':
+      return gitStatus(cwd, { paths: (args.paths as string[]) ?? [] });
     // VL-363: репорт бага в upstream через GitVerse Issues. Сетевой write:
     // идемпотентность by-key не применяется (дедуп даёт номер issue, а
     // повторный вызов создаст второй issue — это осознанно: репорт уникален).
@@ -2626,6 +2665,17 @@ function toolMilestoneArchive(args: ToolArgs, cwd: string): string {
 // Documents (v1.4)
 // ============================================================
 
+/**
+ * Нормализует тег для точного сравнения: trim + lower (VL-416).
+ *
+ * Подстрочный поиск (`query`) не отвечает на вопрос «все документы с тегом
+ * `week`»: он найдёт и `weekly-report`, и совпадение в теле. Точный фильтр
+ * сравнивает нормализованные теги целиком.
+ */
+function normalizeTag(tag: unknown): string {
+  return String(tag ?? '').trim().toLowerCase();
+}
+
 function toolDocumentList(args: ToolArgs, cwd: string): string {
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) throw new Error('Backlog не найден.');
@@ -2637,6 +2687,29 @@ function toolDocumentList(args: ToolArgs, cwd: string): string {
       e.document.title.toLowerCase().includes(q) ||
       e.document.tags.some(t => String(t).toLowerCase().includes(q)) ||
       (e.body && e.body.toLowerCase().includes(q))
+    );
+  }
+  // VL-416: точный фильтр по тегам — AND по нормализованным значениям.
+  // Пустой массив = фильтра нет (не «ничего не найдено»): вызывающий передал
+  // `tags: []` программно, и пустой ответ был бы ложным «документов нет».
+  const wantedTags = (Array.isArray(args.tags) ? (args.tags as unknown[]) : [])
+    .map(normalizeTag)
+    .filter(t => t !== '');
+  if (wantedTags.length > 0) {
+    entries = entries.filter(e => {
+      const own = new Set(e.document.tags.map(normalizeTag));
+      return wantedTags.every(t => own.has(t));
+    });
+  }
+  // VL-416: excerpt — первые N символов тела. Закрывает «сводку по портфелю»
+  // без LLM: заголовок + начало тела одним вызовом вместо N × document_view.
+  const excerptRaw = typeof args.excerpt === 'number' ? args.excerpt : Number(args.excerpt ?? 0);
+  const excerpt = Number.isFinite(excerptRaw) && excerptRaw > 0 ? Math.floor(excerptRaw) : 0;
+  if (excerpt > 0) {
+    return JSON.stringify(
+      entries.map(e => ({ ...e.document, excerpt: e.body.slice(0, excerpt) })),
+      null,
+      2,
     );
   }
   return JSON.stringify(entries.map(e => e.document), null, 2);

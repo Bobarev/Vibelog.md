@@ -247,8 +247,13 @@ function git(cwd: string, args: string[]): { ok: boolean; out: string } {
  * `rev-list @{u}...HEAD` падает при отсутствии upstream — это штатное
  * состояние: ahead/behind = 0 и отдельный булев флаг `upstream: false`
  * (числа не подменяются текстом — иначе `--json` терял бы тип).
+ *
+ * Экспортируется (VL-416): MCP-инструмент `git_status` переиспользует ровно
+ * эту сборку, а не копирует git-вызовы. `collectStatus` тянет задачи, очередь
+ * и grant — для чтения состояния дерева это лишняя работа и лишние импорты
+ * (`web/orchestrator`) в MCP-слое.
  */
-function collectGit(cwd: string): StatusGit | null {
+export function collectGit(cwd: string): StatusGit | null {
   const inside = git(cwd, ['rev-parse', '--is-inside-work-tree']);
   if (!inside.ok || inside.out.trim() !== 'true') return null;
   try {

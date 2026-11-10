@@ -85,6 +85,8 @@ export const TOOL_KINDS: Readonly<Record<string, ToolKind>> = {
   // === Прочее ===
   project_map: 'read',
   git_commit: 'write',
+  // VL-416: read-only снимок рабочего дерева (пара к git_commit)
+  git_status: 'read',
   // VL-363: репорт бага в upstream-репозиторий через GitVerse Issues — сетевой write
   upstream_report_bug: 'write',
   // VL-391: приём входящих отчётов: список — read, accept/reject — write

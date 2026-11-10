@@ -5,7 +5,7 @@
  * - MCP: document_create/view/list/update/search + валидация типа
  * - CLI: doc create/list/view/update/search
  * - Round-trip markdown (documentToMarkdown/markdownToDocument)
- * - listTools() = 56 (37 + project_map VL-235 + 4 супервизора VL-268 + lesson_audit VL-279 + lesson_classify VL-280 + lesson_consolidate VL-400)
+ * - listTools() = 57 (37 + project_map VL-235 + 4 супервизора VL-268 + lesson_audit VL-279 + lesson_classify VL-280 + lesson_consolidate VL-400 + git_status VL-416)
  */
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
@@ -69,9 +69,9 @@ function runCli(...args) {
 // ============================================================
 
 describe('VL-11 — document_* инструменты', () => {
-  it('Все 56 инструментов, document_* зарегистрированы', () => {
+  it('Все 57 инструментов, document_* зарегистрированы', () => {
     const tools = listTools();
-    assert.equal(tools.length, 56);
+    assert.equal(tools.length, 57);
     const names = tools.map(t => t.name);
     for (const n of ['document_list', 'document_view', 'document_create', 'document_update', 'document_edit', 'document_search']) {
       assert.ok(names.includes(n), `${n} не найден`);
@@ -161,6 +161,54 @@ function existsDoc(idPrefix) {
   const files = readdirSync(docsDirPath);
   return files.some(f => f.startsWith(idPrefix));
 }
+
+// ============================================================
+// VL-416 — точный фильтр по тегам и excerpt в document_list
+// ============================================================
+
+describe('VL-416 — document_list: tags (точное совпадение) и excerpt', () => {
+  beforeAll(async () => {
+    setup();
+    await handleToolCall('document_create', { title: 'Недельный отчёт', content: 'тело недельного отчёта', tags: ['week', 'report'] }, testDir);
+    await handleToolCall('document_create', { title: 'Weekly digest', content: 'тело weekly', tags: ['weekly-report'] }, testDir);
+    await handleToolCall('document_create', { title: 'Портфель', content: 'тело портфеля', tags: ['week', 'portfolio'] }, testDir);
+  });
+  afterAll(() => cleanup());
+
+  it('AC4: tags:["week"] не матчит "weekly-report" (точное совпадение, не подстрока)', async () => {
+    const res = JSON.parse(await handleToolCall('document_list', { tags: ['week'] }, testDir));
+    const ids = res.map(d => d.id).sort();
+    assert.deepEqual(ids, ['doc-1', 'doc-3'], `ожидались только точные совпадения: ${JSON.stringify(res)}`);
+  });
+
+  it('AC4: AND по двум тегам + case-insensitive', async () => {
+    const res = JSON.parse(await handleToolCall('document_list', { tags: ['WEEK', 'portfolio'] }, testDir));
+    assert.equal(res.length, 1);
+    assert.equal(res[0].id, 'doc-3');
+  });
+
+  it('AC5: tags:[] — фильтра нет (все документы)', async () => {
+    const res = JSON.parse(await handleToolCall('document_list', { tags: [] }, testDir));
+    assert.equal(res.length, 3);
+  });
+
+  it('AC5: query и tags комбинируются через AND', async () => {
+    const res = JSON.parse(await handleToolCall('document_list', { query: 'портфель', tags: ['week'] }, testDir));
+    assert.equal(res.length, 1);
+    assert.equal(res[0].id, 'doc-3');
+    // query совпадает, а тег — нет: результат пуст
+    const none = JSON.parse(await handleToolCall('document_list', { query: 'портфель', tags: ['report'] }, testDir));
+    assert.equal(none.length, 0);
+  });
+
+  it('AC6: excerpt отдаёт первые N символов тела; без аргумента тела нет', async () => {
+    const withExcerpt = JSON.parse(await handleToolCall('document_list', { tags: ['portfolio'], excerpt: 6 }, testDir));
+    assert.equal(withExcerpt.length, 1);
+    assert.equal(withExcerpt[0].excerpt, 'тело п');
+    const plain = JSON.parse(await handleToolCall('document_list', { tags: ['portfolio'] }, testDir));
+    assert.equal(plain[0].excerpt, undefined, 'без excerpt тело не отдаётся');
+  });
+});
 
 // ============================================================
 // CLI
