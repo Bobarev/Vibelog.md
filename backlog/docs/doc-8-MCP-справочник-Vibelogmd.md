@@ -814,6 +814,8 @@ workflow_apply {"patch": {"workflows": {"default": {"initial_status": "To Do",
 
 Часть инструментов существует **только в веб-чате**: их нет в MCP-реестре, поэтому в headless-фазах (`vibelog agent`, TUI) и в MCP-клиентах они недоступны. Собираются в `chatToolDefs()` (`src/web/tool-policy.ts`) поверх MCP-реестра минус `CHAT_DISALLOWED_TOOLS`.
 
+**Видимость зависит от роли (VL-407).** `chatToolDefs(cwd, persona)` фильтрует итоговый список по `persona.allowTools`: поле не задано — полный набор; непустой массив — ровно перечисленные имена; `[]` — только `memory_remember`. Фильтр применяется к итоговому списку (MCP-реестр + локальные `read_file`/`write_file`/`edit`/`search_files` + `ask_user` + `memory_remember`), поэтому локальные инструменты тоже отсекаются. `memory_remember` добавляется всегда при наличии роли — это механизм памяти роли, а не инструмент проекта. Вызов инструмента вне списка (устаревший `tool_call` в истории треда, прямой `tools/call`) отклоняется машиночитаемым `ackError` «Инструмент "X" не разрешён роли "Y"» — до `localHandlers`/`handleToolCall` и до approval-гейта. Подробности семантики поля — doc-6 §10.
+
 ### memory_remember — записать поправку в память персоны (VL-402)
 
 | Параметр | Тип | Required | Описание |
