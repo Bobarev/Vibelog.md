@@ -219,13 +219,16 @@ export function PersonasPage() {
                         {p.label}
                       </a>
                       <span className="font-mono text-xs text-muted-foreground">{p.id}</span>
+                      {p.id === data.default && (
+                        <span className="text-xs text-muted-foreground">по умолчанию</span>
+                      )}
                     </div>
                   </TableCell>
                   <TableCell>
-                    {p.id === data.default ? (
-                      <Badge>по умолчанию</Badge>
+                    {p.builtin ? (
+                      <Badge variant="secondary">встроенная</Badge>
                     ) : (
-                      <span className="text-xs text-muted-foreground">—</span>
+                      <Badge variant="default">проектная</Badge>
                     )}
                   </TableCell>
                   <TableCell className="max-w-[320px] text-sm text-muted-foreground">

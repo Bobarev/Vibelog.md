@@ -57,10 +57,13 @@ describe('VL-403 AC1: роуты #/personas и #/persona/<id>', () => {
 });
 
 describe('VL-403 AC2: список ролей', () => {
-  it('показывает label, id, описание и размер памяти с предупреждением', () => {
+  it('показывает label, id, описание, тип роли и размер памяти с предупреждением', () => {
     assert.match(listPage, /p\.label/);
     assert.match(listPage, /p\.id/);
     assert.match(listPage, /p\.description/);
+    assert.match(listPage, /p\.builtin/);
+    assert.match(listPage, /встроенная/);
+    assert.match(listPage, /проектная/);
     assert.match(listPage, /p\.memory\.chars/);
     assert.match(listPage, /p\.memory\.truncated/);
     assert.match(listPage, /сверх лимита/);

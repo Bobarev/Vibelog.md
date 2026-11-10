@@ -25,6 +25,8 @@ export interface PersonaSummary {
   id: string;
   label: string;
   description?: string;
+  /** Встроенная роль: удалить нельзя, только переопределить (VL-403). */
+  builtin: boolean;
   memory: PersonaMemoryInfo;
 }
 

@@ -109,6 +109,12 @@ export interface PersonaSummary {
   label: string;
   description?: string;
   /**
+   * VL-403: роль встроенная (нельзя удалить, только переопределить).
+   * Считается по BUILTIN_PERSONAS, а не по наличию записи в settings.json:
+   * переопределение не делает роль проектной.
+   */
+  builtin: boolean;
+  /**
    * VL-401: состояние памяти персоны — БЕЗ текста (как и промпт, память
    * остаётся на сервере: там могут быть личные заметки о пользователе).
    */
@@ -337,6 +343,7 @@ export function listPersonas(cwd: string): { personas: PersonaSummary[]; errors:
         id: p.id,
         label: p.label,
         ...(p.description ? { description: p.description } : {}),
+        builtin: isBuiltinPersonaId(p.id),
         memory: { exists: memory.exists, chars: memory.chars, truncated: memory.truncated },
       };
     }),
