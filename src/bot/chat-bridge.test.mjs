@@ -12,6 +12,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  answerChatApproval,
+  answerChatQuestion,
   clearAllChatBridges,
   clearChatBridge,
   forwardChatMessage,
@@ -20,7 +22,7 @@ import {
   setChatBridge,
 } from '../../dist/bot/chat-bridge.js';
 import { loadChatHistory } from '../../dist/web/chat.js';
-import { writeTurnState } from '../../dist/web/chat-runs.js';
+import { readTurnState, writeTurnState } from '../../dist/web/chat-runs.js';
 import { stringifyYaml } from '../../dist/core/yaml.js';
 
 let cwd;
@@ -160,7 +162,7 @@ describe('forwardChatMessage (VL-408)', () => {
     assert.equal(llm.state.calls, 0, 'LLM не должен вызываться при идущем ходе');
   });
 
-  it('пауза на approval — прогон отменяется, пользователь получает подсказку про веб', async () => {
+  it('AC6: пауза на approval — прогон НЕ отменяется, наружу уходит запрос решения', async () => {
     const threadId = 'chat-approval';
     seedThread(threadId, [{ role: 'user', content: 'старое' }]);
     const llm = fakeLlm([
@@ -176,7 +178,119 @@ describe('forwardChatMessage (VL-408)', () => {
       },
     ]);
     const result = await forwardChatMessage(cwd, threadId, 'создай задачу', { llm });
-    assert.ok('needsWeb' in result, `ожидался needsWeb, получено: ${JSON.stringify(result)}`);
-    assert.match(result.needsWeb, /веб-интерфейс/);
+    assert.ok('approval' in result, `ожидался approval, получено: ${JSON.stringify(result)}`);
+    assert.equal(result.approval.toolCallId, 'tc-1');
+    assert.equal(result.approval.name, 'backlog_create_task');
+    assert.equal(result.approval.threadId, threadId);
+    // Прогон завершился штатно (пауза — не отмена): sidecar не остался running
+    const state = readTurnState(cwd, threadId);
+    assert.notEqual(state?.status, 'running', 'прогон не должен висеть в running');
+  });
+
+  it('AC7: Allow разрешает ожидающий approval и ход продолжается', async () => {
+    const threadId = 'chat-approval-allow';
+    seedThread(threadId, [{ role: 'user', content: 'старое' }]);
+    const llm = fakeLlm([
+      {
+        text: '',
+        toolCalls: [{ id: 'tc-a1', name: 'backlog_create_task', arguments: { title: 'Задача A' } }],
+      },
+      { text: 'Задача создана.', tokens: ['Задача создана.'] },
+    ]);
+    const first = await forwardChatMessage(cwd, threadId, 'создай задачу', { llm });
+    assert.ok('approval' in first);
+    const second = await answerChatApproval(cwd, threadId, 'tc-a1', true, false, { llm });
+    assert.ok('text' in second, `ожидался текст, получено: ${JSON.stringify(second)}`);
+    assert.equal(second.text, 'Задача создана.');
+    const history = loadChatHistory(cwd, threadId);
+    const tool = history.find((m) => m.role === 'tool' && m.tool_call_id === 'tc-a1');
+    assert.ok(tool, 'tool-результат записан');
+    assert.ok(!JSON.parse(tool.content).denied, 'отказа быть не должно');
+  });
+
+  it('AC7: Deny отклоняет вызов, ход продолжается с отказом', async () => {
+    const threadId = 'chat-approval-deny';
+    seedThread(threadId, [{ role: 'user', content: 'старое' }]);
+    const llm = fakeLlm([
+      {
+        text: '',
+        toolCalls: [{ id: 'tc-d1', name: 'backlog_create_task', arguments: { title: 'Задача D' } }],
+      },
+      { text: 'Понял, не создаю.', tokens: ['Понял, не создаю.'] },
+    ]);
+    const first = await forwardChatMessage(cwd, threadId, 'создай задачу', { llm });
+    assert.ok('approval' in first);
+    const second = await answerChatApproval(cwd, threadId, 'tc-d1', false, false, { llm });
+    assert.ok('text' in second);
+    const history = loadChatHistory(cwd, threadId);
+    const tool = history.find((m) => m.role === 'tool' && m.tool_call_id === 'tc-d1');
+    assert.equal(JSON.parse(tool.content).denied, true, 'отказ машиночитаем');
+  });
+
+  it('AC10/AC11: пауза на question и ответ вариантом возобновляют ход', async () => {
+    const threadId = 'chat-question';
+    seedThread(threadId, [{ role: 'user', content: 'старое' }]);
+    const llm = fakeLlm([
+      {
+        text: '',
+        toolCalls: [
+          {
+            id: 'tc-q1',
+            name: 'ask_user',
+            arguments: {
+              question: 'Продолжить?',
+              options: [
+                { id: 'yes', label: 'Да' },
+                { id: 'no', label: 'Нет' },
+              ],
+            },
+          },
+        ],
+      },
+      { text: 'Продолжаю.', tokens: ['Продолжаю.'] },
+    ]);
+    const first = await forwardChatMessage(cwd, threadId, 'спроси', { llm });
+    assert.ok('question' in first, `ожидался question, получено: ${JSON.stringify(first)}`);
+    assert.equal(first.question.toolCallId, 'tc-q1');
+    assert.equal(first.question.question, 'Продолжить?');
+    assert.deepEqual(first.question.options.map((o) => o.id), ['yes', 'no']);
+    assert.equal(first.question.allowCustom, true);
+
+    const second = await answerChatQuestion(cwd, threadId, 'tc-q1', { optionId: 'yes' }, { llm });
+    assert.ok('text' in second, `ожидался текст, получено: ${JSON.stringify(second)}`);
+    const history = loadChatHistory(cwd, threadId);
+    const tool = history.find((m) => m.role === 'tool' && m.tool_call_id === 'tc-q1');
+    assert.deepEqual(JSON.parse(tool.content), { answer: { id: 'yes', label: 'Да' } });
+  });
+
+  it('AC12: свободный ответ уходит как custom', async () => {
+    const threadId = 'chat-question-custom';
+    seedThread(threadId, [{ role: 'user', content: 'старое' }]);
+    const llm = fakeLlm([
+      {
+        text: '',
+        toolCalls: [
+          {
+            id: 'tc-q2',
+            name: 'ask_user',
+            arguments: {
+              question: 'Как назвать?',
+              options: [
+                { id: 'a', label: 'A' },
+                { id: 'b', label: 'B' },
+              ],
+            },
+          },
+        ],
+      },
+      { text: 'Принято.', tokens: ['Принято.'] },
+    ]);
+    const first = await forwardChatMessage(cwd, threadId, 'спроси', { llm });
+    assert.ok('question' in first);
+    const second = await answerChatQuestion(cwd, threadId, 'tc-q2', { custom: 'Своё имя' }, { llm });
+    assert.ok('text' in second);
+    const history = loadChatHistory(cwd, threadId);
+    const tool = history.find((m) => m.role === 'tool' && m.tool_call_id === 'tc-q2');
+    assert.deepEqual(JSON.parse(tool.content), { answer: { custom: 'Своё имя' } });
   });
 });

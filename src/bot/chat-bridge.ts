@@ -18,7 +18,13 @@
  */
 
 import type { ChatMessage } from '../agent/llm.js';
-import { getChatThread, startChatRun, type ChatDeps } from '../web/chat.js';
+import {
+  getChatThread,
+  startChatRun,
+  type ChatDeps,
+  type ChatEvent,
+  type ChatRequestBody,
+} from '../web/chat.js';
 import {
   cancelChatRun,
   readTurnState,
@@ -70,16 +76,37 @@ export function lastAssistantText(history: ChatMessage[]): string {
   return '';
 }
 
-/** Исход пересылки: ответ персоны, ошибка либо «продолжайте в вебе». */
+/**
+ * Исход пересылки: ответ персоны, ошибка, «продолжайте в вебе» либо пауза
+ * хода, которую бот умеет разрешить сам (VL-414).
+ *
+ * `approval`/`question` несут `threadId`: обработчик бота сохраняет паузу в
+ * module-state и по нажатию кнопки возобновляет ход (`answerChatApproval` /
+ * `answerChatQuestion`).
+ */
 export type ForwardResult =
   | { text: string }
   | { error: string }
-  | { needsWeb: string };
+  | { needsWeb: string }
+  | { approval: ApprovalPause }
+  | { question: QuestionPause };
 
-/** Текст подсказки, когда ход встал на паузу, которую бот решить не может. */
+/** Событие approval из веб-чата + тред, в котором висит пауза. */
+export type ApprovalPause = Extract<ChatEvent, { type: 'approval' }> & { threadId: string };
+
+/** Событие question из веб-чата + тред, в котором висит пауза. */
+export type QuestionPause = Extract<ChatEvent, { type: 'question' }> & { threadId: string };
+
+/**
+ * Текст подсказки, когда ход встал на паузу, которую бот решить не может.
+ *
+ * VL-414: approval и question бот теперь решает сам (кнопки), поэтому подсказка
+ * осталась только для сценариев вне возможностей бота — сейчас это
+ * `pricing(kind:'ask')` (карточка дрейфа цены с выбором вендора).
+ */
 const NEEDS_WEB_TEXT =
-  'Ход в веб-чате ждёт подтверждения (запись в backlog) или ответа на вопрос — ' +
-  'продолжите в веб-интерфейсе. Режим пересылки остаётся включённым.';
+  'Ход в веб-чате ждёт решения по цене модели — продолжите в веб-интерфейсе. ' +
+  'Режим пересылки остаётся включённым.';
 
 /**
  * Отправить сообщение в тред веб-чата и дождаться ответа персоны.
@@ -88,10 +115,11 @@ const NEEDS_WEB_TEXT =
  * события (usage/memory/subagent) в бот не транслируются — так требует
  * постановка задачи (нужен ответ персоны, а не телеметрия хода).
  *
- * Пауза на approval/вопросе: у бота нет UI Allow/Deny и карточки вопроса,
- * поэтому прогон отменяется, а пользователь получает подсказку продолжить в
- * вебе. Незакрытый `assistant(tool_calls)` в jsonl закроется синтетическим
- * отказом при следующем сообщении (`closePendingToolCalls` в chat.ts).
+ * VL-414: пауза на approval/вопросе больше НЕ гасит прогон — она возвращается
+ * наружу (`{approval}`/`{question}`), бот показывает кнопки и возобновляет ход
+ * через `answerChatApproval`/`answerChatQuestion`. Прогон при этом завершается
+ * штатно (`produce` возвращает управление, `driveChat` ставит `done`), поэтому
+ * в реестре он не висит и следующий ход стартует свободно.
  *
  * @param cwd — рабочая директория проекта (backlog/, .vibelog/)
  * @param threadId — тред веб-чата
@@ -103,6 +131,59 @@ export async function forwardChatMessage(
   threadId: string,
   text: string,
   deps: ChatDeps = {},
+): Promise<ForwardResult> {
+  return await runAndCollect(cwd, threadId, { threadId, message: text }, deps);
+}
+
+/**
+ * Разрешить/отклонить ожидающий approval и дождаться продолжения хода.
+ *
+ * @param always — «Always allow» (VL-264): инструмент попадает в allow-list
+ *   треда, последующие вызовы идут без паузы
+ */
+export async function answerChatApproval(
+  cwd: string,
+  threadId: string,
+  toolCallId: string,
+  approved: boolean,
+  always = false,
+  deps: ChatDeps = {},
+): Promise<ForwardResult> {
+  return await runAndCollect(
+    cwd,
+    threadId,
+    { threadId, approval: { toolCallId, approved, always } },
+    deps,
+  );
+}
+
+/**
+ * Ответить на ожидающий вопрос `ask_user` и дождаться продолжения хода.
+ *
+ * @param answer — ровно одно из `optionId`/`custom` (валидирует сервер)
+ */
+export async function answerChatQuestion(
+  cwd: string,
+  threadId: string,
+  toolCallId: string,
+  answer: { optionId?: string; custom?: string },
+  deps: ChatDeps = {},
+): Promise<ForwardResult> {
+  return await runAndCollect(cwd, threadId, { threadId, answer: { toolCallId, ...answer } }, deps);
+}
+
+/**
+ * Общий драйвер: старт хода (новый или resume) и сбор событий до исхода.
+ *
+ * Вынесен из `forwardChatMessage` (VL-414), чтобы три точки входа — новое
+ * сообщение, решение по approval, ответ на вопрос — не расходились в
+ * поведении (lesson-37: общая логика — один хелпер).
+ */
+async function runAndCollect(
+  cwd: string,
+  threadId: string,
+  body: ChatRequestBody,
+  deps: ChatDeps,
 ): Promise<ForwardResult> {
   // Тред должен существовать: иначе startChatRun создаст новый файл истории
   // с чужим id и пользователь будет «продолжать» пустой чат.
@@ -120,7 +201,7 @@ export async function forwardChatMessage(
     }
   }
 
-  const started = startChatRun({ threadId, message: text }, cwd, deps);
+  const started = startChatRun(body, cwd, deps);
   if ('error' in started) return { error: started.error };
   const run = started.run;
 
@@ -149,14 +230,20 @@ export async function forwardChatMessage(
           finish({ error: ev.message });
           break;
         case 'approval':
+          // VL-414: пауза, которую бот решает кнопками Allow/Deny. Прогон не
+          // гасим — он завершается сам (produce вернул управление), а решение
+          // придёт новым ходом с body.approval.
+          finish({ approval: { ...ev, threadId } });
+          break;
         case 'question':
-          // Пауза, которую бот решить не может — гасим прогон, чтобы он не
-          // висел в реестре и не блокировал следующий ход.
-          cancelChatRun(threadId, 'Ход остановлен: решение доступно только в веб-интерфейсе');
-          finish({ needsWeb: NEEDS_WEB_TEXT });
+          // VL-414: пауза-вопрос — бот показывает кнопки-варианты и ждёт
+          // свободный текст; ответ уходит новым ходом с body.answer.
+          finish({ question: { ...ev, threadId } });
           break;
         case 'pricing':
           if (ev.kind === 'ask') {
+            // Карточка дрейфа цены (VL-317) — выбор вендора бот не умеет:
+            // гасим прогон и просим продолжить в вебе (осознанное ограничение).
             cancelChatRun(threadId, 'Ход остановлен: решение по цене доступно только в веб-интерфейсе');
             finish({ needsWeb: NEEDS_WEB_TEXT });
           }
