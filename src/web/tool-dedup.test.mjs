@@ -23,13 +23,13 @@ import { join } from 'node:path';
 
 import {
   CHAT_MAX_TOOL_CALLS_DEFAULT,
-  MAX_NOOP_REPEATS_PER_TURN,
+  MAX_UNCHANGED_REPEATS_PER_TURN,
   NON_SEMANTIC_ARGS,
   callSignature,
   createTurnToolGuard,
   duplicateCallResult,
   limitCallResult,
-  noopRepeatCallResult,
+  unchangedRepeatCallResult,
   resolveChatMaxToolCalls,
 } from '../../dist/web/tool-dedup.js';
 
@@ -131,7 +131,13 @@ describe('VL-255 — createTurnToolGuard: дедупликация', () => {
     guard.noteExecuted('read_file', { path: 'README.md' });
     assert.equal(guard.check('read_file', { path: 'README.md' }), 'duplicate');
     assert.equal(guard.check('read_file', { path: 'README.md' }), 'duplicate');
-    assert.deepEqual(guard.stats(), { executed: 1, deduped: 2, limit_hits: 0, noop: 0, noop_blocked: 0 });
+    assert.deepEqual(guard.stats(), {
+      executed: 1,
+      deduped: 2,
+      limit_hits: 0,
+      unchanged: 0,
+      unchanged_blocked: 0,
+    });
   });
 
   it('другие аргументы того же инструмента → execute', () => {
@@ -185,45 +191,45 @@ describe('VL-255 — createTurnToolGuard: повтор после write', () => 
   });
 });
 
-describe('VL-326 — createTurnToolGuard: серия noop-ответов', () => {
-  it('дефолтный кап noop-серии — MAX_NOOP_REPEATS_PER_TURN', () => {
-    assert.equal(MAX_NOOP_REPEATS_PER_TURN, 3);
-    assert.equal(createTurnToolGuard().maxNoopRepeats(), MAX_NOOP_REPEATS_PER_TURN);
-    assert.equal(createTurnToolGuard({ maxNoopRepeats: 5 }).maxNoopRepeats(), 5);
-    assert.equal(createTurnToolGuard({ maxNoopRepeats: 0 }).maxNoopRepeats(), MAX_NOOP_REPEATS_PER_TURN);
+describe('VL-326/VL-413 — createTurnToolGuard: серия ответов с unchanged', () => {
+  it('дефолтный кап серии — MAX_UNCHANGED_REPEATS_PER_TURN', () => {
+    assert.equal(MAX_UNCHANGED_REPEATS_PER_TURN, 3);
+    assert.equal(createTurnToolGuard().maxUnchangedRepeats(), MAX_UNCHANGED_REPEATS_PER_TURN);
+    assert.equal(createTurnToolGuard({ maxUnchangedRepeats: 5 }).maxUnchangedRepeats(), 5);
+    assert.equal(createTurnToolGuard({ maxUnchangedRepeats: 0 }).maxUnchangedRepeats(), MAX_UNCHANGED_REPEATS_PER_TURN);
   });
 
-  it('3 noop подряд не блокируют, 4-й (кап+1) исчерпывает серию', () => {
+  it('3 unchanged подряд не блокируют, 4-й (кап+1) исчерпывает серию', () => {
     const guard = createTurnToolGuard({ maxPerResponse: 16 });
     guard.beginTurn();
     // Каждый вызов с РАЗНЫМ набором уже применённых полей — дедуп их пропускает
-    // (сигнатуры разные), но прогресса нет: инструмент отвечает noop.
+    // (сигнатуры разные), но прогресса нет: инструмент отвечает unchanged.
     const variants = [
       { id: 'VL-1', priority: 'High' },
       { id: 'VL-1', type: 'bug' },
       { id: 'VL-1', priority: 'High' },
     ];
-    for (let i = 0; i < MAX_NOOP_REPEATS_PER_TURN; i++) {
+    for (let i = 0; i < MAX_UNCHANGED_REPEATS_PER_TURN; i++) {
       const args = { ...variants[i], note: i }; // note — разное содержательное поле
       guard.beginTurn();
       assert.equal(guard.check('backlog_update_task', args), 'execute');
-      assert.equal(guard.noteNoop('backlog_update_task', args), false, `noop #${i + 1} не должен исчерпывать кап`);
+      assert.equal(guard.noteUnchanged('backlog_update_task', args), false, `unchanged #${i + 1} не должен исчерпывать кап`);
     }
-    // следующий noop-ответ исчерпывает серию
+    // следующий ответ с unchanged исчерпывает серию
     guard.beginTurn();
     const last = { id: 'VL-1', priority: 'High', note: 99 };
     assert.equal(guard.check('backlog_update_task', last), 'execute');
-    assert.equal(guard.noteNoop('backlog_update_task', last), true);
-    // исчерпанная серия блокирует ПОВТОР вызова, который уже отвечал noop
+    assert.equal(guard.noteUnchanged('backlog_update_task', last), true);
+    // исчерпанная серия блокирует ПОВТОР вызова, который уже отвечал unchanged
     guard.beginTurn();
-    assert.equal(guard.check('backlog_update_task', last), 'noop_repeat');
-    assert.equal(guard.stats().noop_blocked, 1);
-    assert.equal(guard.stats().noop, MAX_NOOP_REPEATS_PER_TURN + 1);
+    assert.equal(guard.check('backlog_update_task', last), 'unchanged_repeat');
+    assert.equal(guard.stats().unchanged_blocked, 1);
+    assert.equal(guard.stats().unchanged, MAX_UNCHANGED_REPEATS_PER_TURN + 1);
     // смена аргументов внутри того же инструмента тоже блокируется: он уже
     // отвечал «изменений нет», другой набор уже применённых полей прогресса
     // не даст (инцидент VL-324: модель меняла только idempotencyKey)
     guard.beginTurn();
-    assert.equal(guard.check('backlog_update_task', { id: 'VL-1', plan: 'x' }), 'noop_repeat');
+    assert.equal(guard.check('backlog_update_task', { id: 'VL-1', plan: 'x' }), 'unchanged_repeat');
     // выход из серии — ДРУГОЙ инструмент: он исполняется и сбрасывает её
     guard.beginTurn();
     assert.equal(guard.check('read_file', { path: 'a.ts' }), 'execute');
@@ -232,17 +238,17 @@ describe('VL-326 — createTurnToolGuard: серия noop-ответов', () =>
     assert.equal(guard.check('backlog_update_task', { id: 'VL-1', plan: 'x' }), 'execute', 'серия сброшена другим инструментом');
   });
 
-  it('реально исполненный (не-noop) вызов сбрасывает серию', () => {
-    const guard = createTurnToolGuard({ maxPerResponse: 16, maxNoopRepeats: 1 });
+  it('реально исполненный (изменивший состояние) вызов сбрасывает серию', () => {
+    const guard = createTurnToolGuard({ maxPerResponse: 16, maxUnchangedRepeats: 1 });
     guard.beginTurn();
     const args = { id: 'VL-1', priority: 'High' };
     assert.equal(guard.check('backlog_update_task', args), 'execute');
-    assert.equal(guard.noteNoop('backlog_update_task', args), false);
+    assert.equal(guard.noteUnchanged('backlog_update_task', args), false);
     guard.beginTurn();
     const args2 = { id: 'VL-1', type: 'bug' };
     assert.equal(guard.check('backlog_update_task', args2), 'execute');
-    assert.equal(guard.noteNoop('backlog_update_task', args2), true, 'кап 1: второй noop исчерпывает серию');
-    // исполнение с успешным ответом (noteExecuted без noteNoop) сбрасывает серию
+    assert.equal(guard.noteUnchanged('backlog_update_task', args2), true, 'кап 1: второй unchanged исчерпывает серию');
+    // исполнение с успешным ответом (noteExecuted без noteUnchanged) сбрасывает серию
     guard.beginTurn();
     assert.equal(guard.check('read_file', { path: 'a.ts' }), 'execute');
     guard.noteExecuted('read_file', { path: 'a.ts' });
@@ -370,13 +376,13 @@ describe('VL-255 — тексты ответов модели', () => {
     assert.match(parsed.message, /заверши ход и продолжи следующим/);
   });
 
-  it('VL-326: noopRepeatCallResult — ok:false, noop_repeat:true и требование сменить аргументы', () => {
-    const parsed = JSON.parse(noopRepeatCallResult(3));
+  it('VL-326/VL-413: unchangedRepeatCallResult — guard-отказ и требование сменить аргументы', () => {
+    const parsed = JSON.parse(unchangedRepeatCallResult(3));
     assert.equal(parsed.ok, false);
-    assert.equal(parsed.noop_repeat, true);
-    // VL-359: исход noop (а не rejected) — серия «изменений нет», не отказ
-    assert.equal(parsed.outcome, 'noop');
-    assert.equal(parsed.noop, true);
+    assert.equal(parsed.unchanged_repeat, true);
+    // VL-413: это guard-отказ (вызов не исполнялся), а не запись
+    assert.equal(parsed.outcome, 'rejected');
+    assert.equal(parsed.reason, 'unchanged_repeat');
     assert.match(parsed.message, /Изменений нет/);
     assert.match(parsed.message, /повтор с теми же аргументами бесполезен/);
     assert.match(parsed.message, /переходи к отчёту/);

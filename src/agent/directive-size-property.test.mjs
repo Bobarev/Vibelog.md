@@ -82,9 +82,7 @@ describe('P5 — размер директивы повтора', () => {
       name: 'backlog_update_task',
       description: 'write-заглушка',
       inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
-      handler: async () => JSON.stringify({
-        ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [],
-      }),
+      handler: async () => JSON.stringify({ ok: true, outcome: 'applied', message: 'Изменений нет', applied: {}, unchanged: ['type'], skipped: [] }),
     };
     const same = { id: 'VL-1', type: 'feature' };
     const { llm } = fakeLlm(Array.from({ length: 10 }, (_, i) => ({

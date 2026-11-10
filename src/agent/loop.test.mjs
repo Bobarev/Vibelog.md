@@ -458,8 +458,8 @@ describe('runLoop loop detection (VL-83)', () => {
       inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
       handler: async () => {
         state.calls++;
-        // VL-304: noop — ошибка, а не успех (ok:false + reason:'noop')
-        return JSON.stringify({ ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [] });
+        // VL-413: неизменяющая запись — УСПЕХ с перечнем неизменённых полей.
+        return JSON.stringify({ ok: true, outcome: 'applied', message: 'Изменений нет', applied: {}, unchanged: ['type'], skipped: [] });
       },
     };
     const same = { id: 'VL-302', type: 'feature' };
@@ -492,7 +492,7 @@ describe('runLoop loop detection (VL-83)', () => {
       inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
       handler: async () => {
         state.calls++;
-        return JSON.stringify({ ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [] });
+        return JSON.stringify({ ok: true, outcome: 'applied', message: 'Изменений нет', applied: {}, unchanged: ['type'], skipped: [] });
       },
     };
     const same = { id: 'VL-302', type: 'feature' };
@@ -709,11 +709,10 @@ describe('runLoop loop detection (VL-83)', () => {
       handler: async () => {
         state.calls++;
         return JSON.stringify({
-          ok: false, noop: true, reason: 'noop',
+          ok: true, outcome: 'applied',
           message: 'Изменений нет: title, tags уже имеют эти значения.',
-          applied: { title: 'T', tags: ['a'] }, skipped: [],
+          applied: {}, unchanged: ['title', 'tags'], skipped: [],
           missing: [{ field: 'content', reason: 'тело урока пустое — не заполнено' }],
-          hint: 'Добавь в вызов `content` с непустым markdown.',
         });
       },
     };
@@ -749,9 +748,7 @@ describe('runLoop loop detection (VL-83)', () => {
       name: 'lesson_update',
       description: 'write-заглушка урока',
       inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
-      handler: async () => JSON.stringify({
-        ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [],
-      }),
+      handler: async () => JSON.stringify({ ok: true, outcome: 'applied', message: 'Изменений нет', applied: {}, unchanged: ['type'], skipped: [] }),
     };
     const same = { id: 'lesson-191', title: 'T' };
     const { llm } = fakeLlm(Array.from({ length: 10 }, (_, i) => ({
@@ -793,9 +790,9 @@ describe('VL-310 — регресс сессии agent-1793637056809 (Code VL-12
       handler: async () => {
         state.calls++;
         return JSON.stringify({
-          ok: false, noop: true, reason: 'noop',
-          message: 'Изменений нет: type уже имеют эти значения. Следующий шаг: переходи к следующему пункту фазы',
-          applied: { id: 'doc-2', type: 'guide' }, skipped: [],
+          ok: true, outcome: 'applied',
+          message: 'Изменений нет: type уже имеют эти значения.',
+          applied: {}, unchanged: ['type'], skipped: [],
         });
       },
     };
@@ -3141,7 +3138,7 @@ describe('VL-410 — директива повтора называет след
         state.calls++;
         return state.calls === 1
           ? JSON.stringify({ ok: true, message: 'обновлено', applied: { type: 'bug' }, skipped: [] })
-          : JSON.stringify({ ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [] });
+          : JSON.stringify({ ok: true, outcome: 'applied', message: 'Изменений нет', applied: {}, unchanged: ['type'], skipped: [] });
       },
     };
     return { spec, state };

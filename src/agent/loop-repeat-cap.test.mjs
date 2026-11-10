@@ -35,7 +35,7 @@ function noopSpec() {
     name: 'backlog_update_task',
     description: 'write-заглушка',
     inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
-    handler: async () => JSON.stringify({ ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [] }),
+    handler: async () => JSON.stringify({ ok: true, outcome: 'applied', message: 'Изменений нет', applied: {}, unchanged: ['type'], skipped: [] }),
   };
 }
 
@@ -370,9 +370,7 @@ describe('VL-411 — блокировка инструмента после вт
         inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
         handler: async () => {
           state.calls++;
-          return JSON.stringify({
-            ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [],
-          });
+          return JSON.stringify({ ok: true, outcome: 'applied', message: 'Изменений нет', applied: {}, unchanged: ['type'], skipped: [] });
         },
       },
     };
@@ -490,7 +488,7 @@ describe('VL-411 — блокировка инструмента после вт
       handler: async (args) => {
         if (args.type === 'feature') {
           state.noop++;
-          return JSON.stringify({ ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [] });
+          return JSON.stringify({ ok: true, outcome: 'applied', message: 'Изменений нет', applied: {}, unchanged: ['type'], skipped: [] });
         }
         state.applied++;
         return JSON.stringify({ ok: true, message: 'обновлено' });

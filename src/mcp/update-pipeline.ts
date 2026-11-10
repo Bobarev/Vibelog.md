@@ -328,7 +328,7 @@ function unchangedPrefix(keys: string[]): string {
  * документа и reference блок строится из имени фазы и собственной неполноты
  * сущности: служебные фазы статуса не меняют — отчёт не нужен.
  */
-function defaultPhaseState(ctx: UpdateContext, missing: SkippedField[]): PhaseState {
+export function defaultPhaseState(ctx: UpdateContext, missing: SkippedField[]): PhaseState {
   // VL-413: блок присутствует ВСЕГДА — потребителю не нужно различать «нет
   // блока» и «фаза неизвестна». `name: null` = ручной вызов MCP вне рана.
   return {
