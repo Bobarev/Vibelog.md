@@ -54,8 +54,34 @@ export interface SubagentSettings {
   maxDepth: number;
   /** Таймаут одной консультации, мс (дефолт 60000). */
   timeoutMs: number;
-  /** Лимит токенов ответа консультанта (дефолт 2000). */
+  /**
+   * Лимит токенов ответа консультанта (дефолт 4000, VL-415).
+   *
+   * Почему 4000, а не 2000: при 2000 токенах русский ответ обрывался на
+   * середине (~6–8 тыс. символов) ещё до обрезки по `maxAnswerChars`. 4000
+   * токенов ≈ 12–16 тыс. символов — укладывается в дефолт `maxAnswerChars`
+   * (20000) с запасом, поэтому обрезка срабатывает редко и осознанно.
+   */
   maxTokens: number;
+  /**
+   * Лимит длины ответа консультанта в символах (дефолт 20000, VL-415).
+   *
+   * Отдельный лимит нужен потому, что общий кап tool-вывода (8 КБ,
+   * `truncateToolOutput`) для `ask_persona` неверен: инструмент возвращает
+   * готовый ответ эксперта, который пользователь читает целиком, а не сырые
+   * данные для модели. Обрезка здесь — по границе строки/слова с явной
+   * пометкой в ответе и в ленте.
+   */
+  maxAnswerChars: number;
+  /**
+   * Сколько итераций разрешено консультанту (дефолт 5, VL-415).
+   *
+   * Было жёстко 3: консультант, изучающий материалы проекта, упирался в
+   * счётчик и возвращал «не дал ответа», хотя модель не сломалась — она не
+   * успела дойти до текста. Настраиваемый лимит + частичный результат
+   * (перечень вызванных инструментов) вместо пустой ошибки.
+   */
+  maxIterations: number;
   /** `error` (дефолт) — tool-результат с ошибкой и списком ролей; `skip` — нейтрально. */
   onMissingPersona: SubagentMissingPersona;
 }
@@ -67,7 +93,9 @@ export const SUBAGENT_DEFAULTS: SubagentSettings = {
   maxCallsPerTurn: 2,
   maxDepth: 1,
   timeoutMs: 60_000,
-  maxTokens: 2_000,
+  maxTokens: 4_000,
+  maxAnswerChars: 20_000,
+  maxIterations: 5,
   onMissingPersona: 'error',
 };
 
@@ -117,7 +145,7 @@ export function readSubagentSettings(cwd: string, errors?: string[]): SubagentSe
   if (raw === undefined) return result;
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     errors?.push(
-      'settings.json: секция subagents должна быть объектом {enabled, display, max_calls_per_turn, max_depth, timeout_ms, max_tokens, on_missing_persona}',
+      'settings.json: секция subagents должна быть объектом {enabled, display, max_calls_per_turn, max_depth, timeout_ms, max_tokens, max_answer_chars, max_iterations, on_missing_persona}',
     );
     return result;
   }
@@ -178,9 +206,31 @@ export function readSubagentSettings(cwd: string, errors?: string[]): SubagentSe
   if (section.max_tokens !== undefined) {
     const tokens = positiveInt(section.max_tokens);
     if (tokens === undefined) {
-      errors?.push('settings.json: subagents.max_tokens должен быть целым ≥ 1 — взято значение по умолчанию (2000)');
+      errors?.push('settings.json: subagents.max_tokens должен быть целым ≥ 1 — взято значение по умолчанию (4000)');
     } else {
       result.maxTokens = tokens;
+    }
+  }
+
+  if (section.max_answer_chars !== undefined) {
+    const chars = positiveInt(section.max_answer_chars);
+    if (chars === undefined) {
+      errors?.push(
+        'settings.json: subagents.max_answer_chars должен быть целым ≥ 1 — взято значение по умолчанию (20000)',
+      );
+    } else {
+      result.maxAnswerChars = chars;
+    }
+  }
+
+  if (section.max_iterations !== undefined) {
+    const iterations = positiveInt(section.max_iterations);
+    if (iterations === undefined) {
+      errors?.push(
+        'settings.json: subagents.max_iterations должен быть целым ≥ 1 — взято значение по умолчанию (5)',
+      );
+    } else {
+      result.maxIterations = iterations;
     }
   }
 

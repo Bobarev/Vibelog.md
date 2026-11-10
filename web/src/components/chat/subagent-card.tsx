@@ -26,6 +26,10 @@ export interface SubagentPartData {
   question?: unknown
   answer?: unknown
   tokens?: unknown
+  /** VL-415: ответ обрезан по `subagents.max_answer_chars`. */
+  truncated?: unknown
+  /** VL-415: длина полного ответа до обрезки. */
+  answerChars?: unknown
 }
 
 /** Токены консультации (для подписи «N токенов»). */
@@ -40,6 +44,9 @@ export function SubagentCard({ data }: { data: SubagentPartData | undefined }) {
   const question = typeof data?.question === "string" ? data.question : ""
   const answer = typeof data?.answer === "string" ? data.answer : ""
   const total = tokensTotal(data?.tokens)
+  // VL-415: пометка об обрезке — в карточке, а не только в тексте для модели.
+  const truncated = data?.truncated === true
+  const answerChars = typeof data?.answerChars === "number" ? data.answerChars : undefined
   const [open, setOpen] = React.useState(false)
 
   if (answer === "" && question === "") return null
@@ -79,6 +86,13 @@ export function SubagentCard({ data }: { data: SubagentPartData | undefined }) {
           <div className="px-3.5 pt-2 pb-2.5">
             <p className={cn(mono, "mb-1 text-muted-foreground")}>Ответ</p>
             <p className="break-words text-foreground/90">{answer !== "" ? answer : "—"}</p>
+            {truncated && (
+              <p className={cn(mono, "mt-1.5 text-muted-foreground")}>
+                {answerChars !== undefined
+                  ? `ответ обрезан по лимиту subagents.max_answer_chars (полный — ${answerChars} символов)`
+                  : "ответ обрезан по лимиту subagents.max_answer_chars"}
+              </p>
+            )}
           </div>
         </div>
       </CollapseContent>

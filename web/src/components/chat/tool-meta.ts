@@ -172,9 +172,18 @@ export function formatResult(result: unknown): string {
     const obj = result as Record<string, unknown>
     // VL-409: ответ консультанта (ask_persona) — показываем текст ответа, а не
     // JSON-обёртку: пользователю нужен ответ роли, а не служебные поля.
+    // VL-415: без clip(4000) — ответ эксперта читают целиком; серверный лимит
+    // (`subagents.max_answer_chars`) уже применён, а пометка об обрезке
+    // приходит полем `truncated`.
     if (typeof obj.answer === "string" && obj.ok === true) {
       const label = typeof obj.personaLabel === "string" ? `${obj.personaLabel}: ` : ""
-      return clip(`${label}${obj.answer}`, 4000)
+      const note =
+        obj.truncated === true
+          ? `\n\n[ответ обрезан по лимиту subagents.max_answer_chars: показано ${obj.answer.length} из ${
+              typeof obj.answerChars === "number" ? obj.answerChars : "?"
+            } символов]`
+          : ""
+      return `${label}${obj.answer}${note}`
     }
     if (typeof obj.error === "string") return clip(obj.error, 3000)
     if (obj.ok === false) {

@@ -121,6 +121,19 @@ describe('tool-meta: подписи, чипы, форматирование', ()
     assert.equal(formatResult('просто текст'), 'просто текст');
   });
 
+  it('VL-415: formatResult показывает ответ ask_persona целиком (без clip 4000)', () => {
+    const answer = 'совет. '.repeat(2000); // 14 000 символов
+    const out = formatResult({ ok: true, personaLabel: 'Психолог', answer, truncated: false, answerChars: answer.length });
+    assert.ok(out.includes(answer), 'ответ не обрезан');
+    assert.ok(!out.includes('…'), 'многоточия обрезки нет');
+  });
+
+  it('VL-415: formatResult помечает обрезанный ответ ask_persona', () => {
+    const out = formatResult({ ok: true, personaLabel: 'Психолог', answer: 'короткий', truncated: true, answerChars: 5000 });
+    assert.match(out, /ответ обрезан по лимиту subagents\.max_answer_chars/);
+    assert.match(out, /5000/);
+  });
+
   it('toolLabel знает write-инструменты, незнакомый отдаёт имя', () => {
     assert.equal(toolLabel('backlog_create_task'), 'Создал задачу');
     assert.equal(toolLabel('unknown_tool'), 'unknown_tool');
