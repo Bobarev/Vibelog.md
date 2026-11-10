@@ -82,6 +82,9 @@ const EXPECTED_MCP_TOOLS = [
   'reference_sync',
   'reference_update',
   'reference_view',
+  // VL-398: конструктор workflow
+  'workflow_apply',
+  'workflow_get',
 ];
 
 // Читаем версию динамически из package.json, чтобы тесты не ломались при бампе

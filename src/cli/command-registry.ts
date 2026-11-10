@@ -57,6 +57,7 @@ export const CLI_COMMANDS: readonly CliCommandEntry[] = [
   { name: 'lesson', summary: 'Уроки из задач: create, list, link, supersede, audit' },
   { name: 'experiment', summary: 'Эксперименты A/B: create, list, dataset, run, record, report, judge, gc' },
   { name: 'config', summary: 'Конфиг проекта (backlog/config.yml): get, set, list' },
+  { name: 'workflow', summary: 'Workflow проекта: show (схема и источник), validate (диагностика), apply (запись)' },
   { name: 'model', summary: 'LLM-модели: list, use, current' },
   { name: 'provider', summary: 'LLM-шлюзы (base_url, ключ): list' },
   { name: 'gateway', summary: 'Алиас provider: LLM-шлюзы (base_url, ключ)' },

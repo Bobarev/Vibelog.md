@@ -178,6 +178,8 @@ describe('VL-306 — все write-инструменты отвечают JSON-a
       'upstream_report_bug',
       // VL-391: upstream_ack_report отвечает JSON-ack (status/accepted_as/rejected_reason)
       'upstream_ack_report',
+      // VL-398: workflow_apply отвечает JSON-ack (applied/noop/error)
+      'workflow_apply',
     ]);
     // Явные исключения с причиной: инструменты супервизора/очереди (VL-268)
     // управляют прогоном фаз, а не данными backlog; их ответ — карточка
@@ -302,6 +304,20 @@ const ACK_SCENARIOS = {
     writeFileSync(join(cwd, 'ack-contract.txt'), 'ack', 'utf-8');
     return handleToolCall('git_commit', { paths: ['ack-contract.txt'], message: 'chore: ack-контракт' }, cwd);
   },
+  // VL-398: конструктор workflow — запись секции workflows в settings.json
+  workflow_apply: async () => handleToolCall('workflow_apply', {
+    patch: {
+      workflows: {
+        acktest: {
+          initial_status: 'To Do',
+          transitions: [
+            { status: 'To Do', phase: 'do', produces_status: 'Done' },
+            { status: 'Done', phase: null, produces_status: null },
+          ],
+        },
+      },
+    },
+  }, cwd),
 };
 
 /**
@@ -392,6 +408,22 @@ const NOOP_SCENARIOS = {
     const t = createTaskFile(cwd, { title: 'Noop-зависимая контракта' });
     await handleToolCall('backlog_update_dependencies', { id: t.id, add: [base.id] }, cwd);
     return JSON.parse(await handleToolCall('backlog_update_dependencies', { id: t.id, add: [base.id] }, cwd));
+  },
+  // VL-398: повтор того же патча workflow — noop (сравнение содержимого)
+  workflow_apply: async () => {
+    const patch = {
+      workflows: {
+        acktest: {
+          initial_status: 'To Do',
+          transitions: [
+            { status: 'To Do', phase: 'do', produces_status: 'Done' },
+            { status: 'Done', phase: null, produces_status: null },
+          ],
+        },
+      },
+    };
+    await handleToolCall('workflow_apply', { patch }, cwd);
+    return JSON.parse(await handleToolCall('workflow_apply', { patch }, cwd));
   },
   document_update: async () => {
     const doc = writeDocument(backlogDir, { title: 'Noop-док контракта', type: 'guide' });
@@ -604,6 +636,9 @@ const PARTIAL_EXEMPT = {
   backlog_trigger_phase: 'прогон фаз: id обязателен',
   backlog_auto_queue: 'очередь: action обязателен',
   backlog_supervisor: 'прогон: action обязателен',
+  // VL-398: patch обязателен по смыслу — без него менять нечего; dryRun/
+  // syncStatuses — модификаторы поведения, а не «незаполненные поля».
+  workflow_apply: 'patch обязателен: без конфигурации применять нечего; dryRun/syncStatuses — модификаторы, а не поля сущности',
 };
 
 describe('VL-357 — отсутствие необязательного по смыслу поля даёт partial, а не rejected', () => {

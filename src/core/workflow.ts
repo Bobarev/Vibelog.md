@@ -236,9 +236,12 @@ function nearestName(input: string, known: readonly string[]): string | null {
  * @param cwd — каталог проекта (.vibelog/settings.json)
  * @returns список предупреждений; пустой массив — конфигурация согласована
  */
-export function validateCompleteness(cwd: string): CompletenessWarning[] {
-  const settings = loadSettings(cwd);
-  const config = loadWorkflows(cwd);
+export function validateCompleteness(
+  cwd: string,
+  settingsOverride?: Record<string, unknown>
+): CompletenessWarning[] {
+  const settings = settingsOverride ?? loadSettings(cwd);
+  const config = loadWorkflows(cwd, settingsOverride);
   const declared = Object.keys(config.workflows);
   const warnings: CompletenessWarning[] = [];
 
@@ -410,7 +413,7 @@ export const SERVICE_PHASES: readonly string[] = ['comment', 'prompt', 'analyze'
  * workflows не должна ронять бота/веб — просто выпадает в fallback,
  * как loadSettings при битом JSON.
  */
-function isValidWorkflow(value: unknown): value is Workflow {
+export function isValidWorkflow(value: unknown): value is Workflow {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const wf = value as Partial<Workflow>;
   if (typeof wf.initial_status !== 'string' || wf.initial_status === '') return false;
@@ -434,8 +437,8 @@ function isValidWorkflow(value: unknown): value is Workflow {
  * Частичная валидность сохраняется: валидные именованные workflow остаются,
  * битые выпадают; ключ 'default', если невалиден — заменяется DEFAULT_WORKFLOW.
  */
-export function loadWorkflows(cwd: string): WorkflowConfig {
-  const settings = loadSettings(cwd);
+export function loadWorkflows(cwd: string, settingsOverride?: Record<string, unknown>): WorkflowConfig {
+  const settings = settingsOverride ?? loadSettings(cwd);
   const rawWorkflows = settings.workflows;
   const rawTaskMap = settings.task_workflows;
 

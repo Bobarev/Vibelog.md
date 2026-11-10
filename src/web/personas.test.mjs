@@ -78,14 +78,14 @@ describe('реестр ролей: встроенные (AC9 / VL-273)', () => {
     assert.deepEqual(errors, []);
     assert.deepEqual(
       personas.map(p => p.id),
-      ['helper', 'architect', 'supervisor'],
+      ['helper', 'architect', 'supervisor', 'workflow-designer'],
     );
     const helper = personas.find(p => p.id === 'helper');
     assert.equal(helper.label, 'Помощник');
     assert.equal(helper.defaultStatus, 'Spec');
     assert.equal(personas.find(p => p.id === 'architect').defaultStatus, 'Planned');
     assert.equal(DEFAULT_PERSONA_ID, 'helper');
-    assert.equal(BUILTIN_PERSONAS.length, 3);
+    assert.equal(BUILTIN_PERSONAS.length, 4);
     // VL-273: supervisor не затронут удалением orchestrator
     const supervisor = personas.find(p => p.id === 'supervisor');
     assert.equal(supervisor.label, 'Супервизор');
@@ -114,7 +114,7 @@ describe('реестр ролей: секция chat_personas (AC8)', () => {
     assert.equal(personas[0].defaultStatus, 'To Do');
     // Встроенные поля, не перечисленные в секции, наследуются
     assert.equal(personas[0].defaultStatus, 'To Do');
-    assert.equal(personas.length, 3);
+    assert.equal(personas.length, 4);
   });
 
   it('добавляет проектную роль в конец реестра', () => {
@@ -131,9 +131,9 @@ describe('реестр ролей: секция chat_personas (AC8)', () => {
     assert.deepEqual(errors, []);
     assert.deepEqual(
       personas.map(p => p.id),
-      ['helper', 'architect', 'supervisor', 'researcher'],
+      ['helper', 'architect', 'supervisor', 'workflow-designer', 'researcher'],
     );
-    const researcher = personas[3];
+    const researcher = personas[4];
     assert.equal(researcher.label, 'Ресёрчер');
     assert.equal(loadPersonaPrompt(cwd, researcher), 'Ищи источники и предлагай задачи.');
   });
@@ -141,7 +141,7 @@ describe('реестр ролей: секция chat_personas (AC8)', () => {
   it('секция не объект → понятная ошибка, встроенные роли живы', () => {
     writePersonas(['bad']);
     const { personas, errors } = loadPersonas(cwd);
-    assert.equal(personas.length, 3);
+    assert.equal(personas.length, 4);
     assert.equal(errors.length, 1);
     assert.match(errors[0], /chat_personas должна быть объектом/);
     assert.deepEqual(validatePersonasConfig(cwd), errors);
@@ -153,7 +153,7 @@ describe('реестр ролей: секция chat_personas (AC8)', () => {
       broken2: { label: 'Без промпта' },
     });
     const { personas, errors } = loadPersonas(cwd);
-    assert.equal(personas.length, 3);
+    assert.equal(personas.length, 4);
     assert.equal(errors.length, 2);
     assert.ok(errors.some(e => e.includes('"broken1"') && e.includes('label')));
     assert.ok(errors.some(e => e.includes('"broken2"') && e.includes('prompt')));
@@ -254,11 +254,11 @@ describe('GET /api/personas (AC13)', () => {
     assert.deepEqual(res.body.errors, []);
     assert.deepEqual(
       res.body.personas.map(p => p.id),
-      ['helper', 'architect', 'supervisor', 'researcher'],
+      ['helper', 'architect', 'supervisor', 'workflow-designer', 'researcher'],
     );
     assert.ok(res.body.personas.every(p => p.prompt === undefined));
     assert.ok(!JSON.stringify(res.body).includes('Секретный текст промпта'));
-    assert.equal(res.body.personas[3].description, 'Ищет информацию');
+    assert.equal(res.body.personas[4].description, 'Ищет информацию');
   });
 
   it('невалидная секция → 200 с ошибками в errors (чат не падает)', () => {
@@ -266,7 +266,7 @@ describe('GET /api/personas (AC13)', () => {
     const res = get();
     assert.equal(res.status, 200);
     assert.ok(res.body.errors.length >= 1);
-    assert.equal(res.body.personas.length, 3);
+    assert.equal(res.body.personas.length, 4);
   });
 
   it('listPersonas отдаёт сводки без prompt/allowTools', () => {
@@ -285,7 +285,7 @@ describe('удалённая роль orchestrator (VL-273)', () => {
     const { personas, errors } = loadPersonas(cwd);
     assert.deepEqual(
       personas.map(p => p.id),
-      ['helper', 'architect', 'supervisor'],
+      ['helper', 'architect', 'supervisor', 'workflow-designer'],
     );
     assert.equal(errors.length, 1);
     assert.match(errors[0], /"orchestrator"/);
@@ -310,7 +310,7 @@ describe('удалённая роль orchestrator (VL-273)', () => {
     const { personas, errors } = loadPersonas(cwd);
     assert.deepEqual(
       personas.map(p => p.id),
-      ['helper', 'architect', 'supervisor', 'researcher'],
+      ['helper', 'architect', 'supervisor', 'workflow-designer', 'researcher'],
     );
     assert.ok(errors.some(e => e.includes('"orchestrator"')));
     // длины промптов читаются только у живых ролей; шаблон удалённой не читается
@@ -326,7 +326,7 @@ describe('удалённая роль orchestrator (VL-273)', () => {
     assert.ok(res.body.errors.some(e => e.includes('"orchestrator"')));
     assert.deepEqual(
       res.body.personas.map(p => p.id),
-      ['helper', 'architect', 'supervisor'],
+      ['helper', 'architect', 'supervisor', 'workflow-designer'],
     );
   });
 
