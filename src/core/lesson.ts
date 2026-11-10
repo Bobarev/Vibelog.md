@@ -67,6 +67,29 @@ export const LESSON_DEFAULTS = {
   techDebtMaxTasks: 1,
 };
 
+/**
+ * Дефолты блока «Уроки проекта» в веб-чате (VL-404, секция `chat_lessons`).
+ *
+ * Отдельная секция, а не `lessons`: у чата другой бюджет промпта (память
+ * персоны + контекст поиска) и другой сигнал — последние сообщения треда,
+ * а не задача. Поэтому и лимиты независимые.
+ */
+export const CHAT_LESSON_DEFAULTS = {
+  /** Выключатель блока целиком. */
+  enabled: true,
+  /** Сколько последних user-сообщений треда брать как запрос. */
+  maxMessages: 3,
+  /** Сколько уроков подставлять (дополнительно капится lessons.prompt_limit). */
+  limit: 3,
+};
+
+/** Настройки блока «Уроки проекта» в веб-чате (VL-404). */
+export interface ChatLessonSettings {
+  enabled: boolean;
+  maxMessages: number;
+  limit: number;
+}
+
 /** Настройки аудита/подстановки lessons (секция `lessons` settings.json). */
 export interface LessonSettings {
   duplicateThreshold: number;
@@ -74,6 +97,8 @@ export interface LessonSettings {
   promptLimit: number;
   /** VL-280: лимит задач техдолга, создаваемых за вызов. */
   techDebtMaxTasks: number;
+  /** VL-404: блок «Уроки проекта» в веб-чате (секция `chat_lessons`). */
+  chatLessons: ChatLessonSettings;
 }
 
 /**
@@ -85,7 +110,9 @@ export interface LessonSettings {
  * @param cwd — рабочая директория (корень проекта с .vibelog/settings.json)
  */
 export function readLessonSettings(cwd: string): LessonSettings {
-  const result: LessonSettings = { ...LESSON_DEFAULTS };
+  // chatLessons копируем отдельно: поверхностный spread оставил бы ссылку на
+  // объект дефолтов, и мутация настроек одного вызова правила бы все.
+  const result: LessonSettings = { ...LESSON_DEFAULTS, chatLessons: { ...CHAT_LESSON_DEFAULTS } };
   let raw: unknown;
   try {
     raw = loadSettings(cwd).lessons;
@@ -94,7 +121,7 @@ export function readLessonSettings(cwd: string): LessonSettings {
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return result;
   const section = raw as Record<string, unknown>;
-  const pick = (key: keyof LessonSettings, prop: string): void => {
+  const pick = (key: 'duplicateThreshold' | 'staleDays' | 'promptLimit' | 'techDebtMaxTasks', prop: string): void => {
     const value = Number(section[prop]);
     if (Number.isFinite(value) && value > 0) result[key] = value;
   };
@@ -108,6 +135,57 @@ export function readLessonSettings(cwd: string): LessonSettings {
   result.promptLimit = Math.floor(result.promptLimit);
   result.staleDays = Math.floor(result.staleDays);
   result.techDebtMaxTasks = Math.max(1, Math.floor(result.techDebtMaxTasks));
+  result.chatLessons = readChatLessonSettings(cwd);
+  return result;
+}
+
+/**
+ * Читает секцию `chat_lessons` настроек (VL-404) — блок «Уроки проекта» в
+ * веб-чате.
+ *
+ * Битые значения не роняют чат (паттерн readLessonSettings/readPersonaMemoryLimit):
+ * берётся дефолт, а в `errors` попадает понятное сообщение. `enabled`
+ * принимает только boolean — строка «false» не должна молча включать блок.
+ *
+ * @param errors — необязательный аккумулятор предупреждений
+ */
+export function readChatLessonSettings(cwd: string, errors?: string[]): ChatLessonSettings {
+  const result: ChatLessonSettings = { ...CHAT_LESSON_DEFAULTS };
+  let raw: unknown;
+  try {
+    raw = loadSettings(cwd).chat_lessons;
+  } catch {
+    return result;
+  }
+  if (raw === undefined) return result;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    errors?.push('settings.json: секция chat_lessons должна быть объектом {enabled, max_messages, limit}');
+    return result;
+  }
+  const section = raw as Record<string, unknown>;
+  if (section.enabled !== undefined) {
+    if (typeof section.enabled === 'boolean') {
+      result.enabled = section.enabled;
+    } else {
+      errors?.push(
+        `settings.json: chat_lessons.enabled должен быть true/false (получено ${JSON.stringify(section.enabled)}) — используется дефолт ${CHAT_LESSON_DEFAULTS.enabled}`,
+      );
+    }
+  }
+  const pickNum = (key: 'maxMessages' | 'limit', prop: string): void => {
+    const value = section[prop];
+    if (value === undefined) return;
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) {
+      result[key] = Math.floor(num);
+      return;
+    }
+    errors?.push(
+      `settings.json: chat_lessons.${prop} должен быть положительным числом (получено ${JSON.stringify(value)}) — используется дефолт ${CHAT_LESSON_DEFAULTS[key]}`,
+    );
+  };
+  pickNum('maxMessages', 'max_messages');
+  pickNum('limit', 'limit');
   return result;
 }
 
@@ -658,6 +736,117 @@ export function scoreLessonForTask(
 }
 
 /**
+ * Опции подбора уроков по произвольному тексту (VL-404).
+ */
+export interface SelectLessonsOptions {
+  /** Кап результата (по умолчанию `lessons.prompt_limit`). */
+  limit?: number;
+  /**
+   * Пути репозитория для сверки с `applies_to` урока (VL-400). Не переданы —
+   * сверка не выполняется (у чата путей задачи нет).
+   */
+  paths?: string[];
+  /**
+   * Минимальный score для попадания в результат (0 — любое совпадение).
+   * Нужен там, где нет контекста задачи: в веб-чате одно общее слово
+   * («файл», «тест») иначе вытащит нерелевантный урок.
+   */
+  minScore?: number;
+  /**
+   * Короткие токены (<3 символов), которые надо сохранить: labels задачи
+   * («ci», «ui») несут смысл, хотя и короче порога.
+   */
+  keepShortTokens?: string[];
+}
+
+/**
+ * Форматирует урок для подстановки в промпт: `- [lesson-N] <title> (kind)`.
+ *
+ * Один формат на все места подстановки (фазы и веб-чат, VL-404): модель
+ * должна видеть уроки одинаково, иначе сравнивать их между блоками нельзя.
+ * kind помогает отличить правило от воркэраунда; у неквалифицированных
+ * уроков скобок нет.
+ */
+export function formatLessonLine(entry: LessonEntry): string {
+  const kind = entry.lesson.kind ? ` (${entry.lesson.kind})` : '';
+  return `- [${entry.lesson.id}] ${entry.lesson.title}${kind}`;
+}
+
+/**
+ * Подбирает уроки по произвольному тексту (VL-404) — общий движок recall.
+ *
+ * Токены берутся из текста через `tokenizeQuery` и усекаются `stemToken`
+ * (та же морфология, что у поиска задач). Кандидаты фильтруются как в
+ * `loadLessonsForTask` (VL-279): только `active` и не протухшие по
+ * `staleDays`. Ранжирование — `scoreLessonForTask` (VL-400), свежесть —
+ * tie-breaker, кап — `limit` (по умолчанию `lessons.prompt_limit`).
+ *
+ * Логика живёт здесь одна: `loadLessonsForTask` (фазы) и блок «Уроки
+ * проекта» в веб-чате — тонкие обёртки над этой функцией (lesson-37:
+ * общий модуль вместо копий).
+ *
+ * @param cwd — рабочая директория
+ * @param text — текст-запрос (задача или последние сообщения разговора)
+ * @param opts — кап, пути для applies_to, порог score, короткие токены
+ */
+export function selectLessonsForText(
+  cwd: string,
+  text: string,
+  opts: SelectLessonsOptions = {},
+): LessonEntry[] {
+  const keepShort = (opts.keepShortTokens ?? []).map(t => String(t).toLowerCase());
+  // Токены короче 3 символов отбрасываем: «с», «в», «и» — предлоги, и
+  // подстрочный матч по ним дал бы score > 0 почти каждому уроку (recall
+  // превратился бы в «подставь первые N по свежести»). Короткие labels
+  // («ci», «ui») сохраняем: они несут смысл и приходят явно.
+  const tokens = tokenizeQuery(String(text || ''))
+    .filter(t => t.length >= 3 || keepShort.includes(t));
+  // Нет токенов вовсе — подбирать нечего.
+  if (tokens.length === 0) return [];
+
+  const settings = readLessonSettings(cwd);
+  const limit = Math.max(0, Math.floor(opts.limit ?? settings.promptLimit));
+  if (limit === 0) return [];
+  const minScore = Number(opts.minScore ?? 0);
+  const paths = opts.paths ?? [];
+
+  const now = Date.now();
+  const maxAgeMs = settings.staleDays * 24 * 60 * 60 * 1000;
+
+  return listLessons(cwd)
+    .filter(e => e.lesson.status === 'active')
+    .filter(e => {
+      // Дата проверки: явный last_verified приоритетнее updated_date; нет
+      // обеих дат — урок считается актуальным (нечего протухать).
+      const stamp = e.lesson.last_verified || e.lesson.updated_date;
+      if (!stamp) return true;
+      const time = Date.parse(stamp);
+      if (Number.isNaN(time)) return true;
+      return now - time <= maxAgeMs;
+    })
+    .map(e => {
+      let score = scoreLessonForTask(e.lesson, tokens, e.body);
+      const appliesTo = (e.lesson.applies_to || []).map(p => String(p).trim()).filter(Boolean);
+      if (appliesTo.length > 0 && paths.length > 0) {
+        const intersects = appliesTo.some(glob => paths.some(path => globMatchesPath(glob, path)));
+        if (!intersects) score *= APPLIES_TO_MISMATCH_FACTOR;
+      }
+      return { entry: e, score };
+    })
+    // Релевантность вперёд, свежесть — tie-breaker: при капе top-N в промпт
+    // попадают уроки «про этот текст», а не просто недавно проверенные.
+    .filter(item => item.score > 0 && item.score >= minScore)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const ta = Date.parse(a.entry.lesson.last_verified || a.entry.lesson.updated_date || '') || 0;
+      const tb = Date.parse(b.entry.lesson.last_verified || b.entry.lesson.updated_date || '') || 0;
+      return tb - ta;
+    })
+    .slice(0, limit)
+    .map(item => item.entry);
+}
+
+/**
  * Подбирает lessons для подстановки в промпт Plan/Code (VL-153, VL-279, VL-400).
  *
  * VL-400 — recall по СМЫСЛУ задачи, а не только по labels:
@@ -668,6 +857,10 @@ export function scoreLessonForTask(
  * - урок с непустым `applies_to`, не пересекающимся с путями из плана/
  *   modified_files задачи, получает множитель 0.5 (не отбрасывается: на фазе
  *   Plan план ещё пуст).
+ *
+ * VL-404: вся фильтрация и ранжирование — в `selectLessonsForText`; здесь
+ * только сборка текста задачи и форматирование строк. Сигнатура публичного
+ * экспорта не менялась (её использует `src/web/phase-prompt.ts`).
  *
  * VL-279 — фильтры «не подставлять устаревшее»:
  * - только status='active' (needs-review/outdated/superseded отбрасываются:
@@ -700,58 +893,13 @@ export function loadLessonsForTask(cwd: string, taskId: string): string[] {
     String(task.description || ''),
     (task.labels || []).join(' '),
   ].join(' ');
-  const taskLabels = (task.labels || []).map(l => String(l).toLowerCase());
-  // Токены короче 3 символов отбрасываем: «с», «в», «и» — предлоги, и
-  // подстрочный матч по ним дал бы score > 0 почти каждому уроку (recall
-  // превратился бы в «подставь первые 5 по свежести»). Короткие labels
-  // («ci», «ui») сохраняем: они несут смысл и приходят явно.
-  const tokens = tokenizeQuery(taskText)
-    .filter(t => t.length >= 3 || taskLabels.includes(t));
-  // Нет токенов вовсе (пустые title+description+labels) — подбирать нечего.
-  if (tokens.length === 0) return [];
-
   const taskPaths = extractTaskPaths([
     String(task.implementationPlan || ''),
     (task.modified_files || []).join(' '),
   ].join(' '));
 
-  const settings = readLessonSettings(cwd);
-  const now = Date.now();
-  const maxAgeMs = settings.staleDays * 24 * 60 * 60 * 1000;
-
-  const scored = listLessons(cwd)
-    .filter(e => e.lesson.status === 'active')
-    .filter(e => {
-      // Дата проверки: явный last_verified приоритетнее updated_date; нет
-      // обеих дат — урок считается актуальным (нечего протухать).
-      const stamp = e.lesson.last_verified || e.lesson.updated_date;
-      if (!stamp) return true;
-      const time = Date.parse(stamp);
-      if (Number.isNaN(time)) return true;
-      return now - time <= maxAgeMs;
-    })
-    .map(e => {
-      let score = scoreLessonForTask(e.lesson, tokens, e.body);
-      const appliesTo = (e.lesson.applies_to || []).map(p => String(p).trim()).filter(Boolean);
-      if (appliesTo.length > 0 && taskPaths.length > 0) {
-        const intersects = appliesTo.some(glob => taskPaths.some(path => globMatchesPath(glob, path)));
-        if (!intersects) score *= APPLIES_TO_MISMATCH_FACTOR;
-      }
-      return { entry: e, score };
-    })
-    // Релевантность вперёд, свежесть — tie-breaker: при капе top-N в промпт
-    // попадают уроки «про эту задачу», а не просто недавно проверенные.
-    .filter(item => item.score > 0)
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      const ta = Date.parse(a.entry.lesson.last_verified || a.entry.lesson.updated_date || '') || 0;
-      const tb = Date.parse(b.entry.lesson.last_verified || b.entry.lesson.updated_date || '') || 0;
-      return tb - ta;
-    })
-    .slice(0, settings.promptLimit);
-
-  return scored.map(({ entry }) => {
-    const kind = entry.lesson.kind ? ` (${entry.lesson.kind})` : '';
-    return `- [${entry.lesson.id}] ${entry.lesson.title}${kind}`;
-  });
+  return selectLessonsForText(cwd, taskText, {
+    paths: taskPaths,
+    keepShortTokens: (task.labels || []).map(l => String(l).toLowerCase()),
+  }).map(formatLessonLine);
 }
