@@ -417,6 +417,7 @@ vibelog lesson <subcommand> [опции]
   link <lessonId> <taskId> [--remove]
   supersede <oldId> <newId>
   audit [--write] [--threshold N] [--stale-days N] [--json] [--verify id,…] [--needs-review id,…]
+  consolidate [--dry-run] [--json] [--threshold N] [--apply-supersede id,…] [--apply-agents "строка,…"]
 ```
 
 Управление уроками из опыта задач (VL-153) — workflow-уроки, предотвращающие повторение ошибок. Файлы — `backlog/lessons/lesson-N-<slug>.md` (YAML-фронтматтер + markdown-тело «Проблема / Решение / Пример»).
@@ -430,8 +431,9 @@ vibelog lesson <subcommand> [опции]
 | `link` | Двусторонняя связь lesson ↔ задача (`linked_tasks` ↔ `task.lessons`); `--remove` — разорвать |
 | `supersede` | Пометить `oldId` как заменённый `newId`: старый → `superseded`, новый получает `supersedes: oldId` |
 | `audit` | Механический аудит актуальности корпуса уроков (VL-279). Read-only: `--write` — отчёт в `backlog/lessons/AUDIT.md`, без него только stdout; `--json` — машинный вывод; `--threshold N` — порог схожести дублей (дефолт 0.35); `--stale-days N` — порог протухания (дефолт 180); `--verify id,…` и `--needs-review id,…` — единственный способ записи: пометить уроки проверенными (`verified_by=auto`, `last_verified=today`) или перевести в `needs-review` (массовых изменений без явных ID нет) |
+| `consolidate` | Детерминированная консолидация корпуса (VL-400, без LLM и сети): кластеры правил (`kind: rule` + связные группы дублей) с предлагаемой строкой для AGENTS.md, пары `duplicate_of` с предложением supersede, уроки с пустым телом. **Read-only по умолчанию** (`--dry-run` — то же явно, `--json` — машинный план). Запись — только явными списками: `--apply-supersede id,…` (канон кластера или урок-дубль) и `--apply-agents "строка,…"` (дописать в секцию-маркер `<!-- lessons:consolidated -->` AGENTS.md, дедуп по нормализованному тексту). Флага «применить всё» нет: порог дублей 0.35 даёт ложные пары, а AGENTS.md читается в каждый ход агента |
 
-Формулировка урока — императив, конкретика, 1 предложение («Тесты со spawn медленные — запускай батчами по 10»). Close-фаза создаёт/обновляет lessons автоматически (шаг 6.5), Plan получает их в промпт через `{{taskLessons}}` по tags задачи.
+Формулировка урока — императив, конкретика, 1 предложение («Тесты со spawn медленные — запускай батчами по 10»). Close-фаза создаёт/обновляет lessons автоматически (шаг 6.5), Plan получает их в промпт через `{{taskLessons}}` — recall по смыслу задачи (VL-400): токены из `title + description + labels` через `tokenizeQuery`/`stemToken`, ранжирование по score (title 3 / tags 2 / applies_to 2 / body 1), свежесть — tie-breaker, кап `lessons.prompt_limit`; урок с непустым `applies_to`, не пересекающимся с путями плана/`modified_files`, получает множитель 0.5 (не отбрасывается — на фазе Plan план ещё пуст).
 
 ---
 
