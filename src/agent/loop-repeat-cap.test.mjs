@@ -60,7 +60,7 @@ describe('VL-357 — кап повторов при недостигнутой �
     const { llm } = fakeLlm(scripts);
     const res = await runLoop({ llm, messages: USER_MSG, tools: [noopSpec()] });
     assert.equal(res.is_error, true, 'работа не сделана — честный fail');
-    assert.match(res.result, /повторила вызов/, res.result.slice(0, 200));
+    assert.match(res.result, /повторила уже применённый вызов/, res.result.slice(0, 200));
   });
 });
 
@@ -183,7 +183,7 @@ describe('VL-361 — shell-работа учитывается как прогр
     const { llm } = fakeLlm(scripts);
     const res = await runLoop({ llm, messages: USER_MSG, tools: [spec, noopSpec()] });
     assert.equal(res.is_error, true, 'упавшая команда не выдаёт себя за работу');
-    assert.match(res.result, /повторила вызов/);
+    assert.match(res.result, /повторила уже применённый вызов/);
   });
 
   it('shell с exit code 1 в выводе работой не считается', async () => {

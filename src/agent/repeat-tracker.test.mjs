@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 
 import {
   INTENT_LOOP_REPEAT_DEFAULT,
-  NOOP_BLOCK_AFTER_REPEATS,
+  UNCHANGED_BLOCK_AFTER_REPEATS,
   PHANTOM_CALL_LIMIT_DEFAULT,
   REPEAT_BLOCK_MAX_PER_RUN,
   REPEAT_LIMITS,
@@ -295,10 +295,11 @@ describe('repeat-tracker: guard-предупреждение (VL-229, AC2)', () 
     assert.equal(PHANTOM_CALL_LIMIT_DEFAULT, REPEAT_LIMITS.phantom);
     assert.equal(INTENT_LOOP_REPEAT_DEFAULT, REPEAT_LIMITS.intent);
     assert.equal(REPEAT_LIMITS.phantom, 3);
-    // VL-411: порог блокировки инструмента после noop-повторов — тоже из единого источника
-    assert.equal(REPEAT_LIMITS.noopBlockAfter, 2);
-    assert.equal(NOOP_BLOCK_AFTER_REPEATS, REPEAT_LIMITS.noopBlockAfter);
-    assert.ok(REPEAT_LIMITS.noopBlockAfter < REPEAT_LIMITS.noop, 'блокировка раньше капа рана');
+    // VL-411/VL-413: порог блокировки инструмента после дословных повторов —
+    // тоже из единого источника.
+    assert.equal(REPEAT_LIMITS.unchangedBlockAfter, 2);
+    assert.equal(UNCHANGED_BLOCK_AFTER_REPEATS, REPEAT_LIMITS.unchangedBlockAfter);
+    assert.ok(REPEAT_LIMITS.unchangedBlockAfter < REPEAT_LIMITS.unchanged, 'блокировка раньше капа рана');
     assert.equal(REPEAT_LIMITS.intent, 4);
   });
 

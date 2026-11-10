@@ -472,11 +472,12 @@ describe('runLoop loop detection (VL-83)', () => {
     const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
     assert.equal(res.is_error, false, `ран не должен падать: ${res.result}`);
     assert.equal(res.result, 'перехожу к документации', 'ран продолжается до финального текста модели');
-    assert.equal(state.calls, 2, 'исполнены c1 и первый c2; повтор c3 с noop-сигнатурой — нет');
+    assert.equal(state.calls, 2, 'исполнены c1 и первый c2; повтор c3 — нет');
     const directive = res.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'c3');
-    assert.ok(directive, 'модель получает директиву на повтор noop-вызова');
-    assert.match(String(directive.content), /Изменений нет/);
-    assert.match(String(directive.content), /Следующий шаг/);
+    assert.ok(directive, 'модель получает директиву на повтор уже применённого вызова');
+    // VL-413: неизменяющая запись — успех, поэтому повтор обрабатывается
+    // общим механизмом applied-серии (директива «уже применён ранее»).
+    assert.match(String(directive.content), /уже применён ранее/);
     assert.equal(res.messages[res.messages.length - 1].role, 'assistant');
   });
 
@@ -502,8 +503,8 @@ describe('runLoop loop detection (VL-83)', () => {
     }));
     const { llm } = fakeLlm(repeated);
     const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
-    assert.equal(res.is_error, true, 'вечный повтор noop-вызова должен честно прерывать фазу');
-    assert.match(res.result, /повторила вызов backlog_update_task/);
+    assert.equal(res.is_error, true, 'вечный повтор должен честно прерывать фазу');
+    assert.match(res.result, /повторила уже применённый вызов backlog_update_task/);
     assert.equal(state.calls, 1, 'вызов исполнялся только один раз');
     assert.equal(res.messages[res.messages.length - 1].role, 'assistant');
   });
@@ -732,15 +733,16 @@ describe('runLoop loop detection (VL-83)', () => {
     // VL-371: проверяем машиночитаемый исход, а не формулировку. Текст директивы
     // свободен — перефразировка не должна ронять тест.
     const parsed = JSON.parse(text);
-    assert.equal(parsed.outcome, 'noop', 'исход объявлен полем, а не выводится из текста');
-    assert.equal(parsed.noop, true, 'вызов не исполнялся — noop');
-    assert.equal(parsed.noop_repeat, true, 'причина повтора объявлена флагом');
-    assert.notEqual(parsed.applied_repeat, true, 'это не повтор применённого вызова');
+    // VL-413: исхода noop больше нет — неизменяющая запись это applied, и
+    // повтор обрабатывается applied-серией.
+    assert.equal(parsed.outcome, 'applied', 'исход объявлен полем, а не выводится из текста');
+    assert.equal(parsed.applied_repeat, true, 'причина повтора объявлена флагом');
     // VL-361: модель видит КОНКРЕТНОЕ недостающее поле, а не «добавь отсутствующее».
     // VL-371: текст `reason` свободен — проверяется только имя поля.
     assert.equal(parsed.missing[0].field, 'content', 'директива называет недостающее поле');
     assert.equal(typeof parsed.missing[0].reason, 'string', 'причина — строка (содержание свободно)');
-    assert.match(parsed.hint, /content/);
+    // VL-413: hint в next не попадает — канал следующего шага это блок phase.
+    assert.equal(parsed.hint, undefined);
   });
 
   it('VL-319 (AC7): кап noop-повторов по-прежнему срабатывает на 4-й серии', async () => {
@@ -756,8 +758,8 @@ describe('runLoop loop detection (VL-83)', () => {
       toolCalls: [{ id: `c${i + 1}`, name: 'lesson_update', arguments: same }],
     })));
     const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
-    assert.equal(res.is_error, true, 'вечный повтор noop-вызова — честный fail');
-    assert.match(res.result, /повторила вызов lesson_update/);
+    assert.equal(res.is_error, true, 'вечный повтор — честный fail');
+    assert.match(res.result, /повторила уже применённый вызов lesson_update/);
   });
 
   it('разные аргументы — не loop detection', async () => {
@@ -826,7 +828,9 @@ describe('VL-310 — регресс сессии agent-1793637056809 (Code VL-12
     // после второго дословного повтора инструмент блокируется в ране и
     // отвечает `tool_blocked`. Поэтому проверяются ОБА вида ответа: серия
     // директив была, а дальше модель получила машиночитаемую блокировку.
-    const directives = res.messages.filter((m) => m.role === 'tool' && String(m.content).includes('Изменений нет'));
+    const directives = res.messages.filter(
+      (m) => m.role === 'tool' && /applied_repeat|tool_blocked/.test(String(m.content)),
+    );
     assert.ok(directives.length >= 2, `директивы на повторы получены (${directives.length})`);
     const blocked = res.messages.filter((m) => m.role === 'tool' && String(m.content).includes('tool_blocked'));
     assert.ok(blocked.length >= 1, `инструмент заблокирован в ране (${blocked.length})`);
@@ -3092,7 +3096,9 @@ describe('VL-362 — директива повтора несёт missing/retryW
     const directives = res.messages
       .filter((m) => m.role === 'tool' && String(m.content).includes('applied_repeat'))
       .map((m) => JSON.parse(String(m.content)));
-    assert.equal(directives.length, 3, 'все повторы серии получили директиву');
+    // VL-413: серия коротка по построению — после второго дословного повтора
+    // инструмент блокируется (VL-411), поэтому директив меньше, чем повторов.
+    assert.ok(directives.length >= 1, `директивы серии получены (${directives.length})`);
     for (const d of directives) {
       assert.equal(d.missing[0].field, 'content', 'каждая директива называет content');
       assert.match(String(d.retryWith?.content), /## Проблема/, 'каждая директива несёт каркас');
@@ -3157,7 +3163,7 @@ describe('VL-410 — директива повтора называет след
   /** Директивы повтора из истории рана. */
   function directivesOf(res) {
     return res.messages
-      .filter((m) => m.role === 'tool' && String(m.content).includes('noop_repeat'))
+      .filter((m) => m.role === 'tool' && String(m.content).includes('applied_repeat'))
       .map((m) => JSON.parse(String(m.content)));
   }
 

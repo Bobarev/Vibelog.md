@@ -114,12 +114,13 @@ describe('VL-398 — workflow_apply', () => {
     assert.deepEqual(saved.models, { default: 'm1' });
   });
 
-  it('повтор того же патча → noop', async () => {
+  it('повтор того же патча → applied+unchanged', async () => {
     await handleToolCall('workflow_apply', { patch: PATCH }, cwd);
     const ack = JSON.parse(await handleToolCall('workflow_apply', { patch: PATCH }, cwd));
-    // noop по контракту serializeAck: ok=false, noop=true (изменений не было)
-    assert.equal(ack.noop, true);
-    assert.equal(ack.outcome, 'noop');
+    // VL-413: неизменяющая запись — успех с перечнем неизменённых полей.
+    assert.equal(ack.ok, true, JSON.stringify(ack));
+    assert.equal(ack.outcome, 'applied');
+    assert.ok(Array.isArray(ack.unchanged) && ack.unchanged.length > 0);
   });
 
   it('невалидный патч (неизвестная фаза) → ok:false, файл не создан', async () => {

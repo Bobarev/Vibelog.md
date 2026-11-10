@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import { runLoop } from '../../dist/agent/loop.js';
 import {
   DIRECTIVE_MAX_BYTES,
-  NOOP_BLOCK_AFTER_REPEATS,
+  UNCHANGED_BLOCK_AFTER_REPEATS,
   retryDirective,
 } from '../../dist/agent/repeat-tracker.js';
 
@@ -101,10 +101,10 @@ describe('P5 — размер директивы повтора', () => {
     assert.ok(directives.length >= 2, `директивы цикла получены (${directives.length})`);
     // Директив «Изменений нет» ровно столько, сколько повторов до блокировки:
     // дальше инструмент отвечает `tool_blocked`, и текст не накапливается.
-    const noopDirectives = directives.filter((d) => d.includes('noop_repeat'));
+    const repeatDirectives = directives.filter((d) => d.includes('applied_repeat'));
     assert.ok(
-      noopDirectives.length <= NOOP_BLOCK_AFTER_REPEATS,
-      `noop-директив не больше порога блокировки (${noopDirectives.length} ≤ ${NOOP_BLOCK_AFTER_REPEATS})`,
+      repeatDirectives.length <= UNCHANGED_BLOCK_AFTER_REPEATS,
+      `директив повтора не больше порога блокировки (${repeatDirectives.length} ≤ ${UNCHANGED_BLOCK_AFTER_REPEATS})`,
     );
     for (const d of directives) {
       const size = Buffer.byteLength(d, 'utf8');

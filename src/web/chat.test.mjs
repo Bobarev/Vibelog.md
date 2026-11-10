@@ -1047,7 +1047,7 @@ describe('VL-255 — дедупликация и лимит tool-вызовов'
     const dir = makeProject();
     try {
       const task = createTaskFile(dir, { title: 'Задача VL-324', type: 'bug', priority: 'High' });
-      // Первый вызов применяет priority/type (они уже такие — noop), дальше
+      // Первый вызов применяет priority/type (они уже такие — unchanged), дальше
       // модель повторяет тот же вызов, меняя ТОЛЬКО idempotencyKey.
       const calls = Array.from({ length: 5 }, (_, i) => ({
         id: `u${i}`,
@@ -1063,9 +1063,11 @@ describe('VL-255 — дедупликация и лимит tool-вызовов'
       );
       const ends = events.filter(e => e.type === 'tool_end');
       assert.equal(ends.length, 5, 'tool_end для каждого вызова (парность)');
-      // Первый — исполнен (noop: поля уже такие), остальные — duplicate
+      // Первый — исполнен (unchanged: поля уже такие), остальные — duplicate
       const first = JSON.parse(ends[0].result);
-      assert.equal(first.noop, true, 'первый вызов честно отвечает noop');
+      // VL-413: неизменяющая запись — успех с перечнем неизменённых полей.
+      assert.equal(first.ok, true, 'первый вызов — успех');
+      assert.ok(Array.isArray(first.unchanged) && first.unchanged.length > 0, 'unchanged перечисляет поля');
       for (const blocked of ends.slice(1)) {
         const parsed = JSON.parse(blocked.result);
         assert.equal(parsed.duplicate, true, `повтор с новым idempotencyKey — duplicate: ${blocked.result.slice(0, 120)}`);
@@ -1078,19 +1080,19 @@ describe('VL-255 — дедупликация и лимит tool-вызовов'
       assert.ok(stats, 'диагностика хода записана');
       assert.equal(stats.executed, 1, 'реально исполнен один вызов');
       assert.equal(stats.deduped, 4);
-      assert.equal(stats.noop, 1, 'noop-счётчик в repeat_stats');
-      assert.equal(stats.noop_blocked, 0);
+      assert.equal(stats.unchanged, 1, 'unchanged-счётчик в repeat_stats');
+      assert.equal(stats.unchanged_blocked, 0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('VL-326: обход дедупа разными наборами полей упирается в кап noop-серии, а не в лимит 16', async () => {
+  it('VL-326/VL-413: обход дедупа разными наборами полей упирается в кап серии unchanged, а не в лимит 16', async () => {
     const dir = makeProject();
     try {
       const task = createTaskFile(dir, { title: 'Задача VL-324b', type: 'bug', priority: 'High' });
       // Каждый вызов — ДРУГОЙ набор уже применённых полей: сигнатуры разные,
-      // дедуп их пропускает, но прогресса нет — инструмент отвечает noop.
+      // дедуп их пропускает, но прогресса нет — инструмент отвечает unchanged.
       // Наборы РАЗЛИЧНЫ по сигнатуре (иначе их отсекает дедуп, и серия не растёт),
       // но каждый содержит только уже применённые значения.
       const variants = [
@@ -1117,17 +1119,17 @@ describe('VL-255 — дедупликация и лимит tool-вызовов'
       );
       const ends = events.filter(e => e.type === 'tool_end');
       assert.equal(ends.length, calls.length);
-      const blocked = ends.filter(e => e.result.includes('"noop_repeat": true'));
-      assert.ok(blocked.length > 0, 'кап noop-серии сработал');
+      const blocked = ends.filter(e => e.result.includes('"unchanged_repeat": true'));
+      assert.ok(blocked.length > 0, 'кап серии unchanged сработал');
       assert.match(blocked[0].result, /повтор с теми же аргументами бесполезен/);
       assert.ok(
         !ends.some(e => e.result.includes('Лимит tool-вызовов')),
-        'кап noop-серии срабатывает раньше лимита вызовов на ответ',
+        'кап серии unchanged срабатывает раньше лимита вызовов на ответ',
       );
       const stats = loadChatToolStats(dir, 'd-noop-cap');
       assert.ok(stats);
-      assert.ok(stats.noop >= 3, 'noop-ответы посчитаны');
-      assert.ok(stats.noop_blocked > 0, 'блокировки по noop-серии посчитаны');
+      assert.ok(stats.unchanged >= 3, 'ответы с unchanged посчитаны');
+      assert.ok(stats.unchanged_blocked > 0, 'блокировки по серии unchanged посчитаны');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

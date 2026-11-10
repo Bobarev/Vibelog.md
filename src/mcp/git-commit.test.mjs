@@ -10,7 +10,7 @@
  *   2. `commit_coauthor: false` → без трейлера;
  *   3. `amend: true` сохраняет тело исходного коммита (%B) и не дублирует трейлер;
  *   4. чужой путь (вне modified_files) → отказ с перечислением; allowForeign → коммит;
- *   5. нет изменений по путям → noop, коммит не создаётся (совместимо с VL-310);
+ *   5. нет изменений по путям → applied+unchanged, коммит не создаётся (VL-413);
  *   6. путь вне проекта, `git add -A`, `.` → отказ;
  *   7. JSON-ack: поля ok/message/applied.hash/applied.subject/applied.paths.
  *
@@ -206,15 +206,15 @@ describe('VL-311 — git_commit: коммит явными путями с тр�
     assert.equal(ack.ok, true, JSON.stringify(ack));
   });
 
-  it('AC5/VL-310: нет изменений по путям → noop без коммита', async () => {
+  it('AC5/VL-413: нет изменений по путям → applied+unchanged без коммита', async () => {
     const before = commitCount(root);
     const ack = parseAck(await handleToolCall('git_commit', { paths: ['a.txt'], message: 'feat: пусто' }, root));
 
-    assert.equal(ack.ok, false, `noop — ошибка, а не успех: ${JSON.stringify(ack)}`);
-    assert.equal(ack.noop, true);
-    assert.equal(ack.reason, 'noop');
-    assert.match(ack.message, /Изменений нет/, 'маркер noop-сообщений (VL-310)');
-    assert.deepEqual(ack.applied.paths, ['a.txt']);
+    // VL-413: неизменяющая запись — успех с перечнем неизменённых полей.
+    assert.equal(ack.ok, true, `неизменяющая запись — успех: ${JSON.stringify(ack)}`);
+    assert.equal(ack.outcome, 'applied');
+    assert.deepEqual(ack.unchanged, ['paths']);
+    assert.match(ack.message, /Изменений нет/, 'маркер сообщений о неизменности');
     assert.equal(commitCount(root), before, 'пустой коммит не создан');
   });
 
