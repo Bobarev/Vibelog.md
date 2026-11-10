@@ -34,7 +34,7 @@ import { listTools } from '../mcp/tools.js';
 import { isUpstreamConfigured } from '../core/gitverse-issues.js';
 import { UPSTREAM_TOOLS } from '../mcp/server.js';
 import { ASK_USER_TOOL, MAX_OPTIONS, MIN_OPTIONS } from './chat-question.js';
-import { makeMemoryRememberTool } from './chat-memory.js';
+import { makeMemoryRememberTool, MEMORY_REMEMBER_TOOL } from './chat-memory.js';
 import type { PersonaConfig } from './personas.js';
 
 /** Локальный инструмент чата: ToolDef + handler (ToolDef из llm.ts без handler — wire-описание). */
@@ -307,7 +307,8 @@ export function makeAskUserTool(): ToolDef {
  * @param persona — роль ТРЕДА: нужна инструменту `memory_remember`, чтобы
  *   писать в память именно этой роли (AC6 VL-402: модель не выбирает, в чью
  *   память писать). Без роли инструмент не добавляется — так его нет в
- *   headless-путях и в тестах, где роль не нужна.
+ *   headless-путях и в тестах, где роль не нужна. С VL-407 роль ещё и
+ *   ОГРАНИЧИВАЕТ набор: `persona.allowTools` фильтрует итоговый список.
  */
 export function chatToolDefs(cwd: string, persona?: PersonaConfig | null): (ToolDef | ChatLocalTool)[] {
   const defs: (ToolDef | ChatLocalTool)[] = listTools()
@@ -322,7 +323,28 @@ export function chatToolDefs(cwd: string, persona?: PersonaConfig | null): (Tool
   // VL-402: запись памяти персоны — тоже только в веб-чате (в MCP-реестре
   // имени нет, поэтому агентская петля его не видит)
   if (persona) defs.push(makeMemoryRememberTool(cwd, persona));
-  return defs;
+  // VL-407: allow_tools роли РЕАЛЬНО ограничивает набор инструментов.
+  // Фильтр применяется к ИТОГОВОМУ списку, а не к listTools(): локальные
+  // read_file/write_file/edit/search_files и ask_user тоже должны отсекаться,
+  // иначе ограничение остаётся фикцией (дефект VL-407).
+  //
+  // Семантика значений:
+  // - `undefined` (поле не задано) → полный набор, как до VL-407: встроенные
+  //   роли и старые конфиги не ломаются (AC2);
+  // - `[]` (пустой массив) → «ничего не разрешено», а НЕ «всё разрешено»:
+  //   путать эти два случая нельзя, иначе ограничение даёт скрытый полный
+  //   доступ (AC3). Остаётся только memory_remember (см. ниже);
+  // - непустой массив → ровно перечисленные имена (AC1).
+  //
+  // memory_remember добавляется ВСЕГДА при наличии роли, независимо от
+  // allow_tools: это не инструмент проекта, а механизм памяти самой роли.
+  // Отсеки его — и роль не сможет запоминать предпочтения пользователя, а
+  // требовать имя в списке значит заставлять помнить про служебный инструмент
+  // при настройке роли (AC5).
+  const allow = persona?.allowTools;
+  if (allow === undefined) return defs;
+  const allowed = new Set(allow);
+  return defs.filter(d => allowed.has(d.name) || d.name === MEMORY_REMEMBER_TOOL);
 }
 
 /** Путь к встроенному шаблону (dist/web/tool-policy.js → ../../templates/prompts/). */

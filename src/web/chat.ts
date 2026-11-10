@@ -34,7 +34,7 @@ import { globalSearch } from '../core/search.js';
 import { formatLessonLine, readChatLessonSettings, readLessonSettings, selectLessonsForText } from '../core/lesson.js';
 import { truncateToolOutput } from '../agent/tools.js';
 import { handleToolCall } from '../mcp/tools.js';
-import { ackDenied, isNoopAck } from '../mcp/tool-result.js';
+import { ackDenied, ackError, isNoopAck } from '../mcp/tool-result.js';
 import { chatToolDefs, isWriteOperation, isInteractiveTool, loadChatSystemTemplate } from './tool-policy.js';
 import type { ChatLocalTool } from './tool-policy.js';
 import {
@@ -1521,6 +1521,10 @@ async function produce(
     // (гейт вызовов уже отправил его в Allow/Deny).
     const grant = checkGrant(cwd, name, args);
     if (grant.kind === 'error') return grantDeniedResult(grant.error, name);
+    // VL-407: ограничение роли — до исполнения (и до approval-гейта выше по
+    // циклу: запрещённый write не должен даже спрашивать разрешения).
+    const personaDenied = personaDeniedAck(activePersona, name);
+    if (personaDenied !== null) return personaDenied;
     const local = localHandlers.get(name);
     const raw = local ? await local.handler(args) : await handleToolCall(name, args, cwd, { defaultStatus: resolveDefaultStatus(activePersona) });
     // VL-402: успешная запись памяти — событие `memory` в ленту (AC2).
@@ -1614,7 +1618,7 @@ async function produce(
     queue.push({ type: 'tool_end', id: answerId, result: content });
     // Остальные неотвеченные вызовы хода: read исполняем сразу, следующий
     // вопрос/approval — новая пауза (последовательные гейты, как у approval).
-    const next = await advanceToNextApproval(history, cwd, threadId, queue, answerId, executeTool);
+    const next = await advanceToNextApproval(history, cwd, threadId, queue, answerId, executeTool, activePersona);
     if (next !== null) {
       pauseOnToolCall(next, cwd, threadId, queue, currentTurn());
       return;
@@ -1667,7 +1671,7 @@ async function produce(
     // VL-256: остальные неотвеченные вызовы хода. Read-only исполняем сразу,
     // а следующий write НЕ отменяем молча — показываем для него свой
     // Allow/Deny (последовательные гейты вместо синтетического not_confirmed).
-    const next = await advanceToNextApproval(history, cwd, threadId, queue, target.id, executeTool);
+    const next = await advanceToNextApproval(history, cwd, threadId, queue, target.id, executeTool, activePersona);
     if (next !== null) {
       pauseOnToolCall(next, cwd, threadId, queue, currentTurn());
       return; // ход снова на паузе: ждём решение по следующему вызову
@@ -1855,6 +1859,15 @@ async function produce(
         continue;
       }
       const grantAllowed = grantGate.kind === 'granted';
+      // VL-407: инструмент вне allow_tools роли не должен даже спрашивать
+      // разрешения — отказ сразу, машиночитаемым ack (модель видит причину).
+      const personaDenied = personaDeniedAck(activePersona, tc.name);
+      if (personaDenied !== null) {
+        history.push({ role: 'tool', tool_call_id: tc.id, content: personaDenied });
+        appendChatMessages(cwd, threadId, [{ role: 'tool', tool_call_id: tc.id, content: personaDenied }]);
+        queue.push({ type: 'tool_end', id: tc.id, result: personaDenied, isError: true });
+        continue;
+      }
       // VL-357: аргументы передаются в классификатор — mixed-инструмент
       // (backlog_manage_*) читает при action:'list' и не требует Allow/Deny.
       const writeOp = isWriteOperation(tc.name, tc.arguments as Record<string, unknown> | undefined);
@@ -2328,6 +2341,31 @@ function grantDeniedResult(error: string, tool: string): string {
 }
 
 /**
+ * VL-407: отказ, если роль треда ограничила набор инструментов
+ * (`allow_tools`), а вызванное имя в список не входит.
+ *
+ * Зачем проверка при ВЫЗОВЕ, если модель уже не видит запрещённые имена в
+ * `tools` (фильтр в chatToolDefs): в истории треда может остаться старый
+ * `tool_call` — тред начат под другой ролью или до фиксации роли (VL-283),
+ * а также вызов может прийти из resume-пути. Молчаливое исполнение в этом
+ * случае означало бы, что ограничение обходится.
+ *
+ * `memory_remember` разрешён всегда при наличии роли — это механизм памяти
+ * самой роли, а не инструмент проекта (см. chatToolDefs).
+ *
+ * @returns текст отказа (JSON-ack) либо null — вызов разрешён
+ */
+function personaDeniedAck(persona: PersonaConfig, name: string): string | null {
+  const allow = persona.allowTools;
+  if (allow === undefined) return null;
+  if (name === MEMORY_REMEMBER_TOOL) return null;
+  if (allow.includes(name)) return null;
+  return ackError(
+    `Инструмент "${name}" не разрешён роли "${persona.label}" (allow_tools в .vibelog/settings.json)`,
+  );
+}
+
+/**
  * VL-256: продвижение к следующему гейту после решения по одному вызову.
  *
  * Read-only вызовы хвоста хода (search/view/read_file) исполняются сразу —
@@ -2343,6 +2381,9 @@ function grantDeniedResult(error: string, tool: string): string {
  * @param skipId — id только что обработанного вызова (его результат уже в истории)
  * @param execute — исполнитель инструмента (учитывает локальные handler'ы:
  *   read_file/write_file не живут в MCP-реестре)
+ * @param persona — роль треда (VL-407): вызов вне её `allow_tools` закрывается
+ *   отказом сразу, без карточки Allow/Deny — иначе пользователь подтверждал бы
+ *   операцию, которую роль всё равно не имеет права выполнить
  * @returns следующий write-вызов, ожидающий подтверждения, либо null
  */
 async function advanceToNextApproval(
@@ -2352,6 +2393,7 @@ async function advanceToNextApproval(
   queue: EventQueue,
   skipId: string,
   execute: (name: string, args: Record<string, unknown>) => Promise<string>,
+  persona?: PersonaConfig | null,
 ): Promise<ToolCall | null> {
   for (const tc of pendingToolCalls(history)) {
     if (tc.id === skipId) continue;
@@ -2379,6 +2421,16 @@ async function advanceToNextApproval(
       continue;
     }
     const grantAllowed = grantGate.kind === 'granted';
+    // VL-407: вызов вне allow_tools роли закрываем отказом, а не карточкой
+    // Allow/Deny — подтверждать операцию, которую роль не имеет права
+    // выполнить, бессмысленно.
+    const personaDenied = persona ? personaDeniedAck(persona, tc.name) : null;
+    if (personaDenied !== null) {
+      history.push({ role: 'tool', tool_call_id: tc.id, content: personaDenied });
+      appendChatMessages(cwd, threadId, [{ role: 'tool', tool_call_id: tc.id, content: personaDenied }]);
+      queue.push({ type: 'tool_end', id: tc.id, result: personaDenied, isError: true });
+      continue;
+    }
     const writeOp = isWriteOperation(tc.name, tc.arguments as Record<string, unknown> | undefined);
     const autoAllowed = grantAllowed || (writeOp && isToolAllowed(cwd, threadId, tc.name));
     if (writeOp && !autoAllowed) return tc;

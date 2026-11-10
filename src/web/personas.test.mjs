@@ -160,7 +160,7 @@ describe('реестр ролей: секция chat_personas (AC8)', () => {
   });
 });
 
-describe('allow_tools: шов без фильтрации (AC10)', () => {
+describe('allow_tools: чтение и валидация (фильтрация — VL-407)', () => {
   it('валидный массив известных инструментов читается в роль', () => {
     writePersonas({
       researcher: {

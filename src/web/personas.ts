@@ -32,6 +32,10 @@ import { fileURLToPath } from 'node:url';
 import { loadSettings } from '../core/settings.js';
 import { loadConfig } from '../core/config.js';
 import { listTools } from '../mcp/tools.js';
+// VL-407: имена инструментов, живущих ТОЛЬКО в веб-чате, берём из их модулей —
+// список в валидаторе и список в chatToolDefs не должны разъезжаться.
+import { ASK_USER_TOOL } from './chat-question.js';
+import { MEMORY_REMEMBER_TOOL } from './chat-memory.js';
 // VL-402: путь/суффикс/лимит памяти персоны переехали в core — их использует
 // и запись (src/core/persona-memory.ts), а две копии разъехались бы
 // (lesson-37). Публичный API этого модуля сохранён реэкспортом.
@@ -55,8 +59,16 @@ export const DEFAULT_PERSONA_ID = 'helper';
 /** Статус создаваемой задачи, когда роль его не задала. */
 const FALLBACK_DEFAULT_STATUS = 'Spec';
 
-/** Локальные (не-MCP) инструменты чата — тоже валидные имена для allow_tools. */
-const LOCAL_CHAT_TOOLS = ['read_file', 'write_file', 'search_files'] as const;
+/**
+ * Локальные (не-MCP) инструменты чата — тоже валидные имена для allow_tools.
+ *
+ * VL-407: сюда же входят `edit` (VL-366), `ask_user` (VL-330) и
+ * `memory_remember` (VL-402) — все они собираются в chatToolDefs поверх
+ * MCP-реестра, поэтому в listTools() их нет, а в allow_tools они валидны.
+ * Без этого роль нельзя было бы ограничить «только чтением» с сохранением
+ * права задавать вопросы, а имя memory_remember отклонялось бы как опечатка.
+ */
+const LOCAL_CHAT_TOOLS = ['read_file', 'write_file', 'edit', 'search_files', ASK_USER_TOOL, MEMORY_REMEMBER_TOOL] as const;
 
 /**
  * Все имена инструментов, допустимые в `allow_tools` (VL-403): MCP-реестр
@@ -94,9 +106,13 @@ export interface PersonaConfig {
    */
   prompt: string;
   /**
-   * Шов на будущее (VL-265, AC10): список разрешённых инструментов роли.
-   * Читается и валидируется, но фильтрация chatToolDefs по нему —
-   * отдельная задача.
+   * Список разрешённых инструментов роли (VL-265, действует с VL-407).
+   *
+   * Семантика: `undefined` — поле не задано, роль получает ВСЕ инструменты
+   * чата (обратная совместимость); `[]` — не разрешено ничего, кроме
+   * всегда-доступного `memory_remember`; непустой массив — ровно эти имена.
+   * Фильтрация — в chatToolDefs (src/web/tool-policy.ts), отказ при вызове
+   * вне списка — в executeTool (src/web/chat.ts).
    */
   allowTools?: string[];
   /** Статус создаваемой из чата задачи (helper → Spec, architect → Planned). */
