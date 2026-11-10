@@ -820,8 +820,15 @@ describe('VL-310 — регресс сессии agent-1793637056809 (Code VL-12
     // VL-371: размер директивы проверяется свойством P5
     // (`directive-size-property.test.mjs`): «не растёт по числу повторов» +
     // потолок `2 × DIRECTIVE_MAX_BYTES`. Здесь остаётся только факт серии.
+    //
+    // VL-411: директива «Изменений нет» приходит только на первых повторах —
+    // после второго дословного повтора инструмент блокируется в ране и
+    // отвечает `tool_blocked`. Поэтому проверяются ОБА вида ответа: серия
+    // директив была, а дальше модель получила машиночитаемую блокировку.
     const directives = res.messages.filter((m) => m.role === 'tool' && String(m.content).includes('Изменений нет'));
-    assert.ok(directives.length >= 10, `директивы на повторы получены (${directives.length})`);
+    assert.ok(directives.length >= 2, `директивы на повторы получены (${directives.length})`);
+    const blocked = res.messages.filter((m) => m.role === 'tool' && String(m.content).includes('tool_blocked'));
+    assert.ok(blocked.length >= 1, `инструмент заблокирован в ране (${blocked.length})`);
   });
 });
 

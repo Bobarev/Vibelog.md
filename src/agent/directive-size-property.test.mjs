@@ -16,7 +16,11 @@ import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { runLoop } from '../../dist/agent/loop.js';
-import { DIRECTIVE_MAX_BYTES, retryDirective } from '../../dist/agent/repeat-tracker.js';
+import {
+  DIRECTIVE_MAX_BYTES,
+  NOOP_BLOCK_AFTER_REPEATS,
+  retryDirective,
+} from '../../dist/agent/repeat-tracker.js';
 
 const USER_MSG = [{ role: 'user', content: 'задача' }];
 
@@ -88,10 +92,30 @@ describe('P5 — размер директивы повтора', () => {
       toolCalls: [{ id: `c${i + 1}`, name: 'backlog_update_task', arguments: same }],
     })));
     const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    // VL-411: серия noop-повторов теперь КОРОТКАЯ по построению — после второго
+    // дословного повтора инструмент блокируется в ране и отвечает
+    // `tool_blocked`. Поэтому проверяется не «директивы не растут» (расти
+    // нечему: серия обрывается), а два инварианта: каждая директива цикла
+    // укладывается в потолок, и серия не длиннее порога блокировки + 1.
     const directives = res.messages
-      .filter((m) => m.role === 'tool' && /noop_repeat|applied_repeat/.test(String(m.content)))
+      .filter((m) => m.role === 'tool' && /noop_repeat|applied_repeat|tool_blocked/.test(String(m.content)))
       .map((m) => String(m.content));
-    assertNotGrowing(directives);
+    assert.ok(directives.length >= 2, `директивы цикла получены (${directives.length})`);
+    // Директив «Изменений нет» ровно столько, сколько повторов до блокировки:
+    // дальше инструмент отвечает `tool_blocked`, и текст не накапливается.
+    const noopDirectives = directives.filter((d) => d.includes('noop_repeat'));
+    assert.ok(
+      noopDirectives.length <= NOOP_BLOCK_AFTER_REPEATS,
+      `noop-директив не больше порога блокировки (${noopDirectives.length} ≤ ${NOOP_BLOCK_AFTER_REPEATS})`,
+    );
+    for (const d of directives) {
+      const size = Buffer.byteLength(d, 'utf8');
+      assert.ok(size <= 2 * DIRECTIVE_MAX_BYTES, `директива ограничена (${size} ≤ ${2 * DIRECTIVE_MAX_BYTES})`);
+    }
+    assert.ok(
+      directives.some((d) => d.includes('tool_blocked')),
+      'после порога инструмент заблокирован в ране',
+    );
   });
 
   it('P5: серия повторов ackError с длинным текстом ошибки — директивы не растут', async () => {

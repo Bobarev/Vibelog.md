@@ -299,3 +299,174 @@ describe('VL-368 — close без отчёта: кап повторов даёт
     assert.equal(res.is_error, false, `code: коммит — достаточный след работы: ${res.result.slice(0, 300)}`);
   });
 });
+
+/**
+ * VL-411 — повтор noop-вызова блокирует ИНСТРУМЕНТ в ране, а не считает до трёх.
+ *
+ * Инцидент: сессия `agent-1794313856082` (spec VL-408) — модель четыре раза
+ * дословно повторила `backlog_update_task {id, type}`, получила четыре
+ * одинаковых noop-директивы и упёрлась в кап `MAX_NOOP_REPEATS_PER_RUN=3` →
+ * `fail()` → откат статуса. Эскалации не было: 1-й, 2-й и 3-й повтор давали
+ * ОДИН И ТОТ ЖЕ текст, а 4-й убивал ран. Теперь после второго дословного
+ * повтора инструмент блокируется: вызов не доходит до handler, а модели
+ * уходит машиночитаемый отказ `tool_blocked` с единственным доступным путём
+ * завершения фазы — `backlog_finish_phase`.
+ */
+describe('VL-411 — блокировка инструмента после второго noop-повтора', () => {
+  const SAME = { id: 'VL-1', type: 'feature' };
+
+  function countingNoopSpec() {
+    const state = { calls: 0 };
+    return {
+      state,
+      spec: {
+        name: 'backlog_update_task',
+        description: 'write-заглушка, ответ noop',
+        inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+        handler: async () => {
+          state.calls++;
+          return JSON.stringify({
+            ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [],
+          });
+        },
+      },
+    };
+  }
+
+  function finishSpec() {
+    const state = { calls: 0 };
+    return {
+      state,
+      spec: {
+        name: 'backlog_finish_phase',
+        description: 'отчёт фазы',
+        inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+        handler: async () => {
+          state.calls++;
+          return JSON.stringify({ ok: true, message: 'отчёт записан' });
+        },
+      },
+    };
+  }
+
+  it('P6: после 2-го дословного повтора вызов не доходит до handler и получает tool_blocked (AC1)', async () => {
+    const { spec, state } = countingNoopSpec();
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'backlog_update_task', arguments: SAME }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'backlog_update_task', arguments: SAME }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'backlog_update_task', arguments: SAME }] },
+      { text: '', toolCalls: [{ id: 'c4', name: 'backlog_update_task', arguments: SAME }] },
+      { text: 'готово' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(state.calls, 1, 'исполнен только первый вызов; повторы не доходят до handler');
+    const blocked = res.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'c4');
+    assert.ok(blocked, 'модель получает ответ на заблокированный вызов');
+    const parsed = JSON.parse(String(blocked.content));
+    assert.equal(parsed.outcome, 'rejected', 'исход — отказ, а не noop');
+    assert.equal(parsed.reason, 'tool_blocked');
+    assert.equal(parsed.tool_blocked, true, 'причина объявлена флагом');
+    assert.match(parsed.message, /заблокирован в этом ране/);
+    assert.match(parsed.message, /backlog_finish_phase/);
+    assert.equal(res.is_error, false, 'ран продолжается — модель может завершить фазу');
+  });
+
+  it('AC2: блокировка per-name не мешает другим инструментам (finish_phase, manage_ac, чтения)', async () => {
+    const { spec, state } = countingNoopSpec();
+    const finish = finishSpec();
+    const acSpec = {
+      name: 'backlog_manage_ac',
+      description: 'AC',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => JSON.stringify({ ok: true, message: 'AC отмечены' }),
+    };
+    const readSpec = {
+      name: 'backlog_view_task',
+      description: 'чтение',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async () => JSON.stringify({ ok: true, read: true, message: 'задача' }),
+    };
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'backlog_update_task', arguments: SAME }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'backlog_update_task', arguments: SAME }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'backlog_update_task', arguments: SAME }] },
+      { text: '', toolCalls: [{ id: 'r1', name: 'backlog_view_task', arguments: { id: 'VL-1' } }] },
+      { text: '', toolCalls: [{ id: 'a1', name: 'backlog_manage_ac', arguments: { id: 'VL-1' } }] },
+      { text: '', toolCalls: [{ id: 'f1', name: 'backlog_finish_phase', arguments: { id: 'VL-1' } }] },
+      { text: 'фаза завершена' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec, finish.spec, acSpec, readSpec] });
+    assert.equal(state.calls, 1, 'заблокирован только backlog_update_task');
+    assert.equal(finish.state.calls, 1, 'backlog_finish_phase прошёл после блокировки');
+    assert.equal(res.result, 'фаза завершена');
+    const readMsg = res.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'r1');
+    assert.ok(!String(readMsg.content).includes('tool_blocked'), 'чтение не заблокировано');
+  });
+
+  it('AC3: тот же инструмент с ДРУГИМИ аргументами исполняется как обычно', async () => {
+    const { spec, state } = countingNoopSpec();
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'c1', name: 'backlog_update_task', arguments: SAME }] },
+      { text: '', toolCalls: [{ id: 'c2', name: 'backlog_update_task', arguments: SAME }] },
+      { text: '', toolCalls: [{ id: 'c3', name: 'backlog_update_task', arguments: SAME }] },
+      { text: '', toolCalls: [{ id: 'c4', name: 'backlog_update_task', arguments: { id: 'VL-1', priority: 'High' } }] },
+      { text: 'готово' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec] });
+    assert.equal(state.calls, 2, 'вызов с другими аргументами дошёл до handler');
+    const other = res.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'c4');
+    assert.ok(!String(other.content).includes('tool_blocked'), 'другие аргументы не блокируются');
+  });
+
+  it('AC5: исчерпание капа обращений к заблокированному инструменту называет незавершённую фазу', async () => {
+    const { spec } = countingNoopSpec();
+    const { llm } = fakeLlm(
+      Array.from({ length: 12 }, (_, i) => ({
+        text: '',
+        toolCalls: [{ id: `c${i}`, name: 'backlog_update_task', arguments: SAME }],
+      })),
+    );
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [spec], phase: 'spec' });
+    assert.equal(res.is_error, true, 'вечный круг по заблокированному инструменту — честный fail');
+    assert.match(res.result, /Фаза spec не завершена/);
+    assert.match(res.result, /backlog_finish_phase не вызван/);
+  });
+
+  it('AC6: регресс agent-1794313856082 — 3 applied + 4 noop {id,type} доходят до backlog_finish_phase', async () => {
+    // Реальная сессия spec VL-408: три успешных обновления задачи, затем
+    // четыре дословных повтора {id, type} с ответом noop → кап → fail.
+    // Теперь повторы не крутятся: инструмент блокируется, а модель доходит
+    // до отчёта фазы.
+    const state = { applied: 0, noop: 0 };
+    const mixedSpec = {
+      name: 'backlog_update_task',
+      description: 'write-заглушка: первые вызовы ok, дальше noop',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      handler: async (args) => {
+        if (args.type === 'feature') {
+          state.noop++;
+          return JSON.stringify({ ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [] });
+        }
+        state.applied++;
+        return JSON.stringify({ ok: true, message: 'обновлено' });
+      },
+    };
+    const finish = finishSpec();
+    const { llm } = fakeLlm([
+      { text: '', toolCalls: [{ id: 'a1', name: 'backlog_update_task', arguments: { id: 'VL-408', title: 'T' } }] },
+      { text: '', toolCalls: [{ id: 'a2', name: 'backlog_update_task', arguments: { id: 'VL-408', priority: 'High' } }] },
+      { text: '', toolCalls: [{ id: 'a3', name: 'backlog_update_task', arguments: { id: 'VL-408', labels: ['x'] } }] },
+      ...Array.from({ length: 4 }, (_, i) => ({
+        text: '',
+        toolCalls: [{ id: `n${i}`, name: 'backlog_update_task', arguments: SAME }],
+      })),
+      { text: '', toolCalls: [{ id: 'f1', name: 'backlog_finish_phase', arguments: { id: 'VL-408' } }] },
+      { text: 'фаза завершена' },
+    ]);
+    const res = await runLoop({ llm, messages: USER_MSG, tools: [mixedSpec, finish.spec], phase: 'spec' });
+    assert.equal(state.applied, 3, 'три успешных обновления исполнены');
+    assert.equal(state.noop, 1, 'noop-вызов исполнен один раз, повторы заблокированы');
+    assert.equal(finish.state.calls, 1, 'ран дошёл до backlog_finish_phase');
+    assert.equal(res.is_error, false, `ран не крутится на повторах: ${res.result.slice(0, 300)}`);
+  });
+});
