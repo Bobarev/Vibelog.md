@@ -197,7 +197,9 @@ describe('VL-409 — настройки секции subagents', () => {
     assert.equal(settings.maxCallsPerTurn, 2);
     assert.equal(settings.maxDepth, 1);
     assert.equal(settings.timeoutMs, 60000);
-    assert.equal(settings.maxTokens, 2000);
+    assert.equal(settings.maxTokens, 4000);
+    assert.equal(settings.maxAnswerChars, 20000);
+    assert.equal(settings.maxIterations, 5);
     assert.equal(settings.onMissingPersona, 'error');
   });
 
@@ -210,6 +212,8 @@ describe('VL-409 — настройки секции subagents', () => {
         max_depth: 1,
         timeout_ms: 100,
         max_tokens: 50,
+        max_answer_chars: 1000,
+        max_iterations: 2,
         on_missing_persona: 'skip',
       },
     });
@@ -219,6 +223,8 @@ describe('VL-409 — настройки секции subagents', () => {
     assert.equal(settings.maxCallsPerTurn, 1);
     assert.equal(settings.timeoutMs, 100);
     assert.equal(settings.maxTokens, 50);
+    assert.equal(settings.maxAnswerChars, 1000);
+    assert.equal(settings.maxIterations, 2);
     assert.equal(settings.onMissingPersona, 'skip');
   });
 
@@ -231,6 +237,8 @@ describe('VL-409 — настройки секции subagents', () => {
         max_depth: 3,
         timeout_ms: -5,
         max_tokens: 'много',
+        max_answer_chars: 0,
+        max_iterations: -1,
       },
     });
     const errors = [];
@@ -240,9 +248,13 @@ describe('VL-409 — настройки секции subagents', () => {
     assert.equal(settings.maxCallsPerTurn, 2);
     assert.equal(settings.maxDepth, 1, 'глубина > 1 отклоняется');
     assert.equal(settings.timeoutMs, 60000);
-    assert.equal(settings.maxTokens, 2000);
-    assert.ok(errors.length >= 6, `сообщений о битых значениях: ${errors.length}`);
+    assert.equal(settings.maxTokens, 4000);
+    assert.equal(settings.maxAnswerChars, 20000);
+    assert.equal(settings.maxIterations, 5);
+    assert.ok(errors.length >= 8, `сообщений о битых значениях: ${errors.length}`);
     assert.ok(errors.some(e => /max_depth/.test(e)), 'сообщение про max_depth');
+    assert.ok(errors.some(e => /max_answer_chars/.test(e)), 'сообщение про max_answer_chars');
+    assert.ok(errors.some(e => /max_iterations/.test(e)), 'сообщение про max_iterations');
   });
 
   it('AC14: неизвестный on_missing_persona → error + сообщение (не молчаливое приведение)', () => {
@@ -530,5 +542,183 @@ describe('VL-409 — консультация в ходе чата', () => {
     const events = await collect({ message: 'спроси', threadId: 'sub-loop' }, { llm });
     const ev = events.find(e => e.type === 'subagent');
     assert.match(ev.answer, /важная заметка/);
+  });
+});
+
+describe('VL-415 — полный ответ консультанта и частичный результат', () => {
+  /** Длинный русский ответ: ~30 КБ в UTF-8 (≈20 тыс. символов). */
+  function longAnswer(chars = 20_000) {
+    const sentence = 'Разбейте задачу на шаги и двигайтесь по одному. ';
+    return sentence.repeat(Math.ceil(chars / sentence.length)).slice(0, chars);
+  }
+
+  it('AC1/AC6: ответ 30 КБ (UTF-8) проходит целиком, общий кап 8 КБ не применяется', async () => {
+    seedConsultant();
+    const answer = longAnswer();
+    assert.ok(Buffer.byteLength(answer, 'utf8') >= 30_000, 'ответ действительно ~30 КБ');
+    const { llm } = fakeLlm(
+      [
+        { toolCalls: [{ id: 'tc-415-1', name: 'ask_persona', arguments: { persona: 'psychologist', question: 'Развёрнуто?' } }] },
+        { text: 'Готово.' },
+      ],
+      { text: answer },
+    );
+    const events = await collect({ message: 'спроси', threadId: 'sub-long' }, { llm });
+    const end = events.find(e => e.type === 'tool_end' && e.id === 'tc-415-1');
+    assert.ok(end, 'tool_end пришёл');
+    const parsed = JSON.parse(end.result);
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.answer, answer, 'ответ не обрезан');
+    assert.equal(parsed.truncated, false);
+    assert.equal(parsed.answerChars, answer.length);
+    assert.ok(!/вывод обрезан/.test(end.result), 'общий кап не сработал');
+    const ev = events.find(e => e.type === 'subagent');
+    assert.equal(ev.answer, answer);
+    assert.equal(ev.truncated, undefined, 'пометки об обрезке нет');
+  });
+
+  it('AC2/AC4/AC5: max_answer_chars=1000 → обрезка по границе слова с пометкой', async () => {
+    seedConsultant();
+    writeSettings({
+      chat_personas: { psychologist: { label: 'Психолог', prompt: 'psychologist' } },
+      subagents: { max_answer_chars: 1000 },
+    });
+    const answer = longAnswer(5000);
+    const { llm } = fakeLlm(
+      [
+        { toolCalls: [{ id: 'tc-415-2', name: 'ask_persona', arguments: { persona: 'psychologist', question: 'Вопрос' } }] },
+        { text: 'Готово.' },
+      ],
+      { text: answer },
+    );
+    const events = await collect({ message: 'спроси', threadId: 'sub-cut' }, { llm });
+    const end = events.find(e => e.type === 'tool_end' && e.id === 'tc-415-2');
+    const parsed = JSON.parse(end.result);
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.truncated, true);
+    assert.equal(parsed.answerChars, answer.length, 'длина полного ответа сохранена');
+    assert.ok(parsed.answer.length < answer.length);
+    assert.match(parsed.answer, /ответ консультанта обрезан: показано \d+ из 5000 символов/);
+    assert.match(parsed.answer, /subagents\.max_answer_chars/, 'пометка называет настройку');
+    // Обрезка по границе слова: последний видимый фрагмент — целое слово
+    const shown = parsed.answer.split('\n\n[ответ консультанта обрезан')[0];
+    assert.ok(!/\s$/.test(shown), 'без висящего пробела');
+    assert.ok(shown.length <= 1000, `показано не больше лимита: ${shown.length}`);
+    assert.ok(shown.length > 500, `обрезка не в начале ответа: ${shown.length}`);
+    // AC5: пометка есть и в событии ленты (UI), а не только в тексте для модели
+    const ev = events.find(e => e.type === 'subagent');
+    assert.equal(ev.truncated, true);
+    assert.equal(ev.answerChars, answer.length);
+  });
+
+  it('AC6: read_file по-прежнему капается 8 КБ (регресс не допущен)', async () => {
+    writeFileSync(join(cwd, 'big.txt'), 'строка текста\n'.repeat(3000), 'utf-8');
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-415-3', name: 'read_file', arguments: { path: 'big.txt' } }] },
+      { text: 'Готово.' },
+    ]);
+    const events = await collect({ message: 'прочитай', threadId: 'sub-cap' }, { llm });
+    const end = events.find(e => e.type === 'tool_end' && e.id === 'tc-415-3');
+    assert.match(end.result, /вывод обрезан/);
+  });
+
+  it('AC8: итерации исчерпаны, но текст в последнем ответе был → это и есть ответ', async () => {
+    seedConsultant({ allow_tools: ['read_file'] });
+    writeFileSync(join(cwd, 'note.txt'), 'заметка', 'utf-8');
+    const { llm } = fakeLlm(
+      [
+        { toolCalls: [{ id: 'tc-415-4', name: 'ask_persona', arguments: { persona: 'psychologist', question: 'Вопрос' } }] },
+        { text: 'Готово.' },
+      ],
+      // Каждая итерация: текст + вызов инструмента (лимит итераций исчерпан)
+      () => ({ text: 'Промежуточный, но осмысленный текст.', toolCalls: [{ id: 'c-415-4', name: 'read_file', arguments: { path: 'note.txt' } }] }),
+    );
+    const events = await collect({ message: 'спроси', threadId: 'sub-lasttext' }, { llm });
+    const end = events.find(e => e.type === 'tool_end' && e.id === 'tc-415-4');
+    const parsed = JSON.parse(end.result);
+    assert.equal(parsed.ok, true, 'ответ не потерян');
+    assert.match(parsed.answer, /Промежуточный, но осмысленный текст/);
+  });
+
+  it('AC9: текст вместе с tool_calls сохраняется и используется, если следующая итерация пуста', async () => {
+    seedConsultant({ allow_tools: ['read_file'] });
+    writeFileSync(join(cwd, 'note.txt'), 'заметка', 'utf-8');
+    let call = 0;
+    const { llm } = fakeLlm(
+      [
+        { toolCalls: [{ id: 'tc-415-5', name: 'ask_persona', arguments: { persona: 'psychologist', question: 'Вопрос' } }] },
+        { text: 'Готово.' },
+      ],
+      () => {
+        call++;
+        if (call === 1) {
+          return { text: 'Сейчас посмотрю файл и отвечу.', toolCalls: [{ id: 'c-415-5', name: 'read_file', arguments: { path: 'note.txt' } }] };
+        }
+        return { text: '', toolCalls: [] };
+      },
+    );
+    const events = await collect({ message: 'спроси', threadId: 'sub-withtext' }, { llm });
+    const end = events.find(e => e.type === 'tool_end' && e.id === 'tc-415-5');
+    const parsed = JSON.parse(end.result);
+    assert.equal(parsed.ok, true);
+    assert.match(parsed.answer, /Сейчас посмотрю файл/);
+  });
+
+  it('AC10/AC11: исчерпаны итерации без текста → partial с перечнем инструментов', async () => {
+    seedConsultant({ allow_tools: ['read_file'] });
+    writeFileSync(join(cwd, 'note.txt'), 'заметка', 'utf-8');
+    writeSettings({
+      chat_personas: { psychologist: { label: 'Психолог', prompt: 'psychologist', allow_tools: ['read_file'] } },
+      subagents: { max_iterations: 2 },
+    });
+    const { llm } = fakeLlm(
+      [
+        { toolCalls: [{ id: 'tc-415-6', name: 'ask_persona', arguments: { persona: 'psychologist', question: 'Вопрос' } }] },
+        { text: 'Отвечаю сам.' },
+      ],
+      () => ({ text: '', toolCalls: [{ id: 'c-415-6', name: 'read_file', arguments: { path: 'note.txt' } }] }),
+    );
+    const events = await collect({ message: 'спроси', threadId: 'sub-partial' }, { llm });
+    const end = events.find(e => e.type === 'tool_end' && e.id === 'tc-415-6');
+    const parsed = JSON.parse(end.result);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.partial, true);
+    assert.equal(parsed.empty, undefined, 'partial и empty различаются');
+    assert.equal(parsed.iterations, 2, 'лимит итераций настраивается');
+    assert.deepEqual(parsed.usedTools, ['read_file', 'read_file']);
+    assert.match(parsed.error, /исчерпал лимит итераций \(2\)/);
+    assert.match(parsed.error, /read_file/);
+    assert.ok(!events.some(e => e.type === 'subagent'), 'события консультации нет');
+  });
+
+  it('AC12: пустой ответ без вызовов → empty, а не partial', async () => {
+    seedConsultant();
+    const { llm } = fakeLlm(
+      [
+        { toolCalls: [{ id: 'tc-415-7', name: 'ask_persona', arguments: { persona: 'psychologist', question: 'Вопрос' } }] },
+        { text: 'Отвечаю сам.' },
+      ],
+      { text: '   ' },
+    );
+    const events = await collect({ message: 'спроси', threadId: 'sub-empty' }, { llm });
+    const end = events.find(e => e.type === 'tool_end' && e.id === 'tc-415-7');
+    const parsed = JSON.parse(end.result);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.empty, true);
+    assert.equal(parsed.partial, undefined);
+    assert.match(parsed.error, /вернул пустой ответ/);
+  });
+
+  it('AC13: в промпте консультанта есть подсказка экономить итерации', async () => {
+    seedConsultant();
+    const { llm, state } = fakeLlm(
+      [
+        { toolCalls: [{ id: 'tc-415-8', name: 'ask_persona', arguments: { persona: 'psychologist', question: 'Вопрос' } }] },
+        { text: 'Ок.' },
+      ],
+      { text: 'Ответ.' },
+    );
+    await collect({ message: 'спроси', threadId: 'sub-prompt' }, { llm });
+    assert.match(state.consultantMessages[0][0].content, /не более 2 файлов/);
   });
 });

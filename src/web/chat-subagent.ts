@@ -52,8 +52,8 @@ export { ASK_PERSONA_TOOL };
  */
 const CONSULTANT_LESSON_MIN_SCORE = 3;
 
-/** Сколько итераций разрешено консультанту (прочитать файл и ответить). */
-const CONSULTANT_MAX_ITERATIONS = 3;
+/** Сколько итераций разрешено консультанту по умолчанию (VL-415: настраивается). */
+const CONSULTANT_MAX_ITERATIONS_FALLBACK = 5;
 
 /** Токены консультации для события в ленте. */
 export interface SubagentTokens {
@@ -69,6 +69,14 @@ export interface SubagentEvent {
   question: string;
   answer: string;
   tokens: SubagentTokens;
+  /** VL-415: ответ обрезан по `subagents.max_answer_chars`. */
+  truncated?: boolean;
+  /** VL-415: сколько символов ответа показано (при обрезке). */
+  answerChars?: number;
+  /** VL-415: консультант исчерпал итерации — ответ частичный. */
+  partial?: boolean;
+  /** VL-415: инструменты, которые консультант успел вызвать. */
+  usedTools?: string[];
 }
 
 /** Зависимости инструмента консультации. */
@@ -105,6 +113,14 @@ function nonEmpty(value: unknown): string | undefined {
  */
 function buildConsultantPrompt(cwd: string, consultant: PersonaConfig, question: string): string {
   const parts: string[] = [loadPersonaPrompt(cwd, consultant)];
+  // VL-415: подсказка экономить итерации. Консультант, увлечённо читающий
+  // материалы проекта, упирался в лимит итераций и не доходил до ответа.
+  // Снижаем вероятность этого, не увеличивая лимит ещё больше.
+  parts.push(
+    '## Как отвечать\n\n' +
+      'Отвечай по существу; если нужны материалы проекта — прочитай не более 2 файлов и ответь. ' +
+      'Не изучай проект «на всякий случай»: пользователь ждёт мнение, а не отчёт о чтении.',
+  );
   const memory = loadPersonaMemory(cwd, consultant);
   if (memory.text) parts.push(`## Память персоны\n\n${memory.text}`);
   const chatLessons = readChatLessonSettings(cwd);
@@ -211,9 +227,19 @@ export function makeAskPersonaTool(deps: AskPersonaDeps): ChatLocalTool {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
       const tokens: SubagentTokens = { input: 0, output: 0, total: 0 };
+      const maxIterations =
+        settings.maxIterations > 0 ? settings.maxIterations : CONSULTANT_MAX_ITERATIONS_FALLBACK;
       let answer = '';
+      /**
+       * VL-415: последний непустой текст модели. Модель часто пишет «сейчас
+       * посмотрю файлы…» вместе с tool_calls — этот текст раньше терялся.
+       * Используется ТОЛЬКО как fallback, когда финального ответа нет.
+       */
+      let lastText = '';
+      /** VL-415: инструменты, которые консультант успел вызвать (для частичного результата). */
+      const usedTools: string[] = [];
       try {
-        for (let iteration = 0; iteration < CONSULTANT_MAX_ITERATIONS; iteration++) {
+        for (let iteration = 0; iteration < maxIterations; iteration++) {
           const resp = await llm.streamChat(messages, tools, {
             signal: controller.signal,
             maxTokens: settings.maxTokens,
@@ -224,12 +250,17 @@ export function makeAskPersonaTool(deps: AskPersonaDeps): ChatLocalTool {
             tokens.total += resp.usage.total_tokens;
             deps.onUsage?.(consultant.id, resp.usage);
           }
+          const text = (resp.text ?? '').trim();
+          if (text !== '') lastText = text;
           if (resp.toolCalls.length === 0) {
-            answer = (resp.text ?? '').trim();
+            // Текст без вызовов — финальный ответ; пустой текст — берём
+            // последний осмысленный (VL-415: не терять ответ).
+            answer = text || lastText;
             break;
           }
           messages.push({ role: 'assistant', content: resp.text || null, tool_calls: resp.toolCalls });
           for (const tc of resp.toolCalls) {
+            usedTools.push(tc.name);
             let out: string;
             try {
               const local = localHandlers.get(tc.name);
@@ -259,19 +290,43 @@ export function makeAskPersonaTool(deps: AskPersonaDeps): ChatLocalTool {
         clearTimeout(timer);
       }
 
+      // VL-415: итерации исчерпаны, но текст в последнем ответе был — отдаём
+      // его как ответ, а не «не дал ответа».
+      if (answer === '' && lastText !== '') answer = lastText;
+
       if (answer === '') {
+        // Два разных исхода (VL-415): исчерпаны итерации (partial) и модель
+        // вернула пустоту без вызовов (empty). Тексты разные — модель должна
+        // понимать, повторять вопрос или отвечать самой.
+        if (usedTools.length > 0) {
+          const list = [...new Set(usedTools)].join(', ');
+          return JSON.stringify({
+            ok: false,
+            partial: true,
+            error:
+              `Консультант «${consultant.label}» исчерпал лимит итераций (${maxIterations}) и не успел ответить. ` +
+              `Вызванные инструменты: ${list}. Отвечай сам или повтори вопрос проще.`,
+            iterations: maxIterations,
+            usedTools,
+          });
+        }
         return JSON.stringify({
           ok: false,
-          error: `Консультант «${consultant.label}» не дал ответа — отвечай сам.`,
+          empty: true,
+          error: `Консультант «${consultant.label}» вернул пустой ответ — отвечай сам.`,
         });
       }
+
+      // VL-415: свой лимит длины ответа вместо общего капа tool-вывода.
+      const limited = limitAnswer(answer, settings.maxAnswerChars);
 
       deps.onEvent?.({
         personaId: consultant.id,
         personaLabel: consultant.label,
         question,
-        answer,
+        answer: limited.answer,
         tokens,
+        ...(limited.truncated ? { truncated: true, answerChars: limited.answerChars } : {}),
       });
 
       return JSON.stringify({
@@ -279,11 +334,41 @@ export function makeAskPersonaTool(deps: AskPersonaDeps): ChatLocalTool {
         personaId: consultant.id,
         personaLabel: consultant.label,
         question,
-        answer,
+        answer: limited.answer,
         tokens,
+        truncated: limited.truncated,
+        answerChars: limited.answerChars,
       });
     },
   };
+}
+
+/**
+ * Обрезка ответа консультанта по `subagents.max_answer_chars` (VL-415).
+ *
+ * Режем по границе строки, иначе по слову — обрезка посередине слова
+ * выглядит как баг. Пометка адресована и модели, и пользователю: она
+ * объясняет, что ответ не «сломался», и называет настройку.
+ *
+ * @returns `answer` — текст с пометкой, `truncated` — была ли обрезка,
+ *          `answerChars` — длина ПОЛНОГО ответа до обрезки
+ */
+function limitAnswer(
+  answer: string,
+  maxChars: number,
+): { answer: string; truncated: boolean; answerChars: number } {
+  if (answer.length <= maxChars) return { answer, truncated: false, answerChars: answer.length };
+  const head = answer.slice(0, maxChars);
+  const newline = head.lastIndexOf('\n');
+  const space = head.lastIndexOf(' ');
+  // Границу ищем только во второй половине лимита: иначе от ответа останется
+  // огрызок, если перевод строки был в самом начале.
+  const cut = newline > maxChars / 2 ? newline : space > maxChars / 2 ? space : head.length;
+  const shown = head.slice(0, cut).trimEnd();
+  const note =
+    `\n\n[ответ консультанта обрезан: показано ${shown.length} из ${answer.length} символов — ` +
+    'увеличьте subagents.max_answer_chars]';
+  return { answer: shown + note, truncated: true, answerChars: answer.length };
 }
 
 /** Перечень доступных ролей для текста ошибки: `id (label), …`. */

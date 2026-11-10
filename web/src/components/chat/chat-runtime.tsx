@@ -96,6 +96,14 @@ type ChatEvent =
       answer: string
       tokens: { input: number; output: number; total: number }
       display?: "inline" | "widget"
+      /** VL-415: ответ обрезан по `subagents.max_answer_chars`. */
+      truncated?: boolean
+      /** VL-415: длина полного ответа до обрезки. */
+      answerChars?: number
+      /** VL-415: консультант исчерпал итерации — ответ частичный. */
+      partial?: boolean
+      /** VL-415: инструменты, которые консультант успел вызвать. */
+      usedTools?: string[]
     }
   /** VL-313: расход токенов треда после очередного вызова модели. */
   | { type: "usage"; usage: ThreadUsageView }
@@ -658,6 +666,9 @@ function applyEvent(
             question: ev.question,
             answer: ev.answer,
             tokens: ev.tokens,
+            // VL-415: пометка об обрезке должна пережить F5 — кладём в data-часть
+            ...(ev.truncated === true ? { truncated: true } : {}),
+            ...(ev.answerChars !== undefined ? { answerChars: ev.answerChars } : {}),
           },
         })
       }
