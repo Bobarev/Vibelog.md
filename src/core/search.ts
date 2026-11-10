@@ -15,9 +15,10 @@
  * Фильтры точного совпадения (status/type/priority/project) — case-insensitive,
  * как в оригинале Backlog.md (task_search).
  *
- * Здесь же — globalSearch (VL-185): единый поиск по 4 типам сущностей
- * (задачи/lessons/references/documents) с группировкой и лимитами; логика
- * не дублируется в веб-слое (lesson-37 — API-хендлер только валидирует).
+ * Здесь же — globalSearch (VL-185): единый поиск по 5 типам сущностей
+ * (задачи/lessons/references/documents/decisions, VL-412) с группировкой и
+ * лимитами; логика не дублируется в веб-слое (lesson-37 — API-хендлер только
+ * валидирует).
  */
 
 import { findBacklogDir } from './paths.js';
@@ -26,6 +27,7 @@ import type { Task } from './task.js';
 import { searchLessons } from './lesson.js';
 import { searchReferences } from './reference.js';
 import { searchDocuments } from './document.js';
+import { searchDecisions } from './decision.js';
 
 /** Фильтры поиска (все поля необязательны — как required: [] в оригинале). */
 export interface SearchFilters {
@@ -288,6 +290,14 @@ export interface SearchDocumentHit {
   tags: string[];
 }
 
+/** Слим-хит архитектурного решения (VL-412): метаданные без ADR-тела. */
+export interface SearchDecisionHit {
+  id: string;
+  title: string;
+  date: string;
+  status: string;
+}
+
 /** Сгруппированный ответ глобального поиска (GET /api/search, VL-185). */
 export interface GlobalSearchResults {
   query: string;
@@ -295,11 +305,17 @@ export interface GlobalSearchResults {
   lessons: SearchLessonHit[];
   references: SearchReferenceHit[];
   documents: SearchDocumentHit[];
+  /** VL-412: архитектурные решения — раньше явно исключались из поиска. */
+  decisions: SearchDecisionHit[];
 }
 
 /**
- * Глобальный поиск по 4 типам сущностей (VL-185): задачи, lessons,
- * references, documents. Decisions НЕ ищутся (не используются активно).
+ * Глобальный поиск по 5 типам сущностей (VL-185, VL-412): задачи, lessons,
+ * references, documents, decisions.
+ *
+ * VL-412: decisions добавлены в поиск. До этого в шапке было написано
+ * «Decisions НЕ ищутся (не используются активно)» — и агент в чате не видел
+ * архитектурные договорённости проекта, планируя задачу.
  *
  * Каждая группа ограничена SEARCH_PER_TYPE_LIMIT, суммарно —
  * SEARCH_TOTAL_LIMIT: лимит задач = min(найдено, TOTAL − остальные_группы),
@@ -320,6 +336,7 @@ export function globalSearch(cwd: string, query: string): GlobalSearchResults {
     lessons: [],
     references: [],
     documents: [],
+    decisions: [],
   });
 
   const q = (query ?? '').trim();
@@ -333,10 +350,13 @@ export function globalSearch(cwd: string, query: string): GlobalSearchResults {
   const lessons = searchLessons(cwd, q).slice(0, SEARCH_PER_TYPE_LIMIT);
   const references = searchReferences(cwd, q).slice(0, SEARCH_PER_TYPE_LIMIT);
   const documents = searchDocuments(backlogDir, q).slice(0, SEARCH_PER_TYPE_LIMIT);
-  const others = lessons.length + references.length + documents.length;
+  // VL-412: решения — пятая группа. Лимит задач считается по сумме остальных,
+  // поэтому формула остаётся прежней (others ≤ 4×5 = 20).
+  const decisions = searchDecisions(backlogDir, q).slice(0, SEARCH_PER_TYPE_LIMIT);
+  const others = lessons.length + references.length + documents.length + decisions.length;
 
   // Задачи добираются до TOTAL − others (спека VL-185); минус 0 не бывает —
-  // others ≤ 3×5 = 15 < 20, но защищаемся на случай смены лимитов
+  // others ≤ 4×5 = 20, но защищаемся на случай смены лимитов
   const tasksAll = searchTasks(cwd, { query: q });
   const taskLimit = Math.max(0, Math.min(tasksAll.length, SEARCH_TOTAL_LIMIT - others));
   const tasks = tasksAll.slice(0, taskLimit);
@@ -369,6 +389,12 @@ export function globalSearch(cwd: string, query: string): GlobalSearchResults {
       title: e.document.title,
       type: e.document.type,
       tags: e.document.tags ?? [],
+    })),
+    decisions: decisions.map(e => ({
+      id: e.decision.id,
+      title: e.decision.title,
+      date: e.decision.date,
+      status: e.decision.status,
     })),
   };
 }

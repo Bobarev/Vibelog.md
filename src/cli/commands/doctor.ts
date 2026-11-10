@@ -19,6 +19,7 @@ import { loadConfig } from '../../core/config.js';
 import { listTasks } from '../../core/store.js';
 import { markdownToTask } from '../../core/task.js';
 import { checkTaskIntegrity } from '../../core/integrity.js';
+import { findDuplicateIds, listDecisions } from '../../core/decision.js';
 import { validateCompleteness } from '../../core/workflow.js';
 import type { FlagValues } from '../args.js';
 
@@ -102,6 +103,10 @@ export async function runDoctor(
   // 13. Согласованность ключей `completeness` с объявленными workflow/фазами
   // (VL-377): опечатка в имени молча отключала гейт неполноты.
   checks.push(checkCompletenessConfig(cwd));
+
+  // 14. Дубли id в backlog/decisions/ (VL-412): два файла с одним id —
+  // getDecision вернёт первый попавшийся, и это может быть устаревшая версия.
+  checks.push(checkDecisionDuplicates(cwd));
 
   // Предупреждение про кэш MCP
   warnings.push('Qwen Code: MCP-сервер мог быть закэширован. Если Qwen не видит новые инструменты — перезапусти Qwen.');
@@ -279,6 +284,8 @@ const MCP_TOOL_PREFIXES = [
   'upstream_',
   // VL-398: конструктор workflow (workflow_get / workflow_apply)
   'workflow_',
+  // VL-412: архитектурные решения (decision_list/view/create/update)
+  'decision_',
 ];
 
 /**
@@ -697,6 +704,54 @@ function checkCompletenessConfig(cwd: string): CheckResult {
   } catch (err) {
     return {
       name: 'completeness_config',
+      ok: false,
+      value: null,
+      hint: (err as Error).message,
+    };
+  }
+}
+
+/**
+ * Проверка 14: дубли id в `backlog/decisions/` (VL-412).
+ *
+ * В проекте реально лежат два файла с `id: decision-10` (устаревшая версия
+ * про `manifest.json` и актуальная про `installed.lock.json`). `nextDecisionId`
+ * берёт max+1, поэтому новые id не ломаются, но `getDecision('decision-10')`
+ * вернёт первый попавшийся, а `listDecisions` покажет оба как разные решения.
+ *
+ * Не блокирующая (как `task_integrity`): автоматически удалять дубль нельзя —
+ * какая версия актуальна, решает человек. `ok = duplicates.length === 0`,
+ * в `requiredNames` проверка НЕ входит.
+ *
+ * @param cwd — каталог проекта
+ */
+function checkDecisionDuplicates(cwd: string): CheckResult {
+  try {
+    const backlogDir = findBacklogDir(cwd);
+    if (!backlogDir) {
+      return { name: 'decision_duplicates', ok: true, value: { count: 0, duplicates: [] } };
+    }
+    const entries = listDecisions(backlogDir);
+    const duplicates = findDuplicateIds(entries);
+    const details = duplicates.map(id => ({
+      id,
+      files: entries
+        .filter(e => e.decision.id.toLowerCase() === id)
+        .map(e => e.path.split('/').pop()),
+    }));
+    const ok = duplicates.length === 0;
+    return {
+      name: 'decision_duplicates',
+      ok,
+      value: { count: duplicates.length, duplicates: details },
+      hint: ok
+        ? undefined
+        : 'Дубли id в backlog/decisions/: getDecision вернёт первый попавшийся файл, и это может быть ' +
+          'устаревшая версия решения. Удалите или переименуйте лишний файл вручную (автоудаления нет).',
+    };
+  } catch (err) {
+    return {
+      name: 'decision_duplicates',
       ok: false,
       value: null,
       hint: (err as Error).message,

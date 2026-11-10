@@ -121,6 +121,11 @@ export const MCP_GROUPS: readonly { title: string; names: readonly string[] }[] 
     names: ['workflow_get', 'workflow_apply'],
   },
   {
+    // VL-412: архитектурные решения (ADR)
+    title: 'Решения (ADR)',
+    names: ['decision_list', 'decision_view', 'decision_create', 'decision_update'],
+  },
+  {
     title: 'Upstream (баг-репорты между проектами)',
     names: ['upstream_report_bug', 'upstream_list_reports', 'upstream_ack_report'],
   },
