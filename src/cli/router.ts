@@ -529,7 +529,14 @@ vibelog lesson <subcommand> [опции]
                                          висячие ссылки, дубли, протухание;
                                          --write пишет backlog/lessons/AUDIT.md;
                                          --verify id1,id2 / --needs-review id1,id2 —
-                                         явные правки по конкретным урокам`,
+                                         явные правки по конкретным урокам
+  consolidate [--dry-run] [--json] [--threshold N]
+              [--apply-supersede id,…] [--apply-agents "строка,…"]
+                                       — консолидация корпуса (VL-400): кластеры
+                                         kind=rule → строка для AGENTS.md, пары
+                                         дублей → supersede, пустые тела.
+                                         По умолчанию только план (read-only);
+                                         запись — явными списками ID/строк`,
 
     config: `
 vibelog config <subcommand> [опции]

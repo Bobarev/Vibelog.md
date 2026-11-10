@@ -80,6 +80,8 @@ export const TOOL_KINDS: Readonly<Record<string, ToolKind>> = {
   // verified/needsReview или apply/confirmIds): поведение до VL-357 сохраняем
   lesson_audit: 'read',
   lesson_classify: 'read',
+  // VL-400: консолидация — план по умолчанию, записи только по явным спискам
+  lesson_consolidate: 'read',
   // === Прочее ===
   project_map: 'read',
   git_commit: 'write',

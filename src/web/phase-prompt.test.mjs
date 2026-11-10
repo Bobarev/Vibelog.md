@@ -811,6 +811,30 @@ describe('VL-153 — taskLessons', () => {
     }
   });
 
+  it('VL-400: recall по смыслу — задача без labels получает релевантный урок', () => {
+    const root = mkdtempSync(join(tmpdir(), 'vl400-lessons-'));
+    try {
+      mkdirSync(join(root, 'backlog', 'tasks'), { recursive: true });
+      writeFileSync(join(root, 'backlog', 'config.yml'), 'project_name: VL-400\n', 'utf-8');
+      createTaskFile(root, {
+        id: 'VL-906',
+        title: 'Починить сборку фронта в worktree',
+        description: 'Сборка падает: не установлены dev-зависимости Vite',
+        status: 'Planned',
+      });
+      createLessonFile(root, {
+        id: 'lesson-11', title: 'Выполняй pnpm install внутри web перед сборкой',
+        status: 'active', tags: ['build'], kind: 'rule',
+        content: '## Проблема\n\nсборка фронта падает\n',
+      });
+      const vars = taskExtraVars(root, 'VL-906');
+      assert.ok(vars.taskLessons.includes('lesson-11'), `recall без labels: ${vars.taskLessons}`);
+      assert.ok(vars.taskLessons.includes('(rule)'), 'kind в строке подстановки');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('нет совпадений по tags → "(нет)"; ошибки чтения не роняют фазу', () => {
     const root = makeRoot(['nomatch']);
     try {

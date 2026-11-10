@@ -94,7 +94,7 @@ export const MCP_GROUPS: readonly { title: string; names: readonly string[] }[] 
     names: [
       'lesson_list', 'lesson_create', 'lesson_view', 'lesson_update',
       'lesson_search_lessons', 'lesson_link', 'lesson_supersede',
-      'lesson_audit', 'lesson_classify',
+      'lesson_audit', 'lesson_classify', 'lesson_consolidate',
     ],
   },
   {

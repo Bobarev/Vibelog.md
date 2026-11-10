@@ -53,6 +53,9 @@ import {
   auditLessons, applyLessonAudit, formatLessonAuditMarkdown,
 } from '../core/lesson-audit.js';
 import { classifyLessons } from '../core/lesson-classify.js';
+import {
+  buildConsolidationPlan, applyConsolidation,
+} from '../core/lesson-consolidate.js';
 import { createLlmClient } from '../agent/llm.js';
 import { findBacklogDir, lessonsDir } from '../core/paths.js';
 import { writeFileSync } from 'node:fs';
@@ -804,6 +807,32 @@ export function listTools(): ToolDefinition[] {
       },
     },
     {
+      name: 'lesson_consolidate',
+      description:
+        'Консолидация корпуса lessons (VL-400): кластеры правил (kind=rule) → предлагаемая строка для AGENTS.md, ' +
+        'пары дублей (duplicate_of из аудита) → предложение supersede, уроки с пустым телом. ' +
+        'READ-ONLY по умолчанию: возвращает план, ничего не пишет. ' +
+        'Запись — только явными списками: supersede (ID канона кластера или урока-дубля) и ' +
+        'appendAgentsMd (строки в секцию-маркер AGENTS.md, дедуп по тексту). ' +
+        'Флага «применить всё» нет намеренно: порог дублей 0.35 даёт ложные пары (lesson-147).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          threshold: { type: 'number', description: 'Порог схожести дублей 0..1 (по умолчанию из настроек/0.35)' },
+          supersede: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'ID уроков: применить supersede-план их кластера/пары (канон → остальные, не-канон → он сам)',
+          },
+          appendAgentsMd: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Строки, дописываемые в секцию-маркер AGENTS.md (дедуп по нормализованному тексту)',
+          },
+        },
+      },
+    },
+    {
       name: 'project_map',
       description:
         'Карта проекта: модули каталога src/ — путь + назначение (первая строка шапки модуля) + экспорты. ' +
@@ -1034,6 +1063,8 @@ export async function handleToolCall(
       return toolLessonAudit(args, cwd);
     case 'lesson_classify':
       return toolLessonClassify(args, cwd);
+    case 'lesson_consolidate':
+      return toolLessonConsolidate(args, cwd);
     case 'project_map':
       return toolProjectMap(args, cwd);
     // VL-311: коммит явными путями с трейлером — детерминированная замена
@@ -3472,8 +3503,64 @@ function toolLessonAudit(args: ToolArgs, cwd: string): string {
 }
 
 /**
- * lesson_classify (VL-280): LLM-классификация уроков + техдолг из workaround'ов.
+ * lesson_consolidate (VL-400): консолидация корпуса lessons.
  *
+ * Границы слоя (lesson-34): типы аргументов валидируются здесь — не-число в
+ * threshold и не-массив в supersede/appendAgentsMd дают явный текст ошибки,
+ * а не TypeError из ядра. Read-only по умолчанию (AC5): план строится всегда,
+ * записи — только по переданным спискам ID/строк (паттерн lesson_audit,
+ * lesson-147). Вывод капится: план на 274 уроках с десятками пар дублей
+ * раздувается, поэтому при превышении бюджета отдаём сводку без titles.
+ */
+function toolLessonConsolidate(args: ToolArgs, cwd: string): string {
+  const threshold = args.threshold;
+  if (threshold !== undefined && (typeof threshold !== 'number' || !(threshold > 0) || threshold > 1)) {
+    return 'Ошибка: поле "threshold" должно быть числом в диапазоне (0, 1].';
+  }
+  const asList = (value: unknown, field: string): string[] | string => {
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) return `Ошибка: поле "${field}" должно быть массивом строк.`;
+    return value.map(v => String(v).trim()).filter(Boolean);
+  };
+  const supersede = asList(args.supersede, 'supersede');
+  if (typeof supersede === 'string') return supersede;
+  const appendAgentsMd = asList(args.appendAgentsMd, 'appendAgentsMd');
+  if (typeof appendAgentsMd === 'string') return appendAgentsMd;
+
+  const plan = buildConsolidationPlan(cwd, {
+    ...(typeof threshold === 'number' ? { duplicateThreshold: threshold } : {}),
+  });
+
+  const applied = (supersede.length > 0 || appendAgentsMd.length > 0)
+    ? applyConsolidation(cwd, {
+      ...(supersede.length > 0 ? { supersede } : {}),
+      ...(appendAgentsMd.length > 0 ? { appendAgentsMd } : {}),
+    })
+    : null;
+
+  const buildPayload = (includeTitles: boolean): string => JSON.stringify({
+    total: plan.total,
+    summary: plan.summary,
+    ruleClusters: plan.ruleClusters.map(c => ({
+      id: c.id,
+      tags: c.tags,
+      lessons: c.lessons,
+      canonical: c.canonical,
+      proposedLine: c.proposedLine,
+      supersede: c.supersede,
+      ...(includeTitles ? { titles: c.titles } : {}),
+    })),
+    duplicatePairs: plan.duplicatePairs,
+    emptyBodies: plan.emptyBodies,
+    ...(applied ? { applied } : {}),
+  }, null, 2);
+
+  const full = buildPayload(true);
+  return full.length <= 20000 ? full : buildPayload(false);
+}
+
+/**
+ * lesson_classify (VL-280): LLM-классификация уроков + техдолг из workaround'ов.
  * Границы слоя (lesson-34): типы аргументов валидируются здесь — не-массив в
  * ids/tags/confirmIds/createClusters игнорируется с явным текстом ошибки,
  * не-число в limit/maxTasks не роняет ядро. Ничего не пишется без явного
