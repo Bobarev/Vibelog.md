@@ -17,6 +17,10 @@
  * - GET  /api/models         — реестр LLM-моделей/провайдеров без ключей (VL-209)
  * - PUT  /api/models         — смена models.default с валидацией (VL-209)
  * - GET  /api/personas       — реестр ролей чата (chat_personas) без промптов (VL-265)
+ * - GET  /api/personas/:id   — полные данные роли: метаданные + тексты промпта и памяти (VL-403)
+ * - PUT  /api/personas/:id   — правка роли с валидацией до записи (VL-403)
+ * - POST /api/personas       — создать проектную роль (VL-403)
+ * - DELETE /api/personas/:id — удалить проектную роль (встроенную нельзя, VL-403)
  * - POST /api/tasks/:id/trigger — запуск фазы оркестратора (VL-28); поле
  *   comment (VL-172) — сначала addComment в задачу, затем {{comment}} промпта;
  *   общий с ботом хелпер startTaskPhase + агент default_agent (VL-180)
@@ -102,6 +106,8 @@ import {
   normalizePricing,
 } from '../core/provider-catalog.js';
 import { DEFAULT_PERSONA_ID, listPersonas, resolvePersona } from './personas.js';
+// VL-403: CRUD ролей со страницы «Персоны» (GET/PUT/POST/DELETE /api/personas/:id)
+import { handlePersonasApi } from './personas-api.js';
 // VL-402: отмена записи памяти персоны из ленты чата (кнопка «Убрать»)
 import { loadMemoryRemovals, removeMemoryByEvent } from './chat-memory.js';
 import { CHAT_SECTION_KEYS, loadBotSettings, saveBotSettings } from '../bot/settings.js';
@@ -532,6 +538,13 @@ export function handleApi(
         body: { personas, default: DEFAULT_PERSONA_ID, errors },
       };
     }
+
+    // /api/personas/:id и write-методы /api/personas — страница «Персоны»
+    // (VL-403). Ветка ПОСЛЕ точного GET /api/personas (иначе список уехал бы
+    // в детальный хендлер) и ДО прочих детальных маршрутов. null — URL не
+    // наш, роутинг продолжается (паттерн handleSetupApi).
+    const personasResponse = handlePersonasApi(method, url, body, cwd);
+    if (personasResponse !== null) return personasResponse;
 
     // GET /api/references — список references (VL-174).
     // Тела (body) НЕ отдаём: список показывает только метаданные

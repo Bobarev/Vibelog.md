@@ -49,6 +49,13 @@ interface NavSubItem {
   title: string;
   url: Route;
   icon?: React.ComponentType<{ className?: string }>;
+  /**
+   * Дополнительные маршруты, где подпункт активен (VL-403): «Персоны»
+   * подсвечиваются и на детальной странице #/persona/<id>, у которой свой
+   * Route — сравнивать только с url нельзя (тот же приём, что activeWhen
+   * у NavItem, VL-174).
+   */
+  activeWhen?: Route[];
 }
 
 /** Пункт меню: ссылка ИЛИ родитель с подпунктами (как NavMainItem в ref-2). */
@@ -150,7 +157,9 @@ function NavParentItem({
 }) {
   const { state, isMobile } = useSidebar();
   const isCollapsedDesktop = state === "collapsed" && !isMobile;
-  const isActive = item.subItems.some((sub) => sub.url === route);
+  const isActive = item.subItems.some(
+    (sub) => sub.url === route || (sub.activeWhen?.includes(route) ?? false),
+  );
 
   if (isCollapsedDesktop) {
     return <NavDropdownItem item={item} isActive={isActive} route={route} />;
@@ -197,7 +206,12 @@ function NavCollapsibleItem({
           <SidebarMenuSub>
             {item.subItems.map((subItem) => (
               <SidebarMenuSubItem key={subItem.id}>
-                <SidebarMenuSubButton asChild isActive={subItem.url === route}>
+                <SidebarMenuSubButton
+                  asChild
+                  isActive={
+                    subItem.url === route || (subItem.activeWhen?.includes(route) ?? false)
+                  }
+                >
                   <a href={hrefFor(subItem.url)}>
                     {subItem.icon && <subItem.icon />}
                     <span>{subItem.title}</span>
@@ -238,7 +252,11 @@ function NavDropdownItem({
               <DropdownMenuItem key={subItem.id} asChild>
                 <a
                   href={hrefFor(subItem.url)}
-                  aria-current={subItem.url === route ? "page" : undefined}
+                  aria-current={
+                    subItem.url === route || (subItem.activeWhen?.includes(route) ?? false)
+                      ? "page"
+                      : undefined
+                  }
                   className="flex items-center gap-2"
                 >
                   {subItem.icon && <subItem.icon />}

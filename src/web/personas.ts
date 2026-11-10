@@ -58,6 +58,27 @@ const FALLBACK_DEFAULT_STATUS = 'Spec';
 /** Локальные (не-MCP) инструменты чата — тоже валидные имена для allow_tools. */
 const LOCAL_CHAT_TOOLS = ['read_file', 'write_file', 'search_files'] as const;
 
+/**
+ * Все имена инструментов, допустимые в `allow_tools` (VL-403): MCP-реестр
+ * `listTools()` + локальные инструменты чата.
+ *
+ * Экспортируется, чтобы страница «Персоны» показывала мультиселект ровно тех
+ * имён, которые примет валидация: список в UI и список в валидаторе — один
+ * источник (иначе пользователь выбирает имя, а PUT отвечает 400).
+ */
+export function knownToolNames(): string[] {
+  return [...listTools().map(t => t.name), ...LOCAL_CHAT_TOOLS];
+}
+
+/**
+ * Встроенная ли роль (VL-403): встроенные роли нельзя удалить, только
+ * переопределить. Проверка по BUILTIN_PERSONAS, а не по наличию записи в
+ * settings.json — переопределение не делает роль проектной.
+ */
+export function isBuiltinPersonaId(id: string): boolean {
+  return BUILTIN_PERSONAS.some(p => p.id === id);
+}
+
 /** Одна роль реестра (после слияния встроенных и проектных). */
 export interface PersonaConfig {
   /** id роли (ключ в chat_personas / встроенный id). */
@@ -87,6 +108,12 @@ export interface PersonaSummary {
   id: string;
   label: string;
   description?: string;
+  /**
+   * VL-403: роль встроенная (нельзя удалить, только переопределить).
+   * Считается по BUILTIN_PERSONAS, а не по наличию записи в settings.json:
+   * переопределение не делает роль проектной.
+   */
+  builtin: boolean;
   /**
    * VL-401: состояние памяти персоны — БЕЗ текста (как и промпт, память
    * остаётся на сервере: там могут быть личные заметки о пользователе).
@@ -316,6 +343,7 @@ export function listPersonas(cwd: string): { personas: PersonaSummary[]; errors:
         id: p.id,
         label: p.label,
         ...(p.description ? { description: p.description } : {}),
+        builtin: isBuiltinPersonaId(p.id),
         memory: { exists: memory.exists, chars: memory.chars, truncated: memory.truncated },
       };
     }),

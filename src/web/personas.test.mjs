@@ -272,10 +272,15 @@ describe('GET /api/personas (AC13)', () => {
   it('listPersonas отдаёт сводки без prompt/allowTools', () => {
     const { personas } = listPersonas(cwd);
     assert.ok(
-      personas.every(p => Object.keys(p).every(k => ['id', 'label', 'description', 'memory'].includes(k))),
+      personas.every(p =>
+        Object.keys(p).every(k => ['id', 'label', 'description', 'builtin', 'memory'].includes(k)),
+      ),
     );
     // VL-401: память отдаётся только состоянием, без текста
     assert.ok(personas.every(p => typeof p.memory.exists === 'boolean'));
+    // VL-403: признак встроенной роли для страницы «Персоны»
+    assert.ok(personas.every(p => typeof p.builtin === 'boolean'));
+    assert.equal(personas.find(p => p.id === 'helper').builtin, true);
   });
 });
 
