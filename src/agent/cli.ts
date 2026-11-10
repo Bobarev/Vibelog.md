@@ -863,6 +863,17 @@ export async function main(argv: string[]): Promise<void> {
     (process.env.VIBELOG_PHASE_NAME && process.env.VIBELOG_PHASE_NAME !== 'prompt'
       ? process.env.VIBELOG_PHASE_NAME
       : undefined);
+  // VL-410: задача и каталог задач для вычисления следующего шага фазы
+  // (`phaseNextStep`). taskCwd — где живут файлы задач: в branch-mode
+  // VIBELOG_CWD указывает на главный репо (lesson-13). Задача не читается —
+  // директива отдаст общую фразу, фаза не падает.
+  const loopTaskCwd = process.env.VIBELOG_CWD ?? cwd;
+  const loopTaskId = isPhaseMode
+    ? positionals[1]
+    : process.env.VIBELOG_PHASE_TASK_ID && taskIdPattern(cwd).test(process.env.VIBELOG_PHASE_TASK_ID)
+      ? process.env.VIBELOG_PHASE_TASK_ID
+      : undefined;
+  const loopTask = loopTaskId ? getTask(loopTaskCwd, loopTaskId) : null;
   const loopResult = await runLoop({
     llm,
     messages,
@@ -873,6 +884,11 @@ export async function main(argv: string[]): Promise<void> {
     // поэтому здесь только явная фаза и env — для close этого достаточно
     // (он всегда приходит явно или через VIBELOG_RUN_PHASE).
     ...(loopRunPhase ? { phase: loopRunPhase } : {}),
+    // VL-410: следующий шаг фазы вычисляется из workflow и completeness —
+    // loop нужны каталог проекта и задача рана. Задача читается из taskCwd
+    // (в branch-mode это главный репо, lesson-13); не читается — директива
+    // отдаст общую фразу, фаза не падает.
+    ...(loopRunPhase && loopTask ? { cwd: loopTaskCwd, task: loopTask } : {}),
     limits: {
       ...(opts.maxToolCalls !== undefined ? { maxToolCalls: opts.maxToolCalls } : {}),
       ...(opts.toolCallsPerSession !== undefined ? { maxToolCallsPerSession: opts.toolCallsPerSession } : {}),

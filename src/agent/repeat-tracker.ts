@@ -884,20 +884,17 @@ export function parsedAckNext(output: string): AckNext | null {
  * (`serializeAck`), и несёт `missing`/`hint`/`retryWith` последнего ответа —
  * плоского текста в директивах цикла не остаётся.
  */
-export function appliedNoopDirective(name: string, lastAck?: AckNext, phase?: string): string {
-  // VL-368: общая фраза «переходи к следующему пункту» не говорит модели, ЧТО
-  // именно делать. В Close следующий шаг единственный: отметить AC/DoD и
-  // вызвать backlog_finish_phase — без этого фаза не завершается (статус не
-  // двигается, авто-resume не запускается).
-  const nextStep =
-    phase === 'close'
-      ? 'Следующий шаг фазы close: отметь AC/DoD (backlog_manage_ac/backlog_manage_dod) и вызови backlog_finish_phase.'
-      : 'Переходи к следующему пункту фазы, а если работа сделана — к отчёту.';
+export function appliedNoopDirective(name: string, lastAck?: AckNext, nextStep?: string, phase?: string): string {
+  // VL-410: текст следующего шага приходит готовым из `phaseNextStep`
+  // (src/core/workflow.ts) — он вычислен из workflow и `completeness`, поэтому
+  // работает для любой фазы, включая кастомные. Хардкод `phase === 'close'`
+  // (VL-368) удалён: имена фаз в директивах не сравниваются.
+  const step = nextStep ?? 'Переходи к следующему пункту фазы, а если работа сделана — к отчёту.';
   return serializeAck({
     outcome: 'noop',
     reason: 'noop_repeat',
     message:
-      `Вызов ${name} уже применён ранее — повтор НЕ выполнен, он ничего не изменит. ` + nextStep,
+      `Вызов ${name} уже применён ранее — повтор НЕ выполнен, он ничего не изменит. ` + step,
     next: ackNextFields(lastAck),
     extra: { applied_repeat: true, ...(phase ? { phase } : {}) },
   });
@@ -920,13 +917,17 @@ export function appliedNoopDirective(name: string, lastAck?: AckNext, phase?: st
  * `missing`/`hint`/`retryWith` последнего ответа — модель видит КОНКРЕТНОЕ
  * недостающее поле, а не описательное «добавь отсутствующее поле».
  */
-export function noopRepeatDirective(name: string, lastAck?: AckNext): string {
+export function noopRepeatDirective(name: string, lastAck?: AckNext, nextStep?: string): string {
+  // VL-410: следующий шаг — готовый текст из `phaseNextStep` (workflow +
+  // completeness), а не общая фраза «прочитай состояние или смени аргумент»:
+  // модель читала её как «попробуй ещё раз» и повторяла вызов дословно
+  // (сессия agent-1794313856082, тот же механизм, что VL-319/349/361).
+  const step = nextStep ?? 'Следующий шаг: прочитай состояние или смени аргумент.';
   return serializeAck({
     outcome: 'noop',
     reason: 'noop_repeat',
     message:
-      `Изменений нет: вызов ${name} НЕ исполнен (поля уже такие). Повтор ничего не изменит. ` +
-      'Следующий шаг: прочитай состояние или смени аргумент.',
+      `Изменений нет: вызов ${name} НЕ исполнен (поля уже такие). Повтор ничего не изменит. ` + step,
     next: ackNextFields(lastAck),
     extra: { noop_repeat: true },
   });

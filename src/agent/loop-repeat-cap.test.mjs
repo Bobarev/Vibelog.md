@@ -8,8 +8,11 @@
  * коммит, отчёт) делает завершение штатным.
  */
 
-import { describe, it } from 'vitest';
+import { describe, it, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { runLoop } from '../../dist/agent/loop.js';
 
@@ -217,10 +220,21 @@ describe('VL-361 — shell-работа учитывается как прогр
  *
  * Close с коммитом документации и последующим капом повторов `lesson_update`
  * завершался «штатно» (is_error:false) при неотмеченных AC/DoD: статус не
- * откатывался, авто-resume не запускался, задача молча висела. Теперь для
- * `REPORT_REQUIRED_PHASES` (close) `runHasProgress()` требует `reportWritten`.
+ * откатывался, авто-resume не запускался, задача молча висела. Теперь
+ * «нужен отчёт» вычисляется из workflow (`phaseNextStep`, VL-410), и
+ * `runHasProgress()` требует `reportWritten`.
  */
 describe('VL-368 — close без отчёта: кап повторов даёт честный fail()', () => {
+  // VL-410: признак «нужен отчёт» считается из workflow задачи, поэтому рану
+  // нужны cwd и задача. Каталог — mkdtemp (AGENTS.md: фиксированные пути
+  // запрещены), задача — минимальный объект: workflow берётся по типу.
+  const projectDir = mkdtempSync(join(tmpdir(), 'vibelog-loop-cap-'));
+  afterAll(() => {
+    rmSync(projectDir, { recursive: true, force: true });
+  });
+  const closeTask = { id: 'VL-1', type: 'task', status: 'Review' };
+  const codeTask = { id: 'VL-1', type: 'task', status: 'Planned' };
+
   const appliedSpec = {
     name: 'lesson_update',
     description: 'write-заглушка, ответ ok',
@@ -255,6 +269,8 @@ describe('VL-368 — close без отчёта: кап повторов даёт
       messages: USER_MSG,
       tools: [commitSpec, appliedSpec],
       phase: 'close',
+      cwd: projectDir,
+      task: closeTask,
     });
     assert.equal(res.is_error, true, `без отчёта фаза не завершена: ${res.result.slice(0, 300)}`);
     assert.match(res.result, /отчёт фазы \(backlog_finish_phase\) не записан/);
@@ -276,11 +292,15 @@ describe('VL-368 — close без отчёта: кап повторов даёт
       messages: USER_MSG,
       tools: [commitSpec, finishSpec, appliedSpec],
       phase: 'close',
+      cwd: projectDir,
+      task: closeTask,
     });
     assert.equal(res.is_error, false, `отчёт записан — ран завершается штатно: ${res.result.slice(0, 300)}`);
   });
 
-  it('вне close (code) след работы по-прежнему достаточен', async () => {
+  it('VL-410: code тоже требует отчёта — у фазы есть переход (Planned → Review)', async () => {
+    // До VL-410 «нужен отчёт» было захардкожено для close. Теперь признак
+    // вычисляется из workflow: у code переход есть, значит отчёт обязателен.
     const same = { id: 'lesson-1' };
     const scripts = [
       { text: '', toolCalls: [{ id: 'g1', name: 'git_commit', arguments: { paths: ['src/a.ts'] } }] },
@@ -295,7 +315,32 @@ describe('VL-368 — close без отчёта: кап повторов даёт
       messages: USER_MSG,
       tools: [commitSpec, appliedSpec],
       phase: 'code',
+      cwd: projectDir,
+      task: codeTask,
     });
-    assert.equal(res.is_error, false, `code: коммит — достаточный след работы: ${res.result.slice(0, 300)}`);
+    assert.equal(res.is_error, true, `code без отчёта — фаза не завершена: ${res.result.slice(0, 300)}`);
+    assert.match(res.result, /отчёт фазы \(backlog_finish_phase\) не записан/);
+  });
+
+  it('VL-410: code с записанным отчётом — штатное завершение', async () => {
+    const same = { id: 'lesson-1' };
+    const scripts = [
+      { text: '', toolCalls: [{ id: 'g1', name: 'git_commit', arguments: { paths: ['src/a.ts'] } }] },
+      { text: '', toolCalls: [{ id: 'f1', name: 'backlog_finish_phase', arguments: { id: 'VL-1' } }] },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        text: '',
+        toolCalls: [{ id: `c${i}`, name: 'lesson_update', arguments: same }],
+      })),
+    ];
+    const { llm } = fakeLlm(scripts);
+    const res = await runLoop({
+      llm,
+      messages: USER_MSG,
+      tools: [commitSpec, finishSpec, appliedSpec],
+      phase: 'code',
+      cwd: projectDir,
+      task: codeTask,
+    });
+    assert.equal(res.is_error, false, `отчёт записан — ран завершается штатно: ${res.result.slice(0, 300)}`);
   });
 });
