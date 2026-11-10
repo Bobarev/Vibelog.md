@@ -33,6 +33,8 @@ Vibelog.md реализует MCP-сервер поверх stdio (JSON-RPC 2.0)
 | `reference_update` | Обновить теги/описание/набор ссылок reference (полная замена) |
 | `reference_link` | Двусторонняя связь reference ↔ задача (linked_tasks ↔ task.references) |
 | `reference_sync` | Доклонировать отсутствующие репозитории (type=repo) |
+| `reference_tasks` | Задачи из клона референса (type=repo): фильтры status/labels/type, сортировка, лимит; ответ содержит `total` и `returned` |
+| `reference_task_view` | Полная задача из клона референса по ID (описание, AC, план, итог) |
 | `document_list` | Список документов (`backlog/docs/`) с текстовым фильтром по id/title/tags/телу |
 | `document_view` | Показать документ по id (frontmatter + содержимое) |
 | `document_create` | Создать документ (readme / guide / specification / other) |

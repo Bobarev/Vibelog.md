@@ -42,6 +42,8 @@ import type { Reference } from '../core/reference.js';
 import {
   cacheReference, refreshReferenceCache, readReferenceCache, syncReferenceCaches,
 } from '../core/reference-cache.js';
+// VL-418: чтение задач из клона референса (чужой backlog) — read-only пара
+import { toolReferenceTasks, toolReferenceTaskView } from './reference-tasks-tool.js';
 import {
   listLessons, getLesson, createLessonFile,
   updateLesson, searchLessons, linkLesson, supersedeLesson,
@@ -668,6 +670,38 @@ export function listTools(): ToolDefinition[] {
         },
       },
     },
+    // VL-418: чтение задач из клона референса (чужой backlog). Аргумента
+    // path/dir в схеме НЕТ намеренно: путь резолвится только через
+    // referenceCloneDir + realpath-проверку внутри references/data/.
+    {
+      name: 'reference_tasks',
+      description: 'Список задач из клона референса (type=repo) — чтение чужого backlog без read_file по путям. Фильтры status/labels/type, сортировка, лимит (дефолт 50, максимум 200). Ответ содержит total (сколько всего совпало) и returned (сколько отдано). Аргумента пути нет: каталог резолвится из reference.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          reference: { type: 'string', description: 'ID reference (ref-N) с type=repo' },
+          status: { type: 'string', description: 'Точный статус задачи (case-insensitive)' },
+          labels: { type: 'array', items: { type: 'string' }, description: 'Метки: должны совпасть все (AND)' },
+          type: { type: 'string', description: 'Точный тип задачи (bug/feature/…)' },
+          limit: { type: 'number', description: 'Максимум задач в ответе (дефолт 50, максимум 200)' },
+          sort: { type: 'string', enum: ['id', 'updated', 'priority'], description: 'Сортировка: id (натуральная), updated (свежие первыми), priority (High→Medium→Low)' },
+          includeCompleted: { type: 'boolean', description: 'Читать и backlog/completed/ (по умолчанию только backlog/tasks/)' },
+        },
+        required: ['reference'],
+      },
+    },
+    {
+      name: 'reference_task_view',
+      description: 'Полная задача из клона референса (type=repo) по ID: описание, AC, план, итоговое резюме. Неизвестный id → ошибка со списком ближайших ID.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          reference: { type: 'string', description: 'ID reference (ref-N) с type=repo' },
+          id: { type: 'string', description: 'ID задачи в клоне (например VL-123)' },
+        },
+        required: ['reference', 'id'],
+      },
+    },
     // === Lessons learned — уроки из задач (VL-153) ===
     {
       name: 'lesson_list',
@@ -1090,6 +1124,12 @@ async function handleToolCallInner(
       return toolReferenceLink(args, cwd);
     case 'reference_sync':
       return toolReferenceSync(args, cwd);
+    // VL-418: чтение задач из клона референса — чистый read, идемпотентность
+    // by-key не нужна (ничего не пишется)
+    case 'reference_tasks':
+      return toolReferenceTasks(args, cwd);
+    case 'reference_task_view':
+      return toolReferenceTaskView(args, cwd);
     case 'lesson_list':
       return toolLessonList(args, cwd);
     case 'lesson_create':
