@@ -14,7 +14,9 @@
  * (#/documents — список документов, VL-181) и 'document'
  * (#/document/<id> — просмотр/редактирование документа, VL-181),
  * 'lessons' (#/lessons — список lessons, VL-182) и 'lesson'
- * (#/lesson/<id> — просмотр/редактирование lesson, VL-182).
+ * (#/lesson/<id> — просмотр/редактирование lesson, VL-182),
+ * 'personas' (#/personas — список ролей веб-чата, VL-403) и 'persona'
+ * (#/persona/<id> — правка промпта и памяти роли, VL-403).
  */
 
 import * as React from 'react';
@@ -35,6 +37,8 @@ export type Route =
   | 'document'
   | 'lessons'
   | 'lesson'
+  | 'personas'
+  | 'persona'
   | 'activity';
 
 /** Текущий маршрут по location.hash. */
@@ -62,11 +66,17 @@ function parseHash(hash: string): Route {
   // 'lesson/<id>' (паттерн documents/document; сам по себе 'lessons' не
   // начинается с 'lesson/', но порядок фиксируем явно — VL-182)
   if (path === 'lessons') return 'lessons';
+  // ВАЖНО: 'personas' — списком точным совпадением ДО детального префикса
+  // 'persona/<id>' (VL-403, паттерн documents/document и lessons/lesson:
+  // 'personas' не начинается с 'persona/', но порядок фиксируем явно —
+  // иначе список уедет на детальную страницу с пустым id, lesson-22)
+  if (path === 'personas') return 'personas';
   // ВАЖНО: 'reference/<id>' — после 'references' (не пересекаются, но рядом:
   // 'references' — список, 'reference/ref-N' — детальная страница VL-174)
   if (path.startsWith('reference/')) return 'reference';
   if (path.startsWith('document/')) return 'document';
   if (path.startsWith('lesson/')) return 'lesson';
+  if (path.startsWith('persona/')) return 'persona';
   return 'board';
 }
 
@@ -157,6 +167,27 @@ export function useLessonId(): string | null {
   const [id, setId] = React.useState<string | null>(() => parseLessonId(window.location.hash));
   React.useEffect(() => {
     const onChange = () => setId(parseLessonId(window.location.hash));
+    window.addEventListener('hashchange', onChange);
+    return () => window.removeEventListener('hashchange', onChange);
+  }, []);
+  return id;
+}
+
+/** id персоны из хеша `#/persona/<id>` (null, если маршрут другой). */
+function parsePersonaId(hash: string): string | null {
+  const match = hash.match(/^#\/persona\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+/**
+ * Подписка на id персоны из хеша (VL-403): детальная страница
+ * `#/persona/<id>` перерисовывается при смене id (навигация из списка без
+ * перезагрузки; guard пустого id — на стороне компонента, lesson-22).
+ */
+export function usePersonaId(): string | null {
+  const [id, setId] = React.useState<string | null>(() => parsePersonaId(window.location.hash));
+  React.useEffect(() => {
+    const onChange = () => setId(parsePersonaId(window.location.hash));
     window.addEventListener('hashchange', onChange);
     return () => window.removeEventListener('hashchange', onChange);
   }, []);
