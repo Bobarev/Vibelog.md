@@ -10,7 +10,7 @@ tags:
 ---
 # MCP-справочник Vibelog.md
 
-56 инструментов MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
+57 инструментов MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
 Автоматическое подключение: `vibelog init` пишет `mcpServers` в `.qwen/settings.json`
 (ручная настройка — в [MCP-SETUP.md](../MCP-SETUP.md)).
 
@@ -409,7 +409,11 @@ HTTP-эндпоинты карточки: `POST /api/chat/supervisor/grant-draft
 
 | Параметр | Тип | Описание |
 |---|---|---|
-| `query` | string | Фильтр по id/title/tags/телу |
+| `query` | string | Фильтр подстрокой по id/title/type/tags/телу |
+| `tags` | string[] | **Точный** фильтр по тегам: AND по нескольким, case-insensitive (`trim().toLowerCase()` с обеих сторон). `tags: ['week']` не матчит `weekly-report` — в отличие от `query`. Пустой массив `[]` = фильтра нет |
+| `excerpt` | number | Первые N символов тела в ответе (по умолчанию `0` — тело не отдаётся). Закрывает «сводку по портфелю» одним вызовом вместо N × `document_view` |
+
+`query` и `tags` комбинируются через AND (оба фильтра применяются последовательно). Точный фильтр по тегам добавлен в VL-416: подстрока `week` находила и `weekly-report`, и совпадение в теле, поэтому «все документы с тегом `week`» спросить было нельзя.
 
 ### document_view
 
@@ -738,6 +742,27 @@ lesson_consolidate {"supersede":["lesson-211"], "appendAgentsMd":["Перед me
 
 ## Git
 
+### git_status — состояние рабочего дерева (read, VL-416)
+
+Read-only обёртка над `collectGit` (`src/core/status.ts`) — того же кода, что собирает секцию `git` в `vibelog status`. До VL-416 у агента был `git_commit`, но не было способа увидеть незакоммиченное: в сессии проекта Vibelog UI грязные настройки заметил человек, а не агент.
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `paths` | string[] | | Если передан — дополнительно `git status --porcelain -- <paths>` по явным путям (вопрос «грязен ли файл задачи перед коммитом»). Пути резолвятся через `resolveInProject`; выход за пределы проекта — отказ |
+
+Ответ — `ackRead` с `{ git, branch, changed, untracked, ahead, behind, upstream }`:
+
+- `changed` — число изменённых файлов, `untracked` — неотслеживаемых, `ahead`/`behind` — расхождение с `upstream`;
+- вне git-репозитория — **не ошибка**: `ok: true`, `git: null` и текст «не git-репозиторий»;
+- сбой git (`git.error`) — `ackError` с исходным текстом: сбой не выдаётся за «чисто»;
+- с `paths` — дополнительно `paths` с разобранным porcelain-выводом (включая переименования `R old -> new`).
+
+Все git-вызовы — `spawnSync('git', args, { cwd })` без shell. `TOOL_KINDS.git_status === 'read'`, в `GRANTABLE_TOOLS` супервизора не входит.
+
+```
+git_status {"paths": ["backlog/tasks/VL-416 - MCP-git-status.md"]}
+```
+
 ### git_commit — детерминированный коммит явными путями (VL-311)
 
 Узкий write-инструмент: коммит только переданных путей, с автоматическим трейлером `Co-authored-by` и сверкой с задачей. Заменил текстовые правила шаблонов фаз («никогда `git add -A`», «передай трейлер вторым `-m`»), которые держались только на дисциплине модели.
@@ -767,7 +792,7 @@ lesson_consolidate {"supersede":["lesson-211"], "appendAgentsMd":["Перед me
 
 Все git-вызовы — `spawnSync('git', args, { cwd })` без shell: `message` и пути передаются аргументами, инъекция невозможна. Необязательный параметр `cwd` (путь внутри проекта) нужен шагу 2 шаблона `phase-close-worktree.md`, который коммитит worktree задачи из фазы close.
 
-Граница: инструмент узкий — только commit. `status`, `log`, `diff`, `merge`, `worktree remove`, `branch -d`, `stash` остаются `run_shell_command` (чтение и редкие операции, обёртка не даёт выигрыша).
+Граница: инструмент узкий — только commit. Чтение состояния дерева — `git_status` (VL-416); `log`, `diff`, `merge`, `worktree remove`, `branch -d`, `stash` остаются `run_shell_command` (редкие операции, обёртка не даёт выигрыша).
 
 `isWriteOperation('git_commit') === true` (маркер `commit` в `WRITE_MARKERS`, `src/core/tool-classify.ts`); в `GRANTABLE_TOOLS` супервизора инструмент не входит.
 
