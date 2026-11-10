@@ -55,6 +55,8 @@ export const BOT_COMMANDS: RegistryCommand[] = [
   { command: 'resume', description: 'Возобновить сессию агента: /resume vb:agent-XXX [комментарий]', usage: '/resume[:agent] <session-ref> [комментарий]', examples: ['/resume vb:agent-1792 продолжи', '/resume 6e3f8a9c-1234-4abc-9def-000000000000 проверь сборку'] },
   { command: 'restart', description: 'Перезапустить бота: /restart [VL-N] — из ветки vb/vl-N, без аргумента — из корневого dist/', examples: ['/restart', '/restart VL-12'] },
   { command: 'web', description: 'Веб-интерфейс: /web start [VL-N] | /web stop', usage: '/web start [VL-N] | /web stop', examples: ['/web start', '/web start VL-12', '/web stop'] },
+  // VL-408: продолжение диалога из веб-чата в боте (пересылка сообщений)
+  { command: 'chat', description: 'Возобновить веб-чат: /chat <chat-id> — пересылка сообщений в чат', usage: '/chat <chat-id>', examples: ['/chat chat-mw9m0xwb-lx1p3oid'] },
 ];
 
 /**

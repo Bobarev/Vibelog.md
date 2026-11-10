@@ -63,6 +63,7 @@ import {
   richToText,
   parseAnalyzeCommand,
   parseAutoCommand,
+  parseChatCommand,
   parseCloseCommand,
   parseCodeCommand,
   parseCommitsCommand,
@@ -77,6 +78,15 @@ import {
   parseStatusCommand,
 } from './commands.js';
 import type { AgentName } from './commands.js';
+// VL-408: мост «бот ↔ веб-чат» — режим пересылки сообщений в тред веб-чата
+import {
+  clearChatBridge,
+  forwardChatMessage,
+  getChatBridge,
+  lastAssistantText,
+  setChatBridge,
+} from './chat-bridge.js';
+import { getChatThread } from '../web/chat.js';
 
 /** Зависимости обработчиков (пин — из замыкания runBot, cwd — проект). */
 export interface HandlerDeps {
@@ -1423,6 +1433,43 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       }
     });
   });
+  // ── VL-408: /chat <chat-id> — продолжить диалог из веб-чата ──
+  // Регистрируется ПОСЛЕ /web и ДО callback_query: все bot.command обязаны
+  // стоять до catch-all message:text (ловушка порядка grammy, doc-1).
+  // Ответ: подтверждение режима + последнее сообщение персоны из треда.
+  bot.command('chat', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const parsed = parseChatCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, escapeMarkdownV2(parsed.error));
+      return;
+    }
+    const history = getChatThread(deps.cwd, parsed.threadId);
+    if (history === null) {
+      await sendMd(ctx, `⚠️ Чат ${escapeMarkdownV2(parsed.threadId)} не найден`);
+      return;
+    }
+    // Режим включаем ДО отправки ответа: пользователь может написать сразу
+    // после подтверждения, и сообщение уже должно уйти в тред.
+    setChatBridge(chatId, parsed.threadId);
+    const last = lastAssistantText(history);
+    await sendMd(
+      ctx,
+      `🔗 Режим пересылки включён: *${escapeMarkdownV2(parsed.threadId)}*\n` +
+        'Пишите обычным текстом — сообщения уйдут в этот веб-чат. ' +
+        'Выход: /cancel или новый /chat.'
+    );
+    if (!last) {
+      await sendMd(ctx, 'В чате пока нет ответов персоны.');
+      return;
+    }
+    // Длинный ответ режем по лимиту Telegram (chunkRich — по границам строк)
+    for (const part of chunkRich(last, TELEGRAM_TEXT_LIMIT)) {
+      await sendMd(ctx, part);
+    }
+  });
   // ── Кнопка «следующий этап» (VL-72) ──
   // callback-кнопка из rich-рендера карточки задачи: data = next:<id>.
   // Запускает фазу по маппингу статус→фаза (как /plan,/code,/close),
@@ -1753,6 +1800,54 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await commitComment(taskId, text, chatId, resolveDefaultAgent(deps.cwd));
     } catch (err) {
       await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+  // ── VL-408: пересылка сообщений в веб-чат (режим /chat) ──
+  // Строго МЕЖДУ awaitingComment (VL-78) и reply-resume (VL-93):
+  // (а) режим комментария должен выигрывать у пересылки — иначе текст
+  // комментария ушёл бы в веб-чат; (б) при активном режиме reply на
+  // сообщение бота тоже должен уходить в чат, а не запускать resume-сессию
+  // агента. Все «не наш случай» ветки зовут next() — иначе цепочка grammy
+  // останавливается и пин-код перестаёт работать (ловушка порядка VL-37).
+  bot.on('message:text', async (ctx, next) => {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) {
+      await next();
+      return;
+    }
+    const threadId = getChatBridge(chatId);
+    if (threadId === null) {
+      await next();
+      return;
+    }
+    const text = ctx.message.text.trim();
+    // /cancel — выход из режима (не пересылаем). Отдельным bot.command его
+    // регистрировать нельзя: он перехватил бы /cancel у режима комментария.
+    if (text === '/cancel') {
+      clearChatBridge(chatId);
+      await sendMd(ctx, 'Режим пересылки завершён.');
+      return;
+    }
+    // Слэш-команды работают как раньше (AC2): уходят дальше по цепочке
+    if (!text || text.startsWith('/')) {
+      await next();
+      return;
+    }
+    const result = await forwardChatMessage(deps.cwd, threadId, text);
+    if ('error' in result) {
+      await sendMd(ctx, `⚠️ ${escapeMarkdownV2(result.error)}`);
+      return;
+    }
+    if ('needsWeb' in result) {
+      await sendMd(ctx, escapeMarkdownV2(result.needsWeb));
+      return;
+    }
+    if (!result.text) {
+      await sendMd(ctx, 'Персона не вернула текст — подробности в веб-интерфейсе.');
+      return;
+    }
+    for (const part of chunkRich(result.text, TELEGRAM_TEXT_LIMIT)) {
+      await sendMd(ctx, part);
     }
   });
   // ── VL-93: reply на информационное сообщение бота → resume сессии qwen ──

@@ -22,6 +22,7 @@ import {
   parseSetCommand,
   parseSpecCommand,
   parseAutoCommand,
+  parseChatCommand,
 } from '../../dist/bot/commands.js';
 
 describe('parseCreateCommand (VL-35)', () => {
@@ -852,5 +853,30 @@ describe('richToText (VL-93 fix: rich_message без поля text)', () => {
       ],
     };
     assert.equal(richToText(rich), '👍\nвторой блок');
+  });
+});
+
+describe('parseChatCommand (VL-408)', () => {
+  it('валидный id треда', () => {
+    assert.deepEqual(parseChatCommand('chat-mw9m0xwb-lx1p3oid'), {
+      threadId: 'chat-mw9m0xwb-lx1p3oid',
+    });
+  });
+
+  it('пустой ввод — подсказка синтаксиса', () => {
+    const r = parseChatCommand('   ');
+    assert.ok('error' in r);
+    assert.match(r.error, /chat <chat-id>/);
+  });
+
+  it('недопустимые символы в id отклоняются (path-traversal)', () => {
+    for (const bad of ['chat/../x', 'chat.jsonl', 'x'.repeat(65)]) {
+      const r = parseChatCommand(bad);
+      assert.ok('error' in r, `id "${bad}" должен быть отклонён`);
+    }
+  });
+
+  it('хвост после id игнорируется', () => {
+    assert.deepEqual(parseChatCommand('chat-abc привет'), { threadId: 'chat-abc' });
   });
 });

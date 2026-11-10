@@ -12,7 +12,7 @@ import { escapeMarkdownV2 } from '../../dist/bot/formatting.js';
 
 describe('BOT_COMMANDS (VL-54)', () => {
   it('реестр валиден по лимитам Telegram', () => {
-    assert.equal(BOT_COMMANDS.length, 25, `ожидалось 25 команда, получено: ${BOT_COMMANDS.length}`);
+    assert.equal(BOT_COMMANDS.length, 26, `ожидалось 26 команда, получено: ${BOT_COMMANDS.length}`);
     assert.ok(BOT_COMMANDS.length <= 100, 'лимит Telegram: не более 100 команд');
     const seen = new Set();
     for (const c of BOT_COMMANDS) {
@@ -104,8 +104,16 @@ describe('BOT_COMMANDS (VL-54)', () => {
   it('commandsHelp() повторяет прежний хардкод help-строки /start', () => {
     assert.equal(
       commandsHelp(),
-      '/help, /tasks, /task <id>, /docs, /doc <id>, /board, /diff, /commits [N], /create, /status, /move <id> <статус>, /set agent <qwen|vb> | model <id> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off>, /model, /auto add VL-N … | start | stop | status, /comment[:agent] VL-1 <текст>, /spec[:agent] <описание>, /plan[:agent] VL-<id> [комментарий], /code[:agent] VL-<id> [комментарий], /close[:agent] VL-<id>, /prompt[:agent] <текст>, /analyze[:agent] <session-ref> [комментарий], /resume[:agent] <session-ref> [комментарий], /restart, /web start [VL-N] | /web stop'
+      '/help, /tasks, /task <id>, /docs, /doc <id>, /board, /diff, /commits [N], /create, /status, /move <id> <статус>, /set agent <qwen|vb> | model <id> | max-wall-time <сек> | max-requests <N> | branch-mode <on|off> | compact <on|off>, /model, /auto add VL-N … | start | stop | status, /comment[:agent] VL-1 <текст>, /spec[:agent] <описание>, /plan[:agent] VL-<id> [комментарий], /code[:agent] VL-<id> [комментарий], /close[:agent] VL-<id>, /prompt[:agent] <текст>, /analyze[:agent] <session-ref> [комментарий], /resume[:agent] <session-ref> [комментарий], /restart, /web start [VL-N] | /web stop, /chat <chat-id>'
     );
+  });
+
+  it('команда chat в реестре с usage /chat <chat-id> (VL-408)', () => {
+    const chat = BOT_COMMANDS.find((c) => c.command === 'chat');
+    assert.ok(chat, 'команда chat отсутствует в реестре');
+    assert.equal(chat.usage, '/chat <chat-id>');
+    assert.ok(chat.examples?.length, 'у chat нет examples');
+    assert.match(chat.examples[0], /^\/chat chat-/);
   });
 
   it('команда web в реестре с usage /web start [VL-N] | /web stop (VL-161)', () => {

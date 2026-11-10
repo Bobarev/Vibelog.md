@@ -673,6 +673,35 @@ export function parseResumeCommand(
   return { sessionId, agent: suffix ?? agent, comment: comment || 'Продолжи' };
 }
 
+/** Результат разбора /chat (VL-408): id треда веб-чата для пересылки. */
+export interface ChatCommand {
+  threadId: string;
+}
+
+/**
+ * Разбирает /chat (VL-408): «<chat-id>» — id треда веб-чата, в который бот
+ * будет пересылать сообщения.
+ *
+ * Формат id — тот же, что у `THREAD_ID_RE` в `src/web/chat.ts` (id попадает
+ * в имя файла истории, поэтому path-traversal недопустим). Regex дублируется
+ * локально намеренно: экспорт из веб-слоя ради парсера бота связал бы
+ * Telegram-бота с внутренностями веб-чата.
+ *
+ * Хвост после id пока игнорируется — задел на «/chat <id> <первое сообщение>».
+ *
+ * @param text — аргументы команды (без слова /chat)
+ * @returns {threadId} или {error} с подсказкой синтаксиса
+ */
+export function parseChatCommand(text: string): ChatCommand | { error: string } {
+  const hint = 'Синтаксис: /chat <chat-id> (id чата из веб-интерфейса)';
+  const trimmed = text.trim();
+  if (!trimmed) return { error: hint };
+  const sp = trimmed.search(/\s/);
+  const id = sp === -1 ? trimmed : trimmed.slice(0, sp);
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id)) return { error: hint };
+  return { threadId: id };
+}
+
 /** Результат разбора /commits (VL-90): сколько коммитов показать. */
 export interface CommitsCommand {
   count: number;
