@@ -536,6 +536,8 @@ vibelog decision <subcommand> [опции]
 
 Статусы (free-form, дефолт `proposed`): `proposed`, `accepted`, `rejected`, `superseded`.
 
+**CLI отстаёт от MCP (VL-412).** В MCP есть четыре инструмента — `decision_list`, `decision_view`, `decision_create`, `decision_update` (справочник — doc-8, раздел «Решения»), а в CLI подкоманды `update` пока нет: точечная правка статуса и ADR-секций доступна только агенту через MCP. Ядро (`updateDecision` в `src/core/decision.ts`) уже умеет и то, и другое — CLI-обёртка вынесена отдельной задачей.
+
 ---
 
 ## experiment

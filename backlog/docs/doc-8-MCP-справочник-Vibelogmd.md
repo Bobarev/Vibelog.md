@@ -10,7 +10,7 @@ tags:
 ---
 # MCP-справочник Vibelog.md
 
-49 инструментов MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
+56 инструментов MCP-сервера (stdio, JSON-RPC 2.0). Совместимо с Backlog.md.
 Автоматическое подключение: `vibelog init` пишет `mcpServers` в `.qwen/settings.json`
 (ручная настройка — в [MCP-SETUP.md](../MCP-SETUP.md)).
 
@@ -451,6 +451,64 @@ HTTP-эндпоинты карточки: `POST /api/chat/supervisor/grant-draft
 | Параметр | Тип | Required | Описание |
 |---|---|---|---|
 | `query` | string | ✓ | Поисковый запрос |
+
+---
+
+## Решения (decisions, ADR, VL-412)
+
+Архитектурные решения проекта — `backlog/decisions/<id>-<slug>.md` (фронтматтер `id/title/date/status`, тело — ADR-секции `## Context` / `## Decision` / `## Consequences` / `## Alternatives`). До VL-412 у агента не было ни одного MCP-инструмента для них: ядро (`src/core/decision.ts`) и CLI (`vibelog decision create|list|view`) были, а в `src/mcp/` — ни одного упоминания `decision`, и `globalSearch` явно исключал решения. Агент, планируя задачу, не видел договорённостей (стек фронтенда, доставка компонентов, формат реестра) и мог предложить уже отвергнутое.
+
+Статусы (`DECISION_STATUSES`): `proposed`, `accepted`, `rejected`, `superseded`. Классификация: `decision_list`/`decision_view` — read, `decision_create`/`decision_update` — write (подтверждение пользователя).
+
+### decision_list — список решений (read)
+
+| Параметр | Тип | Описание |
+|---|---|---|
+| `status` | string | Фильтр по статусу (`proposed\|accepted\|rejected\|superseded`), case-insensitive |
+
+Ответ: `{decisions: [{id, title, date, status}], duplicates?: string[]}`. `duplicates` появляется, когда в `backlog/decisions/` есть несколько файлов с одним `id` (сейчас так у `decision-10`: устаревшая версия про `manifest.json` и актуальная про `installed.lock.json`). Автоудаления дубля нет — какая версия актуальна, решает человек.
+
+### decision_view — тело решения (read)
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `id` | string | ✓ | ID решения, например `decision-6` |
+
+Ответ: `{decision, body, path, ambiguous?}`. Неизвестный id → `ackError` со списком доступных. `ambiguous: true` — id встречается в нескольких файлах, вернулся первый (аддитивное поле, старые вызовы не ломаются).
+
+### decision_create — создать решение (write)
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `title` | string | ✓ | Заголовок (пустой → `ackError`, файл не создаётся) |
+| `status` | string | | Статус, по умолчанию `proposed` |
+| `context` | string | | Секция `## Context` — почему решение понадобилось |
+| `decision` | string | | Секция `## Decision` — что решили |
+| `consequences` | string | | Секция `## Consequences` — последствия |
+| `alternatives` | string | | Секция `## Alternatives` — рассмотренные варианты |
+| `idempotencyKey` | string | | Повтор с тем же ключом не создаёт второе решение |
+
+Ответ — `ackOk` с `applied: {id, title, status}`; id = max+1 (`nextDecisionId`).
+
+### decision_update — точечная правка (write)
+
+| Параметр | Тип | Required | Описание |
+|---|---|---|---|
+| `id` | string | ✓ | ID решения |
+| `status` | string | | Новый статус (сверка с `DECISION_STATUSES`) |
+| `title` | string | | Новый заголовок — файл переименовывается; занятое имя-цель → отказ, не перезапись |
+| `context`, `decision`, `consequences`, `alternatives` | string | | Новое тело соответствующей секции |
+| `idempotencyKey` | string | | Повтор не применяет изменение второй раз |
+
+Тело целиком **не** перезаписывается: правка идёт по имени секции — заголовком считается только строка, начинающаяся ровно с `## ` (без отступа), содержимое fenced-блоков (``` / ~~~) не режется; отсутствующая секция добавляется в каноническом порядке Context → Decision → Consequences → Alternatives. Ответ — `ackOk` с `applied` (только фактически изменённые поля); ничего не изменилось → `ackNoop`. Валидация до записи: пустой title, неизвестный id, недопустимый статус → `ackError`, файл не меняется.
+
+### Дубли id и `vibelog doctor`
+
+`vibelog doctor` содержит неблокирующую проверку `decision_duplicates` (как `task_integrity`): перечисляет id, встречающиеся больше одного раза, с именами файлов и подсказкой про ручное решение. `findDuplicateIds` — тот же расчёт в ядре, `decision_list` отдаёт его как `duplicates`.
+
+### Поиск
+
+`globalSearch` (`src/core/search.ts`) с VL-412 включает пятую группу `decisions` (`searchDecisions` — substring по id/title/телу, case-insensitive). Лимиты групп сохранены: `SEARCH_PER_TYPE_LIMIT = 5`, задачи добираются до `SEARCH_TOTAL_LIMIT − others` (инвариант VL-185). В веб-чате решения попадают в контекст поиска (до 3).
 
 ---
 
