@@ -746,12 +746,58 @@ export function recentConversationText(history: ChatMessage[], maxMessages: numb
 }
 
 /**
+ * Ссылка на AGENTS.md проекта для системного промпта веб-чата (VL-405).
+ *
+ * В TUI-агенте и headless-фазах AGENTS.md вставляется в промпт целиком
+ * (`src/agent/system-prompt.ts`, кап `AGENTS_MD_MAX_CHARS` = 8000). В чате
+ * так делать нельзя: ход интерактивный и повторяется, 8000 символов в каждом
+ * запросе — дорого, а правила проекта нужны далеко не в каждом вопросе.
+ * Поэтому здесь — только ссылка: модель сходит за файлом через `read_file`
+ * (read-операция, подтверждения не требует), когда вопрос действительно про
+ * правила. Формулировка императивная: без «прочитай» блок бесполезен —
+ * модель не догадается, что за файлом надо идти.
+ *
+ * Отсутствие файла — норма (null, блока нет). Прочие ошибки чтения
+ * (EACCES, EISDIR) — тоже null, но с предупреждением в stderr: чат не
+ * роняем, паттерн `src/agent/system-prompt.ts`.
+ *
+ * @param cwd — рабочая директория проекта (корень, где лежит AGENTS.md)
+ * @returns блок `## Правила проекта` либо null, если файла нет/не читается
+ */
+export function describeAgentsMd(cwd: string): string | null {
+  const path = join(cwd, 'AGENTS.md');
+  let chars: number;
+  try {
+    // statSync отделяет «файла нет» (норма) от «файл есть, но не читается»;
+    // длину берём из прочитанного текста, а не из размера в байтах: для
+    // русского AGENTS.md байты заметно больше символов, и «N символов»
+    // вводило бы в заблуждение.
+    statSync(path);
+    chars = readFileSync(path, 'utf-8').length;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      console.error(
+        `Предупреждение: AGENTS.md не прочитан (${code ?? (err as Error).message}) — чат-промпт без ссылки на правила проекта`,
+      );
+    }
+    return null;
+  }
+  return (
+    '## Правила проекта\n\n' +
+    `В корне проекта есть AGENTS.md (${chars} символов) — соглашения по сборке, тестам и стилю кода.\n` +
+    'Прочитай его через read_file, если вопрос касается правил проекта. В промпт он не вставлен.'
+  );
+}
+
+/**
  * System-сообщение: статическая часть из шаблона (VL-219: переопределение
  * .vibelog/prompts/chat-system.md → templates/prompts/chat-system.md,
  * fail-closed) + блок роли (VL-265: общая часть не дублируется в файлах
  * ролей, роль идёт отдельным блоком) + память персоны (VL-401) + уроки
- * проекта по смыслу разговора (VL-404) + динамический контекст globalSearch
- * по последнему сообщению (всегда последним — он рантаймовый).
+ * проекта по смыслу разговора (VL-404) + ссылка на AGENTS.md (VL-405) +
+ * динамический контекст globalSearch по последнему сообщению (всегда
+ * последним — он рантаймовый).
  *
  * VL-401: память читается ТОЛЬКО здесь, в чат-сборке. Headless-фазы и
  * TUI-агент собирают промпт через src/agent/system-prompt.ts и памяти не
@@ -762,6 +808,10 @@ export function recentConversationText(history: ChatMessage[], maxMessages: numb
  * смыслу, VL-400), а не подстрочным поиском по одному сообщению: вопрос
  * «почему падает сборка фронта» находит урок про `pnpm install` в `web/`,
  * хотя слова «pnpm» в вопросе нет.
+ *
+ * VL-405: `## Правила проекта` — ссылка на AGENTS.md, а не его текст
+ * (см. `describeAgentsMd`). Порядок блоков важен: контекст поиска всегда
+ * последний, потому что он рантаймовый и меняется каждый ход.
  */
 function buildSystemPrompt(cwd: string, history: ChatMessage[], persona: PersonaConfig): string {
   const parts: string[] = [
@@ -796,6 +846,11 @@ function buildSystemPrompt(cwd: string, history: ChatMessage[], persona: Persona
       }
     }
   }
+  // VL-405: ссылка на AGENTS.md — после уроков и до контекста поиска.
+  // Именно ссылка, не текст: вставка 8000 символов в каждый ход чата дорога
+  // и почти всегда нерелевантна (см. describeAgentsMd).
+  const agentsMd = describeAgentsMd(cwd);
+  if (agentsMd) parts.push(agentsMd);
   const lastUser = lastUserText(history);
   if (lastUser.trim()) {
     const hits = globalSearch(cwd, lastUser.trim());
