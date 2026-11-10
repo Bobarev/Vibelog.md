@@ -107,6 +107,8 @@ vibelog agent run <фаза> <task-id>       # то же, что vibelog-agent <
 2. содержимое `AGENTS.md` проекта из корня рабочего каталога (читается только оттуда, с лимитом вставки; ошибка чтения — предупреждение, не падение);
 3. для интерактивного чата — дополнительный блок правил чата (`templates/agent-prompt-chat.md` → `.vibelog/prompts/agent-prompt-chat.md`); headless-фазы его не получают.
 
+Веб-чат собирает промпт отдельно (`buildSystemPrompt` в `src/web/chat.ts`): общая часть → блок роли (промпт персоны) → **блок `## Память персоны`** → контекст поиска. Память читается из `.vibelog/prompts/personas/<prompt>.memory.md` (`loadPersonaMemory` в `src/web/personas.ts`), лимит — `persona_memory.max_chars` в `.vibelog/settings.json` (дефолт 2500, при превышении — обрезка по границе строки с явной пометкой). Пустой/отсутствующий файл — блока нет. В headless-фазы и TUI память не попадает: `src/agent/system-prompt.ts` её не читает (инвариант закреплён тестом от обратного, как чат-блок VL-238).
+
 ## 9. Headless-контракт
 
 Headless — единственная строка JSON в stdout (`type: "result"` + текст результата, `is_error`, число ходов, длительность, tool-calls, `session_id`, usage). Прогресс, логи и предупреждения идут в stderr: stdout зарезервирован под результат и читается оркестратором.
