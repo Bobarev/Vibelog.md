@@ -35,10 +35,14 @@
  */
 
 import {
-  ackOk, ackOkDetailed, ackNoopDetailed, ackErrorDetailed,
+  ackOk, ackOkDetailed, ackErrorDetailed, serializeAck,
   unknownFields, sameFieldsUpToDate, BODY_FIELD,
 } from './tool-result.js';
-import type { SkippedField } from './tool-result.js';
+import type { PhaseState, SkippedField } from './tool-result.js';
+// VL-413: состояние фазы — ДАННЫЕ. Источник — workflow и правила неполноты
+// (VL-410), а не текст в ответе инструмента.
+import { SERVICE_PHASES, phaseNextStep } from '../core/workflow.js';
+import type { Task } from '../core/task.js';
 
 /** Аргументы вызова инструмента (произвольный JSON со stdio). */
 export type UpdateArgs = Record<string, unknown>;
@@ -57,9 +61,15 @@ export interface UpdateContext {
   phase: string | null;
 }
 
-/** Следующий шаг, который инструмент прикладывает к ответу. */
+/**
+ * Следующий шаг, который инструмент прикладывает к ответу.
+ *
+ * VL-413: `hint` удалён — канал «что делать дальше» переехал в блок данных
+ * `phase`. Прозаический hint в одном JSON противоречил `message`
+ * («вызови finish_phase» vs «передай поля в этом же вызове»), и слабая модель
+ * цеплялась за конкретный hint, стоящий последним.
+ */
 export interface UpdateNext {
-  hint?: string;
   retryWith?: Record<string, unknown>;
 }
 
@@ -116,7 +126,7 @@ export interface EntitySpec<E> {
     base: Record<string, unknown>,
   ): Record<string, unknown>;
   /** Что попадает в `applied`: значения ИЗ СУЩНОСТИ после записи. */
-  applied(entity: E, keys: string[], via: 'applied' | 'partial' | 'noop', previous?: E): Record<string, unknown>;
+  applied(entity: E, keys: string[], via: 'applied' | 'partial', previous?: E): Record<string, unknown>;
   /**
    * Чего не хватает в сущности (считается ОТ СОСТОЯНИЯ, а не от аргументов).
    * `ctx` добавлен в VL-370: неполнота зависит от workflow сущности и фазы.
@@ -127,12 +137,16 @@ export interface EntitySpec<E> {
    * (env рана/мета сессии); по умолчанию — null (фаза неизвестна).
    */
   resolvePhase?(cwd: string): string | null;
-  /** Следующий шаг при неполноте (hint + готовый образец аргументов). */
+  /** Следующий шаг при неполноте (готовый образец аргументов). */
   next?(entity: E, missing: SkippedField[]): UpdateNext;
-  /** Подсказка для noop-ответа («какие поля ещё можно передать»). */
-  noopHint?(entity: E, keys: string[], transferred: string[], ctx: UpdateContext): string;
+  /**
+   * VL-413: состояние фазы рана для блока `phase` ответа. У задачи считается
+   * из `phaseNextStep` (workflow + completeness); у прочих сущностей — из
+   * имени фазы и собственной неполноты (см. `defaultPhaseState`).
+   */
+  phaseState?(entity: E, ctx: UpdateContext, missing: SkippedField[]): PhaseState | undefined;
   /** Человекочитаемая строка результата. */
-  message(entity: E, keys: string[], via: 'applied' | 'partial' | 'noop'): string;
+  message(entity: E, keys: string[], via: 'applied' | 'partial'): string;
   /**
    * Хук настоящей специфики: проверка АРГУМЕНТА (а не состояния сущности).
    * Возвращает описание отказа либо null. Четыре ветки `toolLessonUpdate`
@@ -235,19 +249,32 @@ export function runUpdate<E>(spec: EntitySpec<E>, args: UpdateArgs, cwd: string)
   const unchanged = !forced && sameFieldsUpToDate(spec.snapshot(current), comparable, spec.setFields);
 
   if (keys.length === 0 || unchanged) {
-    // «Менять нечего» — noop, а не отказ: неполнота сообщается полем missing.
+    // VL-413: неизменяющая запись — УСПЕХ, а не событие. `ok:true` +
+    // `unchanged:[…]` удовлетворяет защитную запись модели: повторять незачем.
+    // До VL-413 здесь стоял `ok:false, noop:true` + директива, и модель читала
+    // `ok:false` как «не удалось» → повтор → кап → fail (сессии
+    // agent-1794322537996, agent-1793637056809).
     const missing = spec.completeness?.(current, ctx) ?? [];
-    const applied = spec.applied(current, keys, 'noop', current);
+    const phase = spec.phaseState
+      ? spec.phaseState(current, ctx, missing)
+      : defaultPhaseState(ctx, missing);
+    // VL-413: retryWith — ДАННЫЕ (готовый образец аргументов), а не директива:
+    // он остаётся и здесь, иначе модель на неизменяющей записи теряет образец
+    // того, что дописать (VL-362: каркас тела урока).
     const next = missing.length > 0 ? (spec.next?.(current, missing) ?? {}) : {};
-    const hint = spec.noopHint?.(current, keys, Object.keys(args), ctx) ?? next.hint;
-    return ackNoopDetailed(
-      `${noopPrefix(keys)}${spec.message(current, keys, 'noop')}`,
-      applied,
-      missing,
-      hint,
-      next.retryWith,
+    return serializeAck({
+      outcome: 'applied',
+      // VL-413: сообщение — только ФАКТ неизменности. Прежний склеенный текст
+      // («Изменений нет: … Задача X обновлена: …») противоречил сам себе.
+      message: unchangedPrefix(keys).trim(),
+      applied: {},
       skipped,
-    );
+      unchanged: keys,
+      ...(missing.length > 0
+        ? { next: { missing, ...(next.retryWith !== undefined ? { retryWith: next.retryWith } : {}) } }
+        : {}),
+      phase,
+    });
   }
 
   // 7. Запись.
@@ -263,28 +290,79 @@ export function runUpdate<E>(spec: EntitySpec<E>, args: UpdateArgs, cwd: string)
   const applied = spec.applied(written, keys, via, current);
   const message = spec.message(written, keys, via);
   if (missing.length === 0) {
-    return ackOk(message, applied, skipped);
+    const phase = spec.phaseState
+      ? spec.phaseState(written, ctx, missing)
+      : defaultPhaseState(ctx, missing);
+    return ackOk(message, applied, skipped, false, { phase });
   }
   const next = spec.next?.(written, missing) ?? {};
+  const phase = spec.phaseState
+    ? spec.phaseState(written, ctx, missing)
+    : defaultPhaseState(ctx, missing);
   return ackOkDetailed(message, applied, skipped, {
     missing,
-    ...(next.hint !== undefined ? { hint: next.hint } : {}),
     ...(next.retryWith !== undefined ? { retryWith: next.retryWith } : {}),
+    phase,
   });
 }
 
 /**
- * Префикс noop-сообщения. Маркер «Изменений нет» закреплён тестами и
- * разборами сессий (VL-303/VL-310), поэтому формулировка общая для всех
- * инструментов, а не своя в каждом.
+ * Префикс сообщения неизменяющей записи (VL-413).
+ *
+ * Маркер «Изменений нет» сохранён: это ФАКТ, а не директива — исход объявлен
+ * полем `outcome:'applied'` и списком `unchanged`, поэтому модель не читает
+ * ответ как отказ. Согласование по числу: для одного поля «type уже имеет эти
+ * значения» читается как ошибка согласования, для нескольких — норма.
  */
-function noopPrefix(keys: string[]): string {
+function unchangedPrefix(keys: string[]): string {
   if (keys.length === 0) return 'Изменений нет: вызов не передал полей для изменения. ';
-  // VL-410: согласование по числу — для одного поля «type уже имеет эти
-  // значения» читается как ошибка согласования, для нескольких — норма.
   return keys.length === 1
     ? `Изменений нет: ${keys[0]} уже имеет эти значения. `
     : `Изменений нет: ${keys.join(', ')} уже имеют эти значения. `;
+}
+
+/**
+ * Состояние фазы для сущностей, у которых нет задачи рана (VL-413).
+ *
+ * `phaseNextStep` требует задачу (workflow + её неполнота), поэтому для урока,
+ * документа и reference блок строится из имени фазы и собственной неполноты
+ * сущности: служебные фазы статуса не меняют — отчёт не нужен.
+ */
+function defaultPhaseState(ctx: UpdateContext, missing: SkippedField[]): PhaseState {
+  // VL-413: блок присутствует ВСЕГДА — потребителю не нужно различать «нет
+  // блока» и «фаза неизвестна». `name: null` = ручной вызов MCP вне рана.
+  return {
+    name: ctx.phase,
+    complete: missing.length === 0,
+    missing: missing.map(m => m.field),
+    next: ctx.phase === null || SERVICE_PHASES.includes(ctx.phase) ? null : 'backlog_finish_phase',
+  };
+}
+
+/**
+ * Состояние фазы задачи из `phaseNextStep` (VL-410) — данные, а не проза.
+ *
+ * @param task — задача после записи (или текущая, если записи не было)
+ * @param ctx — контекст вызова (cwd + доверенная фаза)
+ */
+export function taskPhaseState(task: Task, ctx: UpdateContext, missing: SkippedField[] = []): PhaseState {
+  if (ctx.phase === null) {
+    // Фаза неизвестна (ручной вызов MCP): отчёт не требуется, но блок есть —
+    // и неполнота сущности в нём видна (иначе потребитель теряет missing).
+    return {
+      name: null,
+      complete: missing.length === 0,
+      missing: missing.map(m => m.field),
+      next: null,
+    };
+  }
+  const step = phaseNextStep(ctx.cwd, task, ctx.phase);
+  return {
+    name: ctx.phase,
+    complete: !step.required || step.missing.length === 0,
+    missing: step.missing,
+    next: step.required ? 'backlog_finish_phase' : null,
+  };
 }
 
 /**

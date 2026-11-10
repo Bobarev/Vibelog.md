@@ -120,14 +120,16 @@ describe('VL-262 — атомарность обновления', () => {
     assert.equal(stored.priority, 'Low');
   });
 
-  it('только неизвестные поля → noop со skipped, файл не тронут (VL-369)', async () => {
+  it('только неизвестные поля → applied+unchanged со skipped, файл не тронут (VL-369/VL-413)', async () => {
     const t = createTaskFile(cwd, { title: 'Только неизвестные' });
     // VL-369: неизвестное поле — не порча аргумента, а «передано, но не
-    // записано»: оно попадает в skipped, исход — noop (менять нечего).
+    // записано»: оно попадает в skipped. VL-413: менять нечего — это УСПЕХ
+    // с пустым applied, а не событие.
     const ack = JSON.parse(
       await handleToolCall('backlog_update_task', { id: t.id, definitionOfDone: ['x'], foo: 1 }, cwd),
     );
-    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
+    assert.equal(ack.outcome, 'applied', `ожидался applied: ${JSON.stringify(ack)}`);
+    assert.equal(ack.ok, true);
     const fields = ack.skipped.map((f) => f.field);
     assert.ok(fields.includes('definitionOfDone'), `skipped называет definitionOfDone: ${JSON.stringify(fields)}`);
     assert.ok(fields.includes('foo'), 'skipped называет неизвестное foo');
@@ -177,45 +179,48 @@ describe('VL-262 — idempotencyKey', () => {
   });
 });
 
-describe('VL-303 — no-op update_task не пишет файл и отвечает noop', () => {
-  it('AC1: повтор с уже применёнными полями → {ok:true, noop:true}, файл не переписан', async () => {
+describe('VL-303/VL-413 — неизменяющая запись не пишет файл и отвечает applied+unchanged', () => {
+  it('AC1/AC2: повтор с уже применёнными полями → ok:true, applied:{}, unchanged:[type]', async () => {
     const t = createTaskFile(cwd, { title: 'Noop-задача', type: 'bug' });
     const first = JSON.parse(await handleToolCall('backlog_update_task', { id: t.id, type: 'feature' }, cwd));
     assert.equal(first.ok, true);
-    assert.ok(!first.noop, 'первый вызов — обычный успех');
+    assert.ok(!('unchanged' in first), 'первый вызов — реальная запись');
     const updatedAfterFirst = getTask(cwd, t.id).updated_date;
     const second = JSON.parse(await handleToolCall('backlog_update_task', { id: t.id, type: 'feature' }, cwd));
-    // VL-304: noop — ошибка, а не успех (lesson-92): ok:false + reason:'noop'
-    assert.equal(second.ok, false, `noop не должен быть успехом: ${JSON.stringify(second)}`);
-    assert.equal(second.noop, true, `ожидался noop: ${JSON.stringify(second)}`);
-    assert.equal(second.reason, 'noop');
+    // VL-413: неизменяющая запись — УСПЕХ. ok:false читался моделью как
+    // «не удалось» и давал повтор → кап → fail (сессия agent-1794322537996).
+    assert.equal(second.ok, true, `неизменяющая запись — успех: ${JSON.stringify(second)}`);
+    assert.equal(second.outcome, 'applied');
+    assert.deepEqual(second.unchanged, ['type']);
+    assert.deepEqual(second.applied, {}, 'applied пуст — ничего не записано');
     assert.match(second.message, /Изменений нет/);
-    assert.match(second.message, /Следующий шаг: backlog_finish_phase/);
-    assert.equal(second.applied.type, 'feature');
+    // VL-413: директивы «Следующий шаг» в тексте больше нет — она в блоке phase.
+    assert.ok(!('hint' in second), 'hint как канал следующего шага удалён');
+    assert.ok('phase' in second, 'состояние фазы — блоком данных');
     assert.equal(getTask(cwd, t.id).updated_date, updatedAfterFirst, 'файл не переписан');
   });
 
-  it('частичное совпадение → обычный успех без noop', async () => {
+  it('частичное совпадение → обычный успех без unchanged', async () => {
     const t = createTaskFile(cwd, { title: 'Частично', priority: 'Low' });
     const ack = JSON.parse(
       await handleToolCall('backlog_update_task', { id: t.id, title: 'Частично', priority: 'High' }, cwd),
     );
-    assert.ok(!ack.noop, 'есть реальное изменение — noop быть не должно');
+    assert.ok(!('unchanged' in ack), 'есть реальное изменение — unchanged быть не должно');
     assert.equal(ack.applied.title, 'Частично');
     assert.equal(ack.applied.priority, 'High');
   });
 
-  it('labels в другом порядке → noop (сравнение как множеств)', async () => {
+  it('labels в другом порядке → unchanged (сравнение как множеств)', async () => {
     const t = createTaskFile(cwd, { title: 'Метки', labels: ['a', 'b'] });
     const ack = JSON.parse(await handleToolCall('backlog_update_task', { id: t.id, labels: ['b', 'a'] }, cwd));
-    assert.equal(ack.noop, true, `порядок меток не изменение: ${JSON.stringify(ack)}`);
+    assert.deepEqual(ack.unchanged, ['labels'], `порядок меток не изменение: ${JSON.stringify(ack)}`);
   });
 
-  it('append_notes никогда не noop — файл дописывается', async () => {
+  it('append_notes никогда не unchanged — файл дописывается', async () => {
     const t = createTaskFile(cwd, { title: 'Заметки' });
     await handleToolCall('backlog_update_task', { id: t.id, append_notes: 'строка' }, cwd);
     const ack = JSON.parse(await handleToolCall('backlog_update_task', { id: t.id, append_notes: 'строка' }, cwd));
-    assert.ok(!ack.noop, 'дописывание всегда меняет файл');
+    assert.ok(!('unchanged' in ack), 'дописывание всегда меняет файл');
     assert.match(getTask(cwd, t.id).implementationNotes, /строка\nстрока/);
   });
 });
@@ -239,35 +244,33 @@ describe('VL-262 — applied у остальных write-инструменто�
   });
 });
 
-describe('VL-306 — noop-детекция lesson_update', () => {
-  it('AC2: повтор с теми же аргументами → ackNoop, файл и updated_date не тронуты', async () => {
+describe('VL-306/VL-413 — неизменяющая запись lesson_update', () => {
+  it('AC2: повтор с теми же аргументами → applied+unchanged, файл и updated_date не тронуты', async () => {
     const l = createLessonFile(cwd, { title: 'Урок noop', tags: ['a'], content: '## Проблема\n\nшум\n' });
     const first = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
     assert.equal(first.ok, true, `первый вызов — успех: ${JSON.stringify(first)}`);
     const afterFirst = getLesson(cwd, l.id);
     const second = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
-    assert.equal(second.ok, false, `noop не успех: ${JSON.stringify(second)}`);
-    assert.equal(second.noop, true);
-    assert.equal(second.reason, 'noop');
+    assert.equal(second.ok, true, `неизменяющая запись — успех: ${JSON.stringify(second)}`);
+    assert.equal(second.outcome, 'applied');
+    assert.deepEqual(second.unchanged, ['verified_by'], 'unchanged — имена полей сущности');
     assert.match(second.message, /Изменений нет/);
-    assert.match(second.message, /Следующий шаг: backlog_finish_phase/);
-    assert.equal(second.applied.verified_by, 'agent');
     const afterSecond = getLesson(cwd, l.id);
     assert.equal(afterSecond.lesson.updated_date, afterFirst.lesson.updated_date, 'updated_date не сдвинут');
     assert.equal(afterSecond.path, afterFirst.path, 'файл не переименован');
   });
 
-  it('AC2: теги в другом порядке → noop (сравнение как множества)', async () => {
+  it('AC2: теги в другом порядке → unchanged (сравнение как множества)', async () => {
     const l = createLessonFile(cwd, { title: 'Урок теги', tags: ['a', 'b'], content: '## Проблема\n\nшум\n' });
     const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, tags: ['b', 'a'] }, cwd));
-    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
+    assert.deepEqual(ack.unchanged, ['tags'], `ожидался unchanged: ${JSON.stringify(ack)}`);
   });
 
-  it('AC2: реальное изменение поля → обычный успех без noop', async () => {
+  it('AC2: реальное изменение поля → обычный успех без unchanged', async () => {
     const l = createLessonFile(cwd, { title: 'Урок сброс', tags: ['a'], content: '## Проблема\n\nшум\n' });
     const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, tags: ['a', 'c'] }, cwd));
     assert.equal(ack.ok, true);
-    assert.ok(!ack.noop, 'есть реальное изменение — noop быть не должно');
+    assert.ok(!('unchanged' in ack), 'есть реальное изменение — unchanged быть не должно');
   });
 });
 
@@ -280,18 +283,15 @@ describe('VL-319 — пустое тело урока: ошибка вместо
     return l;
   }
 
-  it('AC1: lesson_update без частей тела на уроке с пустым телом → noop + missing (VL-369/VL-379)', async () => {
+  it('AC1: lesson_update без частей тела на уроке с пустым телом → applied+unchanged + missing (VL-369/VL-379/VL-413)', async () => {
     const l = createEmptyBodyLesson('Урок без тела');
-    // VL-369: неполнота — свойство СУЩНОСТИ, а не ошибка вызова. Таблица
-    // исходов: «не записали × сущность неполная» = noop + missing + retryWith.
-    // Раньше здесь стоял отказ — именно он давал серию отказов, упирающуюся
-    // в ограничитель повторов.
+    // VL-369: неполнота — свойство СУЩНОСТИ, а не ошибка вызова.
+    // VL-413: «не записали» — успех с unchanged, а не событие.
     const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id }, cwd));
-    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
-    assert.equal(ack.outcome, 'noop');
+    assert.equal(ack.outcome, 'applied', `ожидался applied: ${JSON.stringify(ack)}`);
+    assert.equal(ack.ok, true);
     // VL-379: missing называет problem — тело теперь передаётся частями
     assert.equal(ack.missing[0].field, 'problem', 'missing называет пропущенное поле');
-    assert.equal(typeof ack.hint, 'string', 'hint со следующим шагом');
     assert.equal(ack.retryWith.problem, '<что было не так>', 'готовый каркас — три строки');
   });
 
@@ -304,19 +304,19 @@ describe('VL-319 — пустое тело урока: ошибка вместо
     assert.equal(readFileSync(getLesson(cwd, l.id).path, 'utf-8'), before, 'файл не изменён');
   });
 
-  it('AC3: noop-ответ содержит missing[0].field === "problem" и hint', async () => {
+  it('AC3: неизменяющая запись содержит missing[0].field === "problem"', async () => {
     const l = createEmptyBodyLesson('Урок без тела 2');
     // VL-355: первый вызов на пустом теле ПРИМЕНЯЕТ переданное поле и
     // предупреждает о незаполненном теле (раньше — отказ целиком).
     const first = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
     assert.equal(first.ok, true, `первый вызов применяет поле: ${JSON.stringify(first)}`);
     assert.equal(first.missing[0].field, 'problem', 'успех называет незаполненное тело');
-    // Повтор тех же аргументов → noop, и он тоже обязан назвать problem
-    const noop = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
-    assert.equal(noop.noop, true, `ожидался noop: ${JSON.stringify(noop)}`);
-    assert.deepEqual(Object.keys(noop.applied), ['verified_by'], 'applied — только переданные поля');
-    assert.equal(noop.missing[0].field, 'problem', 'noop называет незаполненное тело');
-    assert.equal(typeof noop.hint, 'string', 'hint со следующим шагом обязателен');
+    // Повтор тех же аргументов → applied+unchanged, и он тоже обязан назвать problem
+    const repeat = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+    assert.equal(repeat.outcome, 'applied', `ожидался applied: ${JSON.stringify(repeat)}`);
+    assert.deepEqual(repeat.unchanged, ['verified_by'], 'unchanged — имена полей сущности');
+    assert.deepEqual(repeat.applied, {}, 'applied пуст — ничего не записано');
+    assert.equal(repeat.missing[0].field, 'problem', 'неизменяющая запись называет незаполненное тело');
   });
 });
 
@@ -329,22 +329,22 @@ describe('VL-349 — тело-скелет урока: ошибка вместо
     return l;
   }
 
-  it('AC2: lesson_update без content и без других изменений на теле-скелете → ok:false БЕЗ noop, повтор исполняется', async () => {
+  it('AC2: lesson_update без content и без других изменений на теле-скелете → applied+unchanged, повтор исполняется', async () => {
     const l = createSkeletonLesson('Урок-скелет');
     const path = getLesson(cwd, l.id).path;
     const before = readFileSync(path, 'utf-8');
-    // VL-355: отказ остаётся для вызова, который НИЧЕГО не меняет — только `id`.
     const args = { id: l.id };
     const first = JSON.parse(await handleToolCall('lesson_update', args, cwd));
-    // VL-369: "нечего менять + сущность неполная" — noop с missing, а не отказ.
-    assert.equal(first.noop, true, `ожидался noop: ${JSON.stringify(first)}`);
+    // VL-369/VL-413: "нечего менять + сущность неполная" — успех с unchanged
+    // и missing, а не отказ и не событие.
+    assert.equal(first.outcome, 'applied', `ожидался applied: ${JSON.stringify(first)}`);
+    assert.equal(first.ok, true);
     assert.equal(first.missing[0].field, 'problem', 'missing называет problem');
-    assert.equal(typeof first.hint, 'string', 'hint со следующим шагом');
     assert.equal(readFileSync(path, 'utf-8'), before, 'файл не перезаписан');
 
-    // Повтор той же сигнатуры тоже noop — но с missing и готовым вызовом
+    // Повтор той же сигнатуры — тоже applied+unchanged с missing и готовым вызовом
     const second = JSON.parse(await handleToolCall('lesson_update', args, cwd));
-    assert.equal(second.noop, true, `повтор тоже noop: ${JSON.stringify(second)}`);
+    assert.equal(second.outcome, 'applied', `повтор тоже applied: ${JSON.stringify(second)}`);
     assert.equal(second.missing[0].field, 'problem');
     assert.equal(second.retryWith.problem, '<что было не так>', 'готовый каркас — три строки');
   });
@@ -370,11 +370,12 @@ describe('VL-349 — тело-скелет урока: ошибка вместо
     const ack = JSON.parse(await handleToolCall('lesson_update', {
       id: l.id, content: entry.body,
     }, cwd));
-    assert.equal(ack.reason, 'noop', `ожидался noop: ${JSON.stringify(ack)}`);
-    assert.equal(ack.missing[0].field, 'problem', 'noop называет незаполненное тело');
+    assert.equal(ack.outcome, 'applied', `ожидался applied: ${JSON.stringify(ack)}`);
+    assert.ok(!('unchanged' in ack), 'полей для изменения не передано — unchanged не печатается');
+    assert.equal(ack.missing[0].field, 'problem', 'ответ называет незаполненное тело');
     assert.equal(ack.skipped[0].field, 'content', 'удалённый аргумент в skipped');
     assert.match(String(ack.skipped[0].reason), /поле удалено/);
-    assert.match(String(ack.hint), /problem/);
+    assert.equal(ack.retryWith.problem, '<что было не так>', 'готовый образец аргументов');
   });
 });
 
@@ -401,36 +402,37 @@ describe('VL-355 — незаполненное тело урока: части�
     assert.match(readFileSync(entry.path, 'utf-8'), new RegExp(t.id), 'frontmatter содержит задачу');
   });
 
-  it('AC2: успешный ответ несёт missing[content] и непустой hint', async () => {
+  it('AC2: успешный ответ несёт missing[content] и готовый retryWith', async () => {
     const t2 = createTaskFile(cwd, { title: 'Задача два' });
     const l = createSkeletonLesson('Урок-предупреждение');
     const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id, linkedTasks: [t2.id] }, cwd));
     assert.equal(ack.ok, true, `ожидался успех: ${JSON.stringify(ack)}`);
     assert.equal(ack.missing[0].field, 'problem', 'missing называет незаполненное тело');
-    assert.match(String(ack.hint), /problem/, 'hint говорит, что дописать');
+    // VL-413: канал следующего шага — данные (missing/retryWith/phase), не hint.
+    assert.equal(ack.retryWith.problem, '<что было не так>', 'готовый образец аргументов');
   });
 
-  it('AC5: повтор того же вызова → noop (не отказ), missing содержит content', async () => {
+  it('AC5: повтор того же вызова → applied+unchanged (не отказ), missing содержит problem', async () => {
     const t = createTaskFile(cwd, { title: 'Задача три' });
     const l = createSkeletonLesson('Урок-повтор');
     const args = { id: l.id, linkedTasks: [t.id], verifiedBy: 'agent' };
     const first = JSON.parse(await handleToolCall('lesson_update', args, cwd));
     assert.equal(first.ok, true, `первый вызов применяет: ${JSON.stringify(first)}`);
     const second = JSON.parse(await handleToolCall('lesson_update', args, cwd));
-    assert.equal(second.ok, false, `повтор — noop: ${JSON.stringify(second)}`);
-    assert.equal(second.noop, true);
-    assert.equal(second.missing[0].field, 'problem', 'noop тоже называет незаполненное тело');
+    assert.equal(second.ok, true, `повтор — успех с unchanged: ${JSON.stringify(second)}`);
+    assert.equal(second.outcome, 'applied');
+    assert.equal(second.missing[0].field, 'problem', 'неизменяющая запись тоже называет пробел');
   });
 
-  it('AC6: вызов без частей тела и без других полей → noop + missing: problem (VL-369)', async () => {
+  it('AC6: вызов без частей тела и без других полей → applied+unchanged + missing: problem (VL-369/VL-413)', async () => {
     const l = createSkeletonLesson('Урок-отказ');
-    // VL-369: «нечего менять» — noop по таблице исходов; незаполненное тело
+    // VL-369: «нечего менять» — успех с unchanged; незаполненное тело
     // сообщается полем missing, а НЕ отказом. Отказ остался только для
     // испорченного аргумента (например, передан только problem без solution).
     const ack = JSON.parse(await handleToolCall('lesson_update', { id: l.id }, cwd));
-    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
+    assert.equal(ack.outcome, 'applied', `ожидался applied: ${JSON.stringify(ack)}`);
     assert.equal(ack.missing[0].field, 'problem');
-    assert.equal(typeof ack.hint, 'string');
+    assert.equal(ack.retryWith.problem, '<что было не так>', 'готовый образец аргументов');
     assert.equal(ack.retryWith.problem, '<что было не так>', 'каркас — три строки, без markdown');
   });
 
@@ -474,19 +476,20 @@ describe('VL-362 — retryWith с каркасом тела урока', () => {
     assert.equal(ack.retryWith.solution, '<что сделали>', 'solution-плейсхолдер');
     assert.equal(ack.retryWith.example, '<конкретный пример>', 'example-плейсхолдер');
     assert.ok(!JSON.stringify(ack.retryWith).includes('## '), 'markdown в аргументах не генерируется');
-    assert.match(String(ack.hint), /problem/, 'hint называет problem и solution');
+    assert.equal(ack.retryWith.problem, '<что было не так>', 'retryWith называет problem');
   });
 
-  it('AC2: повтор уже применённого вызова (noop) → retryWith тоже есть', async () => {
+  it('AC2: повтор уже применённого вызова (unchanged) → retryWith тоже есть', async () => {
     const t = createTaskFile(cwd, { title: 'Задача VL-362 повтор' });
     const l = createSkeletonLesson('Урок-каркас повтор');
     const args = { id: l.id, linkedTasks: [t.id] };
     const first = JSON.parse(await handleToolCall('lesson_update', args, cwd));
     assert.equal(first.outcome, 'partial', `первый вызов применяет: ${JSON.stringify(first)}`);
     const second = JSON.parse(await handleToolCall('lesson_update', args, cwd));
-    assert.equal(second.noop, true, `повтор — noop: ${JSON.stringify(second)}`);
+    assert.equal(second.outcome, 'applied', `повтор — applied+unchanged: ${JSON.stringify(second)}`);
+    assert.deepEqual(second.unchanged, ['linked_tasks']);
     assert.equal(second.missing[0].field, 'problem');
-    assert.equal(second.retryWith.problem, '<что было не так>', 'noop тоже несёт каркас тела');
+    assert.equal(second.retryWith.problem, '<что было не так>', 'unchanged тоже несёт каркас тела');
   });
 
   it('AC1: урок с заполненным телом не получает retryWith', async () => {
@@ -498,142 +501,111 @@ describe('VL-362 — retryWith с каркасом тела урока', () => {
   });
 });
 
-describe('VL-310 — noop-детекция общая для write-инструментов', () => {
-  it('AC1: document_update {id, type} дважды → noop, файл не перезаписан', async () => {
+describe('VL-310/VL-413 — неизменяющая запись общая для write-инструментов', () => {
+  it('AC1: document_update {id, type} дважды → applied+unchanged, файл не перезаписан', async () => {
     const doc = writeDocument(backlogDir, { title: 'Док noop', type: 'guide', content: 'тело' });
     const before = statSync(getDocument(backlogDir, doc.id).path).mtimeMs;
     const first = JSON.parse(await handleToolCall('document_update', { id: doc.id, type: 'guide' }, cwd));
-    assert.equal(first.ok, false, `type уже guide — noop ожидался: ${JSON.stringify(first)}`);
-    assert.equal(first.noop, true);
-    assert.equal(first.reason, 'noop');
+    assert.equal(first.ok, true, `type уже guide — успех с unchanged: ${JSON.stringify(first)}`);
+    assert.equal(first.outcome, 'applied');
+    assert.deepEqual(first.unchanged, ['type']);
     assert.match(first.message, /Изменений нет/);
-    assert.match(first.message, /Следующий шаг/);
-    assert.equal(first.applied.type, 'guide');
     const after = statSync(getDocument(backlogDir, doc.id).path).mtimeMs;
     assert.equal(after, before, 'файл не перезаписан');
     const second = JSON.parse(await handleToolCall('document_update', { id: doc.id, type: 'guide' }, cwd));
-    assert.equal(second.noop, true, 'повтор тоже noop');
+    assert.deepEqual(second.unchanged, ['type'], 'повтор тоже unchanged');
   });
 
   it('AC1: document_update с реальным изменением → обычный успех', async () => {
     const doc = writeDocument(backlogDir, { title: 'Док смена', type: 'guide' });
     const ack = JSON.parse(await handleToolCall('document_update', { id: doc.id, type: 'specification' }, cwd));
     assert.equal(ack.ok, true);
-    assert.ok(!ack.noop);
+    assert.ok(!('unchanged' in ack));
     assert.equal(ack.applied.type, 'specification');
   });
 
-  it('AC1: document_update с тем же телом → noop (сравнение тела)', async () => {
+  it('AC1: document_update с тем же телом → unchanged (сравнение тела)', async () => {
     const doc = writeDocument(backlogDir, { title: 'Док тело', content: '# Тело\nтекст' });
     const ack = JSON.parse(await handleToolCall('document_update', { id: doc.id, content: '# Тело\nтекст' }, cwd));
-    assert.equal(ack.noop, true, `тело не изменилось: ${JSON.stringify(ack)}`);
+    assert.deepEqual(ack.unchanged, ['content'], `тело не изменилось: ${JSON.stringify(ack)}`);
   });
 
-  it('AC3: reference_update с теми же тегами (другой порядок) → noop', async () => {
+  it('AC3: reference_update с теми же тегами (другой порядок) → unchanged', async () => {
     const ref = writeReference(cwd, { title: 'Ref noop', type: 'url', url: 'https://example.com', tags: ['a', 'b'] });
     const ack = JSON.parse(await handleToolCall('reference_update', { id: ref.id, tags: ['b', 'a'] }, cwd));
-    assert.equal(ack.noop, true, `порядок тегов не изменение: ${JSON.stringify(ack)}`);
+    assert.deepEqual(ack.unchanged, ['tags'], `порядок тегов не изменение: ${JSON.stringify(ack)}`);
     const real = JSON.parse(await handleToolCall('reference_update', { id: ref.id, tags: ['a', 'c'] }, cwd));
     assert.equal(real.ok, true);
-    assert.ok(!real.noop);
+    assert.ok(!('unchanged' in real));
   });
 
-  it('AC3: backlog_update_status с тем же статусом → noop', async () => {
+  it('AC3: backlog_update_status с тем же статусом → unchanged', async () => {
     const t = createTaskFile(cwd, { title: 'Статус noop' });
     await handleToolCall('backlog_update_status', { id: t.id, status: 'In Progress' }, cwd);
     const ack = JSON.parse(await handleToolCall('backlog_update_status', { id: t.id, status: 'In Progress' }, cwd));
-    assert.equal(ack.noop, true, `статус не изменился: ${JSON.stringify(ack)}`);
+    assert.deepEqual(ack.unchanged, ['status'], `статус не изменился: ${JSON.stringify(ack)}`);
   });
 
-  it('AC3: backlog_update_dependencies с уже существующей зависимостью → noop', async () => {
+  it('AC3: backlog_update_dependencies с уже существующей зависимостью → unchanged', async () => {
     const base = createTaskFile(cwd, { title: 'База noop' });
     const t = createTaskFile(cwd, { title: 'Зависимая noop' });
     await handleToolCall('backlog_update_dependencies', { id: t.id, add: [base.id] }, cwd);
     const ack = JSON.parse(await handleToolCall('backlog_update_dependencies', { id: t.id, add: [base.id] }, cwd));
-    assert.equal(ack.noop, true, `набор зависимостей тот же: ${JSON.stringify(ack)}`);
+    assert.deepEqual(ack.unchanged, ['dependencies'], `набор зависимостей тот же: ${JSON.stringify(ack)}`);
   });
 
-  it('AC3: lesson_link и reference_link на уже установленной связи → noop', async () => {
+  it('AC3: lesson_link и reference_link на уже установленной связи → unchanged', async () => {
     const t = createTaskFile(cwd, { title: 'Связи noop' });
     const l = createLessonFile(cwd, { title: 'Урок связи noop' });
     const ref = writeReference(cwd, { title: 'Ref связи noop', type: 'url', url: 'https://example.org' });
     await handleToolCall('lesson_link', { lessonId: l.id, taskId: t.id }, cwd);
     const lessonAck = JSON.parse(await handleToolCall('lesson_link', { lessonId: l.id, taskId: t.id }, cwd));
-    assert.equal(lessonAck.noop, true, `связь уже есть: ${JSON.stringify(lessonAck)}`);
+    assert.deepEqual(lessonAck.unchanged, ['lessonId', 'taskId', 'action'], `связь уже есть: ${JSON.stringify(lessonAck)}`);
     await handleToolCall('reference_link', { referenceId: ref.id, taskId: t.id }, cwd);
     const refAck = JSON.parse(await handleToolCall('reference_link', { referenceId: ref.id, taskId: t.id }, cwd));
-    assert.equal(refAck.noop, true, `связь уже есть: ${JSON.stringify(refAck)}`);
+    assert.deepEqual(refAck.unchanged, ['referenceId', 'taskId', 'action'], `связь уже есть: ${JSON.stringify(refAck)}`);
   });
 });
 
 /**
- * VL-326: `hint` в noop-ответе — «переданные поля уже такие; если нужны
- * другие — передай их в этом же вызове».
+ * VL-413: состояние фазы — блок ДАННЫХ в каждом ответе write-инструмента.
  *
- * Инцидент VL-324: модель 12 раз подряд вызвала `backlog_update_task`,
- * передавая только уже применённые поля (`priority`, `type`) и меняя лишь
- * `idempotencyKey`. Noop-текст называл следующий шаг (`backlog_finish_phase`),
- * которого в веб-чате нет, и не подсказывал главного: полей просто НЕ ХВАТАЕТ.
- * Теперь `ackNoopDetailed` всегда отдаёт `hint`, а `toolUpdateTask` — свой
- * `hint` с перечнем не переданных полей.
+ * До VL-413 «чего не хватает» и «что делать дальше» жили в прозе
+ * `message`/`hint`, которую модель должна была правильно прочитать. В одном
+ * JSON `message` говорил «вызови backlog_finish_phase», а `hint` — «передай
+ * поля в этом же вызове»; слабая модель цеплялась за конкретный hint и
+ * повторяла вызов (сессия agent-1794322537996, spec VL-408).
  */
-describe('VL-326 — hint в noop-ответе update_task', () => {
-  it('AC5: noop-ответ update_task содержит hint с указанием передать другие поля', async () => {
+describe('VL-413 — блок phase в ответе write-инструмента', () => {
+  it('AC3: ответ несёт phase {name, complete, missing[], next}', async () => {
+    const t = createTaskFile(cwd, { title: 'Phase-задача', type: 'bug', priority: 'High' });
+    const ack = JSON.parse(
+      await handleToolCall('backlog_update_task', { id: t.id, type: 'bug', priority: 'High' }, cwd),
+    );
+    assert.equal(ack.outcome, 'applied');
+    assert.ok(ack.phase !== undefined, `блок phase обязателен: ${JSON.stringify(ack)}`);
+    assert.deepEqual(Object.keys(ack.phase).sort(), ['complete', 'missing', 'name', 'next']);
+    // Фазовый env в тесте снят (clearPhaseEnv) — фаза неизвестна, отчёт не нужен.
+    assert.equal(ack.phase.name, null);
+    assert.equal(ack.phase.next, null);
+    assert.ok(Array.isArray(ack.phase.missing));
+  });
+
+  it('AC3: hint как канал следующего шага удалён из успешного ответа', async () => {
     const t = createTaskFile(cwd, { title: 'Hint-задача', type: 'bug', priority: 'High' });
     const ack = JSON.parse(
       await handleToolCall('backlog_update_task', { id: t.id, type: 'bug', priority: 'High' }, cwd),
     );
-    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
-    assert.equal(typeof ack.hint, 'string', 'hint обязателен в noop-ответе');
-    assert.match(ack.hint, /уже такие/);
-    assert.match(ack.hint, /в ЭТОМ ЖЕ вызове/);
-    // VL-370: перечень берётся из правил неполноты workflow (DEFAULT_COMPLETENESS),
-    // а не из захардкоженного списка популярных полей. Фаза рана неизвестна →
-    // работают правила '*': задача неполна без description; AC/DoD в этой фазе
-    // не требуются, поэтому в подсказке их нет (прежнее ожидание
-    // `acceptanceCriteria` закрепляло именно удалённую эвристику).
-    assert.match(ack.hint, /description/);
-    assert.ok(!ack.hint.includes('acceptanceCriteria'), 'AC не требуются вне фазы close');
+    assert.ok(!('hint' in ack), `hint не должен появляться: ${JSON.stringify(ack)}`);
+    assert.ok(!('noop' in ack), 'исхода noop больше нет');
   });
 
-  it('AC5: переданные поля не предлагаются в hint', async () => {
-    const t = createTaskFile(cwd, { title: 'Hint-задача 2', type: 'bug', priority: 'High' });
-    // plan уже применён первым вызовом — второй становится noop
-    await handleToolCall('backlog_update_task', { id: t.id, plan: 'План уже такой' }, cwd);
-    const ack = JSON.parse(
-      await handleToolCall(
-        'backlog_update_task',
-        { id: t.id, type: 'bug', priority: 'High', plan: 'План уже такой' },
-        cwd,
-      ),
-    );
-    assert.equal(ack.noop, true);
-    assert.match(ack.hint, /description/);
-    const suggestion = ack.hint.split('например:')[1] ?? '';
-    assert.ok(!suggestion.includes('plan'), 'plan передан — не предлагается');
-  });
-
-  it('AC5: универсальный hint (ackNoopDetailed без своего hint) говорит то же самое', async () => {
-    const { ackNoopDetailed, NOOP_DEFAULT_HINT } = await import('../../dist/mcp/tool-result.js');
-    const parsed = JSON.parse(ackNoopDetailed('Изменений нет: test'));
-    assert.equal(parsed.noop, true);
-    assert.equal(parsed.hint, NOOP_DEFAULT_HINT);
-    assert.match(parsed.hint, /уже имеют эти значения/);
-    assert.match(parsed.hint, /в ЭТОМ ЖЕ вызове/);
-    // прежний текст «Следующий шаг: backlog_finish_phase» в hint не звучит —
-    // в веб-чате такого инструмента нет (инцидент VL-324)
-    assert.ok(!parsed.hint.includes('backlog_finish_phase'));
-  });
-
-  it('AC5: ackNoop остаётся обёрткой — message/applied не меняются', async () => {
-    const { ackNoop } = await import('../../dist/mcp/tool-result.js');
-    const parsed = JSON.parse(ackNoop('Изменений нет: type', { type: 'bug' }));
-    assert.equal(parsed.ok, false);
-    assert.equal(parsed.noop, true);
-    assert.equal(parsed.reason, 'noop');
-    assert.equal(parsed.message, 'Изменений нет: type');
-    assert.deepEqual(parsed.applied, { type: 'bug' });
-    assert.deepEqual(parsed.skipped, []);
+  it('AC3: неполнота задачи видна в phase.missing и в next.missing', async () => {
+    const t = createTaskFile(cwd, { title: 'Неполная phase-задача' });
+    const ack = JSON.parse(await handleToolCall('backlog_update_task', { id: t.id, priority: 'Low' }, cwd));
+    assert.equal(ack.outcome, 'partial');
+    assert.ok(ack.phase.missing.includes('description'), `phase.missing: ${JSON.stringify(ack.phase)}`);
+    assert.equal(ack.phase.complete, false);
   });
 });
 

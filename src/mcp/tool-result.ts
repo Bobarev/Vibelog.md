@@ -15,19 +15,24 @@
  * в промптах фаз — формат ответа меняется, привычные подстроки остаются.
  *
  * Четыре формы ответа:
- *   успех  — { ok: true, message, applied, skipped, idempotentReplay? }
- *   noop   — { ok: false, noop: true, reason: 'noop', message, applied,
- *            skipped: [] } (VL-303/VL-304: переданные значения уже были в
- *            задаче, файл не переписан)
+ *   успех  — { ok: true, outcome, message, applied, unchanged?, phase?, skipped }
  *   отказ  — { ok: false, denied: true, reason, applied: {}, skipped, … }
  *   ошибка — { ok: false, error }
  *
- * VL-304: noop — ОШИБКА, а не успех (lesson-92). До VL-304 noop отдавался как
- * `{ok:true, noop:true}`, и модель читала первую строку JSON как «принято,
- * продолжай»: текст «не повторяй» лежал в третьем поле и слабыми моделями не
- * взвешивался (сессия agent-1793631554185 — 4 повтора и падение фазы кодом 1).
- * Теперь `ok:false` + `reason:'noop'`, а MCP-сервер отдаёт такой ответ с
- * `isError: true` (см. `isNoopAck`).
+ * VL-413: исход `noop` УДАЛЁН. Неизменяющая запись — нормальное свойство
+ * идемпотентного write-API, а не особый случай: ответ `{ok:true,
+ * outcome:'applied', applied:{}, unchanged:['type']}` удовлетворяет защитную
+ * запись модели, и повторять её незачем. До VL-413 неизменяющая запись
+ * объявлялась событием (`ok:false, noop:true` + директива), и модель читала
+ * `ok:false` как «не удалось» → повтор → кап → fail. Семь задач подряд
+ * переписывали текст, объясняющий, что `ok:false` — не ошибка; текстом
+ * нельзя отменить сигнал, который несёт само поле `ok` (VL-303 → … → VL-411).
+ *
+ * VL-413: состояние фазы передаётся ДАННЫМИ (`phase: {name, complete,
+ * missing[], next}`), а не прозой `hint`. `hint` как канал следующего шага
+ * удалён: в одном JSON он противоречил `message` («вызови finish_phase» vs
+ * «передай поля в этом же вызове»), и слабая модель цеплялась за конкретный
+ * `hint`, стоящий последним.
  *
  * Отказ подтверждения (веб-чат) кодируется машиночитаемо:
  *   { ok: false, denied: true, reason: 'denied' | 'not_confirmed', … }
@@ -59,16 +64,19 @@ export type DenyReason = 'denied' | 'not_confirmed';
  * объявляется инструментом, а совместимые флаги (`ok`/`noop`/`denied`/`read`)
  * вычисляются из него при сериализации.
  *
- * - `applied`  — операция выполнена полностью;
+ * - `applied`  — операция выполнена полностью (в т.ч. неизменяющая запись:
+ *   `applied:{}` + `unchanged:[…]`, VL-413);
  * - `partial`  — запись состоялась, но часть обязательных по смыслу полей не
  *   заполнена (`next.missing`) — не отказ;
- * - `noop`     — запись ничего не изменила (все переданные значения уже были);
  * - `rejected` — операция не выполнена: ошибка валидации либо отказ
  *   подтверждения (`denied`/`reason` проставляются отдельно);
  * - `read`     — чистое чтение внутри инструмента, эффекта не было;
  * - `unknown`  — исход не определён (плоский текст, не-JSON ответ).
+ *
+ * VL-413: исход `noop` удалён — неизменяющая запись объявляется `applied` с
+ * непустым `unchanged`.
  */
-export type ToolOutcome = 'applied' | 'partial' | 'noop' | 'rejected' | 'read' | 'unknown';
+export type ToolOutcome = 'applied' | 'partial' | 'rejected' | 'read' | 'unknown';
 
 /** Следующий шаг для модели — единое место (было разбросано по флагам). */
 export interface ToolNext {
@@ -76,8 +84,25 @@ export interface ToolNext {
   retryWith?: Record<string, unknown>;
   /** Обязательные по смыслу, но не заполненные поля (VL-319/VL-355). */
   missing?: SkippedField[];
-  /** Текстовая подсказка следующего шага. */
-  hint?: string;
+}
+
+/**
+ * Состояние фазы рана — ДАННЫЕ, а не проза (VL-413).
+ *
+ * До VL-413 «чего не хватает» и «что делать дальше» жили в тексте
+ * `message`/`hint`, который модель должна была правильно прочитать. Теперь
+ * каждый ответ write-инструмента несёт этот блок, вычисленный из
+ * `phaseNextStep` (VL-410) и правил `completeness`.
+ */
+export interface PhaseState {
+  /** Имя фазы рана; null — фаза неизвестна (ручной вызов MCP). */
+  name: string | null;
+  /** Фаза завершена по данным workflow/completeness. */
+  complete: boolean;
+  /** Поля, которых не хватает для завершения фазы. */
+  missing: string[];
+  /** Инструмент следующего шага (`backlog_finish_phase`) либо null. */
+  next: string | null;
 }
 
 /** Внутреннее описание ack'а: исход + данные, флаги НЕ хранятся. */
@@ -87,9 +112,25 @@ export interface ToolAckInput {
   applied?: Record<string, unknown>;
   skipped?: SkippedField[];
   next?: ToolNext;
+  /**
+   * VL-413: переданные поля, значения которых уже стояли в сущности (запись
+   * не изменила файл). Аддитивное поле, НЕ исход: ответ остаётся `applied`.
+   */
+  unchanged?: string[];
+  /** VL-413: состояние фазы рана (данные, а не текст). */
+  phase?: PhaseState;
+  /**
+   * Текст-подсказка ИСПРАВЛЕНИЯ аргументов в ответе-отказе (VL-323/VL-351).
+   *
+   * VL-413: это НЕ канал «следующего шага» — тот переехал в блок `phase`.
+   * Здесь остаётся только готовая инструкция, как починить отклонённый вызов
+   * (`git_commit {…, allowForeign: true}`); директивы отказа (`retryDirective`)
+   * читают её как текст ошибки.
+   */
+  hint?: string;
   /** Текст ошибки (исход `rejected` по причине ошибки валидации). */
   error?: string;
-  /** Причина отказа: `noop` | `denied` | `not_confirmed`. */
+  /** Причина отказа: `denied` | `not_confirmed` | `duplicate` | `limit`. */
   reason?: string;
   /** Явный признак отказа подтверждения — вычисляется из `reason` вызывающим. */
   denied?: boolean;
@@ -120,22 +161,26 @@ export function serializeAck(ack: ToolAckInput): string {
   const ok = ack.outcome === 'applied' || ack.outcome === 'partial' || ack.outcome === 'read';
   out.ok = ok;
   out.outcome = ack.outcome;
-  if (ack.outcome === 'noop') {
-    out.noop = true;
-    out.reason = ack.reason ?? 'noop';
-  }
   if (ack.outcome === 'read') out.read = true;
   if (ack.denied === true) out.denied = true;
   if (ack.reason !== undefined && out.reason === undefined) out.reason = ack.reason;
   if (ack.tool !== undefined) out.tool = ack.tool;
   if (ack.error !== undefined) out.error = ack.error;
+  // VL-413: `hint` остаётся ТОЛЬКО как инструкция исправления в отказе
+  // (его читает `parsedErrorText`/`retryDirective`); канал «следующего шага»
+  // переехал в блок `phase`.
+  if (ack.hint !== undefined && ack.hint !== '') out.hint = ack.hint;
   if (ack.message !== undefined) out.message = ack.message;
   if (ack.applied !== undefined) out.applied = ack.applied;
+  // VL-413: неизменяющая запись — успех с перечнем полей, которые уже стояли.
+  // Печатается только при непустом массиве: пустой список — шум в payload.
+  if (ack.unchanged !== undefined && ack.unchanged.length > 0) out.unchanged = ack.unchanged;
   if (ack.skipped !== undefined) out.skipped = ack.skipped;
   const next = ack.next ?? {};
   if (next.missing !== undefined && next.missing.length > 0) out.missing = next.missing;
-  if (next.hint !== undefined && next.hint !== '') out.hint = next.hint;
   if (next.retryWith !== undefined && Object.keys(next.retryWith).length > 0) out.retryWith = next.retryWith;
+  // VL-413: состояние фазы — блоком данных в каждом ответе write-инструмента.
+  if (ack.phase !== undefined) out.phase = ack.phase;
   if (ack.idempotentReplay === true) out.idempotentReplay = true;
   // VL-359: аддитивные поля (guard-ответы веб-чата: duplicate/limit/noop_repeat).
   // Вычисленные из `outcome` ключи не перезаписываются — исход остаётся
@@ -166,58 +211,40 @@ export interface WriteAck {
    * привязать задачу, но тело остаётся пустым).
    */
   missing?: SkippedField[];
-  /** VL-355: следующий шаг для модели в успешном ответе (что дописать). */
-  hint?: string;
-}
-
-/**
- * Снимок write-вызова, который НЕ изменил состояние (VL-303, форма — VL-304).
- *
- * Отдельный интерфейс, а не флаг `WriteAck`: noop — самостоятельная семантика
- * («изменений нет, файл не переписан»), и её нельзя случайно получить из
- * общего пути успеха. `ok: false` — принципиально (lesson-92): нейтральный
- * `ok: true` модель читает как «принято, продолжай» и повторяет вызов до
- * loop detection, хотя все изменения уже применены (инцидент VL-302).
- */
-export interface NoopAck {
-  ok: false;
-  noop: true;
-  reason: 'noop';
-  /** Текст с перечнем полей и указанием следующего шага. */
-  message: string;
-  /** Фактическое состояние полей (из задачи, без записи). */
-  applied: Record<string, unknown>;
-  skipped: [];
-  /**
-   * VL-319: поля, которые по смыслу обязательны, но НЕ заполнены в сущности
-   * и НЕ переданы в вызове. Без этого списка модель видела только «изменений
-   * нет» и повторяла вызов дословно (сессия agent-1793712738536: урок с
-   * пустым телом, 4 повтора `lesson_update` без `content` → кап → fail).
-   */
-  missing?: SkippedField[];
-  /** VL-319: следующий шаг для модели (что именно поменять в аргументах). */
-  hint?: string;
+  /** VL-413: переданные поля, значения которых уже стояли (файл не изменён). */
+  unchanged?: string[];
+  /** VL-413: состояние фазы рана — данные, а не проза. */
+  phase?: PhaseState;
 }
 
 /**
  * Формирует ответ успешного write-вызова.
  *
+ * VL-413: неизменяющая запись — тоже успех. `unchanged` перечисляет поля,
+ * значения которых уже стояли; `applied` при этом пуст. Отдельного исхода
+ * `noop` больше нет: `ok:false` модель читает как «не удалось» и повторяет
+ * вызов, а идемпотентность — нормальное свойство write-API.
+ *
  * @param message — прежняя текстовая формулировка инструмента («… создана: …»)
  * @param applied — фактически записанные поля со значениями из задачи
  * @param skipped — переданные, но не применённые поля
  * @param idempotentReplay — ответ восстановлен по idempotencyKey
+ * @param extra — unchanged/phase (VL-413)
  */
 export function ackOk(
   message: string,
   applied: Record<string, unknown> = {},
   skipped: SkippedField[] = [],
   idempotentReplay = false,
+  extra: { unchanged?: string[]; phase?: PhaseState } = {},
 ): string {
   return serializeAck({
     outcome: 'applied',
     message,
     applied,
     skipped,
+    ...(extra.unchanged !== undefined ? { unchanged: extra.unchanged } : {}),
+    ...(extra.phase !== undefined ? { phase: extra.phase } : {}),
     ...(idempotentReplay ? { idempotentReplay: true } : {}),
   });
 }
@@ -245,7 +272,6 @@ export function ackOkDetailed(
   skipped: SkippedField[] = [],
   extra: {
     missing?: SkippedField[];
-    hint?: string;
     /**
      * VL-362: готовый образец аргументов для повтора. Нужен, когда модель
      * копирует ОБРАЗЕЦ вызова из промпта, а не текст требования: шаблон Close
@@ -255,6 +281,10 @@ export function ackOkDetailed(
      * VL-353).
      */
     retryWith?: Record<string, unknown>;
+    /** VL-413: переданные поля, значения которых уже стояли. */
+    unchanged?: string[];
+    /** VL-413: состояние фазы рана — данные, а не проза. */
+    phase?: PhaseState;
   } = {},
 ): string {
   const missing = extra.missing ?? [];
@@ -265,27 +295,13 @@ export function ackOkDetailed(
     message,
     applied,
     skipped,
+    ...(extra.unchanged !== undefined ? { unchanged: extra.unchanged } : {}),
+    ...(extra.phase !== undefined ? { phase: extra.phase } : {}),
     next: {
       ...(missing.length > 0 ? { missing } : {}),
-      ...(extra.hint ? { hint: extra.hint } : {}),
       ...(extra.retryWith && Object.keys(extra.retryWith).length > 0 ? { retryWith: extra.retryWith } : {}),
     },
   });
-}
-
-/**
- * Формирует ответ write-вызова, который НЕ изменил состояние (VL-303/VL-304).
- *
- * `ok: false` + `reason: 'noop'` — возврат к lesson-92: no-op вызов это
- * ошибка, а не успех. MCP-сервер отдаёт такой ответ с `isError: true`
- * (см. `isNoopAck`), поэтому модель видит ошибку в первой строке JSON, а не
- * «принято» — и переходит к следующему шагу вместо повтора.
- *
- * @param message — текст с перечнем полей и указанием следующего шага
- * @param applied — фактическое состояние полей (из задачи, без записи)
- */
-export function ackNoop(message: string, applied: Record<string, unknown> = {}): string {
-  return ackNoopDetailed(message, applied);
 }
 
 /**
@@ -299,7 +315,7 @@ export function ackNoop(message: string, applied: Record<string, unknown> = {}):
  *
  * `read: true` — машиночитаемый признак «это чтение, эффекта не было»: цикл
  * (`src/agent/loop.ts`) не пополняет такой ответ ни `appliedSignatures`, ни
- * `noopSignatures`, поэтому повтор исполняется заново и отдаёт свежее
+ * `appliedSignatures`, поэтому повтор исполняется заново и отдаёт свежее
  * состояние. Форма совместима с `ackOk` (`ok: true`, `message`, `applied`),
  * поэтому существующие проверки текста и JSON-контракт не ломаются.
  *
@@ -311,82 +327,21 @@ export function ackRead(message: string, applied: Record<string, unknown> = {}):
 }
 
 /**
- * Формирует noop-ответ с перечнем НЕЗАПОЛНЕННЫХ обязательных полей (VL-319).
+ * Распознаёт ответ write-инструмента, НЕ изменивший состояние (VL-413).
  *
- * Зачем отдельный хелпер: noop-ответ «изменений нет» не сообщает, ЧЕГО в
- * вызове не хватает. Модель читает `applied` (переданные поля) как «всё
- * применено» и повторяет вызов дословно — сессия agent-1793712738536
- * (Close VL-318) сделала 4 повтора `lesson_update` без `content` на уроке с
- * пустым телом, кап `MAX_NOOP_REPEATS_PER_RUN` уронил ран, авто-resume
- * перезапустил фазу, и цикл повторился. `missing` называет пропуск прямо,
- * `hint` — что именно поменять в аргументах.
- *
- * @param message — текст с перечнем полей и указанием следующего шага
- * @param applied — фактическое состояние полей (из задачи, без записи)
- * @param missing — обязательные по смыслу, но не заполненные поля
- * @param hint — следующий шаг для модели
- * @param retryWith — VL-362: готовый образец аргументов для повтора
- */
-export function ackNoopDetailed(
-  message: string,
-  applied: Record<string, unknown> = {},
-  missing: SkippedField[] = [],
-  hint?: string,
-  retryWith?: Record<string, unknown>,
-  skipped: SkippedField[] = [],
-): string {
-  // VL-326: hint есть ВСЕГДА. Без него модель читала noop как «ошибка
-  // инструмента» и повторяла вызов дословно (инцидент VL-324: 12 повторов
-  // `backlog_update_task` с уже применёнными полями). Универсальный текст
-  // называет главное: переданные поля уже такие, нужны ДРУГИЕ поля в этом
-  // же вызове. Вызывающий может передать свой, более конкретный hint.
-  return serializeAck({
-    outcome: 'noop',
-    message,
-    applied,
-    // VL-369: noop — тоже исход write-вызова, и переданные-но-не-записанные
-    // поля (неизвестное имя, null) обязаны быть видны и здесь: иначе «частичность
-    // без отказа» снова прячется в успешном на вид ответе.
-    skipped,
-    next: {
-      ...(missing.length > 0 ? { missing } : {}),
-      hint: hint ?? NOOP_DEFAULT_HINT,
-      // VL-362: готовый образец аргументов — модель копирует образец вызова,
-      // а не текст требования (см. ackOkDetailed).
-      ...(retryWith && Object.keys(retryWith).length > 0 ? { retryWith } : {}),
-    },
-  });
-}
-
-/**
- * Универсальный `hint` noop-ответа (VL-326).
- *
- * Формулировка намеренно не упоминает `backlog_finish_phase`: в веб-чате
- * этого инструмента нет, и прежний текст «Следующий шаг: backlog_finish_phase»
- * уводил модель в тупик. Главный сигнал — «поля уже такие, передай другие».
- */
-export const NOOP_DEFAULT_HINT =
-  'Переданные поля уже имеют эти значения — файл не переписан. ' +
-  'Если нужны другие изменения, передай их в ЭТОМ ЖЕ вызове (например, description, acceptanceCriteria, plan); ' +
-  'повтор с теми же аргументами ничего не изменит.';
-
-/**
- * Распознаёт noop-ответ write-инструмента (VL-304).
- *
- * Нужен MCP-серверу: noop — это `isError: true` на транспортной границе, но
- * `handleToolCall` остаётся строковым (его используют веб-чат и десятки
- * тестов), поэтому признак вычисляется из текста ответа.
+ * Заменяет `isNoopAck` (VL-304): исхода `noop` больше нет — неизменяющая
+ * запись отвечает `{ok:true, outcome:'applied', unchanged:[…]}`. Признак
+ * нужен веб-чату: серия таких ответов означает «прогресса нет», и после капа
+ * ход надо разворачивать директивой, а не ждать лимита вызовов на ответ.
  *
  * @param text — текст tool-результата
- * @returns true, если ответ — JSON-снимок с `noop: true`
+ * @returns true, если ответ — JSON-снимок с непустым `unchanged`
  */
-export function isNoopAck(text: string): boolean {
+export function isUnchangedAck(text: string): boolean {
   try {
-    const parsed = JSON.parse(text) as { outcome?: unknown; noop?: unknown } | null;
+    const parsed = JSON.parse(text) as { unchanged?: unknown } | null;
     if (parsed === null || typeof parsed !== 'object') return false;
-    // VL-357: исход — единственный источник правды; `noop` остаётся
-    // вычисляемым флагом для потребителей, читающих ответ по старинке.
-    return parsed.outcome === 'noop' || parsed.noop === true;
+    return Array.isArray(parsed.unchanged) && parsed.unchanged.length > 0;
   } catch {
     return false; // не JSON — не write-ack
   }
@@ -516,7 +471,7 @@ export function ackDenied(
     message,
     applied: {},
     skipped: fields.map(field => ({ field, reason: 'не применено: нет подтверждения' })),
-    next: { hint },
+    hint,
   });
 }
 
@@ -566,9 +521,11 @@ export function ackErrorDetailed(
     outcome: 'rejected',
     error: message,
     applied: extra.applied && Object.keys(extra.applied).length > 0 ? extra.applied : {},
+    // VL-413: hint — инструкция ИСПРАВЛЕНИЯ аргументов (её читает
+    // `parsedErrorText`/`retryDirective`), а не канал следующего шага.
+    ...(extra.hint ? { hint: extra.hint } : {}),
     next: {
       ...(missing.length > 0 ? { missing } : {}),
-      ...(extra.hint ? { hint: extra.hint } : {}),
       // VL-353: аддитивное поле — только когда инструмент знает точное
       // исправление. Пустой объект не отдаём: «retryWith: {}» модель прочтёт
       // как «повтори как есть».

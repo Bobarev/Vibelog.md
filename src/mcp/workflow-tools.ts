@@ -14,7 +14,7 @@
  * десятки инструментов backlog-домена; конструктор — отдельный домен, и его
  * правки не должны раздувать реестр (тот же приём, что у `supervisor.ts`).
  *
- * Контракт ответов: JSON-ack (`ackRead`/`ackOk`/`ackNoop`/`ackError`) —
+ * Контракт ответов: JSON-ack (`ackRead`/`ackOk`/`ackError`) —
  * требование VL-306/VL-351; ни один путь не бросает исключений.
  */
 
@@ -23,7 +23,7 @@ import {
   describeWorkflow,
   validateWorkflowConfig,
 } from '../core/workflow-config.js';
-import { ackError, ackNoop, ackOk, ackRead } from './tool-result.js';
+import { ackError, ackOk, ackRead } from './tool-result.js';
 import type { ToolArgs, ToolDefinition } from './tools.js';
 
 /** Определения инструментов конструктора workflow. */
@@ -109,9 +109,14 @@ export async function handleWorkflowTool(name: string, args: ToolArgs, cwd: stri
         return ackError(`Workflow не применён: ${(result.errors ?? []).join('; ')}`);
       }
       if (result.noop) {
-        return ackNoop('Изменений нет: конфигурация уже совпадает с переданной', {
-          applied: result.applied ?? {},
-        });
+        // VL-413: неизменяющая запись — успех с перечнем неизменённых полей.
+        return ackOk(
+          'Изменений нет: конфигурация уже совпадает с переданной',
+          {},
+          [],
+          false,
+          { unchanged: Object.keys(result.applied ?? {}) },
+        );
       }
       const message = result.dryRun
         ? '--dry-run: файл не изменён, показано, что было бы записано'

@@ -60,7 +60,7 @@ export const REPEAT_WRITE_LIMIT_DEFAULT = 6;
 export const REPEAT_WRITE_BLOCK_DEFAULT = 8;
 
 /**
- * VL-357: пороги повторов исходов вызова (applied / noop / error) за ран.
+ * VL-357: пороги повторов исходов вызова (applied / unchanged / error) за ран.
  *
  * До VL-357 эти пороги жили в `src/agent/loop.ts` (`MAX_*_REPEATS_PER_RUN`),
  * а порог noop-серии веб-чата — своей константой в `src/web/tool-dedup.ts`.
@@ -90,24 +90,17 @@ export const REPEAT_LIMITS = {
    */
   applied: 3,
   /**
-   * VL-309: кап повторов noop-вызова («изменений нет»). Noop ≠ работа
-   * сделана, поэтому штатного выхода нет — только честный fail() после
-   * исчерпания (инцидент Close VL-307).
-   */
-  noop: 3,
-  /**
-   * VL-411: после какого по счёту дословного повтора noop-вызова инструмент
-   * БЛОКИРУЕТСЯ в ране (дефолт 2).
+   * VL-413: кап серии дословных повторов вызова, вернувшего `unchanged`
+   * (неизменяющая запись). Исхода `noop` больше нет — неизменяющая запись
+   * отвечает `ok:true, outcome:'applied', unchanged:[…]`, поэтому серия
+   * считается по признаку `unchanged`, а не по `ok:false`.
    *
-   * Отдельный порог, а не `noop`: до VL-411 1-й, 2-й и 3-й повтор давали
-   * модели ОДИН И ТОТ ЖЕ текст директивы, а 4-й убивал ран. Модель четыре
-   * раза игнорировала директиву, потому что ничто не мешало ей повторить
-   * вызов ещё раз (сессия `agent-1794313856082`, spec VL-408). Теперь повтор
-   * физически невозможен: после 2-го повтора вызов не доходит до handler, а
-   * `noop` остаётся капом рана (страховка на случай, если блокировка не
-   * включилась — например, для инструментов отчёта).
+   * VL-411: после какого по счёту дословного повтора инструмент БЛОКИРУЕТСЯ
+   * в ране (дефолт 2) — повтор физически не доходит до handler.
    */
-  noopBlockAfter: 2,
+  unchanged: 3,
+  /** VL-411: порог блокировки инструмента после дословных повторов (2). */
+  unchangedBlockAfter: 2,
   /**
    * VL-323: кап серии дословных повторов вызова, вернувшего отказ.
    * 5, а не 3: модели нужно время применить подсказку из текста ошибки
@@ -154,15 +147,15 @@ export const INTENT_LOOP_REPEAT_DEFAULT = REPEAT_LIMITS.intent;
 
 /** VL-310: кап повторов уже применённого вызова за ран. */
 export const MAX_APPLIED_REPEATS_PER_RUN = REPEAT_LIMITS.applied;
-/** VL-309: кап повторов noop-вызова за ран. */
-export const MAX_NOOP_REPEATS_PER_RUN = REPEAT_LIMITS.noop;
+/** VL-413: кап повторов вызова, вернувшего `unchanged`, за ран. */
+export const MAX_UNCHANGED_REPEATS_PER_RUN = REPEAT_LIMITS.unchanged;
 /**
- * VL-411: порог блокировки инструмента после дословных noop-повторов.
+ * VL-411: порог блокировки инструмента после дословных повторов.
  *
- * Производная от `REPEAT_LIMITS.noopBlockAfter` — пороги остаются в
+ * Производная от `REPEAT_LIMITS.unchangedBlockAfter` — пороги остаются в
  * единственном источнике (VL-357/VL-359).
  */
-export const NOOP_BLOCK_AFTER_REPEATS = REPEAT_LIMITS.noopBlockAfter;
+export const UNCHANGED_BLOCK_AFTER_REPEATS = REPEAT_LIMITS.unchangedBlockAfter;
 /** VL-323: кап серии дословных повторов отказавшего вызова за ран. */
 export const MAX_ERROR_REPEATS_PER_RUN = REPEAT_LIMITS.error;
 /** VL-253: кап заблокированных вызовов за ран. */
@@ -837,7 +830,7 @@ export function loopDetectionDirective(
 /**
  * VL-361: машиночитаемый «следующий шаг» из ответа инструмента.
  *
- * Директивы цикла (`appliedNoopDirective`/`noopRepeatDirective`) обязаны нести
+ * Директивы цикла (`appliedRepeatDirective`) обязаны нести
  * ТО ЖЕ, что нёс ответ инструмента: конкретное недостающее поле (`missing`) и
  * готовые аргументы (`retryWith`). Иначе модель видит два разных формата —
  * JSON от инструмента и плоский текст от директивы — и повторяет вызов
@@ -846,6 +839,10 @@ export function loopDetectionDirective(
  */
 export interface AckNext {
   missing?: { field: string; reason: string }[];
+  /**
+   * VL-413: `hint` остаётся ТОЛЬКО у ответов-отказов (инструкция исправления
+   * аргументов). У успешных ответов канал «следующего шага» — блок `phase`.
+   */
   hint?: string;
   retryWith?: Record<string, unknown>;
 }
@@ -894,25 +891,27 @@ export function parsedAckNext(output: string): AckNext | null {
 }
 
 /**
- * Текст директивы для повтора вызова, чей результат уже был ok/noop (VL-303).
+ * Текст директивы для дословного повтора уже исполненного write-вызова (VL-303).
  *
- * Отличие от `loopDetectionDirective`: вызов УЖЕ применён, поэтому фазу
+ * VL-413: единственная директива повтора write-вызова. Исхода `noop` больше
+ * нет (неизменяющая запись — успех с `unchanged`), поэтому отдельная
+ * noop-директива удалена: серия повторов считается по сигнатуре, а не по
+ * семантике ответа.
+ *
+ * Отличие от `loopDetectionDirective`: вызов УЖЕ исполнен, поэтому фазу
  * прерывать нельзя — модели нужно лишь перейти к отчёту. Маркерная подстрока
  * «уже применён» используется тестами и разборами сессий.
  *
  * VL-361: директива отдаётся тем же JSON-контрактом, что и ответ инструмента
- * (`serializeAck`), и несёт `missing`/`hint`/`retryWith` последнего ответа —
- * плоского текста в директивах цикла не остаётся.
+ * (`serializeAck`), и несёт `missing`/`retryWith` последнего ответа.
  */
-export function appliedNoopDirective(name: string, lastAck?: AckNext, nextStep?: string, phase?: string): string {
+export function appliedRepeatDirective(name: string, lastAck?: AckNext, nextStep?: string, phase?: string): string {
   // VL-410: текст следующего шага приходит готовым из `phaseNextStep`
   // (src/core/workflow.ts) — он вычислен из workflow и `completeness`, поэтому
-  // работает для любой фазы, включая кастомные. Хардкод `phase === 'close'`
-  // (VL-368) удалён: имена фаз в директивах не сравниваются.
+  // работает для любой фазы, включая кастомные.
   const step = nextStep ?? 'Переходи к следующему пункту фазы, а если работа сделана — к отчёту.';
   return serializeAck({
-    outcome: 'noop',
-    reason: 'noop_repeat',
+    outcome: 'applied',
     message:
       `Вызов ${name} уже применён ранее — повтор НЕ выполнен, он ничего не изменит. ` + step,
     next: ackNextFields(lastAck),
@@ -921,42 +920,9 @@ export function appliedNoopDirective(name: string, lastAck?: AckNext, nextStep?:
 }
 
 /**
- * Текст директивы для повтора вызова, чей ответ был noop (VL-309, VL-319).
- *
- * Отличие от `appliedNoopDirective`: noop означает «изменений нет», а не
- * «работа сделана». Поэтому ран НЕ завершается — модели напоминают, что повтор
- * бесполезен, и направляют к следующему шагу. Маркерная подстрока «Изменений
- * нет» используется тестами и разборами сессий.
- *
- * VL-319: прежний текст утверждал «вызов уже был выполнен» — это НЕВЕРНЫЙ факт:
- * первый же ответ был noop, вызов не исполнялся. Модель читала «не выполнен» и
- * повторяла дословно (сессия agent-1793712738536: 4 повтора `lesson_update`
- * без `content` → кап → fail).
- *
- * VL-361: директива отдаётся JSON-контрактом `serializeAck` и несёт
- * `missing`/`hint`/`retryWith` последнего ответа — модель видит КОНКРЕТНОЕ
- * недостающее поле, а не описательное «добавь отсутствующее поле».
- */
-export function noopRepeatDirective(name: string, lastAck?: AckNext, nextStep?: string): string {
-  // VL-410: следующий шаг — готовый текст из `phaseNextStep` (workflow +
-  // completeness), а не общая фраза «прочитай состояние или смени аргумент»:
-  // модель читала её как «попробуй ещё раз» и повторяла вызов дословно
-  // (сессия agent-1794313856082, тот же механизм, что VL-319/349/361).
-  const step = nextStep ?? 'Следующий шаг: прочитай состояние или смени аргумент.';
-  return serializeAck({
-    outcome: 'noop',
-    reason: 'noop_repeat',
-    message:
-      `Изменений нет: вызов ${name} НЕ исполнен (поля уже такие). Повтор ничего не изменит. ` + step,
-    next: ackNextFields(lastAck),
-    extra: { noop_repeat: true },
-  });
-}
-
-/**
  * VL-411: директива для вызова, чей инструмент ЗАБЛОКИРОВАН в ране.
  *
- * Отличие от `noopRepeatDirective`: там модели сообщают «повтор ничего не
+ * Отличие от `appliedRepeatDirective`: там модели сообщают «повтор ничего не
  * изменит» и она всё равно может повторить (и повторяла — 4 раза в сессии
  * `agent-1794313856082`). Здесь вызов физически не доходит до handler:
  * инструмент заблокирован до конца рана, и единственный путь завершить фазу —
@@ -975,23 +941,25 @@ export function toolBlockedDirective(name: string, phase?: string): string {
     message:
       `Инструмент ${name} заблокирован в этом ране: он дважды вернул «изменений нет», и повтор ` +
       `не исполняется. Работа фазы закончена — доступен backlog_finish_phase.${phaseNote}`,
-    next: {
-      hint: 'Вызови backlog_finish_phase с отчётом о выполненной работе (AC/DoD — через backlog_manage_ac/backlog_manage_dod).',
-    },
+    hint: 'Вызови backlog_finish_phase с отчётом о выполненной работе (AC/DoD — через backlog_manage_ac/backlog_manage_dod).',
     extra: { tool_blocked: true, ...(phase === undefined || phase === '' ? {} : { phase }) },
   });
 }
 
-/** Собирает `next` для директивы из последнего ответа инструмента (VL-361). */
+/**
+ * Собирает `next` для директивы из последнего ответа инструмента (VL-361).
+ *
+ * VL-413: `hint` в `next` не попадает — `ToolNext` его больше не знает
+ * (канал следующего шага — блок `phase`). Текст hint остаётся в ответе
+ * инструмента верхнеуровневым полем и читается `parsedErrorText`.
+ */
 function ackNextFields(lastAck?: AckNext): {
   missing?: { field: string; reason: string }[];
-  hint?: string;
   retryWith?: Record<string, unknown>;
 } {
   if (lastAck === undefined) return {};
   return {
     ...(lastAck.missing !== undefined && lastAck.missing.length > 0 ? { missing: lastAck.missing } : {}),
-    ...(lastAck.hint !== undefined ? { hint: lastAck.hint } : {}),
     ...(lastAck.retryWith !== undefined ? { retryWith: lastAck.retryWith } : {}),
   };
 }

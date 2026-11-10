@@ -20,7 +20,7 @@
  * правки не должны раздувать реестр (тот же приём, что у `supervisor.ts` и
  * `workflow-tools.ts`).
  *
- * Контракт ответов: JSON-ack (`ackRead`/`ackOk`/`ackNoop`/`ackError`) —
+ * Контракт ответов: JSON-ack (`ackRead`/`ackOk`/`ackError`) —
  * требование VL-306/VL-351; ни один путь не бросает исключений.
  */
 
@@ -34,7 +34,7 @@ import {
 } from '../core/decision.js';
 import type { DecisionEntry } from '../core/decision.js';
 import { findBacklogDir } from '../core/paths.js';
-import { ackError, ackNoop, ackOk, ackRead } from './tool-result.js';
+import { ackError, ackOk, ackRead } from './tool-result.js';
 import type { ToolArgs, ToolDefinition } from './tools.js';
 
 /** Известные поля `decision_create` (переданное вне списка → skipped). */
@@ -275,9 +275,13 @@ export function handleDecisionTool(name: string, args: ToolArgs, cwd: string): s
       }
       const skipped = unknownFields(args, UPDATE_FIELDS);
       if (result.changed.length === 0) {
-        return ackNoop(
+        // VL-413: неизменяющая запись — успех с перечнем неизменённых полей.
+        return ackOk(
           `Изменений нет: решение ${result.decision.id} уже имеет переданные значения`,
-          { id: result.decision.id, ...slim({ decision: result.decision, body: result.body, path: result.path }) },
+          {},
+          [],
+          false,
+          { unchanged: Object.keys(args).filter(k => k !== 'id' && k !== 'idempotencyKey') },
         );
       }
       const applied: Record<string, unknown> = { id: result.decision.id };

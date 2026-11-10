@@ -19,7 +19,7 @@
  *     и подсказкой `allowForeign`);
  *   - трейлер через `appendCommitTrailer`/`resolveCommitCoauthor` из VL-302
  *     (логика трейлера НЕ дублируется — lesson-37: общий модуль вместо копий);
- *   - JSON-ack по контракту VL-306 (`ackOk`/`ackNoop`/`ackError`) с полями
+ *   - JSON-ack по контракту VL-306 (`ackOk`/`ackError`) с полями
  *     hash/subject/paths, noop при «нечего коммитить» (совместимо с VL-310).
  *
  * Граница (сознательно не «git-tool вообще»): `status`, `log`, `diff`, `merge`,
@@ -38,7 +38,7 @@ import { appendCommitTrailer, resolveCommitCoauthor } from '../core/commit-trail
 import { getTask } from '../core/store.js';
 import { taskWorktreeDir } from '../core/worktree.js';
 import { resolveInProject } from '../agent/tools.js';
-import { ackError, ackErrorDetailed, ackNoop, ackOk } from './tool-result.js';
+import { ackError, ackErrorDetailed, ackOk } from './tool-result.js';
 
 /** Аргументы `git_commit` (совпадают с inputSchema инструмента, кроме internal). */
 export interface GitCommitOptions {
@@ -335,7 +335,7 @@ function stagingOutsiders(stagedAll: string[], relPaths: string[]): string[] {
  *
  * @param cwd — cwd вызова MCP (в branch-mode — главный репозиторий)
  * @param opts — paths/message/amend/allowForeign (+ internal taskId)
- * @returns JSON: `ackOk` с hash/subject/paths, `ackNoop` при «нечего коммитить»
+ * @returns JSON: `ackOk` с hash/subject/paths либо с `unchanged` при «нечего коммитить»
  *   либо `ackError` (отказ валидации/сверки/git-ошибка)
  */
 export function commitFiles(cwd: string, opts: GitCommitOptions): string {
@@ -424,9 +424,13 @@ export function commitFiles(cwd: string, opts: GitCommitOptions): string {
   const outsiders = stagingOutsiders(stagedAll, relPaths);
   const amend = opts.amend === true;
   if (stagedOurs.length === 0 && !amend) {
-    return ackNoop(
-      `Изменений нет: по путям ${relPaths.join(', ')} коммитить нечего — коммит не создан, переходи к следующему шагу.`,
-      { paths: relPaths },
+    // VL-413: неизменяющая запись — успех с перечнем неизменённых полей.
+    return ackOk(
+      `Изменений нет: по путям ${relPaths.join(', ')} коммитить нечего — коммит не создан.`,
+      {},
+      [],
+      false,
+      { unchanged: ['paths'] },
     );
   }
 

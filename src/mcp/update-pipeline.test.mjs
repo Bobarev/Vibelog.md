@@ -2,7 +2,7 @@
  * Единый пайплайн обновления сущностей (VL-369) — тесты свойств.
  *
  * Проверяется не форма конкретного инструмента, а ТАБЛИЦА ИСХОДОВ:
- * «записали × сущность полная» → applied / partial / noop / noop+missing /
+ * «записали × сущность полная» → applied / partial / applied+unchanged /
  * rejected. Плюс инвариант, закрывающий класс инцидентов: вызов с корректными
  * аргументами на НЕПОЛНОЙ сущности даёт applied или partial, но НИКОГДА
  * rejected — отказ остаётся только для испорченного аргумента.
@@ -93,23 +93,28 @@ describe('VL-369 AC1/AC2 — таблица исходов «записали ×
     const ack = await call('backlog_update_task', { id: t.id, priority: 'Low' });
     assert.equal(ack.outcome, 'partial', JSON.stringify(ack));
     assert.equal(ack.missing[0].field, 'description', 'missing от состояния сущности');
-    assert.equal(typeof ack.hint, 'string');
+    // VL-413: канал следующего шага — блок данных phase, а не прозаический hint.
+    assert.equal(ack.hint, undefined, 'hint как канал следующего шага удалён');
+    assert.equal(ack.retryWith.description, '…', 'готовый образец аргументов');
   });
 
-  it('нечего менять + полная → noop без missing', async () => {
+  it('VL-413: нечего менять + полная → applied + unchanged без missing', async () => {
     const t = createTaskFile(cwd, { title: 'Noop полная', description: 'есть', priority: 'High' });
     const ack = await call('backlog_update_task', { id: t.id, priority: 'High' });
-    assert.equal(ack.outcome, 'noop', JSON.stringify(ack));
-    assert.equal(ack.noop, true);
+    assert.equal(ack.outcome, 'applied', JSON.stringify(ack));
+    assert.equal(ack.ok, true, 'неизменяющая запись — успех (VL-413)');
+    assert.deepEqual(ack.unchanged, ['priority']);
+    assert.deepEqual(ack.applied, {});
     assert.equal(ack.missing, undefined, 'полная сущность — без missing');
   });
 
-  it('нечего менять + неполная → noop + missing (не отказ)', async () => {
+  it('VL-413: нечего менять + неполная → applied + unchanged + missing (не отказ)', async () => {
     const t = createTaskFile(cwd, { title: 'Noop неполная', priority: 'High' });
     const ack = await call('backlog_update_task', { id: t.id, priority: 'High' });
-    assert.equal(ack.outcome, 'noop', JSON.stringify(ack));
-    assert.equal(ack.missing[0].field, 'description', 'noop тоже называет пробел');
-    assert.equal(typeof ack.hint, 'string');
+    assert.equal(ack.outcome, 'applied', JSON.stringify(ack));
+    assert.equal(ack.ok, true);
+    assert.deepEqual(ack.unchanged, ['priority']);
+    assert.equal(ack.missing[0].field, 'description', 'неизменяющая запись тоже называет пробел');
   });
 
   it('испорченный аргумент → rejected (единственное место отказа)', async () => {
@@ -217,10 +222,10 @@ describe('VL-369 AC5 — неполная сущность НИКОГДА не �
   });
 });
 
-// ── AC10: вызов без полей → noop ───────────────────────────────────────────
+// ── AC10: вызов без полей → applied + unchanged ────────────────────────────
 
-describe('VL-369 AC10 — вызов без изменяющих полей даёт noop, а не исключение', () => {
-  it('все четыре инструмента: {id} → noop (+missing, если сущность неполная)', async () => {
+describe('VL-369 AC10 / VL-413 — вызов без изменяющих полей даёт applied+unchanged', () => {
+  it('все четыре инструмента: {id} → applied + unchanged (+missing, если неполная)', async () => {
     const t = createTaskFile(cwd, { title: 'Только id задача' });
     const l = createLessonFile(cwd, { title: 'Только id урок' });
     const doc = writeDocument(backlogDir, { title: 'Только id док' });
@@ -233,21 +238,23 @@ describe('VL-369 AC10 — вызов без изменяющих полей да
       ['reference_update', ref.id],
     ]) {
       const ack = await call(name, { id });
-      assert.equal(ack.outcome, 'noop', `${name}: ${JSON.stringify(ack)}`);
-      assert.equal(ack.ok, false, `${name}: noop — не успех (lesson-92)`);
+      assert.equal(ack.outcome, 'applied', `${name}: ${JSON.stringify(ack)}`);
+      assert.equal(ack.ok, true, `${name}: неизменяющая запись — успех (VL-413)`);
+      // VL-413: пустой unchanged не печатается — payload не раздувается.
+      assert.ok(!('unchanged' in ack), `${name}: полей не передано — unchanged не печатается`);
     }
   });
 });
 
 // ── AC11: append_notes сохраняет неидемпотентность ─────────────────────────
 
-describe('VL-369 AC11 — append_notes не попадает в noop-сверку', () => {
+describe('VL-369 AC11 — append_notes не попадает в сверку «уже так»', () => {
   it('повторное дописывание меняет файл', async () => {
     const t = createTaskFile(cwd, { title: 'Заметки', description: 'x' });
     const first = await call('backlog_update_task', { id: t.id, append_notes: 'строка' });
     assert.equal(first.outcome, 'applied');
     const second = await call('backlog_update_task', { id: t.id, append_notes: 'строка' });
-    assert.notEqual(second.outcome, 'noop', 'дописывание всегда меняет файл');
+    assert.ok(!('unchanged' in second), 'дописывание всегда меняет файл');
     assert.match(getTask(cwd, t.id).implementationNotes, /строка\nстрока/);
   });
 });
@@ -347,16 +354,20 @@ describe('VL-370 — неполнота как данные (workflow × фаз�
 // ── AC6: backlog_update_status как частный случай ──────────────────────────
 
 describe('VL-369 AC6 — backlog_update_status в общем пайплайне', () => {
-  it('смена статуса → applied; повтор → noop; маркеры текста сохранены', async () => {
+  it('смена статуса → applied; повтор → applied+unchanged; маркеры текста сохранены', async () => {
     const t = createTaskFile(cwd, { title: 'Статус', description: 'x' });
     const first = await call('backlog_update_status', { id: t.id, status: 'In Progress' });
     assert.equal(first.outcome, 'applied');
     assert.equal(first.applied.status, 'In Progress');
     assert.match(first.message, /Статус задачи .* обновлён/);
     const second = await call('backlog_update_status', { id: t.id, status: 'In Progress' });
-    assert.equal(second.outcome, 'noop');
+    assert.equal(second.outcome, 'applied');
+    assert.deepEqual(second.unchanged, ['status']);
     assert.match(second.message, /Изменений нет/);
-    assert.match(second.message, /Следующий шаг: .*backlog_finish_phase/);
+    // VL-413: «что делать дальше» — блок данных phase, а не текст сообщения.
+    // Фазовый env в тесте снят (clearPhaseEnv), поэтому фаза неизвестна:
+    // блок присутствует всегда, name: null, отчёт не требуется.
+    assert.deepEqual(second.phase, { name: null, complete: true, missing: [], next: null });
   });
 });
 
@@ -371,7 +382,8 @@ describe('VL-376 — modified_files накапливается, а не заме
 
     // Сценарий VL-370: второй ран передаёт ОДИН файл, который уже был
     const second = await call('backlog_update_task', { id: t.id, modifiedFiles: ['src/c.ts'] });
-    assert.equal(second.outcome, 'noop', `повтор того же набора — noop: ${JSON.stringify(second)}`);
+    assert.equal(second.outcome, 'applied', `повтор того же набора — applied+unchanged: ${JSON.stringify(second)}`);
+    assert.deepEqual(second.unchanged, ['modified_files']);
     assert.deepEqual(getTask(cwd, t.id).modified_files, ['src/a.ts', 'src/b.ts', 'src/c.ts']);
 
     // Новый файл — добавляется в конец, история цела
@@ -387,11 +399,12 @@ describe('VL-376 — modified_files накапливается, а не заме
     assert.deepEqual(getTask(cwd, t.id).modified_files, ['src/a.ts', 'src/b.ts']);
   });
 
-  it('AC3: повтор с тем же набором — noop, а не ложная запись', async () => {
+  it('AC3: повтор с тем же набором — applied+unchanged, а не ложная запись', async () => {
     const t = createTaskFile(cwd, { title: 'Noop повтора', description: 'x' });
     await call('backlog_update_task', { id: t.id, modifiedFiles: ['src/a.ts', 'src/b.ts'] });
     const repeat = await call('backlog_update_task', { id: t.id, modifiedFiles: ['src/b.ts', 'src/a.ts'] });
-    assert.equal(repeat.outcome, 'noop', `другой порядок того же набора — тоже noop: ${JSON.stringify(repeat)}`);
+    assert.equal(repeat.outcome, 'applied', `другой порядок того же набора — тоже unchanged: ${JSON.stringify(repeat)}`);
+    assert.deepEqual(repeat.unchanged, ['modified_files']);
     assert.match(repeat.message, /Изменений нет/);
   });
 
