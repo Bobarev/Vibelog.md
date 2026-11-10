@@ -1,0 +1,100 @@
+{
+  "taskId": "VL-409",
+  "sessions": [
+    {
+      "sessionId": "agent-1794315458571",
+      "phase": "code",
+      "startedAt": "2026-11-10T12:57:38.449Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-10T13:17:49.444Z",
+      "durationMs": 1208315,
+      "usage": {
+        "input": 9703974,
+        "output": 47789,
+        "cache": 9554432,
+        "total": 9751763,
+        "requests": 80,
+        "reasoning": 28386
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794315458571",
+      "phase": "code",
+      "startedAt": "2026-11-10T12:57:38.449Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-10T13:17:49.612Z",
+      "durationMs": 1208315,
+      "usage": {
+        "input": 9703974,
+        "output": 47789,
+        "cache": 9554432,
+        "total": 9751763,
+        "requests": 80,
+        "reasoning": 28386
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794315458571",
+      "phase": "code",
+      "startedAt": "2026-11-10T13:21:46.759Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-10T13:38:14.325Z",
+      "durationMs": 984986,
+      "usage": {
+        "input": 6795875,
+        "output": 19092,
+        "cache": 6683136,
+        "total": 6814967,
+        "requests": 50,
+        "reasoning": 5114
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "web"
+    },
+    {
+      "sessionId": "agent-1794317956349",
+      "phase": "close",
+      "startedAt": "2026-11-10T13:39:16.234Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-10T13:47:51.164Z",
+      "durationMs": 512097,
+      "usage": {
+        "input": 2389830,
+        "output": 12136,
+        "cache": 2341376,
+        "total": 2401966,
+        "requests": 43,
+        "reasoning": 3216
+      },
+      "model": "deepseek/deepseek-v4.1-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794317956349",
+      "phase": "close",
+      "startedAt": "2026-11-10T13:39:16.234Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-10T13:47:51.273Z",
+      "durationMs": 512097,
+      "usage": {
+        "input": 2389830,
+        "output": 12136,
+        "cache": 2341376,
+        "total": 2401966,
+        "requests": 43,
+        "reasoning": 3216
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    }
+  ]
+}
