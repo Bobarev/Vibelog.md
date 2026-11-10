@@ -272,6 +272,13 @@ export interface ChatRequestBody {
    */
   continue?: unknown;
   /**
+   * VL-406: повтор последнего хода без нового user-сообщения — кнопка
+   * «Повторить» у плашки исхода (пустой ответ, ошибка, прерванный ход).
+   * Семантика та же, что у `continue`: jsonl не получает дубль user-строки,
+   * LLM-цикл стартует по уже накопленной истории.
+   */
+  retry?: unknown;
+  /**
    * VL-317: ответ на карточку дрейфа цены. `pricingAck: true` — «Продолжить»
    * (расхождение принимается и запоминается для треда);
    * `pricingVendor` — «Перейти на <вендор>»: явный вендор для этого хода
@@ -912,8 +919,8 @@ export function startChatRun(
   // ответа живёт в produce: нужны история треда и предложенные варианты).
   const hasAnswer = !!body.answer && typeof body.answer.toolCallId === 'string';
 
-  if (!hasMessage && !hasApproval && body.continue !== true && !hasAnswer) {
-    return { error: 'Пустой запрос: ожидается поле message, approval, answer или continue' };
+  if (!hasMessage && !hasApproval && body.continue !== true && body.retry !== true && !hasAnswer) {
+    return { error: 'Пустой запрос: ожидается поле message, approval, answer, continue или retry' };
   }
 
   // Идущий ход этого треда — присоединяемся, второй LLM-цикл не запускаем
@@ -976,8 +983,7 @@ async function driveChat(
         ev.type === 'tool_end' ||
         ev.type === 'approval' ||
         ev.type === 'question' ||
-        ev.type === 'truncated' ||
-        ev.type === 'pricing'
+        ev.type === 'truncated'
       ) {
         hadContent = true;
       }
@@ -1513,12 +1519,17 @@ async function produce(
       pauseOnToolCall(next, cwd, threadId, queue, currentTurn());
       return; // ход снова на паузе: ждём решение по следующему вызову
     }
-  } else if (body.continue === true) {
+  } else if (body.continue === true || body.retry === true) {
     // VL-269: авто-продолжение после truncated — нового user-сообщения НЕТ,
     // пустая строка в тред не попадает (AC8). Ход стартует по уже
     // накопленной истории; закрывать approval-хвосты не нужно: truncated
     // отдаётся только после closeUnconfirmedTail (парность tool_calls↔tool
     // к этому моменту восстановлена).
+    //
+    // VL-406: `retry: true` (кнопка «Повторить» у плашки исхода) — тот же
+    // путь: повтор хода по накопленной истории, БЕЗ дубля user-сообщения в
+    // jsonl. Отдельное поле, а не `continue`, чтобы в логах и тестах было
+    // видно, что это повтор после пустого ответа/ошибки, а не авто-продолжение.
     if (history.length === 0) {
       queue.push({ type: 'error', message: 'Нечего продолжать: история треда пуста' });
       return;
@@ -1631,9 +1642,18 @@ async function produce(
 
     if (resp.toolCalls.length === 0) {
       // Финальный текст: сохраняем и завершаем ход.
-      const assistant: ChatMessage = { role: 'assistant', content: resp.text };
-      history.push(assistant);
-      appendChatMessages(cwd, threadId, [assistant]);
+      //
+      // VL-406: пустой ответ модели в jsonl НЕ пишем. Раньше сюда попадала
+      // строка `{role:'assistant', content:''}` — она ничего не добавляла в
+      // ленту, но и не давала клиенту никакого признака исхода: ход выглядел
+      // как «ничего не произошло». Теперь такой ход получает статус `empty`
+      // (см. `driveChat`), а история остаётся чистой — повтор не натыкается
+      // на пустое assistant-сообщение в контексте модели.
+      if ((resp.text ?? '').trim() !== '') {
+        const assistant: ChatMessage = { role: 'assistant', content: resp.text };
+        history.push(assistant);
+        appendChatMessages(cwd, threadId, [assistant]);
+      }
       finishStats(); // VL-255: диагностика хода (repeat_stats + deduped/limit_hits)
       queue.push({ type: 'done' });
       return;

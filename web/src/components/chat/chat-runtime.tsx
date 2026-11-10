@@ -640,6 +640,15 @@ const chatAdapter: ChatModelAdapter = {
           ...(activeThreadId ? { threadId: activeThreadId } : {}),
           ...(activeModelId ? { model: activeModelId } : {}),
         }
+      } else if (takeRetryRequest()) {
+        // VL-406: «Повторить» у плашки исхода (пустой ответ / ошибка /
+        // прерванный ход). Повтор идёт по накопленной истории: user-сообщение
+        // НЕ отправляется заново, иначе в jsonl появился бы дубль (AC3).
+        body = {
+          retry: true,
+          ...(activeThreadId ? { threadId: activeThreadId } : {}),
+          ...(activeModelId ? { model: activeModelId } : {}),
+        }
       } else {
         // VL-317: ответ на карточку дрейфа цены — то же сообщение, но с
         // подтверждением расхождения и/или выбранным вендором

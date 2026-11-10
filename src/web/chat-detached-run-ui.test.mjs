@@ -57,8 +57,11 @@ describe('VL-332: состояние хода видно в треде (AC3), F5
   it('индикатор показывает «выполняется» для running и причину для interrupted', () => {
     const indicator = bodyOf(thread, 'function RunInProgressIndicator(');
     assert.ok(indicator.includes('Ассистент отвечает'), 'текст индикатора выполнения');
-    assert.ok(indicator.includes('interrupted'), 'обработка прерванного хода');
-    assert.ok(indicator.includes('Шиммер') === false || indicator.includes('ShimmerLabel'));
+    // VL-406: исходы (interrupted/error/cancelled/empty) вынесены в плашку
+    // RunOutcomeBanner — индикатор рендерит её на месте точек.
+    assert.ok(indicator.includes('<RunOutcomeBanner'), 'обработка прерванного хода');
+    const banner = bodyOf(thread, 'function RunOutcomeBanner(');
+    assert.ok(banner.includes('interrupted'), 'причина прерванного хода в плашке');
   });
 
   it('ChatPage знает про run и опрашивает статус до завершения', () => {
