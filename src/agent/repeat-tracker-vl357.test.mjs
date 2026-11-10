@@ -14,14 +14,13 @@ import {
   REPEAT_LIMITS,
   MAX_APPLIED_REPEATS_PER_RUN,
   MAX_ERROR_REPEATS_PER_RUN,
-  MAX_NOOP_REPEATS_PER_RUN,
+  MAX_UNCHANGED_REPEATS_PER_RUN,
   NON_SEMANTIC_ARGS,
   DIRECTIVE_MAX_BYTES,
   callSignature,
   repeatKey,
   loopDetectionDirective,
-  appliedNoopDirective,
-  noopRepeatDirective,
+  appliedRepeatDirective,
   parsedAckNext,
   parsedErrorText,
   clipErrorText,
@@ -30,11 +29,11 @@ import {
 describe('VL-357 — пороги повторов объявлены один раз', () => {
   it('именованные константы согласованы с REPEAT_LIMITS', () => {
     assert.equal(MAX_APPLIED_REPEATS_PER_RUN, REPEAT_LIMITS.applied);
-    assert.equal(MAX_NOOP_REPEATS_PER_RUN, REPEAT_LIMITS.noop);
+    assert.equal(MAX_UNCHANGED_REPEATS_PER_RUN, REPEAT_LIMITS.unchanged);
     assert.equal(MAX_ERROR_REPEATS_PER_RUN, REPEAT_LIMITS.error);
     assert.equal(REPEAT_LIMITS.error, 5, 'порог отказа выше: модели нужно время применить подсказку');
     assert.equal(REPEAT_LIMITS.applied, 3);
-    assert.equal(REPEAT_LIMITS.noop, 3);
+    assert.equal(REPEAT_LIMITS.unchanged, 3);
   });
 });
 
@@ -84,48 +83,29 @@ describe('VL-357 — директивы повторов: один словар�
     );
   });
 
-  it('appliedNoopDirective и noopRepeatDirective — разные исходы, разные тексты', () => {
-    assert.match(appliedNoopDirective('lesson_update'), /уже применён/);
-    assert.match(noopRepeatDirective('backlog_update_task'), /Изменений нет/);
+  // VL-413: единственная директива повтора write-вызова. Исхода `noop` больше
+  // нет (неизменяющая запись — успех с `unchanged`), поэтому отдельная
+  // noop-директива удалена: серия повторов считается по сигнатуре.
+  it('VL-413: appliedRepeatDirective — исход applied и маркер «уже применён»', () => {
+    const parsed = JSON.parse(appliedRepeatDirective('lesson_update'));
+    assert.match(parsed.message, /уже применён/);
+    assert.equal(parsed.outcome, 'applied', 'повтор применённого вызова — не ошибка');
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.applied_repeat, true, 'флаг причины');
   });
 
   // VL-410: директива называет конкретный следующий шаг фазы, а не общую фразу.
   // Текст шага приходит готовым из `phaseNextStep` (workflow + completeness) —
   // имена фаз в директивах больше не сравниваются.
-  it('VL-410: appliedNoopDirective несёт готовый следующий шаг фазы', () => {
+  it('VL-410: appliedRepeatDirective несёт готовый следующий шаг фазы', () => {
     const step = 'Фаза close не завершена — вызови backlog_finish_phase.';
-    const parsed = JSON.parse(appliedNoopDirective('lesson_update', undefined, step, 'close'));
+    const parsed = JSON.parse(appliedRepeatDirective('lesson_update', undefined, step, 'close'));
     assert.match(parsed.message, /backlog_finish_phase/, 'имя следующего инструмента');
     assert.equal(parsed.phase, 'close', 'фаза проброшена машиночитаемо');
     // Без шага — прежняя общая формулировка (обратная совместимость)
-    const plain = JSON.parse(appliedNoopDirective('lesson_update'));
+    const plain = JSON.parse(appliedRepeatDirective('lesson_update'));
     assert.match(plain.message, /Переходи к следующему пункту фазы/);
     assert.equal(plain.phase, undefined);
-  });
-
-  it('VL-410: noopRepeatDirective несёт готовый следующий шаг фазы', () => {
-    const step = 'Фаза spec не завершена — вызови backlog_finish_phase. Сначала передай в этом же вызове: acceptanceCriteria.';
-    const parsed = JSON.parse(noopRepeatDirective('backlog_update_task', undefined, step));
-    assert.match(parsed.message, /backlog_finish_phase/);
-    assert.match(parsed.message, /acceptanceCriteria/);
-    // Без шага — прежняя общая формулировка
-    const plain = JSON.parse(noopRepeatDirective('backlog_update_task'));
-    assert.match(plain.message, /прочитай состояние или смени аргумент/);
-  });
-
-  it('VL-361: директивы цикла — валидный JSON с outcome noop и флагом причины', () => {
-    for (const [text, flag] of [
-      [noopRepeatDirective('lesson_update'), 'noop_repeat'],
-      [appliedNoopDirective('lesson_update'), 'applied_repeat'],
-    ]) {
-      const parsed = JSON.parse(text);
-      assert.equal(parsed.outcome, 'noop', 'исход объявлен, а не выводится из текста');
-      assert.equal(parsed.ok, false);
-      assert.equal(parsed.noop, true);
-      assert.equal(parsed.reason, 'noop_repeat');
-      assert.equal(parsed[flag], true, `флаг причины ${flag}`);
-      assert.equal(typeof parsed.message, 'string');
-    }
   });
 
   it('VL-361: директива несёт missing/hint/retryWith последнего ответа инструмента', () => {
@@ -134,13 +114,11 @@ describe('VL-357 — директивы повторов: один словар�
       hint: 'Добавь в вызов `content` с непустым markdown.',
       retryWith: { content: '## Проблема\n…' },
     };
-    const parsed = JSON.parse(noopRepeatDirective('lesson_update', lastAck));
+    const parsed = JSON.parse(appliedRepeatDirective('lesson_update', lastAck));
     assert.deepEqual(parsed.missing, [{ field: 'content', reason: 'тело урока не заполнено' }]);
-    assert.match(parsed.hint, /content/);
+    // VL-413: hint в next не попадает — канал следующего шага это блок phase.
+    assert.equal(parsed.hint, undefined);
     assert.deepEqual(parsed.retryWith, { content: '## Проблема\n…' });
-    // applied-директива — тот же контракт
-    const applied = JSON.parse(appliedNoopDirective('lesson_update', lastAck));
-    assert.deepEqual(applied.missing, [{ field: 'content', reason: 'тело урока не заполнено' }]);
   });
 
   it('VL-369: parsedAckNext читает ПЛОСКУЮ форму (serializeAck разворачивает next в корень)', () => {

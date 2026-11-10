@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import { runLoop } from '../../dist/agent/loop.js';
 import {
   DIRECTIVE_MAX_BYTES,
-  NOOP_BLOCK_AFTER_REPEATS,
+  UNCHANGED_BLOCK_AFTER_REPEATS,
   retryDirective,
 } from '../../dist/agent/repeat-tracker.js';
 
@@ -82,9 +82,7 @@ describe('P5 — размер директивы повтора', () => {
       name: 'backlog_update_task',
       description: 'write-заглушка',
       inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
-      handler: async () => JSON.stringify({
-        ok: false, noop: true, reason: 'noop', message: 'Изменений нет', applied: {}, skipped: [],
-      }),
+      handler: async () => JSON.stringify({ ok: true, outcome: 'applied', message: 'Изменений нет', applied: {}, unchanged: ['type'], skipped: [] }),
     };
     const same = { id: 'VL-1', type: 'feature' };
     const { llm } = fakeLlm(Array.from({ length: 10 }, (_, i) => ({
@@ -103,10 +101,10 @@ describe('P5 — размер директивы повтора', () => {
     assert.ok(directives.length >= 2, `директивы цикла получены (${directives.length})`);
     // Директив «Изменений нет» ровно столько, сколько повторов до блокировки:
     // дальше инструмент отвечает `tool_blocked`, и текст не накапливается.
-    const noopDirectives = directives.filter((d) => d.includes('noop_repeat'));
+    const repeatDirectives = directives.filter((d) => d.includes('applied_repeat'));
     assert.ok(
-      noopDirectives.length <= NOOP_BLOCK_AFTER_REPEATS,
-      `noop-директив не больше порога блокировки (${noopDirectives.length} ≤ ${NOOP_BLOCK_AFTER_REPEATS})`,
+      repeatDirectives.length <= UNCHANGED_BLOCK_AFTER_REPEATS,
+      `директив повтора не больше порога блокировки (${repeatDirectives.length} ≤ ${UNCHANGED_BLOCK_AFTER_REPEATS})`,
     );
     for (const d of directives) {
       const size = Buffer.byteLength(d, 'utf8');

@@ -215,10 +215,12 @@ describe('VL-164 — reference_update', () => {
     );
   });
 
-  it('без полей для обновления → noop (VL-369)', async () => {
-    // VL-369: «нечего менять» — noop по общей таблице исходов, а не отказ.
+  it('без полей для обновления → applied+unchanged (VL-369/VL-413)', async () => {
+    // VL-369: «нечего менять» — успех по общей таблице исходов, а не отказ.
     const ack = JSON.parse(await handleToolCall('reference_update', { id: 'ref-1' }, testRoot));
-    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
+    // VL-413: неизменяющая запись — успех с пустым applied.
+    assert.equal(ack.ok, true, `ожидался успех: ${JSON.stringify(ack)}`);
+    assert.equal(ack.outcome, 'applied');
   });
 });
 

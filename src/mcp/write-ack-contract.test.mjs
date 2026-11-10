@@ -399,13 +399,19 @@ describe('VL-351 — каждый write-инструмент отвечает JS
 });
 
 /**
- * VL-310: таблица noop-способных write-инструментов.
+ * VL-310/VL-413: таблица write-инструментов с неизменяющей записью.
  *
  * Каждый вход — сценарий «первый вызов применяет, второй с ТЕМИ ЖЕ
- * аргументами обязан ответить noop». Сценарий сам готовит данные и
- * возвращает второй ack — так таблица остаётся данными, а не копипастой.
+ * аргументами обязан ответить `applied` + непустым `unchanged`». Сценарий сам
+ * готовит данные и возвращает второй ack — так таблица остаётся данными, а не
+ * копипастой.
+ *
+ * VL-413: исход `noop` удалён. Неизменяющая запись — нормальное свойство
+ * идемпотентного write-API, а не событие: `ok:false` модель читала как
+ * «не удалось» и повторяла вызов до капа (сессии agent-1794322537996,
+ * agent-1793637056809).
  */
-const NOOP_SCENARIOS = {
+const UNCHANGED_SCENARIOS = {
   backlog_update_task: async () => {
     const t = createTaskFile(cwd, { title: 'Noop-задача контракта', type: 'bug' });
     await handleToolCall('backlog_update_task', { id: t.id, type: 'feature' }, cwd);
@@ -499,10 +505,11 @@ const NOOP_SCENARIOS = {
 };
 
 /**
- * VL-310: write-инструменты, для которых noop НЕПРИМЕНИМ по природе
- * операции. Причина обязательна — «пятый случай» не должен проскочить молча.
+ * VL-310/VL-413: write-инструменты, для которых неизменяющая запись
+ * НЕПРИМЕНИМА по природе операции. Причина обязательна — «пятый случай» не
+ * должен проскочить молча.
  */
-const NOOP_NOT_APPLICABLE = {
+const UNCHANGED_NOT_APPLICABLE = {
   backlog_create_task: 'создание: повтор создаёт новую сущность, состояние «до» не существует',
   backlog_add_comment: 'дописывание: каждый вызов добавляет запись, тело не хранится как поле',
   backlog_finish_phase: 'фаза: смена статуса + отчёт; повтор отклоняется сервером (already_finished)',
@@ -526,30 +533,34 @@ const NOOP_NOT_APPLICABLE = {
   decision_create: 'создание решения: каждый вызов даёт новый decision-N (id = max+1), состояние «до» не существует',
 };
 
-describe('VL-310 — инвариант «каждый write-инструмент умеет noop»', () => {  it('AC2: каждый noop-способный инструмент отвечает {ok:false, noop:true} на повторной идентичной записи', async () => {
-    for (const [name, scenario] of Object.entries(NOOP_SCENARIOS)) {
+describe('VL-310/VL-413 — инвариант «неизменяющая запись — успех с unchanged»', () => {
+  it('AC2: каждый инструмент отвечает {ok:true, outcome:applied, unchanged:[…]} на повторной идентичной записи', async () => {
+    for (const [name, scenario] of Object.entries(UNCHANGED_SCENARIOS)) {
       const ack = await scenario();
-      assert.equal(ack.noop, true, `${name}: повтор с теми же аргументами обязан быть noop — ${JSON.stringify(ack).slice(0, 300)}`);
-      assert.equal(ack.ok, false, `${name}: noop — ошибка, а не успех (lesson-92/lesson-174)`);
-      assert.equal(ack.reason, 'noop', `${name}: reason должен быть 'noop'`);
+      assert.equal(ack.ok, true, `${name}: неизменяющая запись — успех, а не событие — ${JSON.stringify(ack).slice(0, 300)}`);
+      assert.equal(ack.outcome, 'applied', `${name}: исход — applied`);
+      assert.ok(Array.isArray(ack.unchanged) && ack.unchanged.length > 0,
+        `${name}: unchanged перечисляет неизменённые поля — ${JSON.stringify(ack).slice(0, 300)}`);
+      assert.ok(!('noop' in ack), `${name}: исхода noop больше нет`);
+      assert.ok(!('hint' in ack), `${name}: hint как канал следующего шага удалён`);
       assert.match(String(ack.message), /Изменений нет/, `${name}: маркер «Изменений нет» обязателен`);
     }
   });
 
-  it('AC2/AC3: новый write-инструмент без noop-детекции валит тест', () => {
+  it('AC2/AC3: новый write-инструмент без unchanged-детекции валит тест', () => {
     const missing = listTools()
       .map(t => t.name)
       .filter(name => isWriteOperation(name))
-      .filter(name => !(name in NOOP_SCENARIOS)
-        && !(name in NOOP_NOT_APPLICABLE)
+      .filter(name => !(name in UNCHANGED_SCENARIOS)
+        && !(name in UNCHANGED_NOT_APPLICABLE)
         // Инструменты прогона фаз/очереди — вне домена данных backlog (VL-268).
         && !['backlog_trigger_phase', 'backlog_auto_queue', 'backlog_supervisor'].includes(name));
     assert.deepEqual(
       missing,
       [],
-      `write-инструменты без noop-семантики и без документированного исключения: ${missing.join(', ')}. ` +
-        'Добавь сценарий в NOOP_SCENARIOS (если операция идемпотентна по значениям) ' +
-        'или строку с причиной в NOOP_NOT_APPLICABLE.',
+      `write-инструменты без unchanged-семантики и без документированного исключения: ${missing.join(', ')}. ` +
+        'Добавь сценарий в UNCHANGED_SCENARIOS (если операция идемпотентна по значениям) ' +
+        'или строку с причиной в UNCHANGED_NOT_APPLICABLE.',
     );
   });
 });
@@ -564,7 +575,7 @@ describe('VL-310 — инвариант «каждый write-инструмен�
  * должна узнать об этом из ответа, а не из повторного чтения.
  */
 describe('VL-319 — noop-ответ называет незаполненное обязательное поле', () => {
-  it('AC3/VL-379: noop lesson_update на уроке с пустым телом содержит missing[0].field === "problem" и hint', async () => {
+  it('AC3/VL-379/VL-413: неизменяющая запись lesson_update на пустом теле называет problem в missing', async () => {
     const l = createLessonFile(cwd, { title: 'Урок-пустышка контракта', tags: ['a'] });
     // Обнуляем тело: имитируем урок, созданный шаблоном Close без content
     const entry = getLesson(cwd, l.id);
@@ -573,24 +584,23 @@ describe('VL-319 — noop-ответ называет незаполненное
     // изменяющих полей на пустом теле — noop + missing, не отказ (4-я строка
     // таблицы исходов). Отказ остался только для испорченного аргумента.
     const err = JSON.parse(await handleToolCall('lesson_update', { id: l.id }, cwd));
-    assert.equal(err.noop, true, `ожидался noop: ${JSON.stringify(err)}`);
-    assert.equal(err.outcome, 'noop');
+    assert.equal(err.outcome, 'applied', `ожидался applied: ${JSON.stringify(err)}`);
+    assert.equal(err.ok, true, 'неизменяющая запись — успех (VL-413)');
     assert.equal(err.missing[0].field, 'problem', 'missing называет пропущенное поле');
-    assert.equal(typeof err.hint, 'string', 'hint со следующим шагом');
     // VL-355: вызов с ДРУГИМ полем на пустом теле применяется и предупреждает
     const partial = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
     assert.equal(partial.ok, true, `частичное применение: ${JSON.stringify(partial)}`);
     assert.equal(partial.missing[0].field, 'problem', 'успех тоже называет незаполненное тело');
-    assert.equal(typeof partial.hint, 'string', 'hint обязателен и в успешном ответе');
+    assert.equal(partial.retryWith.problem, '<что было не так>', 'готовый образец аргументов');
     // Дополняем тело → повторный вызов даёт noop с missing (тело уже непустое,
     // но проверяем форму ответа: applied — только переданные поля)
     writeFileSync(entry.path, lessonToMarkdown(entry.lesson, '## Проблема\n\nx\n'), 'utf-8');
     const first = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
     assert.equal(first.ok, true, `первый вызов применяет: ${JSON.stringify(first)}`);
-    const noop = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
-    assert.equal(noop.noop, true, `ожидался noop: ${JSON.stringify(noop)}`);
-    assert.deepEqual(Object.keys(noop.applied), ['verified_by'], 'applied — только переданные поля');
-    assert.equal(typeof noop.hint, 'string', 'hint обязателен в noop-ответе');
+    const repeat = JSON.parse(await handleToolCall('lesson_update', { id: l.id, verifiedBy: 'agent' }, cwd));
+    assert.equal(repeat.outcome, 'applied', `ожидался applied: ${JSON.stringify(repeat)}`);
+    assert.deepEqual(repeat.unchanged, ['verified_by'], 'unchanged — переданное поле уже такое');
+    assert.deepEqual(repeat.applied, {}, 'applied пуст — ничего не записано');
   });
 });
 
@@ -688,7 +698,8 @@ describe('VL-357 — отсутствие необязательного по с
       assert.equal(ack.ok, true, `${name}: partial — не ошибка (ok:true, совместимость с ack-потребителями)`);
       assert.ok(Array.isArray(ack.missing) && ack.missing.length > 0, `${name}: next.missing обязателен — ${String(out).slice(0, 300)}`);
       assert.equal(typeof ack.missing[0].field, 'string', `${name}: missing называет поле`);
-      assert.equal(typeof ack.hint, 'string', `${name}: hint со следующим шагом`);
+      // VL-413: канал следующего шага — данные (missing/retryWith/phase), не hint.
+      assert.ok(ack.phase !== undefined, `${name}: блок phase обязателен`);
     }
   });
 

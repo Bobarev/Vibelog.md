@@ -596,12 +596,12 @@ export function getCompletenessRules(
 /**
  * Следующий шаг фазы — из ДАННЫХ workflow и `completeness`, а не из имён фаз (VL-410).
  *
- * Зачем: директивы цикла (`noopRepeatDirective`/`appliedNoopDirective`) раньше
+ * Зачем: директивы цикла (`appliedRepeatDirective`) раньше
  * знали единственный конкретный шаг — хардкод `phase === 'close'` (VL-368).
  * Для любой другой фазы, включая кастомные (`investigate`, `materialize`,
  * `analyze` из `workflows` в settings), модель получала общую фразу «переходи
  * к следующему пункту» и повторяла вызов дословно до капа
- * `MAX_NOOP_REPEATS_PER_RUN` (сессия agent-1794313856082, фаза spec VL-408).
+ * `MAX_UNCHANGED_REPEATS_PER_RUN` (сессия agent-1794313856082, фаза spec VL-408).
  *
  * Правило вычисляется из конфигурации:
  * - служебная фаза (`SERVICE_PHASES`) статуса не меняет → отчёт не нужен;

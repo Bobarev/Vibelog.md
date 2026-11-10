@@ -97,11 +97,13 @@ describe('VL-153 — lesson_create / view / list / search / update', () => {
     await assert.rejects(handleToolCall('lesson_view', { id: 'lesson-999' }, testRoot), /не найден/);
   });
 
-  it('update: без полей → noop (VL-369)', async () => {
-    // VL-369: вызов без изменяющих аргументов — «менять нечего» (noop),
-    // а не испорченный аргумент. Незаполненное тело сообщается полем missing.
+  it('update: без полей → applied+unchanged (VL-369/VL-413)', async () => {
+    // VL-369: вызов без изменяющих аргументов — «менять нечего», а не
+    // испорченный аргумент. VL-413: это успех с пустым applied.
     const ack = JSON.parse(await handleToolCall('lesson_update', { id: 'lesson-1' }, testRoot));
-    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
+    assert.equal(ack.ok, true, `ожидался успех: ${JSON.stringify(ack)}`);
+    assert.equal(ack.outcome, 'applied');
+    assert.deepEqual(ack.applied, {});
   });
 
   // VL-379 (AC3): тело склеивается с заголовками; example опускается, если не передан.
@@ -178,12 +180,12 @@ describe('VL-153 — lesson_create / view / list / search / update', () => {
     assert.match(view.body, /## Пример/);
   });
 
-  it('VL-379: update {content} без частей → skipped + noop (поле удалено)', async () => {
+  it('VL-379/VL-413: update {content} без частей → skipped + applied+unchanged (поле удалено)', async () => {
     const created = JSON.parse(await handleToolCall('lesson_create', { title: 'Урок с content в update', problem: 'п', solution: 'р' }, testRoot));
     const ack = JSON.parse(await handleToolCall('lesson_update', {
       id: created.applied.id, content: '## Проблема\n\nx\n',
     }, testRoot));
-    assert.equal(ack.noop, true, `менять нечего — noop: ${JSON.stringify(ack)}`);
+    assert.equal(ack.ok, true, `менять нечего — успех: ${JSON.stringify(ack)}`);
     assert.equal(ack.skipped[0].field, 'content');
     assert.match(String(ack.skipped[0].reason), /поле удалено/);
   });

@@ -134,12 +134,13 @@ describe('MCP v1.1 — инструменты', () => {
     assert.equal(task.finalSummary, 'Готово');
   });
 
-  it('update_task: без полей → noop (VL-369)', async () => {
+  it('update_task: без полей → applied+unchanged (VL-369/VL-413)', async () => {
     // VL-369: вызов без изменяющих аргументов — «менять нечего» (noop),
     // а не испорченный аргумент. Отказ остаётся только для порчи аргумента.
     const t = createTaskFile(testDir, { title: 'Пустое' });
     const ack = JSON.parse(await handleToolCall('backlog_update_task', { id: t.id }, testDir));
-    assert.equal(ack.noop, true, `ожидался noop: ${JSON.stringify(ack)}`);
+    // VL-413: неизменяющая запись — успех с перечнем неизменённых полей.
+    assert.equal(ack.ok, true, `ожидался успех: ${JSON.stringify(ack)}`);
   });
 
   // --- VL-219: acceptanceCriteria в update_task + defaultStatus ---

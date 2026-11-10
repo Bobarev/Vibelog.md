@@ -635,9 +635,9 @@ describe('MCP-сервер', () => {
       assert.equal(byPhase.plan, undefined, 'фаза сессии не подменяет фазу рана');
     });
 
-    it('VL-304: noop write-вызов → isError:true с JSON-снимком (ok:false, reason:noop)', async () => {
-      const id = await createTask('Noop isError VL-304');
-      // Первый вызов применяет type, второй — noop (значение уже такое).
+    it('VL-413: неизменяющая запись → обычный успех (ok:true, unchanged), без isError', async () => {
+      const id = await createTask('Unchanged VL-413');
+      // Первый вызов применяет type, второй — неизменяющая запись.
       await callMcp([
         { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
         { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_update_task', arguments: { id, type: 'feature' } } },
@@ -647,14 +647,17 @@ describe('MCP-сервер', () => {
         { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_update_task', arguments: { id, type: 'feature' } } },
         { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'backlog_update_task', arguments: { id, title: 'Noop isError VL-304 (renamed)' } } },
       ]);
-      const noop = responses.find(r => r.id === 2);
-      assert.equal(noop.result.isError, true, `noop должен быть isError: ${noop.result.content[0].text}`);
-      const ack = JSON.parse(noop.result.content[0].text);
-      assert.equal(ack.ok, false);
-      assert.equal(ack.noop, true);
-      assert.equal(ack.reason, 'noop');
+      const repeat = responses.find(r => r.id === 2);
+      // VL-413: неизменяющая запись — успех, на транспортной границе НЕ ошибка.
+      assert.ok(!repeat.result.isError, `неизменяющая запись не isError: ${repeat.result.content[0].text}`);
+      const ack = JSON.parse(repeat.result.content[0].text);
+      assert.equal(ack.ok, true);
+      assert.equal(ack.outcome, 'applied');
+      assert.deepEqual(ack.unchanged, ['type']);
+      assert.ok(!('noop' in ack), 'исхода noop больше нет');
       assert.match(ack.message, /Изменений нет/);
-      assert.match(ack.message, /Следующий шаг: backlog_finish_phase/);
+      // VL-413: состояние фазы — блоком данных, а не текстом «Следующий шаг».
+      assert.ok(ack.phase !== undefined, 'блок phase обязателен');
       // Обычный успех — без isError
       const ok = responses.find(r => r.id === 3);
       assert.ok(!ok.result.isError, `успех не должен быть isError: ${ok.result.content[0].text}`);

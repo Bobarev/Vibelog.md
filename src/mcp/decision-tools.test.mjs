@@ -134,7 +134,7 @@ describe('VL-412 — CRUD через MCP', () => {
     assert.equal(rejected.applied.decisions[0].id, 'decision-2');
   });
 
-  it('AC3: decision_update меняет статус, тело не тронуто; повтор → noop', async () => {
+  it('AC3: decision_update меняет статус, тело не тронуто; повтор → applied+unchanged', async () => {
     const before = ack(await handleToolCall('decision_view', { id: 'decision-2' }, cwd));
     const upd = ack(await handleToolCall('decision_update', { id: 'decision-2', status: 'accepted' }, cwd));
     assert.equal(upd.ok, true, JSON.stringify(upd));
@@ -146,8 +146,9 @@ describe('VL-412 — CRUD через MCP', () => {
     assert.equal(after.applied.body, before.applied.body, 'тело не тронуто');
 
     const repeat = ack(await handleToolCall('decision_update', { id: 'decision-2', status: 'accepted' }, cwd));
-    assert.equal(repeat.noop, true, `ожидался noop: ${JSON.stringify(repeat)}`);
-    assert.equal(repeat.ok, false);
+    // VL-413: неизменяющая запись — успех с перечнем неизменённых полей.
+    assert.equal(repeat.ok, true, `ожидался успех: ${JSON.stringify(repeat)}`);
+    assert.deepEqual(repeat.unchanged, ['status']);
     assert.match(String(repeat.message), /Изменений нет/);
   });
 });

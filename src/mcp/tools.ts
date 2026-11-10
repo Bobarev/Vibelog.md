@@ -67,8 +67,11 @@ import { getCompletenessFields, getCompletenessRules, taskCompletenessMissing } 
 import type { CompletenessField } from '../core/workflow.js';
 import { buildProjectMap } from '../core/project-map.js';
 import { truncateToolOutput } from '../agent/tools.js';
-import { ackOk, ackOkDetailed, ackRead, ackNoop, ackNoopDetailed, ackError, ackErrorDetailed, unknownFields, sameValue, sameFieldsUpToDate, SET_FIELDS, BODY_FIELD } from './tool-result.js';
-import { runUpdate } from './update-pipeline.js';
+import { ackOk, ackOkDetailed, ackRead, ackError, ackErrorDetailed, unknownFields, sameValue, sameFieldsUpToDate, SET_FIELDS, BODY_FIELD } from './tool-result.js';
+import { runUpdate, taskPhaseState, defaultPhaseState } from './update-pipeline.js';
+// VL-413: блок `phase` обязателен в КАЖДОМ ответе write-инструмента — признак
+// «это write» берётся из общего классификатора (VL-306), а не из списка имён.
+import { isWriteOperation } from '../core/tool-classify.js';
 import type { EntitySpec, RejectDetail } from './update-pipeline.js';
 // VL-399: точечная правка тела документа + guard от молчаливой потери тела
 import { applyBodyEdit, contentShrinkCheck } from './document-edit.js';
@@ -981,6 +984,44 @@ export async function handleToolCall(
   cwd: string,
   opts?: HandleToolCallOpts,
 ): Promise<string> {
+  const out = await handleToolCallInner(name, args, cwd, opts);
+  return withPhaseBlock(name, args, cwd, out);
+}
+
+/**
+ * Дописывает блок `phase` в ответ write-инструмента (VL-413, AC3).
+ *
+ * Зачем на границе, а не в каждом инструменте: AC3 требует блок в КАЖДОМ
+ * ответе write-инструмента, а write-инструментов в реестре больше тридцати.
+ * Копия в каждом — ровно тот дефект, который закрывал VL-369 (четыре копии
+ * одной логики). Здесь одна точка: ответ уже JSON-ack → добавляем поле, если
+ * его нет; плоский текст и не-JSON не трогаем (их форма — отдельный контракт).
+ *
+ * `phaseNextStep` читает диск, поэтому блок считается ОДИН раз на ответ и
+ * только когда его действительно нет (update-pipeline уже положил свой).
+ */
+function withPhaseBlock(name: string, args: ToolArgs, cwd: string, out: string): string {
+  if (!isWriteOperation(name, args)) return out;
+  let parsed: Record<string, unknown>;
+  try {
+    const value: unknown = JSON.parse(out);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return out;
+    parsed = value as Record<string, unknown>;
+  } catch {
+    return out; // плоский текст — не ack, форма не наша
+  }
+  if (parsed.phase !== undefined) return out;
+  if (parsed.ok !== true) return out; // отказы/ошибки — не «состояние фазы»
+  parsed.phase = defaultPhaseState({ cwd, phase: resolveGuardPhase(cwd) }, []);
+  return JSON.stringify(parsed, null, 2);
+}
+
+async function handleToolCallInner(
+  name: string,
+  args: ToolArgs,
+  cwd: string,
+  opts?: HandleToolCallOpts,
+): Promise<string> {
   switch (name) {
     // VL-262: write-инструменты задачи — идемпотентность по ключу вызывающего.
     // Без idempotencyKey поведение прежнее (обёртка прозрачна).
@@ -1628,32 +1669,18 @@ const taskSpec: EntitySpec<Task> = {
   // Фаза — только доверенный источник (env рана/мета сессии), args.phase не читается
   resolvePhase: resolveGuardPhase,
   completeness: (entity, ctx) => taskMissing(entity, ctx.cwd, ctx.phase),
+  // VL-413: только готовый образец аргументов — «что делать дальше» несёт
+  // блок данных `phase`, а не прозаический hint.
   next: (_entity, missing) => {
     // Готовый образец вызова: имена ПОЛЕЙ задачи → имена АРГУМЕНТОВ инструмента
     const fields = missing.map(m => fieldToArg(m.field));
-    return {
-      hint:
-        `Дополни задачу в этом же вызове — не хватает: ${missing.map(m => m.field).join(', ')}. ` +
-        'Поля необязательны, но без них сущность неполна.',
-      ...(fields.length > 0
-        ? { retryWith: Object.fromEntries(fields.map(f => [f, '…'])) }
-        : {}),
-    };
+    return fields.length > 0
+      ? { retryWith: Object.fromEntries(fields.map(f => [f, '…'])) }
+      : {};
   },
-  noopHint: (entity, keys, transferred, ctx) => {
-    const suggestions = taskMissing(entity, ctx.cwd, ctx.phase)
-      .map(m => fieldToArg(m.field))
-      .filter(arg => !transferred.includes(arg));
-    return (
-      `Переданные поля (${keys.join(', ')}) уже такие. ` +
-      `Если нужны другие изменения, передай их в ЭТОМ ЖЕ вызове` +
-      (suggestions.length > 0 ? ` — например: ${suggestions.join(', ')}.` : '.')
-    );
-  },
-  message: (entity, keys, via) =>
-    via === 'noop'
-      ? 'Следующий шаг: backlog_finish_phase (или следующий шаг плана) — повтор этого вызова ничего не изменит.'
-      : `Задача ${entity.id} обновлена: ${keys.join(', ')}`,
+  // VL-413: состояние фазы — из workflow и completeness (VL-410), данные.
+  phaseState: (entity, ctx, missing) => taskPhaseState(entity, ctx, missing),
+  message: (entity, keys) => `Задача ${entity.id} обновлена: ${keys.join(', ')}`,
 };
 
 /**
@@ -1684,10 +1711,8 @@ const statusSpec: EntitySpec<Task> = {
     for (const key of keys) result[key] = (entity as unknown as Record<string, unknown>)[key];
     return result;
   },
-  message: (entity, keys, via) =>
-    via === 'noop'
-      ? 'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.'
-      : `Статус задачи ${entity.id} обновлён: ${entity.status}`,
+  phaseState: (entity, ctx, missing) => taskPhaseState(entity, ctx, missing),
+  message: (entity, keys) => `Статус задачи ${entity.id} обновлён: ${entity.status}`,
 };
 
 function toolUpdateStatus(args: ToolArgs, cwd: string): string {
@@ -2392,10 +2417,13 @@ function toolUpdateDependencies(args: ToolArgs, cwd: string): string {
   const before = [...(task.dependencies || [])];
   const unchanged = before.length === deps.length && before.every(d => deps.includes(d));
   if (unchanged) {
-    return ackNoop(
-      `Изменений нет: зависимости задачи ${args.id} уже [${deps.join(', ')}]. ` +
-        'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.',
-      { dependencies: deps },
+    // VL-413: неизменяющая запись — успех с перечнем неизменённых полей.
+    return ackOk(
+      `Изменений нет: зависимости задачи ${args.id} уже [${deps.join(', ')}].`,
+      {},
+      [],
+      false,
+      { unchanged: ['dependencies'] },
     );
   }
   updateTaskFile(cwd, args.id as string, { dependencies: deps });
@@ -2524,10 +2552,13 @@ function toolMilestoneRename(args: ToolArgs, cwd: string): string {
   // (повтор упадёт «не найдена») — явный список-исключение в
   // write-ack-contract.test.mjs.
   if (String(from).toLowerCase() === String(to).toLowerCase()) {
-    return ackNoop(
-      `Изменений нет: веха «${from}» уже называется «${to}». ` +
-        "Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.",
-      { from, to, updated_tasks: 0 },
+    // VL-413: неизменяющая запись — успех, а не событие.
+    return ackOk(
+      `Изменений нет: веха «${from}» уже называется «${to}».`,
+      {},
+      [],
+      false,
+      { unchanged: ['from', 'to'] },
     );
   }
   const updated = renameMilestone(backlogDir, from, to);
@@ -2642,7 +2673,8 @@ function toolDocumentCreate(args: ToolArgs, cwd: string): string {
       [],
       {
         missing: [{ field: 'content', reason: 'content не передан — тело документа пустое' }],
-        hint: `Заполни тело: document_update {"id": "${doc.id}", "content": "# …"}`,
+        // VL-413: готовый образец аргументов вместо прозаического hint.
+        retryWith: { id: doc.id, content: '# …' },
       },
     );
   }
@@ -2744,11 +2776,7 @@ const documentSpec: EntitySpec<DocumentEntity> = {
   },
   // Тело документа необязательно по смыслу (см. PARTIAL_EXEMPT в контракт-тесте)
   completeness: () => [],
-  message: (entity, keys, via) =>
-    via === 'noop'
-      ? 'Следующий шаг: переходи к следующему пункту фазы (правки/проверки) или к backlog_finish_phase — ' +
-        'повтор этого вызова ничего не изменит.'
-      : `Документ ${entity.document.id} обновлён: ${entity.document.title}`,
+  message: (entity, keys) => `Документ ${entity.document.id} обновлён: ${entity.document.title}`,
 };
 
 /**
@@ -2806,10 +2834,13 @@ function toolDocumentEdit(args: ToolArgs, cwd: string): string {
   // old_string === new_string (или замена на тот же текст): файл не переписываем —
   // это noop по природе, а не применение (VL-303/lesson-92).
   if (result.body === before) {
-    return ackNoopDetailed(
-      'Изменений нет: old_string и new_string дают тот же текст. ' +
-        'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор не изменит документ.',
-      { id, replaced: 0, bodyLengthBefore: before.length, bodyLengthAfter: before.length },
+    // VL-413: неизменяющая запись — успех с перечнем неизменённых полей.
+    return ackOk(
+      'Изменений нет: old_string и new_string дают тот же текст.',
+      {},
+      [],
+      false,
+      { unchanged: ['old_string', 'new_string'] },
     );
   }
 
@@ -2904,7 +2935,8 @@ async function toolReferenceAdd(args: ToolArgs, cwd: string): Promise<string> {
       [],
       {
         missing: [{ field: 'description', reason: 'description не передан — тело reference пустое' }],
-        hint: `Добавь описание: reference_update {"id": "${ref.id}", "description": "…"}`,
+        // VL-413: готовый образец аргументов вместо прозаического hint.
+        retryWith: { id: ref.id, description: '…' },
       },
     );
   }
@@ -3033,10 +3065,7 @@ const referenceSpec: EntitySpec<ReferenceEntity> = {
   },
   // Тело reference необязательно по смыслу (см. PARTIAL_EXEMPT в контракт-тесте)
   completeness: () => [],
-  message: (entity, keys, via) =>
-    via === 'noop'
-      ? 'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.'
-      : `Reference ${entity.reference.id} обновлён: ${keys.join(', ')}`,
+  message: (entity, keys) => `Reference ${entity.reference.id} обновлён: ${keys.join(', ')}`,
 };
 
 // VL-164: обновление меты reference; MCP-параметр description → UpdateReferenceInput.content
@@ -3060,11 +3089,14 @@ function toolReferenceLink(args: ToolArgs, cwd: string): string {
     const inTask = (taskEntry.references || []).includes(referenceId);
     const upToDate = action === 'add' ? inRef && inTask : !inRef && !inTask;
     if (upToDate) {
-      return ackNoop(
+      // VL-413: неизменяющая запись — успех, а не событие.
+      return ackOk(
         `Изменений нет: связь Reference ${referenceId} ↔ задача ${taskId} уже ` +
-          `${action === 'add' ? 'установлена' : 'удалена'}. ` +
-          'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.',
-        { referenceId, taskId, action },
+          `${action === 'add' ? 'установлена' : 'удалена'}.`,
+        {},
+        [],
+        false,
+        { unchanged: ['referenceId', 'taskId', 'action'] },
       );
     }
   }
@@ -3331,17 +3363,11 @@ const lessonSpec: EntitySpec<LessonEntity> = {
   },
   // VL-379: не текст требования, а ГОТОВЫЙ образец аргументов — форма та же,
   // что у модели в схеме (три строки, без markdown и `\n`).
-  next: () => ({ hint: LESSON_BODY_HINT, retryWith: { ...LESSON_BODY_TEMPLATE } }),
-  noopHint: (entity, keys) =>
-    isLessonBodyUnfilled(entity.body)
-      ? `Переданные поля (${keys.join(', ')}) уже такие. ВНИМАНИЕ: тело урока не заполнено (пустое или дефолтный скелет) — передай problem (что было не так) и solution (что сделали).`
-      : 'Переходи к следующему шагу фазы: повтор с теми же аргументами ничего не изменит.',
+  next: () => ({ retryWith: { ...LESSON_BODY_TEMPLATE } }),
   message: (entity, keys, via) =>
-    via === 'noop'
-      ? 'Следующий шаг: backlog_finish_phase (или следующий шаг плана) — повтор этого вызова ничего не изменит.'
-      : via === 'partial'
-        ? `Lesson ${entity.lesson.id} обновлён: ${keys.join(', ')} (тело урока всё ещё не заполнено)`
-        : `Lesson ${entity.lesson.id} обновлён: ${keys.join(', ')} (updated_date: ${entity.lesson.updated_date})`,
+    via === 'partial'
+      ? `Lesson ${entity.lesson.id} обновлён: ${keys.join(', ')} (тело урока всё ещё не заполнено)`
+      : `Lesson ${entity.lesson.id} обновлён: ${keys.join(', ')} (updated_date: ${entity.lesson.updated_date})`,
   // Единственный хук специфики: испорченный АРГУМЕНТ тела, а не свойство
   // состояния (VL-319). Файл не перезаписывается. VL-379: проверяются части —
   // problem и solution передаются вместе и непустыми; example без них смысла
@@ -3413,11 +3439,14 @@ function toolLessonLink(args: ToolArgs, cwd: string): string {
     const inTask = (taskEntry.lessons || []).includes(lessonId);
     const upToDate = action === 'add' ? inLesson && inTask : !inLesson && !inTask;
     if (upToDate) {
-      return ackNoop(
+      // VL-413: неизменяющая запись — успех, а не событие.
+      return ackOk(
         `Изменений нет: связь Lesson ${lessonId} ↔ задача ${taskId} уже ` +
-          `${action === 'add' ? 'установлена' : 'удалена'}. ` +
-          'Следующий шаг: переходи к следующему пункту фазы или к backlog_finish_phase — повтор этого вызова ничего не изменит.',
-        { lessonId, taskId, action },
+          `${action === 'add' ? 'установлена' : 'удалена'}.`,
+        {},
+        [],
+        false,
+        { unchanged: ['lessonId', 'taskId', 'action'] },
       );
     }
   }

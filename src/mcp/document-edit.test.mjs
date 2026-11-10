@@ -186,14 +186,15 @@ describe('VL-399 — document_edit (AC1–AC3)', () => {
     assert.equal(bodyOf(doc.id), 'стало', 'второй раз текст не менялся');
   });
 
-  it('AC3: old_string === new_string — noop, файл не перезаписан', async () => {
+  it('AC3: old_string === new_string — applied+unchanged, файл не перезаписан', async () => {
     const doc = writeDocument(backlogDir, { title: 'Noop правки', content: 'без изменений' });
     const before = readFileSync(getDocument(backlogDir, doc.id).path, 'utf-8');
     const res = ack(await handleToolCall('document_edit', {
       id: doc.id, old_string: 'без изменений', new_string: 'без изменений',
     }, cwd));
-    assert.equal(res.noop, true, JSON.stringify(res));
-    assert.equal(res.reason, 'noop');
+    // VL-413: неизменяющая запись — успех с перечнем неизменённых полей.
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.ok(Array.isArray(res.unchanged) && res.unchanged.length > 0);
     assert.equal(readFileSync(getDocument(backlogDir, doc.id).path, 'utf-8'), before);
   });
 

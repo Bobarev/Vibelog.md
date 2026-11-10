@@ -41,10 +41,10 @@ import {
   MAX_APPLIED_REPEATS_PER_RUN,
   MAX_BLOCKED_CALLS_PER_RUN,
   MAX_ERROR_REPEATS_PER_RUN,
-  MAX_NOOP_REPEATS_PER_RUN,
+  MAX_UNCHANGED_REPEATS_PER_RUN,
   NEXT_STEP_HINT,
-  NOOP_BLOCK_AFTER_REPEATS,
   PHANTOM_CALL_LIMIT_DEFAULT,
+  UNCHANGED_BLOCK_AFTER_REPEATS,
   REPEAT_BLOCK_MAX_PER_RUN,
   REPEAT_READ_LIMIT_DEFAULT,
   REPEAT_SEARCH_LIMIT_DEFAULT,
@@ -52,10 +52,9 @@ import {
   REPEAT_WARN_MAX_PER_RUN,
   REPEAT_WRITE_LIMIT_DEFAULT,
   analyzeToolRepeats,
-  appliedNoopDirective,
+  appliedRepeatDirective,
   createRepeatGuard,
   loopDetectionDirective,
-  noopRepeatDirective,
   parsedAckNext,
   parsedErrorText,
   repeatBlockDirective,
@@ -76,14 +75,13 @@ export {
   MAX_APPLIED_REPEATS_PER_RUN,
   MAX_BLOCKED_CALLS_PER_RUN,
   MAX_ERROR_REPEATS_PER_RUN,
-  MAX_NOOP_REPEATS_PER_RUN,
+  MAX_UNCHANGED_REPEATS_PER_RUN,
   NEXT_STEP_HINT,
   REPEAT_LIMITS,
   REPEAT_WARN_MAX_PER_RUN,
-  appliedNoopDirective,
+  appliedRepeatDirective,
   clipErrorText,
   loopDetectionDirective,
-  noopRepeatDirective,
   parsedAckNext,
   parsedErrorText,
   retryDirective,
@@ -367,7 +365,7 @@ function isReportWritingTool(name: string): boolean {
  * отчёт» было захардкожено для одной фазы, и директива повтора для любой
  * другой фазы (включая кастомные `investigate`/`materialize`) не называла
  * модели следующего шага — она повторяла вызов дословно до капа
- * `MAX_NOOP_REPEATS_PER_RUN` (сессия agent-1794313856082, spec VL-408).
+ * `MAX_UNCHANGED_REPEATS_PER_RUN` (сессия agent-1794313856082, spec VL-408).
  *
  * Теперь признак «нужен отчёт» = «у фазы есть переход из статуса до фазы»
  * (данные workflow), а текст шага называет неполные поля из `completeness`.
@@ -438,7 +436,7 @@ export function shellCallIsWork(command: string, output: string): boolean {
 // VL-357: пороги повторов живут в ОДНОМ месте — `REPEAT_LIMITS`
 // (`src/agent/repeat-tracker.ts`). Раньше `loop.ts` держал свой набор
 // `MAX_*_REPEATS_PER_RUN`, `repeat-tracker.ts` — свои `REPEAT_*`, а веб-чат —
-// `MAX_NOOP_REPEATS_PER_TURN`: инцидент попадал в тот детектор, что сработал
+// `MAX_UNCHANGED_REPEATS_PER_TURN`: инцидент попадал в тот детектор, что сработал
 // первым, и получал директиву из его словаря. Локальные константы оставлены
 // только как реэкспорт (их импортируют тесты).
 // VL-359: `PHANTOM_CALL_LIMIT_DEFAULT` (VL-215) и `INTENT_LOOP_REPEAT_DEFAULT`
@@ -539,20 +537,9 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // Повтор такой сигнатуры фазу не прерывает: эффект уже достигнут, модели
   // уходит директива «уже применён, переходи к отчёту».
   const appliedSignatures = new Set<string>();
-  // VL-309: сигнатуры, чей вызов вернул noop (ok:false + reason:'noop').
-  // Noop — это «изменений нет», а НЕ «работа сделана» (VL-304 ошибочно
-  // складывал noop в appliedSignatures): повтор такого вызова не должен
-  // завершать ран. Вместо finishAppliedRepeat модели уходит директива
-  // «изменений нет — переходи к следующему шагу», и цикл продолжается.
-  // Инцидент: сессия agent-1793647788155 (Close VL-307) — повтор
-  // lesson_update (noop) оборвал ран, документация не была написана, а
-  // задача получила Done через авто-отчёт.
-  const noopSignatures = new Set<string>();
-  // VL-309: сколько раз за ран модели напоминали «изменений нет». Страховка
-  // от вечного круга «директива → повтор»: при превышении — честный fail()
-  // (is_error:true → оркестратор откатит статус и запустит авто-resume), а не
-  // ложный «успех» с невыполненной работой.
-  let noopRepeatCount = 0;
+  // VL-413: отдельного набора noop-сигнатур больше нет. Неизменяющая запись
+  // отвечает `ok:true, outcome:'applied', unchanged:[…]` — это успех, и
+  // повтор такой сигнатуры обрабатывается общим механизмом applied-серии.
   // VL-310: серия подряд повторов УЖЕ ПРИМЕНЁННОГО вызова (appliedSignatures).
   // Считается серия, а не сумма за ран: повтор, перемежающийся с реальной
   // работой (модель вернулась к прежнему шагу после новых вызовов), не должен
@@ -560,21 +547,19 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   // честный fail() (is_error:true → оркестратор откатит статус).
   let appliedRepeatCount = 0;
   let appliedRepeatSig: string | null = null;
-  // VL-310: то же для noop-повторов (см. noopSignatures).
-  let noopRepeatSig: string | null = null;
-  // VL-411: имена инструментов, ЗАБЛОКИРОВАННЫХ в этом ране после второго
-  // дословного noop-повтора. До VL-411 1-й, 2-й и 3-й повтор давали модели
-  // ОДИН И ТОТ ЖЕ текст директивы, а 4-й убивал ран: ничто физически не
-  // мешало повторить вызов ещё раз (сессия `agent-1794313856082`, spec
-  // VL-408). Блокировка per-name и до конца рана: снимать её на
-  // `resetRepeatSeries` нельзя — цикл возобновится. Вызов с ДРУГИМИ
-  // аргументами проходит (блокировка включается только на дословном повторе
-  // той же сигнатуры), поэтому легитимная работа не отрезается.
+  // VL-411/VL-413: имена инструментов, ЗАБЛОКИРОВАННЫХ в этом ране после
+  // серии дословных повторов уже применённого вызова. До VL-411 1-й, 2-й и
+  // 3-й повтор давали модели ОДИН И ТОТ ЖЕ текст директивы, а 4-й убивал ран:
+  // ничто физически не мешало повторить вызов ещё раз (сессия
+  // `agent-1794313856082`, spec VL-408). Блокировка per-name и до конца рана:
+  // снимать её на `resetRepeatSeries` нельзя — цикл возобновится. Вызов с
+  // ДРУГИМИ аргументами проходит (блокировка включается только на дословном
+  // повторе той же сигнатуры), поэтому легитимная работа не отрезается.
   const blockedTools = new Set<string>();
   // VL-411: сколько раз ПОДРЯД модель обратилась к заблокированному инструменту.
-  // Считается серия (как у applied/noop-повторов), а не сумма за ран: обращение
+  // Считается серия (как у applied-повторов), а не сумма за ран: обращение
   // к заблокированному инструменту, перемежающееся реальной работой, — не
-  // вечный круг. Кап — MAX_NOOP_REPEATS_PER_RUN: блокировка не должна
+  // вечный круг. Кап — MAX_UNCHANGED_REPEATS_PER_RUN: блокировка не должна
   // превращаться в бесконечное «отказ → повтор» до wall-time.
   let blockedToolStreak = 0;
   // VL-323: сигнатуры, чей последний ответ был отказом (`ok:false`). Отдельный
@@ -591,7 +576,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
     { text: string; fromHint: boolean; retryWith?: Record<string, unknown> }
   >();
   // VL-361: последний «следующий шаг» из ответа инструмента по сигнатуре —
-  // `missing`/`hint`/`retryWith`. Директива повтора обязана назвать КОНКРЕТНОЕ
+  // `missing`/`retryWith`. Директива повтора обязана назвать КОНКРЕТНОЕ
   // недостающее поле, иначе модель повторяет вызов дословно (сессия
   // agent-1794064942811: 4 повтора `lesson_update` без `content`).
   const lastAckBySignature = new Map<string, AckNext>();
@@ -774,7 +759,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
    * В VL-310 терминальный выход оставлен ТОЛЬКО для случая «отчёт уже
    * записан»: если модель повторила уже применённый вызов и в задаче есть
    * комментарий `@agent` за текущий ран, терять больше нечего. Если отчёта
-   * нет — ран продолжается (см. `appliedNoopDirective` и
+   * нет — ран продолжается (см. `appliedRepeatDirective` и
    * `MAX_APPLIED_REPEATS_PER_RUN`): терминальный выход на первом повторе
    * обрывал фазу на середине работы (сессия agent-1793637056809, Code VL-124).
    *
@@ -874,16 +859,17 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       }
     }
     /**
-     * Ответ означает «вызов НЕ удался»: JSON с `ok:false` (ackError/ackDenied/
-     * noop) либо текст-исключение. Плоский текст успешного локального
-     * инструмента («файл записан») сюда не попадает.
+     * Ответ означает «вызов НЕ удался»: JSON с `ok:false` (ackError/ackDenied)
+     * либо текст-исключение. Плоский текст успешного локального инструмента
+     * («файл записан») сюда не попадает. VL-413: исхода `noop` нет —
+     * неизменяющая запись отвечает `ok:true`.
      */
     const isFailureResponse = (content: string): boolean => {
       try {
         const parsed = JSON.parse(content) as { ok?: unknown; outcome?: unknown } | null;
         if (parsed === null || typeof parsed !== 'object') return false;
         if (parsed.ok === false) return true;
-        return parsed.outcome === 'rejected' || parsed.outcome === 'noop';
+        return parsed.outcome === 'rejected';
       } catch {
         // Директива блокировки тоже лежит в tool-результате: вызов НЕ
         // исполнялся, и считать его работой нельзя (иначе кап повторов
@@ -921,7 +907,7 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
   /**
    * VL-357 (шаг 5): исчерпан кап повторов — решаем по прогрессу.
    *
-   * До VL-357 любое исчерпание капа (`MAX_APPLIED/NOOP/ERROR_REPEATS_PER_RUN`)
+   * До VL-357 любое исчерпание капа (`MAX_APPLIED/UNCHANGED/ERROR_REPEATS_PER_RUN`)
    * убивало ран кодом 1, даже когда работа была сделана: merge прошёл, 3455
    * тестов зелёные, а фаза падала на повторе `lesson_update` (регресс VL-349).
    * Теперь при наличии следа работы ран завершается ШТАТНО с блоком прогресса
@@ -1234,20 +1220,21 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // роли assistant — модель читала его как свой текст и после resume
       // повторяла тот же вызов; инцидент VL-234).
       const signature = `${call.name}|${JSON.stringify(call.arguments ?? {})}`;
-      // VL-411: инструмент заблокирован в этом ране (два дословных noop-повтора
-      // подряд). Вызов НЕ доходит до handler, счётчики повторов не растут —
-      // модель получает машиночитаемый отказ `tool_blocked` с единственным
-      // доступным путём завершения фазы. Счётчик обращений к заблокированному
-      // инструменту нужен, чтобы вечный круг «блокировка → повтор» не крутился
-      // до wall-time: после капа — честный fail() с именем незавершённой фазы.
+      // VL-411/VL-413: инструмент заблокирован в этом ране (серия дословных
+      // повторов уже применённого вызова). Вызов НЕ доходит до handler,
+      // счётчики повторов не растут — модель получает машиночитаемый отказ
+      // `tool_blocked` с единственным доступным путём завершения фазы.
+      // Счётчик обращений к заблокированному инструменту нужен, чтобы вечный
+      // круг «блокировка → повтор» не крутился до wall-time: после капа —
+      // честный fail() с именем незавершённой фазы.
       // Условие включает и сигнатуру: блокировка per-name не должна отрезать
       // вызов того же инструмента с ДРУГИМИ аргументами (AC3) — легитимная
-      // работа после noop-повтора проходит как обычно.
-      if (blockedTools.has(call.name) && noopSignatures.has(signature)) {
+      // работа после повтора проходит как обычно.
+      if (blockedTools.has(call.name) && appliedSignatures.has(signature)) {
         blockedToolStreak++;
-        if (blockedToolStreak > MAX_NOOP_REPEATS_PER_RUN) {
+        if (blockedToolStreak > MAX_UNCHANGED_REPEATS_PER_RUN) {
           return failOnRepeatCap(
-            `Модель ${blockedToolStreak} раз подряд повторила вызов ${call.name}, вернувший «изменений нет» — вызов не исполнялся. ` +
+            `Модель ${blockedToolStreak} раз подряд повторила уже применённый вызов ${call.name} — вызов не исполнялся. ` +
               `${options.phase === undefined || options.phase === '' ? 'Фаза' : `Фаза ${options.phase}`} не завершена: backlog_finish_phase не вызван.`,
           );
         }
@@ -1264,41 +1251,12 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // VL-253: плюс per-signature счётчик и общий кап рана — иначе при
       // чередовании сигнатур серия «подряд» сбрасывалась и луп шёл кругами.
       const blockAndPush = async (): Promise<void> => {
-        // VL-309: noop — «изменений нет», а не «работа сделана». Ран НЕ
-        // завершается: модели уходит директива «переходи к следующему шагу»,
-        // фатальные счётчики не растут. Кап повторов — против вечного круга.
-        if (noopSignatures.has(signature)) {
-          // VL-310: считаем СЕРИЮ подряд (как у appliedSignatures): повтор,
-          // перемежающийся с реальной работой, — не вечный цикл.
-          if (noopRepeatSig === signature) {
-            noopRepeatCount++;
-          } else {
-            noopRepeatSig = signature;
-            noopRepeatCount = 1;
-          }
-          // VL-411: после второго дословного повтора инструмент блокируется в
-          // ране — следующий вызов той же сигнатуры не дойдёт до handler.
-          // Директива этого повтора уже называет блокировку, чтобы модель не
-          // тратила ход на ещё одну попытку.
-          const nowBlocked = noopRepeatCount >= NOOP_BLOCK_AFTER_REPEATS;
-          if (nowBlocked) blockedTools.add(call.name);
-          await pushMessage({
-            role: 'tool',
-            tool_call_id: call.id,
-            content: nowBlocked
-              ? toolBlockedDirective(call.name, options.phase)
-              : noopRepeatDirective(call.name, lastAckBySignature.get(signature), nextStepText),
-          });
-          console.error(
-            `[vibelog-agent] повтор noop-вызова: ${call.name}${nowBlocked ? ' (инструмент заблокирован в ране)' : ''}`,
-          );
-          return;
-        }
-        // VL-303/VL-304/VL-310: вызов уже применён (ответ ok) — фатальные
-        // счётчики НЕ растут, ран НЕ завершается: модели уходит директива
-        // «переходи к отчёту», цикл продолжается. Терминальный выход остаётся
-        // только для случая «отчёт уже записан» (reportWritten), иначе ран
-        // обрывался на середине работы (сессия agent-1793637056809, VL-124).
+        // VL-303/VL-310/VL-413: вызов уже применён (ответ ok, включая
+        // неизменяющую запись с `unchanged`) — фатальные счётчики НЕ растут,
+        // ран НЕ завершается: модели уходит директива «переходи к отчёту»,
+        // цикл продолжается. Терминальный выход остаётся только для случая
+        // «отчёт уже записан» (reportWritten), иначе ран обрывался на середине
+        // работы (сессия agent-1793637056809, VL-124).
         if (appliedSignatures.has(signature)) {
           if (appliedRepeatSig === signature) {
             appliedRepeatCount++;
@@ -1306,17 +1264,27 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
             appliedRepeatSig = signature;
             appliedRepeatCount = 1;
           }
+          // VL-411/VL-413: после серии дословных повторов инструмент
+          // блокируется в ране — следующий вызов той же сигнатуры не дойдёт до
+          // handler. Директива этого повтора уже называет блокировку, чтобы
+          // модель не тратила ход на ещё одну попытку.
+          const nowBlocked = appliedRepeatCount >= UNCHANGED_BLOCK_AFTER_REPEATS;
+          if (nowBlocked) blockedTools.add(call.name);
           await pushMessage({
             role: 'tool',
             tool_call_id: call.id,
-            content: appliedNoopDirective(
-              call.name,
-              lastAckBySignature.get(signature),
-              nextStepText,
-              options.phase,
-            ),
+            content: nowBlocked
+              ? toolBlockedDirective(call.name, options.phase)
+              : appliedRepeatDirective(
+                  call.name,
+                  lastAckBySignature.get(signature),
+                  nextStepText,
+                  options.phase,
+                ),
           });
-          console.error(`[vibelog-agent] повтор применённого вызова: ${call.name}`);
+          console.error(
+            `[vibelog-agent] повтор применённого вызова: ${call.name}${nowBlocked ? ' (инструмент заблокирован в ране)' : ''}`,
+          );
           return;
         }
         // VL-323: вызов, вернувший отказ (ackError), — не луп «по сделанной
@@ -1385,8 +1353,6 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       const resetRepeatSeries = (signature?: string): void => {
         appliedRepeatCount = 0;
         appliedRepeatSig = null;
-        noopRepeatCount = 0;
-        noopRepeatSig = null;
         // VL-411: реально исполненный вызов рвёт и серию обращений к
         // заблокированному инструменту. Сам набор blockedTools НЕ чистим:
         // блокировка живёт до конца рана, иначе цикл возобновится.
@@ -1448,22 +1414,6 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
         }
         return null;
       };
-
-      // VL-309: повтор noop-вызова («изменений нет») — вызов НЕ исполняется,
-      // но и ран НЕ завершается: модели уходит директива «переходи к
-      // следующему шагу», цикл продолжается. Кап повторов — против вечного
-      // круга; после исчерпания — честный fail() (работа не завершена),
-      // чтобы оркестратор откатил статус и запустил авто-resume.
-      if (noopSignatures.has(signature)) {
-        await blockAndPush();
-        if (noopRepeatCount > MAX_NOOP_REPEATS_PER_RUN) {
-          return failOnRepeatCap(
-            `Модель ${noopRepeatCount} раз повторила вызов ${call.name}, вернувший «изменений нет» — вызов не исполнялся. ` +
-              `${options.phase === undefined || options.phase === '' ? 'Фаза' : `Фаза ${options.phase}`} не завершена: backlog_finish_phase не вызван.`,
-          );
-        }
-        continue;
-      }
 
       if (blocked.has(signature)) {
         // AC5: сигнатура отклонена в прошлом ране (resume) — не исполняем.
@@ -1646,26 +1596,23 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
       // VL-274: tool завершён — активность; окно простоя отсчитывается заново
       // (resume делает и noteActivity: длительность инструмента не «съедает» бюджет)
       idleGuard.resume();
-      // VL-303/VL-304/VL-309: классифицируем ответ write-вызова:
-      // ok:true → appliedSignatures (повтор завершает ран штатно),
-      // noop:true → noopSignatures (повтор НЕ завершает ран, см. VL-309).
+      // VL-303/VL-413: классифицируем ответ write-вызова: ok:true →
+      // appliedSignatures (повтор обрабатывается applied-серией). Исхода
+      // `noop` больше нет: неизменяющая запись отвечает ok:true + unchanged.
       // Парсинг в try/catch: текстовые ответы внешних MCP-инструментов не
       // должны ломать цикл.
       if (!toolError) {
         let applied = false;
-        let noop = false;
         // VL-318: третий исход — JSON-отказ (ok:false, ackError/ackDenied).
         // Такой ответ НЕ применён: сигнатура не пополняет appliedSignatures,
         // повтор исполняется заново и модель получает свежий текст ошибки.
         let failed = false;
         try {
-          const parsed = JSON.parse(output) as { ok?: unknown; noop?: unknown; read?: unknown } | null;
-          if (parsed && typeof parsed === 'object' && parsed.noop === true) {
-            noop = true;
-          } else if (parsed && typeof parsed === 'object' && parsed.read === true) {
+          const parsed = JSON.parse(output) as { ok?: unknown; read?: unknown } | null;
+          if (parsed && typeof parsed === 'object' && parsed.read === true) {
             // VL-351: чтение внутри write-инструмента (backlog_manage_*
             // action:list). Эффекта не было — сигнатура не пополняет ни
-            // appliedSignatures, ни noopSignatures: повтор исполняется заново
+            // appliedSignatures: повтор исполняется заново
             // и отдаёт свежее состояние, без ложной директивы «уже применён
             // ранее» (сессия agent-1794047067509, Close VL-349).
             applied = false;
@@ -1701,15 +1648,12 @@ export async function runLoop(options: RunLoopOptions): Promise<LoopResult> {
           // который пишет отчёт/комментарий фазы.
           if (isReportWritingTool(call.name)) reportWritten = true;
         }
-        if (noop) {
-          noopSignatures.add(signature);
-        }
         // VL-361/VL-362: запоминаем «следующий шаг» из ответа инструмента —
         // директива повтора назовёт КОНКРЕТНОЕ недостающее поле (`missing`) и
         // готовые аргументы (`retryWith`), а не описательное «добавь
         // отсутствующее». VL-362: извлечение вынесено из ветки `noop` — исход
         // `partial` (ok:true + missing) тоже несёт `next`, а директива для
-        // него — `appliedNoopDirective` (сигнатура попадает в
+        // него — `appliedRepeatDirective` (сигнатура попадает в
         // appliedSignatures). Раньше карта заполнялась только на noop, и
         // директива повтора частично применённого `lesson_update` содержала
         // лишь `applied_repeat: true` без `missing` (сессия
