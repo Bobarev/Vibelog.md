@@ -80,13 +80,29 @@ import {
 import type { AgentName } from './commands.js';
 // VL-408: мост «бот ↔ веб-чат» — режим пересылки сообщений в тред веб-чата
 import {
+  answerChatApproval,
+  answerChatQuestion,
   clearChatBridge,
   forwardChatMessage,
   getChatBridge,
   lastAssistantText,
   setChatBridge,
 } from './chat-bridge.js';
+import type { ForwardResult } from './chat-bridge.js';
+// VL-414: rich-отправка ответа персоны (GFM) и UI пауз хода (approval/question)
+import { sendChatAnswer } from './chat-answer.js';
+import {
+  approvalKeyboard,
+  approvalText,
+  expiredQuestionText,
+  parseChatCallback,
+  questionKeyboard,
+  questionText,
+} from './chat-pause.js';
+import type { ChatPause } from './chat-pause.js';
 import { getChatThread } from '../web/chat.js';
+import { cancelChatRun } from '../web/chat-runs.js';
+import { isQuestionExpired, questionAskedAt } from '../web/chat-question.js';
 
 /** Зависимости обработчиков (пин — из замыкания runBot, cwd — проект). */
 export interface HandlerDeps {
@@ -100,13 +116,26 @@ export interface HandlerDeps {
  *
  * При ошибке парсинга (400 can't parse entities — незакрытая сущность
  * в тексте) — повтор без форматирования, чтобы бот не молчал.
+ *
+ * @param replyMarkup — необязательная inline-клавиатура (VL-414): кнопки
+ *   Allow/Deny и варианты вопроса. Прокидывается в обе ветки — базовый
+ *   Bot API, не rich-расширение.
  */
-async function sendMd(ctx: Context, text: string): Promise<void> {
+async function sendMd(
+  ctx: Context,
+  text: string,
+  replyMarkup?: { inline_keyboard: { text: string; callback_data: string }[][] }
+): Promise<void> {
   try {
-    await ctx.reply(text, { parse_mode: 'MarkdownV2' });
+    await ctx.reply(
+      text,
+      replyMarkup
+        ? { parse_mode: 'MarkdownV2', reply_markup: replyMarkup }
+        : { parse_mode: 'MarkdownV2' }
+    );
   } catch {
     try {
-      await ctx.reply(text);
+      await ctx.reply(text, replyMarkup ? { reply_markup: replyMarkup } : {});
     } catch {
       // Сеть недоступна — игнорируем, polling продолжится
     }
@@ -353,6 +382,77 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   // chatId → id задачи; паттерн awaitingPin — память процесса, рестарт
   // бота теряет режим ожидания (допустимо — пользователь нажмёт заново)
   const awaitingComment = new Map<number, string>();
+  // VL-414: висящая пауза хода веб-чата (approval/question) по чату Telegram.
+  // Паттерн awaitingComment — память процесса: рестарт бота теряет паузу,
+  // висящий tool_call закроется синтетическим отказом при следующем сообщении.
+  const chatPauses = new Map<number, ChatPause>();
+
+  /**
+   * Вывести исход пересылки в бот (VL-414).
+   *
+   * Единая точка для перехватчика `message:text` и callback-кнопок пауз:
+   * ответ персоны уходит rich-сообщением (GFM), пауза — карточкой с кнопками
+   * и записью в `chatPauses`, служебные тексты — через `sendMd`.
+   */
+  async function deliverChatResult(
+    ctx: Context,
+    chatId: number,
+    result: ForwardResult
+  ): Promise<void> {
+    if ('error' in result) {
+      await sendMd(ctx, `⚠️ ${escapeMarkdownV2(result.error)}`);
+      return;
+    }
+    if ('needsWeb' in result) {
+      await sendMd(ctx, escapeMarkdownV2(result.needsWeb));
+      return;
+    }
+    if ('approval' in result) {
+      const ev = result.approval;
+      chatPauses.set(chatId, {
+        kind: 'approval',
+        threadId: ev.threadId,
+        toolCallId: ev.toolCallId,
+        name: ev.name,
+      });
+      await sendMd(
+        ctx,
+        approvalText({ name: ev.name, args: ev.args, ...(ev.grant ? { grant: ev.grant } : {}) }),
+        approvalKeyboard()
+      );
+      return;
+    }
+    if ('question' in result) {
+      const ev = result.question;
+      chatPauses.set(chatId, {
+        kind: 'question',
+        threadId: ev.threadId,
+        toolCallId: ev.toolCallId,
+        allowCustom: ev.allowCustom,
+        options: ev.options.map((o) => ({ id: o.id, label: o.label })),
+      });
+      await sendMd(
+        ctx,
+        questionText({ question: ev.question, options: ev.options, allowCustom: ev.allowCustom }),
+        questionKeyboard(ev.options)
+      );
+      return;
+    }
+    if (!result.text) {
+      await sendMd(ctx, 'Персона не вернула текст — подробности в веб-интерфейсе.');
+      return;
+    }
+    // VL-414: ответ персоны — GFM-текст модели, отправляем Rich Message
+    await sendChatAnswer(bot, chatId, result.text);
+  }
+
+  /** Погасить висящую паузу чата (AC8): прогон не должен блокировать тред. */
+  function dropChatPause(chatId: number, reason: string): void {
+    const pause = chatPauses.get(chatId);
+    if (!pause) return;
+    chatPauses.delete(chatId);
+    cancelChatRun(pause.threadId, reason);
+  }
 
   /** Проверка привязки чата; при отсутствии — ответ-подсказка. */
   function requireBind(ctx: Context): boolean {
@@ -1441,6 +1541,9 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     if (!requireBind(ctx)) return;
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return;
+    // VL-414: новый /chat при висящей паузе — старый прогон гасим, иначе
+    // тред останется заблокированным ожиданием решения (AC8).
+    dropChatPause(chatId, 'Ход остановлен: режим пересылки переключён на другой чат');
     const parsed = parseChatCommand((ctx.match ?? '').toString());
     if ('error' in parsed) {
       await sendMd(ctx, escapeMarkdownV2(parsed.error));
@@ -1465,10 +1568,9 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, 'В чате пока нет ответов персоны.');
       return;
     }
-    // Длинный ответ режем по лимиту Telegram (chunkRich — по границам строк)
-    for (const part of chunkRich(last, TELEGRAM_TEXT_LIMIT)) {
-      await sendMd(ctx, part);
-    }
+    // VL-414: ответ персоны — GFM-текст модели, отправляем Rich Message
+    // (chunkRich по rich-лимиту 32768 внутри sendChatAnswer)
+    await sendChatAnswer(bot, chatId, last);
   });
   // ── Кнопка «следующий этап» (VL-72) ──
   // callback-кнопка из rich-рендера карточки задачи: data = next:<id>.
@@ -1476,6 +1578,72 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   // включая notifyPhaseDone. Регистрируется ДО catch-all message:text.
   bot.on('callback_query', async (ctx) => {
     const data = ctx.callbackQuery?.data ?? '';
+    // ── VL-414: кнопки пауз хода веб-чата (approval / question) ──
+    // data = chata:allow|deny|always либо chatq:<индекс варианта>.
+    // Регистрируются ДО фильтра «чужие callback не трогаем» (ловушка порядка
+    // grammy VL-37) и до остальных веток — префиксы не пересекаются.
+    const pauseCallback = parseChatCallback(data);
+    if (pauseCallback !== null) {
+      // answerCallbackQuery обязателен в любом исходе — иначе «часики»
+      if (!requireBind(ctx)) {
+        await ctx
+          .answerCallbackQuery({ text: 'Бот не привязан к чату — выполните /start' })
+          .catch(() => {});
+        return;
+      }
+      const chatId = ctx.chat?.id;
+      const pause = chatId === undefined ? undefined : chatPauses.get(chatId);
+      if (chatId === undefined || !pause || pause.kind !== pauseCallback.kind) {
+        await ctx
+          .answerCallbackQuery({ text: 'Решение уже принято или устарело' })
+          .catch(() => {});
+        return;
+      }
+      if (pauseCallback.kind === 'approval' && pause.kind === 'approval') {
+        chatPauses.delete(chatId);
+        const approved = pauseCallback.decision !== 'deny';
+        const always = pauseCallback.decision === 'always';
+        await ctx
+          .answerCallbackQuery({
+            text: approved ? (always ? '✅ Разрешено всегда' : '✅ Разрешено') : '⛔ Отклонено',
+          })
+          .catch(() => {});
+        const result = await answerChatApproval(
+          deps.cwd,
+          pause.threadId,
+          pause.toolCallId,
+          approved,
+          always
+        );
+        await deliverChatResult(ctx, chatId, result);
+        return;
+      }
+      if (pauseCallback.kind === 'question' && pause.kind === 'question') {
+        // TTL 24 ч (VL-330): истёкший вопрос не возобновляем — сообщаем, что снят
+        if (isQuestionExpired(questionAskedAt(deps.cwd, pause.threadId, pause.toolCallId))) {
+          chatPauses.delete(chatId);
+          await ctx.answerCallbackQuery({ text: expiredQuestionText() }).catch(() => {});
+          await sendMd(ctx, escapeMarkdownV2(expiredQuestionText()));
+          return;
+        }
+        const option = pause.options[pauseCallback.index];
+        if (!option) {
+          await ctx
+            .answerCallbackQuery({ text: 'Вариант устарел — вопрос задан заново' })
+            .catch(() => {});
+          return;
+        }
+        chatPauses.delete(chatId);
+        await ctx.answerCallbackQuery({ text: `✅ ${option.label}` }).catch(() => {});
+        const result = await answerChatQuestion(deps.cwd, pause.threadId, pause.toolCallId, {
+          optionId: option.id,
+        });
+        await deliverChatResult(ctx, chatId, result);
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: 'Решение уже принято или устарело' }).catch(() => {});
+      return;
+    }
     // ── Кнопка «Комментарий» (VL-78): режим ожидания текста ──
     // data = comment:<id>. Бот просит ввести комментарий; текст будет
     // принят обработчиком message:text (awaitingComment) ДО catch-all пина.
@@ -1802,6 +1970,45 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, `Ошибка: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
+  // ── VL-414: свободный ответ на вопрос персоны (ask_user) ──
+  // Строго МЕЖДУ awaitingComment (VL-78) и перехватчиком /chat (VL-408):
+  // приоритет свободного ответа выше обычной пересылки в веб-чат, иначе текст
+  // ушёл бы новым сообщением вместо ответа на висящий вопрос (AC12).
+  bot.on('message:text', async (ctx, next) => {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) {
+      await next();
+      return;
+    }
+    const pause = chatPauses.get(chatId);
+    if (!pause || pause.kind !== 'question') {
+      await next();
+      return;
+    }
+    const text = ctx.message.text.trim();
+    if (text === '/cancel') {
+      chatPauses.delete(chatId);
+      cancelChatRun(pause.threadId, 'Вопрос снят пользователем');
+      await sendMd(ctx, 'Отменено.');
+      return;
+    }
+    // allowCustom: false — текст не принимаем, ждём кнопку (валидация
+    // validateAnswer всё равно отклонила бы custom)
+    if (!pause.allowCustom) {
+      await sendMd(ctx, 'Выберите вариант кнопкой или /cancel.');
+      return;
+    }
+    if (!text) {
+      await sendMd(ctx, 'Ответ пуст — введите текст или /cancel.');
+      return;
+    }
+    // Удаляем ДО async-работы — защита от двойного ввода
+    chatPauses.delete(chatId);
+    const result = await answerChatQuestion(deps.cwd, pause.threadId, pause.toolCallId, {
+      custom: text,
+    });
+    await deliverChatResult(ctx, chatId, result);
+  });
   // ── VL-408: пересылка сообщений в веб-чат (режим /chat) ──
   // Строго МЕЖДУ awaitingComment (VL-78) и reply-resume (VL-93):
   // (а) режим комментария должен выигрывать у пересылки — иначе текст
@@ -1824,6 +2031,8 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     // /cancel — выход из режима (не пересылаем). Отдельным bot.command его
     // регистрировать нельзя: он перехватил бы /cancel у режима комментария.
     if (text === '/cancel') {
+      // VL-414: висящая пауза гасится вместе с режимом (AC8)
+      dropChatPause(chatId, 'Ход остановлен: режим пересылки выключен');
       clearChatBridge(chatId);
       await sendMd(ctx, 'Режим пересылки завершён.');
       return;
@@ -1834,21 +2043,8 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       return;
     }
     const result = await forwardChatMessage(deps.cwd, threadId, text);
-    if ('error' in result) {
-      await sendMd(ctx, `⚠️ ${escapeMarkdownV2(result.error)}`);
-      return;
-    }
-    if ('needsWeb' in result) {
-      await sendMd(ctx, escapeMarkdownV2(result.needsWeb));
-      return;
-    }
-    if (!result.text) {
-      await sendMd(ctx, 'Персона не вернула текст — подробности в веб-интерфейсе.');
-      return;
-    }
-    for (const part of chunkRich(result.text, TELEGRAM_TEXT_LIMIT)) {
-      await sendMd(ctx, part);
-    }
+    // VL-414: ответ персоны — rich (GFM), пауза — карточка с кнопками
+    await deliverChatResult(ctx, chatId, result);
   });
   // ── VL-93: reply на информационное сообщение бота → resume сессии qwen ──
   // Строго МЕЖДУ awaitingComment (VL-78) и catch-all пина (ловушка порядка
