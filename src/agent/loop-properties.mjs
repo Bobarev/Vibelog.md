@@ -40,4 +40,8 @@ export const PROPERTIES = {
     file: 'src/agent/directive-size-property.test.mjs',
     text: 'директива не растёт по числу повторов и ограничена DIRECTIVE_MAX_BYTES',
   },
+  P6: {
+    file: 'src/agent/loop-repeat-cap.test.mjs',
+    text: 'повтор noop-вызова блокирует инструмент в ране, а не считает до капа',
+  },
 };

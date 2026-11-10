@@ -96,6 +96,19 @@ export const REPEAT_LIMITS = {
    */
   noop: 3,
   /**
+   * VL-411: после какого по счёту дословного повтора noop-вызова инструмент
+   * БЛОКИРУЕТСЯ в ране (дефолт 2).
+   *
+   * Отдельный порог, а не `noop`: до VL-411 1-й, 2-й и 3-й повтор давали
+   * модели ОДИН И ТОТ ЖЕ текст директивы, а 4-й убивал ран. Модель четыре
+   * раза игнорировала директиву, потому что ничто не мешало ей повторить
+   * вызов ещё раз (сессия `agent-1794313856082`, spec VL-408). Теперь повтор
+   * физически невозможен: после 2-го повтора вызов не доходит до handler, а
+   * `noop` остаётся капом рана (страховка на случай, если блокировка не
+   * включилась — например, для инструментов отчёта).
+   */
+  noopBlockAfter: 2,
+  /**
    * VL-323: кап серии дословных повторов вызова, вернувшего отказ.
    * 5, а не 3: модели нужно время применить подсказку из текста ошибки
    * (инцидент Close VL-320).
@@ -143,6 +156,13 @@ export const INTENT_LOOP_REPEAT_DEFAULT = REPEAT_LIMITS.intent;
 export const MAX_APPLIED_REPEATS_PER_RUN = REPEAT_LIMITS.applied;
 /** VL-309: кап повторов noop-вызова за ран. */
 export const MAX_NOOP_REPEATS_PER_RUN = REPEAT_LIMITS.noop;
+/**
+ * VL-411: порог блокировки инструмента после дословных noop-повторов.
+ *
+ * Производная от `REPEAT_LIMITS.noopBlockAfter` — пороги остаются в
+ * единственном источнике (VL-357/VL-359).
+ */
+export const NOOP_BLOCK_AFTER_REPEATS = REPEAT_LIMITS.noopBlockAfter;
 /** VL-323: кап серии дословных повторов отказавшего вызова за ран. */
 export const MAX_ERROR_REPEATS_PER_RUN = REPEAT_LIMITS.error;
 /** VL-253: кап заблокированных вызовов за ран. */
@@ -930,6 +950,35 @@ export function noopRepeatDirective(name: string, lastAck?: AckNext, nextStep?: 
       `Изменений нет: вызов ${name} НЕ исполнен (поля уже такие). Повтор ничего не изменит. ` + step,
     next: ackNextFields(lastAck),
     extra: { noop_repeat: true },
+  });
+}
+
+/**
+ * VL-411: директива для вызова, чей инструмент ЗАБЛОКИРОВАН в ране.
+ *
+ * Отличие от `noopRepeatDirective`: там модели сообщают «повтор ничего не
+ * изменит» и она всё равно может повторить (и повторяла — 4 раза в сессии
+ * `agent-1794313856082`). Здесь вызов физически не доходит до handler:
+ * инструмент заблокирован до конца рана, и единственный путь завершить фазу —
+ * `backlog_finish_phase`. Текст называет это прямо, чтобы модель не искала
+ * обходных путей.
+ *
+ * Исход — `rejected` с `reason: 'tool_blocked'`: `runHasProgress()` считает
+ * такой ответ «не работой» (см. `isFailureResponse`), и это правильно —
+ * вызов не исполнялся.
+ */
+export function toolBlockedDirective(name: string, phase?: string): string {
+  const phaseNote = phase === undefined || phase === '' ? '' : ` Фаза ${phase} не завершена.`;
+  return serializeAck({
+    outcome: 'rejected',
+    reason: 'tool_blocked',
+    message:
+      `Инструмент ${name} заблокирован в этом ране: он дважды вернул «изменений нет», и повтор ` +
+      `не исполняется. Работа фазы закончена — доступен backlog_finish_phase.${phaseNote}`,
+    next: {
+      hint: 'Вызови backlog_finish_phase с отчётом о выполненной работе (AC/DoD — через backlog_manage_ac/backlog_manage_dod).',
+    },
+    extra: { tool_blocked: true, ...(phase === undefined || phase === '' ? {} : { phase }) },
   });
 }
 
