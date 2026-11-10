@@ -585,9 +585,18 @@ HTTP-эндпоинты карточки: `POST /api/chat/supervisor/grant-draft
 | `taskId` | string | ✓ | |
 | `action` | string | ✓ | add / remove — правит `linked_tasks` референса И `references` задачи |
 
-### reference_sync — доклонировать отсутствующие репозитории
+### reference_sync — доклонировать и обновить репозитории
 
-Параметров нет. Обходит все references type=repo, клонирует отсутствующие (для разработчиков, склонировавших проект без `data/`). Возвращает {cloned, skipped, failed}.
+| Параметр | Тип | Описание |
+|---|---|---|
+| `id` | string | Синхронизировать один референс (repo — pull, url/doc/spec — перекачать кэш) |
+| `all` | boolean | Обойти все references (repo — pull, url/doc/spec — кэш) |
+
+Без параметров — обход всех references type=repo. Для `type: repo` существующий клон **обновляется** через `git pull --ff-only` (VL-417): раньше существующий каталог считался «уже клонирован, пропуск» и клон застывал навсегда, а `sync` рапортовал «пропущено: N» — читалось как «всё актуально». Теперь `skipped` означает «клон актуален» (pull прошёл, HEAD не изменился), а `updated` — «pull принёс изменения».
+
+Возвращает `{cloned, skipped, updated, failed, diffs}`: `diffs` — по каждому обновлённому ref объект `{tasks: {added, removed, statusChanged}, documents: {added, removed}, decisions: {added, removed}}`, посчитанный по `git diff --name-status <before> <after>` (ID задачи — из имени файла, смена статуса — `from`/`to` через `git show <before>:<path>`). При `all`/`id` в ответ добавляется секция `repos` и `message` вида «обновлено: N (ref-1: +3 задач, −1 задача, 2 смены статуса), без изменений: M, ошибок: K».
+
+`--ff-only` — осознанно: локальные правки в клоне или разошедшиеся ветки дают `failed` с текстом stderr git и подсказкой «удалите каталог клона и повторите sync»; авто-`reset`/`checkout` не делается (молчаливая потеря чужих правок недопустима). Каталог без `.git` — тоже `failed` с подсказкой, каталог не удаляется. Отсутствующий каталог делегирует в `cloneReferenceRepo` (первый sync = клон).
 
 ---
 
