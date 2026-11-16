@@ -85,7 +85,13 @@ export interface MemoryState {
 /** Результат записи: успех с записью либо отказ с понятной причиной. */
 export type MemoryWriteResult =
   | { ok: true; entry: MemoryEntry; chars: number; limit: number }
-  | { ok: false; reason: string };
+  /**
+   * Отказ (файл не меняется). `chars`/`limit` заполняются ТОЛЬКО при
+   * превышении лимита (VL-419): вызывающий по ним отличает переполнение
+   * от пустого текста/дубля и может подсказать модель выход
+   * (`memory_forget` в веб-чате).
+   */
+  | { ok: false; reason: string; chars?: number; limit?: number };
 
 /** Результат удаления записи. */
 export type MemoryRemoveResult =
@@ -309,6 +315,10 @@ export function appendMemoryEntry(
         `Память персоны заполнена: ${state.chars} из ${state.limit} символов, ` +
         `запись добавит ещё ${chars - state.chars}. Удалите лишние записи (/memory remove <N>) ` +
         'или увеличьте persona_memory.max_chars в settings.json',
+      // VL-419: текущий размер и лимит — чтобы вызывающий (инструмент
+      // memory_remember) мог дать модели точный hint с выходом из тупика
+      chars: state.chars,
+      limit: state.limit,
     };
   }
   writeTextAtomic(personaMemoryPath(cwd, prompt), content);

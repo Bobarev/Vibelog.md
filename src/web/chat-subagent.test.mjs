@@ -28,6 +28,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { runChat } from '../../dist/web/chat.js';
+import { extractMemoryLines } from '../../dist/web/chat-subagent.js';
+import { handleApi } from '../../dist/web/api.js';
+import { appendMemoryEntry, readMemoryEntries } from '../../dist/core/persona-memory.js';
 import { chatToolDefs, isWriteOperation } from '../../dist/web/tool-policy.js';
 import { listTools } from '../../dist/mcp/tools.js';
 import { readSubagentSettings, SUBAGENT_DEFAULTS, DEFAULT_CONSULTANT_TOOLS } from '../../dist/core/subagents.js';
@@ -316,6 +319,7 @@ describe('VL-409 — консультация в ходе чата', () => {
     const names = state.consultantTools[0];
     assert.ok(!names.includes('ask_persona'), 'ask_persona не выдан консультанту');
     assert.ok(!names.includes('memory_remember'), 'memory_remember не выдан консультанту');
+    assert.ok(!names.includes('memory_forget'), 'memory_forget не выдан консультанту (VL-419)');
   });
 
   it('AC4: консультант получает только чтение по умолчанию', async () => {
@@ -720,5 +724,175 @@ describe('VL-415 — полный ответ консультанта и час�
     );
     await collect({ message: 'спроси', threadId: 'sub-prompt' }, { llm });
     assert.match(state.consultantMessages[0][0].content, /не более 2 файлов/);
+  });
+});
+
+describe('VL-419 — память консультанта: служебные строки ЗАПОМНИТЬ:', () => {
+  it('AC4: одна строка — запись извлечена, текст без неё', () => {
+    const out = extractMemoryLines('Ответ психолога.\nЗАПОМНИТЬ: Не откладывать задачи дольше недели');
+    assert.deepEqual(out.entries, ['Не откладывать задачи дольше недели']);
+    assert.equal(out.text, 'Ответ психолога.');
+  });
+
+  it('AC4: две строки — обе записями, текст чист', () => {
+    const out = extractMemoryLines(
+      'Ответ.\nЗАПОМНИТЬ: Первое правило\nЗАПОМНИТЬ: Второе правило',
+    );
+    assert.deepEqual(out.entries, ['Первое правило', 'Второе правило']);
+    assert.equal(out.text, 'Ответ.');
+  });
+
+  it('AC4: три строки — берутся первые две, третья отбрасывается и из текста', () => {
+    const out = extractMemoryLines(
+      'Ответ.\nЗАПОМНИТЬ: Раз\nЗАПОМНИТЬ: Два\nЗАПОМНИТЬ: Три',
+    );
+    assert.deepEqual(out.entries, ['Раз', 'Два']);
+    assert.equal(out.text, 'Ответ.');
+    assert.ok(!out.text.includes('Три'));
+  });
+
+  it('AC4: строк нет — текст возвращается байт-в-байт (без trim)', () => {
+    const raw = 'Обычный ответ с хвостовым пробелом. ';
+    const out = extractMemoryLines(raw);
+    assert.equal(out.text, raw);
+    assert.deepEqual(out.entries, []);
+  });
+
+  it('AC4: строка не в конце — всё равно извлекается, пустые строки схлопнуты', () => {
+    const out = extractMemoryLines('Середина.\n\nЗАПОМНИТЬ: Правило посередине\n\nКонец.');
+    assert.deepEqual(out.entries, ['Правило посередине']);
+    assert.equal(out.text, 'Середина.\n\nКонец.');
+  });
+
+  it('AC4: регистр префикса значим — «запомнить:» остаётся обычным текстом', () => {
+    const raw = 'Ответ.\nзапомнить: строчными буквами';
+    const out = extractMemoryLines(raw);
+    assert.deepEqual(out.entries, []);
+    assert.equal(out.text, raw, 'строка не тронута');
+  });
+
+  it('AC3: в промпте консультанта есть блок формата ЗАПОМНИТЬ (≤2 строк, конец)', async () => {
+    seedConsultant();
+    const { llm, state } = fakeLlm(
+      [
+        { toolCalls: [{ id: 'tc-419-p', name: 'ask_persona', arguments: { persona: 'psychologist', question: 'Вопрос' } }] },
+        { text: 'Ок.' },
+      ],
+      { text: 'Ответ.' },
+    );
+    await collect({ message: 'спроси', threadId: 'sub-419-prompt' }, { llm });
+    const prompt = state.consultantMessages[0][0].content;
+    assert.match(prompt, /ЗАПОМНИТЬ: <правило одной фразой в императиве>/);
+    assert.match(prompt, /Не более 2 строк за консультацию/);
+    assert.match(prompt, /САМОМ КОНЦЕ ответа/);
+  });
+
+  it('AC5/AC6: запись уходит в память КОНСУЛЬТАНТА, ответ без служебных строк', async () => {
+    seedConsultant();
+    const { llm, state } = fakeLlm(
+      [
+        { toolCalls: [{ id: 'tc-419-1', name: 'ask_persona', arguments: { persona: 'psychologist', question: 'Повторяющаяся ситуация' } }] },
+        { text: 'Ок.' },
+      ],
+      { text: 'Вот мнение.\n\nЗАПОМНИТЬ: Разбирать тревогу до начала рабочего дня' },
+    );
+    const events = await collect({ message: 'спроси', threadId: 'sub-419-mem' }, { llm });
+
+    // Файл КОНСУЛЬТАНТА заполнен, роли треда — нет
+    const consultantFile = readFileSync(memoryFile('psychologist'), 'utf8');
+    assert.match(consultantFile, /Разбирать тревогу до начала рабочего дня/);
+    assert.equal(existsSync(memoryFile('helper')), false, 'память роли треда не тронута');
+
+    // Событие memory с ролью консультанта — карточка «Психолог запомнил»
+    const memory = events.find(e => e.type === 'memory');
+    assert.ok(memory, 'событие memory пришло');
+    assert.equal(memory.personaId, 'psychologist');
+    assert.equal(memory.personaLabel, 'Психолог');
+    assert.match(memory.entry.text, /Разбирать тревогу/);
+
+    // AC6: служебных строк нет ни в событии, ни в tool-результате
+    const ev = events.find(e => e.type === 'subagent');
+    assert.ok(ev, 'событие subagent пришло');
+    assert.ok(!ev.answer.includes('ЗАПОМНИТЬ:'), 'answer события без служебных строк');
+    assert.equal(ev.memory?.length, 1, 'запись видна в событии консультации');
+    const end = events.find(e => e.type === 'tool_end' && e.id === 'tc-419-1');
+    const parsed = JSON.parse(end.result);
+    assert.equal(parsed.ok, true);
+    assert.ok(!end.result.includes('ЗАПОМНИТЬ:'), 'tool-результат без служебных строк');
+    assert.match(parsed.answer, /Вот мнение/);
+
+    // Консультанту по-прежнему не выдают инструменты памяти
+    const names = state.consultantTools[0];
+    assert.ok(!names.includes('memory_remember'));
+    assert.ok(!names.includes('memory_forget'));
+  });
+
+  it('AC7: дубль → memorySkipped с причиной, консультация ok: true', async () => {
+    seedConsultant();
+    mkdirSync(join(cwd, '.vibelog', 'prompts', 'personas'), { recursive: true });
+    writeFileSync(
+      memoryFile('psychologist'),
+      '- Разбирать тревогу до начала рабочего дня. (2026-11-10)\n',
+      'utf-8',
+    );
+    const { llm } = fakeLlm(
+      [
+        { toolCalls: [{ id: 'tc-419-2', name: 'ask_persona', arguments: { persona: 'psychologist', question: 'Вопрос' } }] },
+        { text: 'Ок.' },
+      ],
+      { text: 'Ответ.\nЗАПОМНИТЬ: разбирать тревогу до начала рабочего дня' },
+    );
+    const events = await collect({ message: 'спроси', threadId: 'sub-419-dup' }, { llm });
+    const end = events.find(e => e.type === 'tool_end' && e.id === 'tc-419-2');
+    const parsed = JSON.parse(end.result);
+    assert.equal(parsed.ok, true, 'консультация успешна при отказе записи');
+    assert.equal(parsed.memory, undefined, 'записей нет');
+    assert.equal(parsed.memorySkipped?.length, 1, 'отказ собран в memorySkipped');
+    assert.match(parsed.memorySkipped[0].reason, /уже есть/);
+    assert.equal(parsed.memorySkipped[0].text, 'разбирать тревогу до начала рабочего дня');
+    const ev = events.find(e => e.type === 'subagent');
+    assert.equal(ev.memorySkipped?.length, 1, 'отказ виден в событии');
+    assert.ok(!events.some(e => e.type === 'memory'), 'события memory нет (записей нет)');
+    // Файл не задублирован
+    const lines = readFileSync(memoryFile('psychologist'), 'utf8').trim().split('\n');
+    assert.equal(lines.length, 1, 'осталась одна запись');
+  });
+
+  it('AC8: отмена из карточки консультанта удаляет из ЕГО файла, а не треда', async () => {
+    seedConsultant();
+    // Роль треда фиксируется первым ходом (файл helper не создаётся)
+    const { llm } = fakeLlm([{ text: 'Ок.' }]);
+    await collect({ message: 'привет', threadId: 'sub-419-rm' }, { llm });
+    appendMemoryEntry(cwd, 'psychologist', 'Наблюдение психолога', new Date(2026, 10, 10));
+    appendMemoryEntry(cwd, 'helper', 'Запись помощника', new Date(2026, 10, 10));
+
+    const res = handleApi(
+      'POST',
+      '/api/chat/threads/sub-419-rm/memory/remove',
+      { text: 'Наблюдение психолога', personaId: 'psychologist' },
+      cwd,
+    );
+    assert.equal(res.status, 200);
+    assert.equal(res.body.removed.text, 'Наблюдение психолога.');
+    assert.equal(
+      readMemoryEntries(cwd, 'psychologist').entries.length,
+      0,
+      'файл консультанта очищен',
+    );
+    assert.equal(
+      readMemoryEntries(cwd, 'helper').entries.length,
+      1,
+      'память роли треда не тронута',
+    );
+
+    // Неизвестная роль — отказ, а не произвольный путь
+    const bad = handleApi(
+      'POST',
+      '/api/chat/threads/sub-419-rm/memory/remove',
+      { text: 'Наблюдение психолога', personaId: 'nope' },
+      cwd,
+    );
+    assert.equal(bad.status, 404);
+    assert.match(bad.body.error, /не найдена/);
   });
 });

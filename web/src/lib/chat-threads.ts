@@ -47,6 +47,35 @@ function isMemoryAck(
   return typeof entry?.text === "string";
 }
 
+/**
+ * VL-419: успешный результат `ask_persona` с записями памяти КОНСУЛЬТАНТА
+ * (`{ok: true, personaId, personaLabel, memory: [{index,text,date}]}`).
+ * По нему восстановление истории рисует карточки «<Роль> запомнил: …» —
+ * те же data-части `chat-memory`, что приходят живыми событиями `memory`.
+ */
+function consultantMemoryOf(
+  value: unknown,
+):
+  | { personaId: string; personaLabel: string; entries: { index: number; text: string; date: string }[] }
+  | null {
+  if (typeof value !== "object" || value === null) return null;
+  const obj = value as { ok?: unknown; personaId?: unknown; personaLabel?: unknown; memory?: unknown };
+  if (obj.ok !== true || !Array.isArray(obj.memory)) return null;
+  const entries = obj.memory.filter(
+    (e): e is { index: number; text: string; date: string } =>
+      typeof e === "object" &&
+      e !== null &&
+      typeof (e as { index?: unknown }).index === "number" &&
+      typeof (e as { text?: unknown }).text === "string",
+  );
+  if (entries.length === 0) return null;
+  return {
+    personaId: typeof obj.personaId === "string" ? obj.personaId : "",
+    personaLabel: typeof obj.personaLabel === "string" ? obj.personaLabel : "",
+    entries,
+  };
+}
+
 /** id треда из хеша `#/chat/<id>`; null — тред не выбран, 'new' — новый. */
 export function parseChatThreadId(hash: string): string | null {
   const match = hash.match(/^#\/chat\/([^/]+)$/);
@@ -101,6 +130,8 @@ export function historyToMessages(
     }
 
     let pendingApproval = false;
+    /** VL-419: распарсенный результат ask_persona (для карточек памяти). */
+    let parsedAskPersona: unknown;
     for (const tc of m.tool_calls ?? []) {
       const raw = results.get(tc.id);
       const part: Record<string, unknown> = {
@@ -119,6 +150,7 @@ export function historyToMessages(
         } catch {
           // не-JSON результат (текст ошибки) оставляем строкой
         }
+        if (tc.name === "ask_persona") parsedAskPersona = parsed;
         // VL-402: успешная запись памяти — не строка инструмента, а карточка
         // «Запомнил: …» с кнопкой «Убрать». Синтезируем ту же data-часть, что
         // приходит живым событием `memory`, чтобы после F5 лента выглядела
@@ -166,6 +198,26 @@ export function historyToMessages(
         part.isError = true;
       }
       parts.push(part);
+
+      // VL-419: память консультанта из результата ask_persona — карточки
+      // «<Роль> запомнил: …» после F5 (живые события memory в jsonl не пишутся,
+      // восстановление опирается на tool-результат, как memory_remember)
+      const consultantMemory = tc.name === "ask_persona" ? consultantMemoryOf(parsedAskPersona) : null;
+      if (consultantMemory !== null) {
+        for (const entry of consultantMemory.entries) {
+          parts.push({
+            type: "data",
+            name: "chat-memory",
+            data: {
+              index: entry.index,
+              text: entry.text,
+              date: entry.date,
+              personaId: consultantMemory.personaId,
+              ...(consultantMemory.personaLabel !== "" ? { personaLabel: consultantMemory.personaLabel } : {}),
+            },
+          })
+        }
+      }
     }
 
     if (parts.length === 0) continue;

@@ -16,7 +16,11 @@
  * - **глубина 1**: консультант НЕ получает `ask_persona` — иначе лавина
  *   вложенных запросов и непредсказуемая стоимость. Проверяется тестом, а не
  *   только кодом;
- * - **консультант не пишет в память**: `memory_remember` ему не выдаётся;
+ * - **консультант не пишет в память сам**: `memory_remember`/`memory_forget`
+ *   ему не выдаются (VL-409/419). Его наблюдения о пользователе сервер
+ *   записывает в ЕГО память из служебных строк `ЗАПОМНИТЬ:` в конце ответа —
+ *   целевую роль при этом определяет сервер по `consultant.prompt`, а не
+ *   модель (инвариант AC6 VL-402);
  * - **консультант не меняет проект**: write-инструменты отсекаются даже если
  *   роль объявила их в `allow_tools` — карточку Allow/Deny внутри вложенного
  *   запроса показать некому, а молчаливая запись запрещена правилом доступа;
@@ -30,6 +34,7 @@
 import type { ChatMessage, LlmClient, LlmUsage, ToolDef } from '../agent/llm.js';
 import { truncateToolOutput } from '../agent/tools.js';
 import { formatLessonLine, readChatLessonSettings, readLessonSettings, selectLessonsForText } from '../core/lesson.js';
+import { appendMemoryEntry } from '../core/persona-memory.js';
 import { handleToolCall } from '../mcp/tools.js';
 import { isWriteOperation } from '../core/tool-classify.js';
 import {
@@ -37,7 +42,7 @@ import {
   DEFAULT_CONSULTANT_TOOLS,
   type SubagentSettings,
 } from '../core/subagents.js';
-import { MEMORY_REMEMBER_TOOL } from './chat-memory.js';
+import { MEMORY_FORGET_TOOL, MEMORY_REMEMBER_TOOL } from './chat-memory.js';
 import { chatToolDefs, askPersonaToolDef, type ChatLocalTool } from './tool-policy.js';
 import { loadPersonaMemory, loadPersonas, loadPersonaPrompt, resolvePersona, type PersonaConfig } from './personas.js';
 
@@ -77,6 +82,10 @@ export interface SubagentEvent {
   partial?: boolean;
   /** VL-415: инструменты, которые консультант успел вызвать. */
   usedTools?: string[];
+  /** VL-419: записи, которые сервер добавил в память КОНСУЛЬТАНТА. */
+  memory?: Array<{ index: number; text: string; date: string }>;
+  /** VL-419: отказы appendMemoryEntry (дубль/лимит) — консультация успешна. */
+  memorySkipped?: Array<{ text: string; reason: string }>;
 }
 
 /** Зависимости инструмента консультации. */
@@ -123,6 +132,17 @@ function buildConsultantPrompt(cwd: string, consultant: PersonaConfig, question:
   );
   const memory = loadPersonaMemory(cwd, consultant);
   if (memory.text) parts.push(`## Память персоны\n\n${memory.text}`);
+  // VL-419: канал записи консультанта. Ему не выдают memory_remember (VL-409:
+  // консультация не должна молча писать), но наблюдения о человеке — как раз
+  // его экспертиза. Сервер извлекает строки и пишет в память КОНСУЛЬТАНТА:
+  // файл выбирает сервер по consultant.prompt, модель знает только формат.
+  parts.push(
+    '## Память\n\n' +
+      'Если по ходу ответа ты узнал о пользователе устойчивое и важное (то, что пригодится в следующий раз), перечисли это в САМОМ КОНЦЕ ответа отдельными строками:\n' +
+      'ЗАПОМНИТЬ: <правило одной фразой в императиве>\n' +
+      'Строки служебные — пользователь их не увидит, они попадут в твою память.\n' +
+      'Не более 2 строк за консультацию. Если запоминать нечего — строк нет.',
+  );
   const chatLessons = readChatLessonSettings(cwd);
   if (chatLessons.enabled) {
     const promptLimit = readLessonSettings(cwd).promptLimit;
@@ -139,15 +159,17 @@ function buildConsultantPrompt(cwd: string, consultant: PersonaConfig, question:
 
 /**
  * Инструменты консультанта: `allow_tools` роли (или только-чтение по
- * умолчанию), минус `ask_persona` (глубина 1), минус `memory_remember`
- * (консультант не пишет в память) и минус write-операции (консультация не
- * меняет проект — подтверждать запись внутри вложенного запроса некому).
+ * умолчанию), минус `ask_persona` (глубина 1), минус инструменты памяти
+ * (`memory_remember`/`memory_forget` — консультант не пишет и не чистит
+ * память инструментами; его канал — служебные строки VL-419) и минус
+ * write-операции (консультация не меняет проект — подтверждать запись внутри
+ * вложенного запроса некому).
  */
 function consultantTools(cwd: string, consultant: PersonaConfig): (ToolDef | ChatLocalTool)[] {
   const allowed = new Set(consultant.allowTools ?? DEFAULT_CONSULTANT_TOOLS);
   return chatToolDefs(cwd, consultant).filter(def => {
     if (def.name === ASK_PERSONA_TOOL) return false;
-    if (def.name === MEMORY_REMEMBER_TOOL) return false;
+    if (def.name === MEMORY_REMEMBER_TOOL || def.name === MEMORY_FORGET_TOOL) return false;
     if (!allowed.has(def.name)) return false;
     return !isWriteOperation(def.name);
   });
@@ -157,6 +179,41 @@ function consultantTools(cwd: string, consultant: PersonaConfig): (ToolDef | Cha
 function consultantUserText(question: string, context?: string): string {
   if (context === undefined) return question;
   return `${question}\n\nКонтекст:\n${context}`;
+}
+
+/**
+ * Извлекает служебные строки `ЗАПОМНИТЬ:` из ответа консультанта (VL-419).
+ *
+ * Строки пишет модель по блоку «## Память» системного промпта. Префикс
+ * фиксированный и регистрозависимый: «запомнить:» — обычный текст ответа,
+ * а не канал записи (case-insensitive для кириллицы не нужен).
+ *
+ * Возвращает текст БЕЗ служебных строк (пустые строки, оставшиеся на месте
+ * извлечённых, схлопываются; хвост обрезается) и массив записей — не более 2
+ * (лимит из промпта; лишние отбрасываются, модель могла его нарушить).
+ * Fail-safe: формат не выполнен — исходный текст возвращается байт-в-байт,
+ * записи пустые; это не ошибка консультации.
+ *
+ * @param answer — полный ответ консультанта ДО обрезки по max_answer_chars
+ */
+export function extractMemoryLines(answer: string): { text: string; entries: string[] } {
+  const entries: string[] = [];
+  const kept: string[] = [];
+  let removed = 0;
+  for (const line of answer.split('\n')) {
+    const match = /^ЗАПОМНИТЬ:\s*(.*)$/.exec(line);
+    if (match === null) {
+      kept.push(line);
+      continue;
+    }
+    removed++;
+    const value = match[1]!.trim();
+    if (value !== '' && entries.length < 2) entries.push(value);
+  }
+  // Служебных строк нет — текст не трогаем (контракт точного ответа VL-415)
+  if (removed === 0) return { text: answer, entries };
+  const text = kept.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '');
+  return { text, entries };
 }
 
 /**
@@ -317,8 +374,25 @@ export function makeAskPersonaTool(deps: AskPersonaDeps): ChatLocalTool {
         });
       }
 
-      // VL-415: свой лимит длины ответа вместо общего капа tool-вывода.
-      const limited = limitAnswer(answer, settings.maxAnswerChars);
+      // VL-419: служебные строки ЗАПОМНИТЬ: — в память КОНСУЛЬТАНТА (файл
+      // берётся из consultant.prompt: целевую роль определяет сервер, а не
+      // модель — инвариант AC6 VL-402). Отказ записи (дубль/лимит) не валит
+      // консультацию — попадает в memorySkipped с причиной.
+      const extracted = extractMemoryLines(answer);
+      const memory: Array<{ index: number; text: string; date: string }> = [];
+      const memorySkipped: Array<{ text: string; reason: string }> = [];
+      for (const entryText of extracted.entries) {
+        const written = appendMemoryEntry(cwd, consultant.prompt, entryText);
+        if (written.ok) {
+          memory.push({ index: written.entry.index, text: written.entry.text, date: written.entry.date });
+        } else {
+          memorySkipped.push({ text: entryText, reason: written.reason });
+        }
+      }
+
+      // VL-415: свой лимит длины ответа вместо общего капа tool-вывода —
+      // применяется к тексту уже без служебных строк (AC6 VL-419)
+      const limited = limitAnswer(extracted.text, settings.maxAnswerChars);
 
       deps.onEvent?.({
         personaId: consultant.id,
@@ -327,6 +401,8 @@ export function makeAskPersonaTool(deps: AskPersonaDeps): ChatLocalTool {
         answer: limited.answer,
         tokens,
         ...(limited.truncated ? { truncated: true, answerChars: limited.answerChars } : {}),
+        ...(memory.length > 0 ? { memory } : {}),
+        ...(memorySkipped.length > 0 ? { memorySkipped } : {}),
       });
 
       return JSON.stringify({
@@ -338,6 +414,8 @@ export function makeAskPersonaTool(deps: AskPersonaDeps): ChatLocalTool {
         tokens,
         truncated: limited.truncated,
         answerChars: limited.answerChars,
+        ...(memory.length > 0 ? { memory } : {}),
+        ...(memorySkipped.length > 0 ? { memorySkipped } : {}),
       });
     },
   };

@@ -105,7 +105,7 @@ import {
   listCatalogVendors,
   normalizePricing,
 } from '../core/provider-catalog.js';
-import { DEFAULT_PERSONA_ID, listPersonas, resolvePersona } from './personas.js';
+import { DEFAULT_PERSONA_ID, listPersonas, resolvePersona, type PersonaConfig } from './personas.js';
 // VL-403: CRUD ролей со страницы «Персоны» (GET/PUT/POST/DELETE /api/personas/:id)
 import { handlePersonasApi } from './personas-api.js';
 // VL-402: отмена записи памяти персоны из ленты чата (кнопка «Убрать»)
@@ -259,17 +259,32 @@ export function handleApi(
     }
 
     // /api/chat/threads/:id/memory/remove — отмена записи памяти персоны
-    // (VL-402, AC2): кнопка «Убрать» в ленте. Тело {index?, text?} — текст
-    // приоритетнее (номера сдвигаются после удаления соседней записи).
-    // Роль берётся из треда (AC6): чужую память через этот роут не тронуть.
+    // (VL-402, AC2): кнопка «Убрать» в ленте. Тело {index?, text?, personaId?} —
+    // текст приоритетнее (номера сдвигаются после удаления соседней записи).
+    // VL-419: personaId обязателен для карточек записей КОНСУЛЬТАНТА: файл
+    // памяти берётся по известной роли реестра (resolvePersona), а не по
+    // произвольному пути — чужую память «в обход» по-прежнему не тронуть.
+    // Без personaId роль берётся из треда (AC6), как раньше.
     const chatMemoryRemoveMatch = url.match(/^\/api\/chat\/threads\/([^/]+)\/memory\/remove$/);
     if (chatMemoryRemoveMatch) {
       if (method !== 'POST') return { status: 405, body: { error: 'Метод не поддерживается' } };
       const memThreadId = chatMemoryRemoveMatch[1]!;
-      const personaId = effectiveThreadPersona(cwd, memThreadId);
-      const persona = personaId === null ? null : resolvePersona(cwd, personaId);
-      if (persona === null) {
-        return { status: 404, body: { error: 'Роль треда не определена — память недоступна' } };
+      const reqPersonaId =
+        typeof body?.personaId === 'string' && body.personaId.trim() !== ''
+          ? body.personaId.trim()
+          : null;
+      let persona: PersonaConfig | null;
+      if (reqPersonaId !== null) {
+        persona = resolvePersona(cwd, reqPersonaId);
+        if (persona === null) {
+          return { status: 404, body: { error: `Роль "${reqPersonaId}" не найдена — память недоступна` } };
+        }
+      } else {
+        const personaId = effectiveThreadPersona(cwd, memThreadId);
+        persona = personaId === null ? null : resolvePersona(cwd, personaId);
+        if (persona === null) {
+          return { status: 404, body: { error: 'Роль треда не определена — память недоступна' } };
+        }
       }
       const result = removeMemoryByEvent(cwd, memThreadId, persona, {
         index: body?.index,

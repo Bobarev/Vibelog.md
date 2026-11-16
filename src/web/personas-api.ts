@@ -51,7 +51,7 @@ import {
 } from './personas.js';
 import type { PersonaConfig } from './personas.js';
 // VL-407: имя служебного инструмента памяти — для предупреждения о вырожденном allow_tools
-import { MEMORY_REMEMBER_TOOL } from './chat-memory.js';
+import { MEMORY_FORGET_TOOL, MEMORY_REMEMBER_TOOL } from './chat-memory.js';
 import type { ApiResponse } from './api.js';
 
 /**
@@ -123,20 +123,21 @@ function readTextOrEmpty(path: string): string {
 /**
  * VL-407: предупреждение о вырожденном `allow_tools`.
  *
- * Если список непустой и состоит только из `memory_remember`, роль фактически
- * остаётся без инструментов проекта: `memory_remember` добавляется всегда
- * (это механизм памяти роли, а не инструмент проекта). Не блокируем — это
- * может быть осознанным «роль только разговаривает», но пользователь должен
- * увидеть, что ограничение получилось жёстче ожидаемого.
+ * Если список непустой и состоит только из инструментов памяти, роль
+ * фактически остаётся без инструментов проекта: `memory_remember` и
+ * `memory_forget` добавляются всегда (это механизм памяти роли, а не
+ * инструменты проекта, VL-419). Не блокируем — это может быть осознанным
+ * «роль только разговаривает», но пользователь должен увидеть, что
+ * ограничение получилось жёстче ожидаемого.
  *
  * @returns текст предупреждения либо null — список осмысленный
  */
 function allowToolsWarning(tools: string[] | undefined): string | null {
   if (tools === undefined || tools.length === 0) return null;
-  if (!tools.every(t => t === MEMORY_REMEMBER_TOOL)) return null;
+  if (!tools.every(t => t === MEMORY_REMEMBER_TOOL || t === MEMORY_FORGET_TOOL)) return null;
   return (
-    'allow_tools содержит только memory_remember — роль фактически без инструментов проекта ' +
-    '(memory_remember доступен всегда как механизм памяти роли)'
+    'allow_tools содержит только инструменты памяти (memory_remember/memory_forget) — ' +
+    'роль фактически без инструментов проекта (память доступна всегда как механизм роли)'
   );
 }
 

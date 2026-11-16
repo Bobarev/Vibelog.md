@@ -96,9 +96,15 @@ async function collect(body, deps) {
 }
 
 describe('VL-407 — chatToolDefs фильтрует итоговый список', () => {
-  it('AC1: остаются только перечисленные имена (+ memory_remember)', () => {
+  it('AC1: остаются только перечисленные имена (+ инструменты памяти)', () => {
     const names = chatToolDefs(cwd, persona('auditor')).map(d => d.name).sort();
-    assert.deepEqual(names, ['backlog_search', 'memory_remember', 'read_file', 'search_files']);
+    assert.deepEqual(names, [
+      'backlog_search',
+      'memory_forget',
+      'memory_remember',
+      'read_file',
+      'search_files',
+    ]);
   });
 
   it('AC2: allow_tools не задан → полный набор, как раньше', () => {
@@ -108,9 +114,9 @@ describe('VL-407 — chatToolDefs фильтрует итоговый списо
     }
   });
 
-  it('AC3: пустой массив → только memory_remember (не «всё разрешено»)', () => {
+  it('AC3: пустой массив → только инструменты памяти (не «всё разрешено»)', () => {
     const names = chatToolDefs(cwd, persona('silent')).map(d => d.name);
-    assert.deepEqual(names, ['memory_remember']);
+    assert.deepEqual(names, ['memory_remember', 'memory_forget']);
   });
 
   it('AC4: локальные инструменты чата участвуют в фильтрации', () => {

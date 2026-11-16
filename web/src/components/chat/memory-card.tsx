@@ -20,7 +20,12 @@ import * as React from "react"
 import { CheckIcon, XIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
-import { getActiveThreadId, isMemoryRemoved, markMemoryRemoved } from "./chat-runtime"
+import {
+  getActivePersonaId,
+  getActiveThreadId,
+  isMemoryRemoved,
+  markMemoryRemoved,
+} from "./chat-runtime"
 import { field, ghostButton, mono, paper } from "./surfaces"
 
 /** Данные data-части `chat-memory` (зеркало события `memory` сервера). */
@@ -29,11 +34,20 @@ export interface MemoryPartData {
   text?: unknown
   date?: unknown
   personaId?: unknown
+  /** VL-419: метка роли — у записей консультанта она есть всегда. */
+  personaLabel?: unknown
 }
 
 export function MemoryCard({ data }: { data: MemoryPartData | undefined }) {
   const text = typeof data?.text === "string" ? data.text : ""
   const date = typeof data?.date === "string" ? data.date : ""
+  const personaId = typeof data?.personaId === "string" ? data.personaId : ""
+  const personaLabel = typeof data?.personaLabel === "string" ? data.personaLabel : ""
+  // VL-419: запись чужой роли (консультанта) — «<Роль> запомнил: …»: карточка
+  // может жить в треде другой роли, и подпись «Запомнил» приписала бы
+  // наблюдение Психолога Помощнику.
+  const foreign = personaId !== "" && personaId !== getActivePersonaId()
+  const who = foreign ? `${personaLabel !== "" ? personaLabel : personaId} запомнил` : "Запомнил"
   // Начальное состояние — из sidecar треда (после F5 запись уже могла быть убрана)
   const [removed, setRemoved] = React.useState(() => (text !== "" ? isMemoryRemoved(text) : false))
   const [busy, setBusy] = React.useState(false)
@@ -55,7 +69,10 @@ export function MemoryCard({ data }: { data: MemoryPartData | undefined }) {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
+          // VL-419: personaId уходит на сервер — «Убрать» удаляет запись из
+          // ФАЙЛА ЭТОЙ роли (консультанта), а не роли треда. Без personaId
+          // сервер по-прежнему берёт роль из треда (записи «Помощника»).
+          body: JSON.stringify(personaId !== "" ? { text, personaId } : { text }),
         },
       )
       if (!res.ok) {
@@ -88,7 +105,7 @@ export function MemoryCard({ data }: { data: MemoryPartData | undefined }) {
         </span>
         <div className="flex min-w-0 flex-col gap-0.5">
           <p className="text-[13px] break-words">
-            <span className="text-muted-foreground">Запомнил: </span>
+            <span className="text-muted-foreground">{who}: </span>
             {text}
           </p>
           <p className={cn(mono, "text-muted-foreground")}>

@@ -34,7 +34,7 @@ import { listTools } from '../mcp/tools.js';
 import { isUpstreamConfigured } from '../core/gitverse-issues.js';
 import { UPSTREAM_TOOLS } from '../mcp/server.js';
 import { ASK_USER_TOOL, MAX_OPTIONS, MIN_OPTIONS } from './chat-question.js';
-import { makeMemoryRememberTool, MEMORY_REMEMBER_TOOL } from './chat-memory.js';
+import { makeMemoryForgetTool, makeMemoryRememberTool, MEMORY_FORGET_TOOL, MEMORY_REMEMBER_TOOL } from './chat-memory.js';
 import { ASK_PERSONA_TOOL, readSubagentSettings } from '../core/subagents.js';
 import type { PersonaConfig } from './personas.js';
 
@@ -344,7 +344,8 @@ export function askPersonaToolDef(): ToolDef {
 /**
  * Инструменты модели чата: все MCP-инструменты (кроме
  * CHAT_DISALLOWED_TOOLS) + локальные read_file/write_file/edit/search_files +
- * интерактивный ask_user (VL-330) + memory_remember (VL-402). Схемы совпадают
+ * интерактивный ask_user (VL-330) + memory_remember/memory_forget (VL-402/419). Схемы
+ * совпадают
  * с реестром listTools() — дублирования нет (Р2 плана VL-219).
  *
  * @param cwd — каталог проекта
@@ -364,9 +365,12 @@ export function chatToolDefs(cwd: string, persona?: PersonaConfig | null): (Tool
   defs.push(makeReadFileTool(cwd), makeWriteFileTool(cwd), makeEditTool(cwd), makeSearchFilesTool(cwd));
   // VL-330: интерактивный вопрос — только в веб-чате (в headless его нет)
   defs.push(makeAskUserTool());
-  // VL-402: запись памяти персоны — тоже только в веб-чате (в MCP-реестре
-  // имени нет, поэтому агентская петля его не видит)
-  if (persona) defs.push(makeMemoryRememberTool(cwd, persona));
+  // VL-402/419: запись и чистка памяти персоны — только веб-чат (в MCP-реестре
+  // имён нет, поэтому агентская петля их не видит)
+  if (persona) {
+    defs.push(makeMemoryRememberTool(cwd, persona));
+    defs.push(makeMemoryForgetTool(cwd, persona));
+  }
   // VL-409: консультация другой роли (`ask_persona`) — только веб-чат и только
   // при включённых субагентах. Handler собирается в chat.ts (там есть
   // LLM-клиент, счётчик хода и очередь событий), здесь — объявление для модели.
@@ -383,18 +387,20 @@ export function chatToolDefs(cwd: string, persona?: PersonaConfig | null): (Tool
   //   роли и старые конфиги не ломаются (AC2);
   // - `[]` (пустой массив) → «ничего не разрешено», а НЕ «всё разрешено»:
   //   путать эти два случая нельзя, иначе ограничение даёт скрытый полный
-  //   доступ (AC3). Остаётся только memory_remember (см. ниже);
+  //   доступ (AC3). Остаются только инструменты памяти (см. ниже);
   // - непустой массив → ровно перечисленные имена (AC1).
   //
-  // memory_remember добавляется ВСЕГДА при наличии роли, независимо от
-  // allow_tools: это не инструмент проекта, а механизм памяти самой роли.
-  // Отсеки его — и роль не сможет запоминать предпочтения пользователя, а
-  // требовать имя в списке значит заставлять помнить про служебный инструмент
-  // при настройке роли (AC5).
+  // memory_remember/memory_forget добавляются ВСЕГДА при наличии роли,
+  // независимо от allow_tools: это не инструменты проекта, а механизм памяти
+  // самой роли. Отсеки их — и роль не сможет запоминать и чистить свою память,
+  // а требовать имя в списке значит заставлять помнить про служебные
+  // инструменты при настройке роли (AC5).
   const allow = persona?.allowTools;
   if (allow === undefined) return defs;
   const allowed = new Set(allow);
-  return defs.filter(d => allowed.has(d.name) || d.name === MEMORY_REMEMBER_TOOL);
+  return defs.filter(
+    d => allowed.has(d.name) || d.name === MEMORY_REMEMBER_TOOL || d.name === MEMORY_FORGET_TOOL,
+  );
 }
 
 /** Путь к встроенному шаблону (dist/web/tool-policy.js → ../../templates/prompts/). */
