@@ -2009,47 +2009,11 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     });
     await deliverChatResult(ctx, chatId, result);
   });
-  // ── VL-408: пересылка сообщений в веб-чат (режим /chat) ──
-  // Строго МЕЖДУ awaitingComment (VL-78) и reply-resume (VL-93):
-  // (а) режим комментария должен выигрывать у пересылки — иначе текст
-  // комментария ушёл бы в веб-чат; (б) при активном режиме reply на
-  // сообщение бота тоже должен уходить в чат, а не запускать resume-сессию
-  // агента. Все «не наш случай» ветки зовут next() — иначе цепочка grammy
-  // останавливается и пин-код перестаёт работать (ловушка порядка VL-37).
-  bot.on('message:text', async (ctx, next) => {
-    const chatId = ctx.chat?.id;
-    if (chatId === undefined) {
-      await next();
-      return;
-    }
-    const threadId = getChatBridge(chatId);
-    if (threadId === null) {
-      await next();
-      return;
-    }
-    const text = ctx.message.text.trim();
-    // /cancel — выход из режима (не пересылаем). Отдельным bot.command его
-    // регистрировать нельзя: он перехватил бы /cancel у режима комментария.
-    if (text === '/cancel') {
-      // VL-414: висящая пауза гасится вместе с режимом (AC8)
-      dropChatPause(chatId, 'Ход остановлен: режим пересылки выключен');
-      clearChatBridge(chatId);
-      await sendMd(ctx, 'Режим пересылки завершён.');
-      return;
-    }
-    // Слэш-команды работают как раньше (AC2): уходят дальше по цепочке
-    if (!text || text.startsWith('/')) {
-      await next();
-      return;
-    }
-    const result = await forwardChatMessage(deps.cwd, threadId, text);
-    // VL-414: ответ персоны — rich (GFM), пауза — карточка с кнопками
-    await deliverChatResult(ctx, chatId, result);
-  });
   // ── VL-93: reply на информационное сообщение бота → resume сессии qwen ──
-  // Строго МЕЖДУ awaitingComment (VL-78) и catch-all пина (ловушка порядка
-  // grammy VL-37): все «не мой случай» ветки уходят next() дальше — иначе
-  // catch-all пина перехватил бы reply и остановил цепочку.
+  // Строго МЕЖДУ VL-414 (перехват вопроса) и VL-408 (мост): reply с
+  // session-ref приоритетнее пересылки в веб-чат; без next() catch-all пина
+  // перехватил бы reply (ловушка порядка grammy VL-37). Выше — awaitingComment
+  // (VL-78): он выше обоих. Все «не мой случай» ветки уходят next() дальше.
   bot.on('message:text', async (ctx, next) => {
     const reply = ctx.message.reply_to_message;
     if (!reply) {
@@ -2108,6 +2072,46 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       ctx,
       `🔄 Сессия возобновлена (resume ${escapeMarkdownV2(ref.sessionId)}), PID ${result.pid}`
     );
+  });
+  // ── VL-408: пересылка сообщений в веб-чат (режим /chat) ──
+  // Строго МЕЖДУ reply-resume (VL-93, зарегистрирован выше) и catch-all пина;
+  // выше также awaitingComment (VL-78) и вопрос VL-414:
+  // (а) режим комментария должен выигрывать у пересылки — иначе текст
+  // комментария ушёл бы в веб-чат;
+  // (б) reply на сообщение бота с session-ref приоритетнее пересылки и
+  // обрабатывается VL-93, который зарегистрирован выше; в мост уходят только
+  // сообщения без session-ref. Все «не наш случай» ветки зовут next() —
+  // иначе цепочка grammy останавливается и пин-код перестаёт работать
+  // (ловушка порядка VL-37).
+  bot.on('message:text', async (ctx, next) => {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) {
+      await next();
+      return;
+    }
+    const threadId = getChatBridge(chatId);
+    if (threadId === null) {
+      await next();
+      return;
+    }
+    const text = ctx.message.text.trim();
+    // /cancel — выход из режима (не пересылаем). Отдельным bot.command его
+    // регистрировать нельзя: он перехватил бы /cancel у режима комментария.
+    if (text === '/cancel') {
+      // VL-414: висящая пауза гасится вместе с режимом (AC8)
+      dropChatPause(chatId, 'Ход остановлен: режим пересылки выключен');
+      clearChatBridge(chatId);
+      await sendMd(ctx, 'Режим пересылки завершён.');
+      return;
+    }
+    // Слэш-команды работают как раньше (AC2): уходят дальше по цепочке
+    if (!text || text.startsWith('/')) {
+      await next();
+      return;
+    }
+    const result = await forwardChatMessage(deps.cwd, threadId, text);
+    // VL-414: ответ персоны — rich (GFM), пауза — карточка с кнопками
+    await deliverChatResult(ctx, chatId, result);
   });
   // Ввод пина — ОБЯЗАТЕЛЬНО ПОСЛЕ ВСЕХ bot.command: catch-all message:text
   // перехватывает любое текстовое сообщение и без next() останавливает
