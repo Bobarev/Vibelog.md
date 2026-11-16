@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-10 16:59'
-updated_date: '2026-11-10 18:51'
+updated_date: '2026-11-16 16:02'
 due_date: ''
 labels:
   - agent
   - core
 dependencies:
   - VL-410
-milestone: ''
+milestone: v1.14
 references: []
 priority: ''
 type: bug

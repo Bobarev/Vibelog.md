@@ -5,13 +5,13 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-10 11:07'
-updated_date: '2026-11-10 12:35'
+updated_date: '2026-11-16 16:02'
 due_date: ''
 labels: []
 dependencies:
   - VL-401
   - VL-404
-milestone: ''
+milestone: v1.14
 references: []
 priority: low
 type: feature

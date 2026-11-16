@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-09 23:56'
-updated_date: '2026-11-10 01:34'
+updated_date: '2026-11-16 16:02'
 due_date: ''
 labels:
   - docs
   - tech-debt
   - agent
 dependencies: []
-milestone: ''
+milestone: v1.14
 references: []
 priority: medium
 type: chore

@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-16 13:04'
-updated_date: '2026-11-16 13:35'
+updated_date: '2026-11-16 16:02'
 due_date: ''
 labels:
   - bot
   - workflow
   - bug
 dependencies: []
-milestone: ''
+milestone: v1.14
 references: []
 priority: medium
 type: bug

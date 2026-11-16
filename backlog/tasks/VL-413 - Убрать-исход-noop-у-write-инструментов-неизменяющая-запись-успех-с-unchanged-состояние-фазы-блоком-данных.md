@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-10 18:56'
-updated_date: '2026-11-10 21:22'
+updated_date: '2026-11-16 16:02'
 due_date: ''
 labels:
   - mcp
@@ -14,7 +14,7 @@ labels:
 dependencies:
   - VL-410
   - VL-411
-milestone: ''
+milestone: v1.14
 references: []
 priority: ''
 type: bug

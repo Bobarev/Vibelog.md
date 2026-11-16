@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-09 23:47'
-updated_date: '2026-11-10 01:56'
+updated_date: '2026-11-16 16:02'
 due_date: ''
 labels:
   - cli
@@ -13,7 +13,7 @@ labels:
   - agent
   - onboarding
 dependencies: []
-milestone: ''
+milestone: v1.14
 references: []
 priority: high
 type: feature

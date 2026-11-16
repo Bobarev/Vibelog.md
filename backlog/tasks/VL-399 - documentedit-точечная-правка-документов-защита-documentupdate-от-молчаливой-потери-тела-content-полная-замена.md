@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-10 00:09'
-updated_date: '2026-11-10 00:50'
+updated_date: '2026-11-16 16:02'
 due_date: ''
 labels:
   - mcp
@@ -13,7 +13,7 @@ labels:
   - safety
   - tech-debt
 dependencies: []
-milestone: ''
+milestone: v1.14
 references: []
 priority: high
 type: bug
