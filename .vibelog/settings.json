@@ -75,7 +75,7 @@
     }
   },
   "models": {
-    "default": "selectel/deepseek/deepseek-v4.1-flash",
+    "default": "routerai/xiaomi/mimo-v2.6-flash@Xiaomi",
     "available": {
       "routerai/xiaomi/mimo-v2.6-flash@makora": {
         "label": "makora.rai/mimo-v2.6-flash",
@@ -143,9 +143,9 @@
         "model": "deepseek/deepseek-v4.1-flash",
         "api_mode": "responses",
         "pricing": {
-          "input_per_1m": 2.584080356,
-          "output_per_1m": 46.9832792,
-          "cache_per_1m": 0.469832792
+          "input_per_1m": 2.603428256,
+          "output_per_1m": 47.3350592,
+          "cache_per_1m": 0.473350592
         }
       },
       "selectel/deepseek/deepseek-v4.1-flash": {
@@ -156,6 +156,19 @@
           "input_per_1m": 11.82,
           "output_per_1m": 32.83,
           "cache_per_1m": 0.79
+        }
+      },
+      "routerai/deepseek/deepseek-v4.1-flash/@alibaba": {
+        "label": "DeepSeek: DeepSeek V4.1 Flash",
+        "gateway": "routerai",
+        "vendor": "alibaba",
+        "model": "deepseek/deepseek-v4.1-flash",
+        "api_mode": "responses",
+        "context_window": 1000000,
+        "pricing": {
+          "input_per_1m": 24.67012548,
+          "output_per_1m": 98.68050192,
+          "cache_per_1m": 0.4934025096
         }
       }
     }
@@ -184,6 +197,7 @@
   "pricing_guard": {
     "enabled": true,
     "on_drift": "ask",
+    "catalog_ttl_minutes": 5,
     "offline": "allow"
   },
   "upstream": {
