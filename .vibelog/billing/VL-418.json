@@ -76,6 +76,42 @@
       "agent": "vb",
       "fallback": true,
       "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794810066838",
+      "phase": "close",
+      "startedAt": "2026-11-16T06:21:06.716Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-16T06:59:39.526Z",
+      "durationMs": 2309749,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 30
+      },
+      "model": "xiaomi/mimo-v2.6-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1794810066838",
+      "phase": "close",
+      "startedAt": "2026-11-16T06:21:06.716Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-16T06:59:39.716Z",
+      "durationMs": 2309749,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 30
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
     }
   ]
 }
