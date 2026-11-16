@@ -63,12 +63,12 @@ export function makeMemoryRememberTool(cwd: string, persona: PersonaConfig): Mem
   return {
     name: MEMORY_REMEMBER_TOOL,
     description:
-      'Запоминает устойчивое предпочтение пользователя о СТИЛЕ ОБЩЕНИЯ и работе с ним ' +
-      '(язык, тон, формат ответов, чего не делать) в память текущей роли. ' +
+      'Записывает устойчивое правило о пользователе в память текущей роли. ' +
+      'ЧТО считать устойчивым — решает промпт твоей роли: для одного это стиль ' +
+      'общения и работа с тобой, для другого — устойчивые факты о человеке. ' +
       'Запись применяется сразу и видна пользователю в ленте с кнопкой «Убрать» — ' +
       'подтверждения не требуется. НЕ записывай сюда то, что относится к коду проекта ' +
-      '(архитектура, соглашения, найденные грабли) — для этого есть lessons; ' +
-      'и не записывай разовые факты разговора («пользователь спросил про X»). ' +
+      '(архитектура, соглашения, найденные грабли) — для этого есть lessons. ' +
       'Формулируй как правило в императиве, одной фразой.',
     inputSchema: {
       type: 'object',
@@ -84,13 +84,123 @@ export function makeMemoryRememberTool(cwd: string, persona: PersonaConfig): Mem
     handler: async (args: Record<string, unknown>): Promise<string> => {
       const result = appendMemoryEntry(cwd, persona.prompt, args.text as string);
       if (!result.ok) {
-        // Отказ — понятным tool-результатом; файл не менялся (AC1/AC3)
-        return JSON.stringify({ ok: false, error: result.reason });
+        // Отказ — понятным tool-результатом; файл не менялся (AC1/AC3).
+        // VL-419: при переполнении модель обязана знать выход — без hint'а
+        // память деградировала бы в «первые N записей навсегда». chars/limit
+        // заполняются только отказом по лимиту (см. MemoryWriteResult).
+        const payload: Record<string, unknown> = { ok: false, error: result.reason };
+        if (result.chars !== undefined && result.limit !== undefined) {
+          payload.chars = result.chars;
+          payload.limit = result.limit;
+          payload.hint =
+            'Память заполнена. Убери устаревшие записи через memory_forget {index} ' +
+            'или попроси пользователя: /memory remove <N>';
+        }
+        return JSON.stringify(payload);
       }
       return JSON.stringify({
         ok: true,
         applied: ['memory'],
         entry: { index: result.entry.index, text: result.entry.text, date: result.entry.date },
+        chars: result.chars,
+        limit: result.limit,
+      });
+    },
+  };
+}
+
+/** Имя инструмента удаления записи памяти (VL-419). */
+export const MEMORY_FORGET_TOOL = 'memory_forget';
+
+/**
+ * Нормализация текста записи для сравнения (дубль в `appendMemoryEntry`,
+ * удаление по тексту): регистр, пробелы, хвостовая пунктуация.
+ */
+function normalizeMemoryText(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, ' ').trim().replace(/[.!?;:,]+$/u, '').trim();
+}
+
+/**
+ * Инструмент `memory_forget {index? | text?}` — удаление одной записи памяти
+ * текущей роли (VL-419): без него память при переполнении деградирует в
+ * «первые N записей навсегда» — чистить её умеет только человек.
+ *
+ * Ровно один аргумент: `index` — 1-based номер из `/memory`; `text` — точное
+ * совпадение после нормализации (то же сравнение, что при проверке дублей).
+ * Оба или ни одного — отказ. Вне диапазона / текст не найден — отказ со
+ * СПИСКОМ текущих записей, чтобы модель могла исправиться по номерам.
+ *
+ * Классификация: входит в `REVERSIBLE_WRITE_TOOLS` (`src/core/tool-classify.ts`)
+ * — Allow/Deny на чистку не спрашивается (состояние видно через `/memory`).
+ * В `TOOL_KINDS`/MCP-реестре имени нет — инструмент локальный, как
+ * `memory_remember`; консультанту не выдаётся (`consultantTools`).
+ *
+ * @param cwd — каталог проекта
+ * @param persona — роль ТРЕДА (файл памяти берётся из её `prompt`)
+ */
+export function makeMemoryForgetTool(cwd: string, persona: PersonaConfig): MemoryTool {
+  return {
+    name: MEMORY_FORGET_TOOL,
+    description:
+      'Удаляет одну запись из памяти текущей роли. Нужен РОВНО один аргумент: ' +
+      'index — 1-based номер записи (список в /memory) либо text — точный текст записи. ' +
+      'Отказ приходит с entries — текущими записями, исправляйся по ним. ' +
+      'Применяй, когда память заполнена (memory_remember вернул hint) и устаревшие записи мешают.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        index: { type: 'number', description: '1-based номер записи из /memory' },
+        text: { type: 'string', description: 'Точный текст записи (сравнение без регистра и пунктуации)' },
+      },
+    },
+    handler: async (args: Record<string, unknown>): Promise<string> => {
+      const hasIndex = args.index !== undefined && args.index !== null;
+      const hasText = typeof args.text === 'string' && args.text.trim() !== '';
+      if (hasIndex && hasText) {
+        return JSON.stringify({
+          ok: false,
+          error: 'memory_forget: передай РОВНО один аргумент — index ИЛИ text, не оба сразу',
+        });
+      }
+      if (!hasIndex && !hasText) {
+        return JSON.stringify({
+          ok: false,
+          error: 'memory_forget: нужен один аргумент — index (1-based номер записи) либо text (точный текст записи)',
+        });
+      }
+      const state = readMemoryEntries(cwd, persona.prompt);
+      /** Текущие записи для отказа: модель увидит номера и тексты. */
+      const entries = state.entries.map(e => ({ index: e.index, text: e.text, date: e.date }));
+      let target: MemoryEntry | undefined;
+      if (hasIndex) {
+        const index = Number(args.index);
+        if (!Number.isInteger(index) || index < 1 || index > state.entries.length) {
+          return JSON.stringify({
+            ok: false,
+            error:
+              `Записи №${String(args.index)} нет: в памяти ${state.entries.length} ` +
+              `запис${state.entries.length === 1 ? 'ь' : 'ей'}`,
+            entries,
+          });
+        }
+        target = state.entries[index - 1];
+      } else {
+        const norm = normalizeMemoryText(args.text as string);
+        target = state.entries.find(e => normalizeMemoryText(e.text) === norm);
+        if (target === undefined) {
+          return JSON.stringify({
+            ok: false,
+            error: 'Запись с таким текстом в памяти не найдена',
+            entries,
+          });
+        }
+      }
+      const result = removeMemoryEntry(cwd, persona.prompt, target.index);
+      if (!result.ok) return JSON.stringify({ ok: false, error: result.reason });
+      return JSON.stringify({
+        ok: true,
+        applied: ['memory'],
+        removed: { index: result.removed.index, text: result.removed.text },
         chars: result.chars,
         limit: result.limit,
       });
@@ -253,9 +363,8 @@ export function removeMemoryByEvent(
   const text = typeof request.text === 'string' ? request.text.trim() : '';
   let target: MemoryEntry | undefined;
   if (text !== '') {
-    const norm = (s: string) =>
-      s.toLowerCase().replace(/\s+/g, ' ').trim().replace(/[.!?;:,]+$/u, '');
-    target = state.entries.find(e => norm(e.text) === norm(text));
+    // Та же нормализация, что у дублей и у memory_forget (VL-419)
+    target = state.entries.find(e => normalizeMemoryText(e.text) === normalizeMemoryText(text));
   }
   if (target === undefined) {
     const index = Number(request.index);

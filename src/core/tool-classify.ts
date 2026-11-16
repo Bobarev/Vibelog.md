@@ -65,8 +65,13 @@ const INTERACTIVE_TOOLS: ReadonlySet<string> = new Set(['ask_user']);
  *
  * Решение закреплено тестом (`src/web/chat-memory.test.mjs`): если следующая
  * правка классификатора вернёт `memory_remember` в write, тест упадёт.
+ *
+ * `memory_forget` (VL-419) — та же логика: удаление записи памяти моделью
+ * тоже не требует Allow/Deny. Пользователь контролирует состояние через
+ * `/memory` и страницу «Персоны», а запись (в отличие от файла) легко
+ * создаётся заново `memory_remember`. Решение закреплено AC10 VL-419.
  */
-const REVERSIBLE_WRITE_TOOLS: ReadonlySet<string> = new Set(['memory_remember']);
+const REVERSIBLE_WRITE_TOOLS: ReadonlySet<string> = new Set(['memory_remember', 'memory_forget']);
 
 /**
  * Инструменты без побочных эффектов, которых нет в декларации (VL-409).

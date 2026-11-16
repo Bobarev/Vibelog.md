@@ -83,6 +83,8 @@ type ChatEvent =
       type: "memory"
       entry: { index: number; text: string; date: string }
       personaId: string
+      /** VL-419: метка роли для карточки «<Роль> запомнил: …». */
+      personaLabel?: string
     }
   /**
    * VL-409: консультация другой роли (`ask_persona`) завершена. display
@@ -635,6 +637,8 @@ function applyEvent(
     case "memory":
       // VL-402: запись памяти уже применена сервером — показываем её в ленте
       // data-частью (как pricing/truncated), чтобы строка пережила F5.
+      // VL-419: personaId/personaLabel есть и у записей консультанта — карточка
+      // пишет «<Роль> запомнил: …», а «Убрать» удаляет из файла этой роли.
       parts.push({
         type: "data",
         name: CHAT_MEMORY_PART,
@@ -643,6 +647,7 @@ function applyEvent(
           text: ev.entry.text,
           date: ev.entry.date,
           personaId: ev.personaId,
+          ...(ev.personaLabel !== undefined ? { personaLabel: ev.personaLabel } : {}),
         },
       })
       return false

@@ -50,7 +50,7 @@ import {
 } from './chat-question.js';
 import { createCallGuard, formatChatLimitsErrors, resolveChatLimits } from './chat-limits.js';
 // VL-402: запись памяти персоны — инструмент memory_remember и команда /memory
-import { MEMORY_REMEMBER_TOOL, runMemoryCommand } from './chat-memory.js';
+import { MEMORY_FORGET_TOOL, MEMORY_REMEMBER_TOOL, runMemoryCommand } from './chat-memory.js';
 // VL-409: консультация другой роли — инструмент ask_persona
 import { ASK_PERSONA_TOOL, makeAskPersonaTool } from './chat-subagent.js';
 import { recordSubagentUsage } from './chat-subagent-usage.js';
@@ -214,6 +214,8 @@ export type ChatEvent =
       entry: { index: number; text: string; date: string };
       /** id роли, в чью память записали (AC6: только роль треда). */
       personaId: string;
+      /** VL-419: метка роли для карточки (консультант не роль треда). */
+      personaLabel?: string;
     }
   /**
    * VL-409: консультация другой роли (`ask_persona`) завершена. Клиент
@@ -237,6 +239,10 @@ export type ChatEvent =
       partial?: boolean;
       /** VL-415: инструменты, которые консультант успел вызвать. */
       usedTools?: string[];
+      /** VL-419: записи в память КОНСУЛЬТАНТА (сервер из ЗАПОМНИТЬ: строк). */
+      memory?: Array<{ index: number; text: string; date: string }>;
+      /** VL-419: отказы записи (дубль/лимит) — консультация при этом успешна. */
+      memorySkipped?: Array<{ text: string; reason: string }>;
     }
   /**
    * VL-313: расход токенов треда после очередного вызова модели. Клиент
@@ -1541,6 +1547,17 @@ async function produce(
       },
       onEvent: event => {
         queue.push({ type: 'subagent', ...event, display: subagentSettings.display });
+        // VL-419: записи консультанта — отдельными событиями `memory` с ЕГО
+        // ролью: карточка в ленте пишет «<Роль> запомнил: …» и отменяет
+        // запись из файла консультанта, а не роли треда (AC8).
+        for (const entry of event.memory ?? []) {
+          queue.push({
+            type: 'memory',
+            entry,
+            personaId: event.personaId,
+            personaLabel: event.personaLabel,
+          });
+        }
       },
     });
     localHandlers.set(ASK_PERSONA_TOOL, askPersona);
@@ -1595,7 +1612,7 @@ async function produce(
     if (name === MEMORY_REMEMBER_TOOL) {
       const entry = memoryEntryOf(raw);
       if (entry !== null) {
-        queue.push({ type: 'memory', entry, personaId: activePersona.id });
+        queue.push({ type: 'memory', entry, personaId: activePersona.id, personaLabel: activePersona.label });
       }
     }
     // VL-326/VL-413: ответ с `unchanged` («изменений нет») — не прогресс, а
@@ -2417,15 +2434,15 @@ function grantDeniedResult(error: string, tool: string): string {
  * а также вызов может прийти из resume-пути. Молчаливое исполнение в этом
  * случае означало бы, что ограничение обходится.
  *
- * `memory_remember` разрешён всегда при наличии роли — это механизм памяти
- * самой роли, а не инструмент проекта (см. chatToolDefs).
+ * `memory_remember`/`memory_forget` разрешены всегда при наличии роли — это
+ * механизм памяти самой роли, а не инструменты проекта (см. chatToolDefs).
  *
  * @returns текст отказа (JSON-ack) либо null — вызов разрешён
  */
 function personaDeniedAck(persona: PersonaConfig, name: string): string | null {
   const allow = persona.allowTools;
   if (allow === undefined) return null;
-  if (name === MEMORY_REMEMBER_TOOL) return null;
+  if (name === MEMORY_REMEMBER_TOOL || name === MEMORY_FORGET_TOOL) return null;
   if (allow.includes(name)) return null;
   return ackError(
     `Инструмент "${name}" не разрешён роли "${persona.label}" (allow_tools в .vibelog/settings.json)`,

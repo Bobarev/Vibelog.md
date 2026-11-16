@@ -35,7 +35,7 @@ import { listTools } from '../mcp/tools.js';
 // VL-407: имена инструментов, живущих ТОЛЬКО в веб-чате, берём из их модулей —
 // список в валидаторе и список в chatToolDefs не должны разъезжаться.
 import { ASK_USER_TOOL } from './chat-question.js';
-import { MEMORY_REMEMBER_TOOL } from './chat-memory.js';
+import { MEMORY_FORGET_TOOL, MEMORY_REMEMBER_TOOL } from './chat-memory.js';
 import { ASK_PERSONA_TOOL } from '../core/subagents.js';
 // VL-402: путь/суффикс/лимит памяти персоны переехали в core — их использует
 // и запись (src/core/persona-memory.ts), а две копии разъехались бы
@@ -63,13 +63,14 @@ const FALLBACK_DEFAULT_STATUS = 'Spec';
 /**
  * Локальные (не-MCP) инструменты чата — тоже валидные имена для allow_tools.
  *
- * VL-407: сюда же входят `edit` (VL-366), `ask_user` (VL-330) и
- * `memory_remember` (VL-402) — все они собираются в chatToolDefs поверх
- * MCP-реестра, поэтому в listTools() их нет, а в allow_tools они валидны.
- * Без этого роль нельзя было бы ограничить «только чтением» с сохранением
- * права задавать вопросы, а имя memory_remember отклонялось бы как опечатка.
+ * VL-407: сюда же входят `edit` (VL-366), `ask_user` (VL-330) и инструменты
+ * памяти `memory_remember`/`memory_forget` (VL-402/419) — все они собираются
+ * в chatToolDefs поверх MCP-реестра, поэтому в listTools() их нет, а в
+ * allow_tools они валидны. Без этого роль нельзя было бы ограничить
+ * «только чтением» с сохранением права задавать вопросы, а имена инструментов
+ * памяти отклонялись бы как опечатка.
  */
-const LOCAL_CHAT_TOOLS = ['read_file', 'write_file', 'edit', 'search_files', ASK_USER_TOOL, MEMORY_REMEMBER_TOOL, ASK_PERSONA_TOOL] as const;
+const LOCAL_CHAT_TOOLS = ['read_file', 'write_file', 'edit', 'search_files', ASK_USER_TOOL, MEMORY_REMEMBER_TOOL, MEMORY_FORGET_TOOL, ASK_PERSONA_TOOL] as const;
 
 /**
  * Все имена инструментов, допустимые в `allow_tools` (VL-403): MCP-реестр

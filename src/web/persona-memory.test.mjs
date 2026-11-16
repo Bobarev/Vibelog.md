@@ -23,9 +23,10 @@
 
 import { describe, it, beforeAll, afterAll, beforeEach } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 import {
@@ -333,5 +334,42 @@ describe('VL-401 — git-исключение памяти персон', () => 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('VL-419 — раздел «Память» в шаблонах ролей (критерий — роль-специфика)', () => {
+  /** Исходник шаблона относительно тест-файла (паттерн tool-policy.test.mjs). */
+  function templateSrc(rel) {
+    return readFileSync(fileURLToPath(new URL(`../../templates/prompts/${rel}`, import.meta.url)), 'utf8');
+  }
+
+  const cases = [
+    ['helper', /СТИЛЕ ОБЩЕНИЯ/i, /разовые факты.*не запоминай/i],
+    ['architect', /формат плана/, /lessons и decisions/],
+    ['supervisor', /видеть прогон/, /settings\.json/],
+    ['workflow-designer', /workflow_get/, /процессе проекта/],
+  ];
+
+  for (const [name, criterion, guard] of cases) {
+    it(`AC2: personas/${name}.md содержит «## Память» со своим критерием`, () => {
+      const src = templateSrc(`personas/${name}.md`);
+      const at = src.indexOf('## Память');
+      assert.ok(at >= 0, 'раздел «## Память» есть');
+      const next = src.indexOf('\n## ', at + 1);
+      const section = src.slice(at, next < 0 ? undefined : next);
+      assert.match(section, criterion, 'критерий специфичен для роли');
+      assert.match(section, guard, 'граница критерия зафиксирована');
+    });
+  }
+
+  it('AC1: chat-system.md — только механизм, критерий «что запоминать» вынесен', () => {
+    const paragraph = templateSrc('chat-system.md')
+      .split('\n')
+      .find(l => l.startsWith('Память персоны'));
+    assert.ok(paragraph, 'абзац «Память персоны» на месте');
+    assert.match(paragraph, /сказано в промпте твоей роли/, 'критерий отослан к роли');
+    assert.ok(!paragraph.includes('СТИЛЯ ОБЩЕНИЯ'), 'критерий стиля высен из общего шаблона');
+    assert.ok(!paragraph.includes('разовые факты'), 'критерий разовых фактов вынесен');
+    assert.ok(!paragraph.includes('когда пользователь поправляет'), 'старый критерий удалён');
   });
 });

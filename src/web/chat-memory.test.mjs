@@ -370,3 +370,113 @@ describe('VL-402 — отмена записи из ленты (AC2)', () => {
     });
   });
 });
+
+describe('VL-419 — инструмент memory_forget и выход из переполнения', () => {
+  const role = { id: 'helper', label: 'Помощник', prompt: 'helper' };
+
+  /** Handler инструмента из chatToolDefs (тот же путь, что у модели в чате). */
+  function toolHandler(name) {
+    const def = chatToolDefs(cwd, role).find(d => d.name === name);
+    assert.ok(def, `${name} объявлен в chatToolDefs`);
+    return def.handler;
+  }
+
+  it('AC9: memory_forget есть в чатах при известной роли, нет без роли и в MCP', () => {
+    assert.ok(chatToolDefs(cwd, role).some(d => d.name === 'memory_forget'));
+    assert.ok(!chatToolDefs(cwd).some(d => d.name === 'memory_forget'), 'без роли — headless-путь');
+    assert.ok(!listTools().some(t => t.name === 'memory_forget'), 'нет в MCP-реестре/TOOL_KINDS');
+  });
+
+  it('AC10: memory_forget НЕ write (REVERSIBLE_WRITE_TOOLS) — без Allow/Deny', () => {
+    assert.equal(isWriteOperation('memory_forget'), false);
+    assert.equal(isWriteOperation('memory_forget', { index: 1 }), false);
+    // Решение закреплено тестом: классификатор вернёт инструмент в write — упадёт
+    assert.equal(isWriteOperation('write_file'), true, 'write_file по-прежнему подтверждается');
+  });
+
+  it('AC9: {index} удаляет нужную запись, chars уменьшается', async () => {
+    appendMemoryEntry(cwd, 'helper', 'Первая заметка', new Date(2026, 10, 10));
+    appendMemoryEntry(cwd, 'helper', 'Вторая заметка', new Date(2026, 10, 10));
+    const before = readMemoryEntries(cwd, 'helper');
+    const res = JSON.parse(await toolHandler('memory_forget')({ index: 1 }));
+    assert.equal(res.ok, true);
+    assert.deepEqual(res.applied, ['memory']);
+    assert.equal(res.removed.index, 1);
+    assert.match(res.removed.text, /Первая заметка/);
+    const after = readMemoryEntries(cwd, 'helper');
+    assert.equal(after.entries.length, 1);
+    assert.equal(after.entries[0].text, 'Вторая заметка.', 'сдвиг номеров корректен');
+    assert.ok(res.chars < before.chars, 'chars уменьшился');
+    assert.equal(res.limit, before.limit);
+  });
+
+  it('AC9: {text} находит по нормализованному совпадению (регистр/пунктуация)', async () => {
+    appendMemoryEntry(cwd, 'helper', 'Не пиши длинно', new Date(2026, 10, 10));
+    const res = JSON.parse(await toolHandler('memory_forget')({ text: 'не пиши длинно.' }));
+    assert.equal(res.ok, true);
+    assert.match(res.removed.text, /Не пиши длинно/);
+    assert.equal(readMemoryEntries(cwd, 'helper').entries.length, 0);
+  });
+
+  it('AC9: оба аргумента / ни одного → отказ, файл не менялся', async () => {
+    appendMemoryEntry(cwd, 'helper', 'Запись', new Date(2026, 10, 10));
+    const handler = toolHandler('memory_forget');
+    const both = JSON.parse(await handler({ index: 1, text: 'Запись' }));
+    assert.equal(both.ok, false);
+    assert.match(both.error, /РОВНО один/);
+    const none = JSON.parse(await handler({}));
+    assert.equal(none.ok, false);
+    assert.match(none.error, /нужен один аргумент/);
+    assert.equal(readMemoryEntries(cwd, 'helper').entries.length, 1, 'файл не менялся');
+  });
+
+  it('AC9: index вне диапазона → отказ со списком записей (текст — тоже)', async () => {
+    appendMemoryEntry(cwd, 'helper', 'Одна запись', new Date(2026, 10, 10));
+    const handler = toolHandler('memory_forget');
+    const res = JSON.parse(await handler({ index: 5 }));
+    assert.equal(res.ok, false);
+    assert.match(res.error, /№5 нет/);
+    assert.ok(Array.isArray(res.entries), 'список записей для исправления');
+    assert.equal(res.entries[0].index, 1);
+    assert.match(res.entries[0].text, /Одна запись/);
+    const byText = JSON.parse(await handler({ text: 'нет такого' }));
+    assert.equal(byText.ok, false);
+    assert.ok(Array.isArray(byText.entries), 'по тексту тоже приходит список');
+    assert.equal(readMemoryEntries(cwd, 'helper').entries.length, 1, 'файл не менялся');
+  });
+
+  it('AC11: memory_remember при переполнении возвращает hint с memory_forget', async () => {
+    writeSettings({ persona_memory: { max_chars: 60 } });
+    appendMemoryEntry(cwd, 'helper', 'Первая заметка о пользователе', new Date(2026, 10, 10));
+    const res = JSON.parse(
+      await toolHandler('memory_remember')({ text: 'Вторая заметка о пользователе подлиннее' }),
+    );
+    assert.equal(res.ok, false);
+    assert.equal(typeof res.chars, 'number', 'текущий размер в ответе');
+    assert.equal(res.limit, 60, 'лимит в ответе');
+    assert.match(res.hint, /memory_forget/);
+    assert.match(res.hint, /\/memory remove/);
+    // Дубль/пустой текст hint'а не получают — это не переполнение
+    writeSettings({});
+    const dup = JSON.parse(
+      await toolHandler('memory_remember')({ text: 'Первая заметка о пользователе' }),
+    );
+    assert.equal(dup.ok, false);
+    assert.equal(dup.hint, undefined);
+  });
+
+  it('AC9/AC10: вызов memory_forget в ходе чата — без карточки Allow/Deny', async () => {
+    appendMemoryEntry(cwd, 'helper', 'Устаревшая запись', new Date(2026, 10, 10));
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-forget-1', name: 'memory_forget', arguments: { index: 1 } }] },
+      { text: 'Готово.' },
+    ]);
+    const events = await collect({ message: 'почисти память', threadId: 'forget-run' }, { llm });
+    const end = events.find(e => e.type === 'tool_end' && e.id === 'tc-forget-1');
+    assert.ok(end, 'tool_end пришёл');
+    const parsed = JSON.parse(end.result);
+    assert.equal(parsed.ok, true);
+    assert.ok(!events.some(e => e.type === 'approval'), 'Allow/Deny не спрашивали');
+    assert.equal(readMemoryEntries(cwd, 'helper').entries.length, 0);
+  });
+});
