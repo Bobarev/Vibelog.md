@@ -68,6 +68,9 @@ export const TOOL_KINDS: Readonly<Record<string, ToolKind>> = {
   reference_update: 'write',
   reference_link: 'write',
   reference_sync: 'write',
+  // VL-418: чтение задач из клона референса (чужой backlog) — read-only
+  reference_tasks: 'read',
+  reference_task_view: 'read',
   // === Lessons ===
   lesson_list: 'read',
   lesson_create: 'write',

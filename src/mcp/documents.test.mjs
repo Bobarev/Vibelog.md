@@ -5,7 +5,7 @@
  * - MCP: document_create/view/list/update/search + валидация типа
  * - CLI: doc create/list/view/update/search
  * - Round-trip markdown (documentToMarkdown/markdownToDocument)
- * - listTools() = 57 (37 + project_map VL-235 + 4 супервизора VL-268 + lesson_audit VL-279 + lesson_classify VL-280 + lesson_consolidate VL-400 + git_status VL-416)
+ * - listTools() = 59 (37 + project_map VL-235 + 4 супервизора VL-268 + lesson_audit VL-279 + lesson_classify VL-280 + lesson_consolidate VL-400 + git_status VL-416 + reference_tasks/reference_task_view VL-418)
  */
 
 import { describe, it, beforeAll, afterAll } from 'vitest';
@@ -69,9 +69,9 @@ function runCli(...args) {
 // ============================================================
 
 describe('VL-11 — document_* инструменты', () => {
-  it('Все 57 инструментов, document_* зарегистрированы', () => {
+  it('Все 59 инструментов, document_* зарегистрированы', () => {
     const tools = listTools();
-    assert.equal(tools.length, 57);
+    assert.equal(tools.length, 59);
     const names = tools.map(t => t.name);
     for (const n of ['document_list', 'document_view', 'document_create', 'document_update', 'document_edit', 'document_search']) {
       assert.ok(names.includes(n), `${n} не найден`);

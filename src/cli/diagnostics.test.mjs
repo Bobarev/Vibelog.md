@@ -83,6 +83,8 @@ const EXPECTED_MCP_TOOLS = [
   'reference_remove',
   'reference_search',
   'reference_sync',
+  'reference_task_view',
+  'reference_tasks',
   'reference_update',
   'reference_view',
   // VL-398: конструктор workflow

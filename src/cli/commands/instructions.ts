@@ -102,6 +102,8 @@ export const MCP_GROUPS: readonly { title: string; names: readonly string[] }[] 
     names: [
       'reference_list', 'reference_add', 'reference_view', 'reference_search',
       'reference_remove', 'reference_update', 'reference_link', 'reference_sync',
+      // VL-418: задачи из клона референса (чужой backlog)
+      'reference_tasks', 'reference_task_view',
     ],
   },
   {
