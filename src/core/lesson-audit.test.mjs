@@ -465,7 +465,11 @@ describe('VL-279 — MCP lesson_audit (AC1, AC9)', () => {
   it('read-only по умолчанию: отчёт без изменений файлов', async () => {
     writeLesson('lesson-841', { title: 'Аудит через MCP', tags: ['mcp'], updated_date: '2020-01-01' });
     const before = readFileSync(join(lessonsPath, 'lesson-841.md'), 'utf-8');
-    const raw = await handleToolCall('lesson_audit', {}, testRoot);
+    // staleDays huge: уроки фикстуры с датой 2026-05-20 через 180 дней от
+    // РЕАЛЬНОЙ даты прогона становятся stale, находки раздувают JSON за кап
+    // 20 КБ (src/mcp/tools.ts, lesson-30) и byLesson выпадает из ответа —
+    // тест падал бы вечно-датозависимо (дата-бомба, инцидент VL-421).
+    const raw = await handleToolCall('lesson_audit', { staleDays: 1000000 }, testRoot);
     const report = JSON.parse(raw);
     assert.ok(Array.isArray(report.findings), 'findings — массив');
     assert.ok(report.summary && typeof report.summary.missing_path === 'number', 'сводка по типам');
