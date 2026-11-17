@@ -56,6 +56,13 @@ export function listTasks(cwd: string): Task[] {
  * @returns объект задачи или null
  */
 export function getTask(cwd: string, id: string): Task | null {
+  // VL-425: fail-safe последнего рубежа — не-строковый/пустой id (number,
+  // undefined, null) → null вместо TypeError на id.toLowerCase(). Страховка
+  // для путей мимо MCP-guard (CLI/веб/тесты/будущие инструменты): раньше
+  // такие вызовы падали «Cannot read properties of undefined» ДО проверки
+  // «задача не найдена» (инцидент lb-gift LB-16).
+  if (typeof id !== 'string' || id === '') return null;
+
   const backlogDir = findBacklogDir(cwd);
   if (!backlogDir) return null;
 
@@ -326,6 +333,10 @@ export function rejectTaskFile(cwd: string, id: string, comment?: string): Task 
  * @returns абсолютный путь к файлу или null
  */
 function findTaskFilePath(backlogDir: string, id: string): string | null {
+  // VL-425: fail-safe — тот же контракт, что в getTask (см. там): не-строковый
+  // id → null, не TypeError на id.toLowerCase()
+  if (typeof id !== 'string' || id === '') return null;
+
   const dir = tasksDir(backlogDir);
   if (!existsSync(dir)) return null;
 

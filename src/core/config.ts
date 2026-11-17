@@ -102,6 +102,24 @@ export function loadConfig(cwd: string): Record<string, unknown> {
 }
 
 /**
+ * Префикс id задач проекта (VL-425): task_prefix из backlog/config.yml,
+ * дефолт VL (конфига нет / префикс пуст — например /prompt без проекта).
+ *
+ * Единственный источник префикса: taskIdPattern строит regex из этой же
+ * функции, normalizeTaskId (MCP-guard) собирает canonical id «prefix-N» —
+ * логика не разъезжается при смене источника конфига.
+ */
+export function taskPrefix(cwd: string): string {
+  try {
+    const raw = loadConfig(cwd).task_prefix;
+    if (typeof raw === 'string' && raw.trim() !== '') return raw.trim();
+  } catch {
+    // backlog/ или config.yml нет — дефолтный префикс
+  }
+  return 'VL';
+}
+
+/**
  * Regex «id похож на задачу проекта» (VL-118): префикс берётся из
  * task_prefix backlog/config.yml и экранируется — префикс приходит из
  * данных пользователя и может содержать спецсимволы regex. Дефолт VL,
@@ -112,13 +130,7 @@ export function loadConfig(cwd: string): Record<string, unknown> {
  * префиксом (LB-, ot-…): worktree не создавалась, мета не писалась.
  */
 export function taskIdPattern(cwd: string): RegExp {
-  let prefix = 'VL';
-  try {
-    const raw = loadConfig(cwd).task_prefix;
-    if (typeof raw === 'string' && raw.trim() !== '') prefix = raw.trim();
-  } catch {
-    // backlog/ или config.yml нет — дефолтный префикс
-  }
+  const prefix = taskPrefix(cwd);
   return new RegExp('^' + escapeRegExp(prefix) + '-\\d+$', 'i');
 }
 

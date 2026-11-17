@@ -117,4 +117,19 @@ describe('store.mjs — CRUD операции', () => {
     assert.ok(task);
     assert.equal(task.id, 'tst-3');
   });
+
+  // ——— VL-425: fail-safe не-строкового id (страховка путей мимо MCP-guard) ———
+
+  it('getTask — не-строковый/пустой id → null, не TypeError (VL-425)', () => {
+    assert.equal(getTask(testDir, 16), null, 'число → null');
+    assert.equal(getTask(testDir, undefined), null, 'undefined → null');
+    assert.equal(getTask(testDir, null), null, 'null → null');
+    assert.equal(getTask(testDir, ''), null, 'пустая строка → null');
+  });
+
+  it('updateTaskFile — не-строковый id → «не найдена», не TypeError (VL-425)', () => {
+    // Инцидент LB-16: раньше здесь падал «Cannot read properties of undefined
+    // (reading 'toLowerCase')» — текст, по которому модель не понимала причину
+    assert.throws(() => updateTaskFile(testDir, 16, { status: 'Done' }), /не найдена/);
+  });
 });
