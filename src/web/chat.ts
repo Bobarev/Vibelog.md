@@ -37,6 +37,16 @@ import { handleToolCall } from '../mcp/tools.js';
 import { ackDenied, ackError, isUnchangedAck } from '../mcp/tool-result.js';
 import { chatToolDefs, isWriteOperation, isInteractiveTool, loadChatSystemTemplate } from './tool-policy.js';
 import type { ChatLocalTool } from './tool-policy.js';
+// VL-422: внешние MCP-серверы веб-чата — процессный кэш с refcount по тредам
+import {
+  connectExternalForChat,
+  externalChatMcpStatus,
+  getExternalSpecs,
+  releaseExternalForChat,
+  type ExternalChatConnectResult,
+} from './external-chat-mcp.js';
+// VL-422: конфиг mcpServers для /mcp status — тот же резолв, что у подключения
+import { loadExternalMcpServers } from '../agent/external-mcp.js';
 import {
   ASK_USER_TOOL,
   answerToolResult,
@@ -645,6 +655,52 @@ export function fixThreadPersona(cwd: string, threadId: string, personaId: strin
     // сбой записи роли не должен рвать текущий ход
   }
   return personaId;
+}
+
+/**
+ * Флаг внешних MCP-серверов треда (VL-422): ключ `mcp` в ТОМ ЖЕ sidecar,
+ * где живёт роль (`<threadId>.persona.json`). true — тред держит единицу
+ * refcount кэша (external-chat-mcp) и видит внешние инструменты в
+ * chatToolDefs. Пишется только командой `/mcp on|off`; по умолчанию false —
+ * проект без mcpServers и треды до VL-422 ничего не платят.
+ */
+export function readThreadMcp(cwd: string, threadId: string): boolean {
+  if (!THREAD_ID_RE.test(threadId)) return false;
+  const file = personaFile(cwd, threadId);
+  if (!existsSync(file)) return false;
+  try {
+    const raw: unknown = JSON.parse(readFileSync(file, 'utf8'));
+    return (raw as { mcp?: unknown } | null)?.mcp === true;
+  } catch {
+    // битый sidecar — флаг выключен (тред продолжит работать)
+    return false;
+  }
+}
+
+/**
+ * Записать флаг внешних MCP-серверов треда, сохранив остальные ключи
+ * sidecar (persona/fixedAt). Сбой чтения/записи не рвёт ход — тот же
+ * паттерн, что у fixThreadPersona/saveThreadAllowList.
+ */
+export function setThreadMcp(cwd: string, threadId: string, value: boolean): void {
+  if (!THREAD_ID_RE.test(threadId)) return;
+  try {
+    const file = personaFile(cwd, threadId);
+    let data: Record<string, unknown> = {};
+    if (existsSync(file)) {
+      const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'));
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        data = parsed as Record<string, unknown>;
+      }
+    } else {
+      mkdirSync(chatSessionsDir(cwd), { recursive: true });
+    }
+    if (value) data.mcp = true;
+    else delete data.mcp;
+    writeFileSync(file, JSON.stringify(data, null, 2) + '\n', 'utf8');
+  } catch {
+    // сбой sidecar не должен рвать диалог
+  }
 }
 
 /**
@@ -1514,7 +1570,11 @@ async function produce(
   }
   void driftAcceptedPercent;
 
-  const tools = chatToolDefs(cwd, activePersona);
+  // VL-422: внешние MCP-инструменты подключаются только по `/mcp on` — флаг
+  // треда в sidecar; без него (и без соединения в кэше) список пуст,
+  // поведение проекта без mcpServers не меняется.
+  const externalTools = readThreadMcp(cwd, threadId) ? getExternalSpecs(cwd) : [];
+  const tools = chatToolDefs(cwd, activePersona, externalTools);
   // VL-409: консультации другой роли. Счётчик живёт в пределах хода (лимит
   // `subagents.max_calls_per_turn`), настройки читаются один раз — битые
   // значения дают дефолты и сообщение в лог сервера, чат не падает (AC7).
@@ -2100,6 +2160,13 @@ async function runChatCommand(
     return runMemoryCommand(parsed.args, cwd, deps.persona);
   }
 
+  // VL-422: `/mcp` — внешние MCP-серверы этого треда. Обрабатывается ДО
+  // настроек сжатия: команда не имеет отношения к /trim и /compact и не
+  // должна блокироваться их выключенным состоянием.
+  if (parsed.name === 'mcp') {
+    return runMcpCommand(arg, deps);
+  }
+
   const { settings, errors } = resolveChatCompaction(cwd);
   if (errors.length > 0) console.error(`[vibelog-chat] некорректные настройки сжатия: ${errors.join('; ')}`);
   if (!settings.enabled) {
@@ -2134,6 +2201,96 @@ async function runChatCommand(
   }
 
   return { text: unknownCommandText(parsed.name), isError: true };
+}
+
+/**
+ * `/mcp on|off|status` (VL-422): подключение сторонних MCP-серверов веб-чата.
+ *
+ * `on` — поднимает соединение (процессный кэш с refcount) и ставит флаг
+ * треда: инструменты видны модели со СЛЕДУЮЩЕГО хода (команда в LLM-цикл
+ * сама не уходит). Guard по «флаг И состояние в Map»: после перезапуска
+ * сервера флаг живёт на диске, а соединения нет — повторный on поднимает
+ * его заново. `off` — снимает ЕДИНИЦУ этого треда: при живых тредах-соседях
+ * соединение не рвётся. `status` — настроенные (settings.json) + подключённые
+ * (кэш процесса) + флаг треда.
+ */
+async function runMcpCommand(
+  arg: string,
+  deps: CommandDeps,
+): Promise<{ text: string; isError?: boolean }> {
+  const { cwd, threadId } = deps;
+
+  if (arg === 'on') {
+    const pre = externalChatMcpStatus(cwd);
+    if (readThreadMcp(cwd, threadId) && pre !== null) {
+      return {
+        text: `Внешние MCP-серверы уже подключены в этом треде: серверов ${pre.connected}, инструментов ${pre.tools}.`,
+      };
+    }
+    let result: ExternalChatConnectResult;
+    try {
+      result = await connectExternalForChat(cwd);
+    } catch (err) {
+      // connectExternalMcpServers fail-safe по серверам, но сбой чтения
+      // конфига не должен ронять ход — ответ текстом команды
+      return {
+        text: `Подключение внешних MCP-серверов не удалось: ${err instanceof Error ? err.message : String(err)}`,
+        isError: true,
+      };
+    }
+    if ('error' in result) {
+      return { text: `Внешние MCP-серверы не подключены: ${result.error}.`, isError: true };
+    }
+    setThreadMcp(cwd, threadId, true);
+    return {
+      text:
+        `Подключено серверов: ${result.connected}, инструментов: ${result.tools}. ` +
+        'Инструменты будут видны модели со следующего хода; `/mcp off` — отключить.',
+    };
+  }
+
+  if (arg === 'off') {
+    if (!readThreadMcp(cwd, threadId)) {
+      return { text: 'Внешние MCP-серверы в этом треде не подключались — отключать нечего.' };
+    }
+    await releaseExternalForChat(cwd);
+    setThreadMcp(cwd, threadId, false);
+    return {
+      text: 'Внешние MCP-серверы отключены в этом треде: их инструменты исчезнут со следующего хода.',
+    };
+  }
+
+  if (arg === 'status') {
+    // Конфиг читается туда же, куда подключение (VL-167: VIBELOG_CWD ?? cwd)
+    const servers = loadExternalMcpServers(process.env.VIBELOG_CWD ?? cwd);
+    const lines: string[] = [];
+    if (servers.length === 0) {
+      lines.push('Настроенные серверы: не настроены (секция mcpServers в .vibelog/settings.json).');
+    } else {
+      lines.push(`Настроенные серверы (${servers.length}):`);
+      for (const s of servers) {
+        const cmd = [s.command, ...s.args].join(' ');
+        lines.push(`- ${s.name}: ${cmd}${s.enabled === false ? ' [отключён]' : ''}`);
+      }
+    }
+    const status = externalChatMcpStatus(cwd);
+    lines.push(
+      status === null
+        ? 'Подключение: не подключено.'
+        : `Подключение: подключено серверов ${status.connected}, инструментов ${status.tools} (владельцев refcount: ${status.refcount}).`,
+    );
+    lines.push(
+      readThreadMcp(cwd, threadId)
+        ? 'В этом треде: подключено (`/mcp off` — отключить).'
+        : 'В этом треде: не подключено (`/mcp on` — подключить).',
+    );
+    return { text: lines.join('\n') };
+  }
+
+  return {
+    text: 'Формат команды: `/mcp on|off|status` — подключить внешние MCP-серверы в этом треде, отключить или показать состояние.',
+    isError: true,
+  };
 }
 
 /** Цель сжатия в токенах для треда: процент окна либо fallback (AC8). */

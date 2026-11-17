@@ -22,6 +22,8 @@ import { handleSetupCheckBot, handleSetupPing } from './setup-api.js';
 import { handleCatalogApi } from './catalog-api.js';
 import { handleReferencesSyncApi } from './references-sync-api.js';
 import { runChat, resetOrphanedChatRuns, streamChatRun } from './chat.js';
+// VL-422: остановка сервера закрывает и внешние MCP-клиенты чата
+import { shutdownExternalChatMcp } from './external-chat-mcp.js';
 import { cancelChatRun, getChatRun } from './chat-runs.js';
 import { getAssetsHtml } from './assets.js';
 import { serveStatic } from './static.js';
@@ -325,8 +327,15 @@ export function startWebServer(
   // VL-270: сервер закрыли (тест, /web stop) — тик обязан остановиться вместе
   // с ним: иначе таймер продолжит считать по закрытому проекту, а в тестах
   // оставит воркеру незавершённую работу.
+  // VL-422: вместе с сервером закрываются и внешние MCP-клиенты веб-чата —
+  // процессы сторонних серверов (и их браузеры) не должны переживать
+  // остановку доски. Дренаж асинхронный: сбой закрытия логируется и НЕ
+  // мешает самому закрытию сервера.
   server.on('close', () => {
     stopSupervisorTimer();
+    void shutdownExternalChatMcp().catch((err) => {
+      console.error(`[external-mcp] закрытие клиентов при остановке сервера: ${(err as Error).message}`);
+    });
   });
 
   return server;

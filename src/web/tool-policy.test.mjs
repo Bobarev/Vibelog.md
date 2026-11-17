@@ -413,3 +413,45 @@ describe('VL-366 — инструмент edit в веб-чате', () => {
     assert.equal(after.split('\n').length, before.split('\n').length + 1);
   });
 });
+
+describe('VL-422 — chatToolDefs: externalTools (сторонние MCP-инструменты)', () => {
+  /** Спец внешнего инструмента — ровно то, что отдаёт getExternalSpecs. */
+  const external = (name) => ({
+    name,
+    description: 'внешний инструмент',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async () => 'внешний ответ',
+  });
+
+  it('внешние идут ПОСЛЕ локальных и ДО ask_user (порядок списка)', () => {
+    const names = chatToolDefs('/tmp/vl422-nonexistent-cwd', null, [external('srv__do_thing')]).map(d => d.name);
+    const idx = n => names.indexOf(n);
+    assert.ok(idx('search_files') >= 0 && idx('search_files') < idx('srv__do_thing'), 'после локальных');
+    assert.ok(idx('srv__do_thing') < idx('ask_user'), 'до ask_user');
+    // handler сохраняется — chat.ts собирает localHandlers по 'handler' in t
+    const tool = chatToolDefs('/tmp/vl422-nonexistent-cwd', null, [external('srv__do_thing')])
+      .find(d => d.name === 'srv__do_thing');
+    assert.equal(typeof tool.handler, 'function', 'handler спеца сохранён для маршрутизации');
+  });
+
+  it('фильтр allow_tools применяется к внешним — ДО него они в списке (VL-407)', () => {
+    const ext = [external('srv__do_thing')];
+    // Роль без внешнего имени → внешний отфильтрован (урок VL-407)
+    const limited = { id: 'r', label: 'R', prompt: 'p', allowTools: ['read_file'] };
+    const names = chatToolDefs('/tmp/vl422-nonexistent-cwd', limited, ext).map(d => d.name);
+    assert.ok(!names.includes('srv__do_thing'), 'внешний отсечён allow_tools');
+    assert.ok(names.includes('read_file'), 'разрешённый локальный остался');
+    // Роль с внешним именем → внешний остаётся (если включён явно)
+    const allowed = { ...limited, allowTools: ['srv__do_thing'] };
+    const names2 = chatToolDefs('/tmp/vl422-nonexistent-cwd', allowed, ext).map(d => d.name);
+    assert.ok(names2.includes('srv__do_thing'), 'внешний из списка allow_tools виден');
+    assert.ok(!names2.includes('read_file'), 'неразрешённый локальный отсечён');
+  });
+
+  it('без externalTools поведение прежнее (пустой массив по умолчанию)', () => {
+    const plain = chatToolDefs('/tmp/vl422-nonexistent-cwd').map(d => d.name);
+    const explicit = chatToolDefs('/tmp/vl422-nonexistent-cwd', null, []).map(d => d.name);
+    assert.deepEqual(plain, explicit, 'дефолтный аргумент не меняет список');
+    assert.ok(!plain.some(n => n.includes('__')), 'внешних имён без передачи externalTools нет');
+  });
+});

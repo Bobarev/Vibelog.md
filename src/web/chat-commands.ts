@@ -150,6 +150,17 @@ export const CHAT_COMMANDS: ChatCommand[] = [
     usage: '/memory [add <текст> | remove <N> | clear]',
     examples: ['/memory', '/memory add Не использовать англицизмы', '/memory remove 2', '/memory clear'],
   },
+  {
+    // VL-422: сторонние MCP-серверы (секция mcpServers settings.json)
+    // подключаются ТОЛЬКО по явной команде — решение пользователя: не
+    // лениво по роли и не eager при старте веб-процесса.
+    name: 'mcp',
+    description:
+      'Внешние MCP-серверы из mcpServers settings.json: ' +
+      'подключить/отключить в этом треде/показать состояние',
+    usage: '/mcp on|off|status',
+    examples: ['/mcp on', '/mcp status'],
+  },
 ];
 
 /** Найти команду по имени (регистр не важен); null — команды нет. */
