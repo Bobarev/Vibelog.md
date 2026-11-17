@@ -777,9 +777,12 @@ const chatAdapter: ChatModelAdapter = {
           ...(activeThreadId ? { threadId: activeThreadId } : {}),
           // VL-209: переопределение модели (undefined — default из settings.json)
           ...(activeModelId ? { model: activeModelId } : {}),
-          // VL-265/VL-283: роль первого хода — сервер фиксирует её за тредом
-          // (<threadId>.persona.json) и последующие ходы поле игнорирует
-          persona: activePersonaId,
+          // VL-265/VL-283/VL-423: поле persona сервер читает ТОЛЬКО на первом
+          // ходе нового треда (когда у треда ещё нет зафиксированной роли).
+          // Для существующего треда оно всегда игнорируется, а его несовпадение
+          // (module-state пикера ≠ роль треда) давало warn на каждом ходе —
+          // шлём только когда треда ещё нет.
+          ...(activeThreadId ? {} : { persona: activePersonaId }),
         }
       }
 
