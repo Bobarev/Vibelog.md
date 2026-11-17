@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Добавлено
+
+- **VL-422: слэш-команда `/mcp on|off|status` в веб-чате — подключение сторонних MCP-серверов по требованию** — веб-чат собирал инструменты только из `chatToolDefs` (встроенный vibelog-MCP + локальные), а внешние серверы из секции `mcpServers` `.vibelog/settings.json` подключались лишь в агентских путях (TUI-сессия, раны фаз) — в веб-процессе их не было вовсе. Новый `src/web/external-chat-mcp.ts` — процессный кэш соединений по cwd с refcount по тредам: `connectExternalForChat` (гейт «внешние серверы не настроены» до спавна, защита от двойного спавна, fail-safe битых серверов общий с агентским путём), `releaseExternalForChat` (refcount 0 → закрытие клиентов), `getExternalSpecs` (синхронный доступ для chatToolDefs) и `shutdownExternalChatMcp` (дренаж кэша при закрытии сервера в `startWebServer`, сбой не мешает закрытию). `/mcp on` подключает серверы и ставит флаг `mcp` в sidecar треда — инструменты видны модели со следующего хода; `/mcp off` снимает единицу refcount треда (повторный `on` в одном треде — guard по флагу, без дублей); `/mcp status` показывает настроенные серверы, факт подключения и число инструментов. `chatToolDefs(cwd, persona?, externalTools=[])` вставляет внешние после локальных и ДО фильтра `allow_tools` (VL-407), сохраняя handler; классификация неизвестных имён — write → Allow/Deny без изменений. Тесты: новый `src/web/chat-mcp.test.mjs` (13 кейсов: подключение/отключение/refcount двух тредов/проект без `mcpServers`/shutdown/классификация write), правки `tool-policy.test.mjs` (порядок и `allow_tools` к внешним) и `chat-commands.test.mjs`. Документация: doc-6 (слэш-команды веб-чата).
+
 ## [1.14.0] — 2026-11-16
 
 ### Добавлено
