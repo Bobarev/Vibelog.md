@@ -1,11 +1,11 @@
 ---
 id: VL-423
 title: 'Веб-чат: POST шлёт persona из module-state пикера вместо роли треда — warn «роль уже зафиксирована» на каждом ходе'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-17 16:24'
-updated_date: '2026-11-17 17:26'
+updated_date: '2026-11-17 17:52'
 due_date: ''
 labels:
   - web
@@ -26,14 +26,17 @@ modified_files:
   - web/dist/assets/index-B6pxBQhY.js
   - web/dist/assets/index-DoC0smW1.js
   - web/dist/assets/index-DWfTMWtm.css
-lessons: []
+  - CHANGELOG.md
+  - backlog/lessons/lesson-115-Перед-тем-как-винить-свою-правку-в-падении-полного-прогона-прогони-упавший-тест-файл-изолированно-и-сверь-состав-diff.md
+lessons:
+  - lesson-115
 token_usage:
   input: 0
   output: 0
   cache: 0
   total: 0
-  requests: 98
-  duration_ms: 3128668
+  requests: 117
+  duration_ms: 3867206
   by_phase:
     code:
       input: 0
@@ -44,7 +47,7 @@ token_usage:
       input: 0
       output: 0
       cache: 0
-      requests: 38
+      requests: 57
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -72,7 +75,7 @@ token_usage:
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 Тесты проходят
-- [ ] #2 Документация обновлена
+- [x] #2 Документация обновлена
 - [x] #3 Нет регрессий
 <!-- DOD:END -->
 
@@ -166,9 +169,15 @@ author: @agent
 created: 2026-11-17 17:26
 ---
 Фаза close прервана агентом (aborted): Фаза Close прервана: полный прогон тестов падает после классификации — 1 failed из 4429: src/core/report.test.mjs → «пишет report.md в каталог рана и печатает отчёт» (AssertionError: process.exitCode = 1 вместо 0), 4416 passed + 4 skipped + static.test.mjs 8 passed.
-
 Что успел сделать до прерывания:
 - Merge vb/vl-423 → master ВЫПОЛНЕН без конфликтов (merge-коммит 71195b3, в ветке 1 коммит 302b49c).
 - Сборка pnpm build — зелёная; ранний точечный фильтр (chat-persona-ui, chat-detached-run-ui, chat — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-17 17:52
+---
+Фаза Close выполнена. Ветка vb/vl-423 слита в master ранее (merge-коммит 71195b3, в ветке 1 коммит 302b49c — состав master..vb/vl-423 пуст), worktree .vibelog/worktrees/vl-423 удалён (force: только untracked-симлинк backlog/references/data от оркестратора), ветка vb/vl-423 удалена.
+Тесты: ранний точечный фильтр (chat-persona-ui, chat-detached-run-ui, chat) зелёный ещё в прошлом ране. Полный прогон в этом ране: 1 failed из 4429 — src/web/orchestrator.test.mjs («billing уходит тем же коммитом», VL-352). Классификация: файл вне diff merge (касается только web/src/chat-runtime.tsx + web/dist), изолированно зелёный (89/89), параллельного vitest нет (ps пуст); в предыдущем ране фазы падал уже другой чужой файл (src/core/report.test.mjs) — прыжок падения между файлами = флака параллельного прогона, не регрессия. Один разрешённый повтор (pnpm test:fast, без пересборки — сборка за фазу одна): 230 файлов, 4425 passed + 4 skipped — зелёный целиком.
+DoD: 1 Тесты проходят — зелёный повтор после классификации; 2 Документация обновлена — запись в CHANGELOG.md Unreleased (коммит 537c2d5); 3 Нет регрессий — merge затронул только chat-runtime.tsx, точечные и полный прогоны зелёные. Урок: дополнен lesson-115 (коммит 067a0ad), linked к VL-423. Подзадач нет.
 ---
 <!-- COMMENTS:END -->
