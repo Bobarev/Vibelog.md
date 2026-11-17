@@ -29,6 +29,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ToolDef } from '../agent/llm.js';
 import { resolveInProject, truncateToolOutput, formatDirListing, formatFileSlice, parseReadPath, formatMissingPathHint, makeEdit } from '../agent/tools.js';
+import type { ToolSpec } from '../agent/tools.js';
 import { searchProjectFiles } from '../agent/search-files.js';
 import { listTools } from '../mcp/tools.js';
 import { isUpstreamConfigured } from '../core/gitverse-issues.js';
@@ -354,8 +355,17 @@ export function askPersonaToolDef(): ToolDef {
  *   память писать). Без роли инструмент не добавляется — так его нет в
  *   headless-путях и в тестах, где роль не нужна. С VL-407 роль ещё и
  *   ОГРАНИЧИВАЕТ набор: `persona.allowTools` фильтрует итоговый список.
+ * @param externalTools — внешние MCP-инструменты (VL-422) из кэша
+ *   `getExternalSpecs` — только когда тред в состоянии `/mcp on`. Добавляются
+ *   ПОСЛЕ локальных и ДО фильтра allow_tools (иначе ограничение роли
+ *   VL-407 не действует на внешние имена); handler сохраняется (spread
+ *   спеца) — chat.ts маршрутизирует вызовы по `'handler' in t`.
  */
-export function chatToolDefs(cwd: string, persona?: PersonaConfig | null): (ToolDef | ChatLocalTool)[] {
+export function chatToolDefs(
+  cwd: string,
+  persona?: PersonaConfig | null,
+  externalTools: ToolSpec[] = [],
+): (ToolDef | ChatLocalTool)[] {
   const defs: (ToolDef | ChatLocalTool)[] = listTools()
     .filter(t => !CHAT_DISALLOWED_TOOLS.includes(t.name))
     // VL-375/VL-391: ненастроенный upstream в чате так же бессмысленен,
@@ -363,6 +373,14 @@ export function chatToolDefs(cwd: string, persona?: PersonaConfig | null): (Tool
     .filter(t => !UPSTREAM_TOOLS.includes(t.name) || isUpstreamConfigured(cwd))
     .map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
   defs.push(makeReadFileTool(cwd), makeWriteFileTool(cwd), makeEditTool(cwd), makeSearchFilesTool(cwd));
+  // VL-422: внешние MCP-инструменты — после локальных, ДО ask_user и ДО
+  // фильтра allow_tools (VL-407: ограничение роли обязано действовать и на
+  // внешние имена). Дисallowed-имена отсекаются defensively: у внешних
+  // всегда есть префикс «сервер__», но фильтр списка запрещённых дешевле,
+  // чем доверие к этому факту. handler сохраняется — chat.ts собирает
+  // localHandlers по `'handler' in t` и исполнение подхватится без нового
+  // маршрутизатора.
+  defs.push(...externalTools.filter(t => !CHAT_DISALLOWED_TOOLS.includes(t.name)));
   // VL-330: интерактивный вопрос — только в веб-чате (в headless его нет)
   defs.push(makeAskUserTool());
   // VL-402/419: запись и чистка памяти персоны — только веб-чат (в MCP-реестре
