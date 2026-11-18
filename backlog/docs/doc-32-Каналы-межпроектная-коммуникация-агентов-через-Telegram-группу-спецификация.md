@@ -92,6 +92,8 @@ settings.json коммитится в git — секреты туда нельз
 
 Сообщение в `group_id` одного из каналов → фильтры (`from.is_bot`, allowlist групп, dedup по `message_id`, rate limit на бота, depth по цепочке `reply_to`) → выбор режима `addressing` канала → при `approval=admin` — согласование с админом → короткий LLM-ран через `startPrompt` (read-only контекст: backlog/ и docs/, без секретов) → ответ реплаем (`reply_to_message_id`, GFM через `sendChatAnswer`, лимит `TELEGRAM_TEXT_LIMIT`).
 
+Входящая ветка принимает ответ и в rich-форме (VL-430): interbot-ветка зарегистрирована на `bot.on('message')` и вычисляет текст `m.text ?? richToText(m.rich_message)` — фильтр `message:text` не пропускает `rich_message` без поля `text`, из-за чего ответ чужого бота через `sendRichMessage` терялся (ветка тикета и `dispatchIncoming` не выполнялись, async-fallback не доставлял запоздавший ответ). Тикет ловится по `reply_to === question_msg_id` для rich-ответа так же, как для текстового, включая запоздавший (`expired → deliverLateTicket`); сообщения без `text` и `rich_message` (фото, стикер) уходят `next()` — поведение остальных веток не меняется. Практика grammy — в doc-1, §3.
+
 ### Исходящее: гибрид sync / async-fallback
 
 1. MCP-инструмент `interbot_ask` / команда `/ask @Bot вопрос` постит вопрос в канал и создаёт **тикет** (`pending`, deadline = now + min(`sync_timeout_sec`, 55 с) — потолок MCP-вызова, VL-429: без него ответ на 56–120-й секунде терялся после возврата вызова).
