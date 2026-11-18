@@ -195,7 +195,7 @@ describe('MCP-сервер', () => {
     assert.equal(result.serverInfo.name, 'vibelog-md');
   });
 
-  it('tools/list — возвращает 59 инструментов', async () => {
+  it('tools/list — возвращает 60 инструментов', async () => {
     const responses = await callMcp([
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
       { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
@@ -203,14 +203,16 @@ describe('MCP-сервер', () => {
     const listResp = responses.find(r => r.id === 2);
     assert.ok(listResp);
     // VL-375/VL-391: реестр целиком — listTools(); в проекте БЕЗ секции
-    // upstream скрыты все три upstream-инструмента (fail-closed).
+    // upstream скрыты все три upstream-инструмента (fail-closed), без
+    // каналов comms.yaml скрыт interbot_ask (VL-428) — итого 4 скрытых.
     const all = listTools();
-    assert.equal(all.length, 59, 'полный реестр — 59 инструментов');
-    assert.equal(listResp.result.tools.length, all.length - 3);
+    assert.equal(all.length, 60, 'полный реестр — 60 инструментов');
+    assert.equal(listResp.result.tools.length, all.length - 4);
     const names = listResp.result.tools.map(t => t.name);
     assert.ok(!names.includes('upstream_report_bug'), 'ненастроенный upstream скрыт в tools/list');
     assert.ok(!names.includes('upstream_list_reports'));
     assert.ok(!names.includes('upstream_ack_report'));
+    assert.ok(!names.includes('interbot_ask'), 'ненастроенный interbot скрыт в tools/list (VL-428)');
     // Существующие
     assert.ok(names.includes('backlog_create_task'));
     assert.ok(names.includes('backlog_list_tasks'));
