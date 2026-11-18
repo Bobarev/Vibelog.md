@@ -405,6 +405,9 @@ async function sendPhaseResult(bot: Bot, chatId: number, run: PhaseRun, taskId?:
 export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   // ── VL-429: режим --trace — лог ВСЕХ входящих update и исходящих api.*-вызовов ──
   // Мусора много — это осознанно (диагностика потерь между ботами).
+  // Метка времени trace-строк (HH:MM:SS.mmm, UTC) — диагностика задержек
+  // между ботами: без неё «ответа нет за 120 с» невозможно локализовать
+  const stamp = (): string => new Date().toISOString().slice(11, 23);
   if (deps.trace) {
     console.log('[trace] глобальный лог включён: все входящие update и исходящие api.-вызовы');
     bot.use(async (ctx, next) => {
@@ -429,7 +432,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       } else if (ctx.callbackQuery !== undefined) {
         parts.push(`cb=${JSON.stringify((ctx.callbackQuery as { data?: string }).data ?? '')}`);
       }
-      console.log(parts.join(' '));
+      console.log(stamp(), parts.join(' '));
       await next();
     });
     // VL-430 (AC6): перехват через transformer, а НЕ instance-patch на bot.api.
@@ -443,7 +446,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     bot.api.config.use((prev, method, payload, signal) => {
       if (method === 'sendMessage' || method === 'sendRichMessage' || method === 'answerCallbackQuery') {
         const shown = JSON.stringify(payload ?? {}).slice(0, 300);
-        console.log(`[trace] api.${method} →`, shown);
+        console.log(stamp(), `[trace] api.${method} →`, shown);
       }
       return prev(method, payload, signal);
     });
@@ -468,7 +471,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
    * (slice), чтобы не залить консоль при потоке сообщений.
    */
   const trace = deps.trace
-    ? (...args: unknown[]): void => console.log('[trace]', ...args)
+    ? (...args: unknown[]): void => console.log(stamp(), '[trace]', ...args)
     : (): void => {};
 
   /**
