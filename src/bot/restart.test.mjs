@@ -53,8 +53,16 @@ describe('spawnReplacementBot (VL-70)', () => {
   // реальный long-polling: тест висел до таймаута и плодил живых ботов
   // (поймано 2026-10-03). Раньше — глобальный delete process.env (гонка при
   // fileParallelism); теперь — явный env-объект каждого спавна без токена.
+  // VL-429: изоляция и от маркеров up-режима VL-427 — ран/веб в окружении
+  // держит VIBELOG_UP=1/VIBELOG_UP_PORT, и без стрипа тесты «без маркера»
+  // падают на машине с запущенным веб-интерфейсом (утечка окружения хоста)
   const spawnEnv = () => {
-    const { TELEGRAM_BOT_TOKEN: _omit, ...env } = process.env;
+    const {
+      TELEGRAM_BOT_TOKEN: _omit,
+      VIBELOG_UP: _up,
+      VIBELOG_UP_PORT: _upPort,
+      ...env
+    } = process.env;
     return env;
   };
 
@@ -87,8 +95,16 @@ describe('spawnReplacementBot (VL-70)', () => {
 });
 
 describe('VL-427: режим up замещающего процесса (AC6)', () => {
+  // VL-429: как и в VL-70-блоке выше — strip ambient-маркеров: ран агента
+  // держит VIBELOG_UP=1 в process.env, иначе тест «без маркера» получает
+  // 'up --port …' вместо 'bot'
   const spawnEnv = () => {
-    const { TELEGRAM_BOT_TOKEN: _omit, ...env } = process.env;
+    const {
+      TELEGRAM_BOT_TOKEN: _omit,
+      VIBELOG_UP: _up,
+      VIBELOG_UP_PORT: _upPort,
+      ...env
+    } = process.env;
     return env;
   };
 

@@ -14,6 +14,7 @@ import {
   parseAskArgs,
   interbotAsk,
   MCP_CALL_CAP_SEC,
+  askTicketDeadlineSec,
 } from '../../../dist/core/interbot/ask.js';
 import { writeComms, resolveChannel } from '../../../dist/core/comms.js';
 import {
@@ -240,6 +241,35 @@ describe('VL-428: interbot_ask — синхронное ожидание (AC5)',
 
   it('потолок ожидания — min(sync_timeout, MCP_CALL_CAP_SEC)', () => {
     assert.ok(MCP_CALL_CAP_SEC < 60, 'должен быть меньше лимита MCP-клиента 60 с');
+  });
+
+  it('VL-429 фикс 55–120 с: дедлайн тикета = min(sync_timeout, MCP_CALL_CAP_SEC)', () => {
+    // Глобальный 120 с больше потолка MCP — дедлайн обязан ужиматься, иначе
+    // ответ на 56–120-й секунде помечается answered после возврата вызова
+    assert.equal(askTicketDeadlineSec(120), MCP_CALL_CAP_SEC);
+    assert.equal(askTicketDeadlineSec(55), MCP_CALL_CAP_SEC);
+    // sync_timeout меньше потолка — дедлайн по нему (лимит не растягивается)
+    assert.equal(askTicketDeadlineSec(30), 30);
+    assert.equal(askTicketDeadlineSec(1), 1);
+  });
+
+  it('VL-429: дедлайн реально записывается в тикет по потолку MCP', () => {
+    // Контракт createTicket: deadline − asked_at = timeoutSec; в interbotAsk
+    // timeoutSec теперь = askTicketDeadlineSec(sync_timeout), а не sync_timeout
+    const cwd = root();
+    const t = createTicket(cwd, {
+      id: 'vl429-1',
+      channel_id: 'g1',
+      question_msg_id: 9,
+      timeoutSec: askTicketDeadlineSec(60),
+    });
+    const deadlineMs = new Date(t.deadline).getTime();
+    const askedMs = new Date(t.asked_at).getTime();
+    assert.equal(
+      deadlineMs - askedMs,
+      MCP_CALL_CAP_SEC * 1000,
+      'дедлайн тикета — потолок MCP-вызова (55 с), а не sync_timeout',
+    );
   });
 });
 

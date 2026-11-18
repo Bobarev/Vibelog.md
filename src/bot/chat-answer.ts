@@ -45,6 +45,20 @@ async function sendMdFallback(
 }
 
 /**
+ * Rich-сервер проигнорировал reply_parameters (VL-429, фикс 2).
+ *
+ * Признак — вернулось сообщение с message_id, но без reply_to_message:
+ * контент отправлен, а reply потерян, тикет ответ не поймает. Пустой/необъектный
+ * ответ расширения трактуется как «непроверяемо» → без фолбэка (иначе каждый
+ * вызов дублировался бы sendMessage).
+ */
+function richDroppedReply(res: unknown): boolean {
+  if (res === null || typeof res !== 'object') return false;
+  const obj = res as Record<string, unknown>;
+  return typeof obj.message_id === 'number' && !('reply_to_message' in obj);
+}
+
+/**
  * Отправить ответ персоны в Telegram как Rich Message (GFM).
  *
  * Паттерн `sendPhaseResult` (`handlers.ts`): `chunkRich` по rich-лимиту
@@ -57,7 +71,9 @@ async function sendMdFallback(
  * @param chatId — адресат
  * @param text — сырой GFM-текст ответа персоны
  * @param opts.replyTo — message_id, на которое ответить reply (VL-428:
- *   ответ чужому боту в канале обязан быть reply на его вопрос)
+ *   ответ чужому боту в канале обязан быть reply на его вопрос; VL-429:
+ *   если rich-сервер проигнорировал reply_parameters — сообщение удаляется
+ *   и досылается через sendMessage с reply_parameters, reply не теряется)
  */
 export async function sendChatAnswer(
   bot: Bot,
@@ -68,16 +84,30 @@ export async function sendChatAnswer(
   try {
     for (const part of chunkRich(text)) {
       if (opts.replyTo !== undefined) {
-        // Каст: rich-расширение принимает reply_parameters третьим аргументом;
-        // если сервер их проигнорирует — сообщение уйдёт без reply, но контент
-        // не потеряется (главное — ответ дошёл)
-        await (
+        // Каст: rich-расширение принимает reply_parameters третьим аргументом.
+        // VL-429 (фикс 2): ответ обязан дойти С reply — иначе тикет чужого
+        // бота его не поймает (маскируется под «интербот молчит»). Если сервер
+        // вернул сообщение без reply_to_message — третий аргумент проигнорирован:
+        // удаляем его и досылаем через sendMessage с reply_parameters (AC6)
+        const res = await (
           bot.api.sendRichMessage as unknown as (
             chatId: number,
             payload: unknown,
             other?: unknown,
           ) => Promise<unknown>
         )(chatId, { markdown: part }, { reply_parameters: { message_id: opts.replyTo } });
+        if (richDroppedReply(res)) {
+          const richMsg = res as { message_id: number };
+          console.error(
+            `sendRichMessage проигнорировал reply_parameters (message_id=${richMsg.message_id}) — фолбэк sendMessage с reply`,
+          );
+          try {
+            await bot.api.deleteMessage(chatId, richMsg.message_id);
+          } catch {
+            // Удаление недоступно — досылаем с reply всё равно (reply важнее дубля)
+          }
+          await sendMdFallback(bot, chatId, part, opts.replyTo);
+        }
       } else {
         await bot.api.sendRichMessage(chatId, { markdown: part });
       }

@@ -20,12 +20,13 @@ import { migrateEnvToComms } from '../../core/comms.js';
  * Выполняет команду bot.
  *
  * @param _positional — позиционные аргументы (не используются)
- * @param _flags — флаги (не используются)
+ * @param flags — флаги; `--trace` (VL-429) — диагностика interbot-ветки
+ *   в консоль бота (усечённый лог без токенов и comms.yaml)
  * @param cwd — рабочая директория проекта (backlog/ и .vibelog/ ищутся отсюда)
  */
 export async function runBot(
   _positional: string[],
-  _flags: Record<string, unknown>,
+  flags: Record<string, unknown>,
   cwd: string
 ): Promise<void> {
   // .env корня проекта + секция env settings.json загружаются сами — запуск
@@ -76,7 +77,12 @@ export async function runBot(
       })
     : new Bot(token);
   if (proxy) console.log('Прокси:', proxy);
-  registerHandlers(bot, { cwd, getPin: () => pin });
+  // VL-429: --trace — пошаговая диагностика входящих interbot-сообщений
+  // (канал/тикет/диспатч/ран/onExit) в консоль; без флага — поведение и
+  // вывод бота не меняются
+  const trace = flags['trace'] === true;
+  if (trace) console.log('[trace] режим включён: interbot-ветка логируется в консоль');
+  registerHandlers(bot, { cwd, getPin: () => pin, trace });
   // Меню команд в Telegram: ошибки API логируются, polling продолжается (VL-54)
   await syncCommands(bot);
 

@@ -103,8 +103,10 @@ describe('VL-427: vb up — один процесс (AC1, AC3)', () => {
       // обе части отработали сбой независимо: нет process.exit веба (режим up)
       assert.match(getOut(), /Веб-интерфейс не поднялся — команда продолжает работу/);
       assert.match(getOut(), /Бот не запущен, веб-интерфейс не поднялся/);
-      // выход возможен только после того, как обе части отчитались
-      await new Promise((r) => child.once('exit', r));
+      // выход возможен только после того, как обе части отчитались;
+      // гонка exit/once (VL-429): при быстром завершении колбэк once('exit')
+      // после факта не вызывается — процесс уже мёртв, вешаемся вечно
+      await new Promise((r) => { if (child.exitCode !== null) r(); else child.once('exit', r); });
       assert.equal(child.exitCode, 1, `ожидался exit 1: ${getOut()}`);
     } finally {
       child.kill('SIGTERM');

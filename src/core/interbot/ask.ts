@@ -8,10 +8,12 @@
  * здесь файл опрашивается.
  *
  * Лимит MCP-клиента на один вызов — 60 с (REQUEST_TIMEOUT_MS_DEFAULT,
- * src/agent/mcp-client.ts): ожидание ограничивается 55 с, хотя глобальный
- * sync_timeout_sec (120 с) остаётся дедлайном тикета — запоздавший ответ
- * уходит в async-fallback (комментарий к задаче + уведомление в боте),
- * а не теряется.
+ * src/agent/mcp-client.ts): ожидание ограничивается 55 с. VL-429 (фикс 1):
+ * и дедлайн тикета ставится в тот же потолок min(sync_timeout_sec, 55 с) —
+ * иначе ответ на 56–120-й секунде помечался answered, но MCP-клиент к тому
+ * времени уже вернулся «ответа нет», и доставка не происходила (дырка
+ * 55–120 с). Теперь такой ответ — expired → штатный async-fallback
+ * (комментарий к задаче + уведомление в боте), а не потеря.
  */
 
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
@@ -20,6 +22,17 @@ import { createTicket, waitForAnswer } from './tickets.js';
 
 /** Жёсткий потолок одного MCP-вызова (клиент 60 с, запас 5 с). */
 export const MCP_CALL_CAP_SEC = 55;
+
+/**
+ * Дедлайн тикета interbot_ask (VL-429, фикс дырки 55–120 с): не длиннее
+ * потолка MCP-вызова — ответ после capSec не может быть доставлен вызывающему
+ * синхронно, поэтому тикет честно «протухает» и уходит в async-fallback.
+ *
+ * @param syncTimeout — sync_timeout_sec проекта (глобальный потолок ожидания)
+ */
+export function askTicketDeadlineSec(syncTimeout: number): number {
+  return Math.min(syncTimeout, MCP_CALL_CAP_SEC);
+}
 
 /** Аргументы interbot_ask (приходят как есть из JSON-RPC). */
 export interface InterbotAskArgs {
@@ -130,11 +143,14 @@ export async function interbotAsk(cwd: string, rawArgs: InterbotAskArgs): Promis
   const text = parsed.to ? `${parsed.to} ${parsed.question}` : parsed.question;
   const messageId = await sendTelegramText(cwd, channel.group_id, text);
   const fullTimeout = syncTimeoutSec(cwd);
+  // VL-429 (фикс 1): дедлайн тикета = потолок MCP-вызова — ответ позже capSec
+  // обязан уйти в async-fallback (expired), а не «замaskироваться» под answered
+  const capSec = askTicketDeadlineSec(fullTimeout);
   const ticket = createTicket(cwd, {
     id: `ask-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     channel_id: channel.id,
     question_msg_id: messageId,
-    timeoutSec: fullTimeout,
+    timeoutSec: capSec,
     ...(parsed.task || parsed.kind
       ? {
           context: {
@@ -146,14 +162,13 @@ export async function interbotAsk(cwd: string, rawArgs: InterbotAskArgs): Promis
   });
   // Фактическое ожидание ограничено лимитом MCP-клиента (AC5: «не дольше
   // sync_timeout_sec» — потолок тем более выполняется)
-  const capSec = Math.min(fullTimeout, MCP_CALL_CAP_SEC);
   const { answered, ticket: final } = await waitForAnswer(cwd, ticket.id, {
     maxWaitMs: capSec * 1000,
   });
   if (answered && final.reply) return final.reply;
   return (
-    `Ответа нет за ${capSec} с (лимит ожидания MCP; дедлайн тикета — ${fullTimeout} с). ` +
-    `Тикет ${ticket.id} остаётся активным: запоздавший ответ будет доставлен ` +
+    `Ответа нет за ${capSec} с (потолок MCP-вызова; дедлайн тикета тоже ${capSec} с). ` +
+    `Тикет ${ticket.id}: запоздавший ответ будет доставлен асинхронно — ` +
     `комментарием к задаче${parsed.task ? ` ${parsed.task}` : ''} и уведомлением в боте.`
   );
 }

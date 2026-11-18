@@ -130,6 +130,12 @@ export interface HandlerDeps {
   cwd: string;
   /** Актуальный пин-код текущей сессии. */
   getPin: () => string;
+  /**
+   * VL-429: режим --trace — логирование interbot-ветки в консоль бота.
+   * Опционален: без него (undefined/false) trace-helper — noop, вывод
+   * бота не меняется (AC1).
+   */
+  trace?: boolean;
 }
 
 /**
@@ -409,6 +415,18 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   const chatPauses = new Map<number, ChatPause>();
 
   /**
+   * VL-429: trace-лог interbot-ветки (режим `vibelog bot --trace`).
+   *
+   * Пишет в консоль с префиксом `[trace]` только при deps.trace=true,
+   * иначе — noop (AC1: без флага вывод бота не меняется). В лог НЕ попадают
+   * токены и содержимое comms.yaml; длинный текст вызывающий усекает сам
+   * (slice), чтобы не залить консоль при потоке сообщений.
+   */
+  const trace = deps.trace
+    ? (...args: unknown[]): void => console.log('[trace]', ...args)
+    : (): void => {};
+
+  /**
    * Вывести исход пересылки в бот (VL-414).
    *
    * Единая точка для перехватчика `message:text` и callback-кнопок пауз:
@@ -615,8 +633,18 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
 
   bot.on('message:text', async (ctx, next) => {
     const m = ctx.message;
+    // VL-429 (--trace): вход — идентификаторы и усечённый текст; токены и
+    // comms.yaml в лог не попадают (AC2/AC4)
+    trace(
+      'вход: message_id=', m.message_id,
+      'chat_id=', ctx.chat?.id,
+      'from=', { id: m.from?.id, username: m.from?.username, is_bot: m.from?.is_bot },
+      'reply_to=', m.reply_to_message?.message_id,
+      'text=', m.text.slice(0, 100),
+    );
     // Только ЧУЖИЕ боты: свои сообщения (в т.ч. наши ответы) — не наша зона
     if (!m.from?.is_bot || m.from.id === ctx.me.id) {
+      trace('пропуск: сообщение не от чужого бота → next()');
       await next();
       return;
     }
@@ -627,6 +655,10 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     }
     const cfg = readComms(deps.cwd, { warn: () => {} });
     const channel = cfg.channels.find((c) => c.group_id === chatId);
+    trace(
+      'канал для chat_id', chatId, ':',
+      channel ? `найден «${channel.id}»` : 'не найден',
+    );
     if (!channel) {
       // Не канал interbot — обычный чат, дальше по цепочке (пин/мост)
       await next();
@@ -652,11 +684,16 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     };
     // ── Ветка ответа на НАШ вопрос (тикет) — минуя диспатч (AC5/AC6) ──
     const repliedTo = m.reply_to_message?.message_id;
-    if (
+    const ticketMatch =
       repliedTo !== undefined &&
-      loadTickets(deps.cwd).some((t) => t.question_msg_id === repliedTo)
-    ) {
+      loadTickets(deps.cwd).some((t) => t.question_msg_id === repliedTo);
+    trace('ветка тикета: reply_to=', repliedTo ?? '—', 'совпадение=', ticketMatch);
+    if (ticketMatch && repliedTo !== undefined) {
       const updated = answerTicket(deps.cwd, repliedTo, m.text);
+      trace(
+        'answerTicket →',
+        updated === null ? 'null (ответ без тикета)' : `статус=${updated.status}`,
+      );
       if (updated === null) {
         // «Ответ без тикета»: потерянное сообщение — лог для диагностики
         console.warn(
@@ -665,7 +702,10 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         return;
       }
       // Запоздали (после дедлайна) → async-fallback: комментарий + уведомление
-      if (updated.status === 'expired') void deliverLateTicket(updated);
+      if (updated.status === 'expired') {
+        trace('ветка expired → deliverLateTicket, тикет', updated.id);
+        void deliverLateTicket(updated);
+      }
       return;
     }
     const decision = dispatchIncoming(incoming, {
@@ -678,10 +718,18 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       runs: interbotRuns,
       limits: DEFAULT_LIMITS,
     });
+    trace(
+      'dispatch:', decision.action,
+      decision.action !== 'process' ? `reason=${decision.reason}` : '',
+      'depth=', decision.depth,
+    );
     if (decision.action !== 'process') {
       // Игнор (пустой reply) или служебный ответ (depth/лимиты)
       if (decision.reply) {
+        trace('служебный ответ → sendChatAnswer, replyTo=', m.message_id);
         await sendChatAnswer(bot, chatId, decision.reply, { replyTo: m.message_id });
+      } else {
+        trace('игнор: пустой reply, сообщение пропущено молча');
       }
       return; // в цепочку grammy не идём: interbot-сообщение — наша зона
     }
@@ -692,11 +740,40 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       const answer =
         run.result?.result ??
         (run.exitCode === 0 ? '' : 'Ран завершился с ошибкой — повтори вопрос позже.');
+      // VL-429 (фикс 4): ошибка рана — НЕ карточка согласования и НЕ «ответ»
+      // в группу: отдельное уведомление админу без кнопок approve (AC7)
+      const runFailed =
+        run.result?.is_error === true ||
+        (run.exitCode !== undefined && run.exitCode !== null && run.exitCode !== 0) ||
+        answer.includes('[API Error:');
+      if (runFailed) {
+        trace(
+          'onExit: ран упал, exitCode=', run.exitCode,
+          'is_error=', run.result?.is_error,
+        );
+        const detail = answer ? `\n\n${answer.slice(0, 1500)}` : '';
+        if (channel.admin_chat !== undefined) {
+          trace('ран упал → уведомление в admin_chat', channel.admin_chat, '(без кнопок)');
+          void bot.api
+            .sendMessage(
+              channel.admin_chat,
+              `⚠️ Ран упал, ответа нет (канал «${channel.label ?? channel.id}»):${detail}`,
+            )
+            .catch((err) =>
+              console.error('[interbot] уведомление об ошибке рана не отправлено:', err),
+            );
+        } else {
+          // Без admin_chat уведомить некому — в группу ошибку не шлём (AC7)
+          console.error('[interbot] ран упал, admin_chat не задан — ответа нет:', answer.slice(0, 300));
+        }
+        return;
+      }
       if (!answer) return;
       const kind = classifyAnswer(answer);
       // Вариант C: decision_request ВСЕГДА через inline-кнопки в admin_chat
       // (даже при approval=auto); info/question — по режиму канала
       const needsAdmin = kind === 'decision_request' || channel.approval === 'admin';
+      trace('onExit: exitCode=', run.exitCode, 'kind=', kind, 'needsAdmin=', needsAdmin);
       if (needsAdmin && channel.admin_chat !== undefined) {
         const id = ++decisionSeq;
         pendingDecisions.set(id, { answer, chatId, replyTo });
@@ -704,6 +781,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
           const oldest = pendingDecisions.keys().next().value;
           if (oldest !== undefined) pendingDecisions.delete(oldest);
         }
+        trace('ответ → admin_chat (карточка согласования), id=', id, 'chat=', channel.admin_chat);
         void bot.api
           .sendMessage(
             channel.admin_chat,
@@ -722,11 +800,14 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
           )
           .catch((err) => console.error('[interbot] карточка решения не отправлена:', err));
       } else {
+        trace('ответ → группа chatId=', chatId, 'sendChatAnswer replyTo=', replyTo);
         void sendChatAnswer(bot, chatId, answer, { replyTo });
       }
     };
+    trace('старт рана, prompt:', prompt.slice(0, 100));
     const result = startPrompt(deps.cwd, prompt, onExit, resolveDefaultAgent(deps.cwd));
     if ('error' in result) {
+      trace('старт рана НЕ удался:', result.error);
       await sendChatAnswer(bot, chatId, `⚠️ Не удалось запустить ран: ${result.error}`, {
         replyTo: m.message_id,
       });
@@ -1904,7 +1985,9 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       const [act, rawId] = data.slice('ibot:'.length).split(':');
       const id = Number(rawId);
       const pending = pendingDecisions.get(id);
+      trace('approval ibot:', act, 'id=', id, 'найдено=', pending !== undefined);
       if (!pending || (act !== 'ok' && act !== 'no')) {
+        trace('ibot: решение устарело/некорректное — callback отклонён');
         await ctx
           .answerCallbackQuery({ text: 'Решение уже принято или устарело' })
           .catch(() => {});
@@ -1920,11 +2003,13 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       if (act === 'ok') {
         await ctx.answerCallbackQuery({ text: '✅ Опубликовано' }).catch(() => {});
         await sendChatAnswer(bot, pending.chatId, pending.answer, { replyTo: pending.replyTo });
+        trace('ibot:ok отправлен, chatId=', pending.chatId, 'replyTo=', pending.replyTo);
       } else {
         await ctx.answerCallbackQuery({ text: '⛔ Отклонено' }).catch(() => {});
         await sendChatAnswer(bot, pending.chatId, '⛔ Админ отклонил публикацию решения.', {
           replyTo: pending.replyTo,
         });
+        trace('ibot:no отправлен, chatId=', pending.chatId, 'replyTo=', pending.replyTo);
       }
       return;
     }

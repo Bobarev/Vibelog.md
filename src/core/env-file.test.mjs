@@ -7,7 +7,7 @@
  * параллельных прогонах в разных worktree.
  */
 
-import { describe, it, afterAll, beforeEach } from 'vitest';
+import { describe, it, afterAll, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -89,6 +89,18 @@ describe('upsertDotEnv (VL-329)', () => {
 });
 
 describe('parseChatIds / readBotChats (VL-329)', () => {
+  // VL-429: изоляция от host-машины — readBotChats (VL-428) сначала читает
+  // comms.yaml из process.cwd(): локальный comms реального проекта (чаты
+  // перенесены при ручном тесте VL-428) утекал в тест. cwd → пустой tmp без
+  // .vibelog, comms-ветка возвращает [] и тест проверяет .env-логику
+  const origCwd = process.cwd;
+  beforeEach(() => {
+    process.cwd = () => root;
+  });
+  afterEach(() => {
+    process.cwd = origCwd;
+  });
+
   it('parseChatIds: пробелы, мусор и дубли', () => {
     assert.deepEqual(parseChatIds('1, 2 ,3'), [1, 2, 3]);
     assert.deepEqual(parseChatIds('1,мусор,2'), [1, 2]);

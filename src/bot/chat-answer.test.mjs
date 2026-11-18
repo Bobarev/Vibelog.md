@@ -17,21 +17,41 @@ import { TELEGRAM_TEXT_LIMIT } from '../../dist/bot/formatting.js';
  *
  * @param opts.richFails — sendRichMessage бросает (проверка фолбэка)
  * @param opts.mdFails — sendMessage с parse_mode бросает (проверка plain)
+ * @param opts.richReply — что rich-сервер возвращает при reply_parameters:
+ *   'with' — message_id + reply_to_message (reply принят),
+ *   'without' — только message_id (reply проигнорирован, VL-429),
+ *   по умолчанию {} — ответ непроверяем (детект невозможен)
+ * @param opts.deleteFails — deleteMessage бросает (VL-429: reply всё равно досылается)
  */
 function fakeBot(opts = {}) {
   const calls = [];
   return {
     calls,
     api: {
-      async sendRichMessage(chatId, rich) {
+      async sendRichMessage(chatId, rich, other) {
         if (opts.richFails) throw new Error('400 RICH_MESSAGE_UNSUPPORTED');
-        calls.push({ method: 'rich', chatId, markdown: rich.markdown });
+        calls.push({ method: 'rich', chatId, markdown: rich.markdown, other });
+        if (opts.richReply === 'with') {
+          return { message_id: 55, reply_to_message: { message_id: other?.reply_parameters?.message_id } };
+        }
+        if (opts.richReply === 'without') return { message_id: 55 };
         return {};
       },
       async sendMessage(chatId, text, other) {
         if (opts.mdFails && other?.parse_mode) throw new Error("400 can't parse entities");
-        calls.push({ method: 'text', chatId, text, parseMode: other?.parse_mode });
+        calls.push({
+          method: 'text',
+          chatId,
+          text,
+          parseMode: other?.parse_mode,
+          replyTo: other?.reply_parameters?.message_id,
+        });
         return {};
+      },
+      async deleteMessage(chatId, messageId) {
+        if (opts.deleteFails) throw new Error('400 MESSAGE_DELETE_FAILED');
+        calls.push({ method: 'delete', chatId, messageId });
+        return true;
       },
     },
   };
@@ -88,5 +108,39 @@ describe('sendChatAnswer (VL-414)', () => {
       bot.calls[0].text.includes('_часть 1\\/'),
       `нумерация частей в MarkdownV2, получено: ${JSON.stringify(bot.calls[0].text.slice(-40))}`
     );
+  });
+
+  // ── VL-429 (фикс 2): replyTo обязан дойти с reply ──
+
+  it('VL-429 AC6: rich принял reply_parameters (reply_to_message в ответе) — фолбэка нет', async () => {
+    const bot = fakeBot({ richReply: 'with' });
+    await sendChatAnswer(bot, 42, 'ответ с reply', { replyTo: 7 });
+    assert.equal(bot.calls.length, 1, 'ответ ушёл одним rich-сообщением');
+    assert.equal(bot.calls[0].method, 'rich');
+    assert.equal(bot.calls[0].other.reply_parameters.message_id, 7, 'третий аргумент передан');
+  });
+
+  it('VL-429 AC6: rich проигнорировал reply_parameters → delete + sendMessage с reply', async () => {
+    const bot = fakeBot({ richReply: 'without' });
+    await sendChatAnswer(bot, 42, 'ответ с reply', { replyTo: 7 });
+    const methods = bot.calls.map((c) => c.method);
+    assert.deepEqual(methods, ['rich', 'delete', 'text'], 'rich без reply удаляется и досылается');
+    const text = bot.calls.find((c) => c.method === 'text');
+    assert.equal(text.replyTo, 7, 'фолбэк обязан нести reply_parameters — тикет ловит ответ');
+  });
+
+  it('VL-429 AC6: ответ rich непроверяем (без message_id) — без фолбэка и дублей', async () => {
+    const bot = fakeBot();
+    await sendChatAnswer(bot, 42, 'ответ с reply', { replyTo: 7 });
+    assert.equal(bot.calls.length, 1, 'непроверяемый ответ ≠ проигнорированный reply');
+    assert.equal(bot.calls[0].method, 'rich');
+  });
+
+  it('VL-429 AC6: deleteMessage упал — sendMessage с reply всё равно уходит', async () => {
+    const bot = fakeBot({ richReply: 'without', deleteFails: true });
+    await sendChatAnswer(bot, 42, 'ответ с reply', { replyTo: 7 });
+    const text = bot.calls.find((c) => c.method === 'text');
+    assert.ok(text, 'дубль лучше потерянного reply (AC6)');
+    assert.equal(text.replyTo, 7);
   });
 });

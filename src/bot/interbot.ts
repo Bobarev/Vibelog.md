@@ -48,10 +48,21 @@ export interface IncomingMsg {
   reply_to_from_id?: number;
 }
 
-/** Решение по входящему сообщению. */
+/** Решение по входящему сообщению.
+ *
+ * VL-429: у `action='answer'` появилось поле `reason` — почему диспатч не
+ * запустил ран (для trace-лога и юнит-тестов): dedup/rate/depth/
+ * not-addressed/run-limit; `ignore` — резервная причина «вне классификации»
+ * (защита будущих веток: вручную решение с пустым ответом).
+ */
 export type IncomingDecision =
   | { action: 'process'; depth: number; kind: 'question' }
-  | { action: 'answer'; depth: number; reply: string };
+  | {
+      action: 'answer';
+      depth: number;
+      reply: string;
+      reason: 'dedup' | 'rate' | 'depth' | 'not-addressed' | 'run-limit' | 'ignore';
+    };
 
 /**
  * TTL-кэш dedup по message_id.
@@ -196,10 +207,11 @@ export function dispatchIncoming(
   // 0. Только сообщения от ботов
   if (!msg.is_bot) return { action: 'process', depth: 0, kind: 'question' } as never;
   // dedup
-  if (ctx.dedup.check(msg.message_id)) return { action: 'answer', depth: 0, reply: '' };
+  if (ctx.dedup.check(msg.message_id))
+    return { action: 'answer', depth: 0, reply: '', reason: 'dedup' };
   // rate limit на бота
   if (ctx.rate.limited(msg.from_id, limits.botRatePerMin))
-    return { action: 'answer', depth: 0, reply: '' };
+    return { action: 'answer', depth: 0, reply: '', reason: 'rate' };
   // depth по цепочке reply
   const depth = replyDepth(msg.message_id, ctx.replyMap, limits.maxDepth + 1);
   if (depth > limits.maxDepth)
@@ -207,13 +219,15 @@ export function dispatchIncoming(
       action: 'answer',
       depth,
       reply: 'Цепочка слишком длинная (лимит depth) — эскалируй вопрос человеку.',
+      reason: 'depth',
     };
   // addressing
   const mentioned =
     mentionsUs(msg.text, ctx.ourUsername) ||
     (msg.reply_to_from_id !== undefined && msg.reply_to_from_id === ctx.ourBotId);
   if (channel.addressing === 'mention' && !mentioned && !ctx.isTicketAnswer) {
-    return { action: 'answer', depth, reply: '' }; // не наше — молча игнорируем
+    // не наше — молча игнорируем
+    return { action: 'answer', depth, reply: '', reason: 'not-addressed' };
   }
   // глобальный лимит ранов/час
   if (!ctx.isTicketAnswer && ctx.runs.limited(limits.globalRunsPerHour))
@@ -221,6 +235,7 @@ export function dispatchIncoming(
       action: 'answer',
       depth,
       reply: 'Лимит входящих запросов в час исчерпан — повтори позже.',
+      reason: 'run-limit',
     };
   return { action: 'process', depth, kind: 'question' };
 }

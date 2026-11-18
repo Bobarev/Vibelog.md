@@ -129,7 +129,7 @@ describe('VL-428: depth по цепочке reply (AC3)', () => {
     assert.equal(replyDepth(9, loop), 1, 'guard разрывает петлю');
   });
 
-  it('dispatchIncoming: depth > maxDepth → «эскалируй человеку»', () => {
+  it('dispatchIncoming: depth > maxDepth → «эскалируй человеку», reason=depth', () => {
     const map = new Map([
       [10, 9],
       [9, 8],
@@ -137,6 +137,7 @@ describe('VL-428: depth по цепочке reply (AC3)', () => {
     ]);
     const d = dispatchIncoming(msg(), ctx({ replyMap: map }));
     assert.equal(d.action, 'answer');
+    assert.equal(d.reason, 'depth', 'VL-429: причина ответа видна в trace');
     assert.ok(d.reply.includes('эскалируй'), d.reply);
   });
 
@@ -166,6 +167,7 @@ describe('VL-428: addressing mention (AC3)', () => {
     const ignored = dispatchIncoming(msg({ text: 'привет всем' }), ctx());
     assert.equal(ignored.action, 'answer');
     assert.equal(ignored.reply, '', 'не наше — молча игнорируем');
+    assert.equal(ignored.reason, 'not-addressed', 'VL-429: причина игнора для trace');
   });
 
   it('addressing=all: без упоминания тоже process (задел v2, дефолт mention)', () => {
@@ -173,21 +175,24 @@ describe('VL-428: addressing mention (AC3)', () => {
     assert.equal(d.action, 'process');
   });
 
-  it('dedup/rate/runs: каждый фильтр отсекает сообщение', () => {
+  it('dedup/rate/runs: каждый фильтр отсекает сообщение (VL-429: с reason)', () => {
     const dedup = createDedupCache();
     dedup.check(10);
     const d1 = dispatchIncoming(msg(), ctx({ dedup }));
     assert.equal(d1.action, 'answer');
+    assert.equal(d1.reason, 'dedup');
 
     const rate = createRateLimiter();
     for (let i = 0; i < DEFAULT_LIMITS.botRatePerMin; i++) rate.limited(777, DEFAULT_LIMITS.botRatePerMin);
     const d2 = dispatchIncoming(msg({ message_id: 11 }), ctx({ rate }));
     assert.equal(d2.action, 'answer');
+    assert.equal(d2.reason, 'rate');
 
     const runs = createRunLimiter();
     for (let i = 0; i < DEFAULT_LIMITS.globalRunsPerHour; i++) runs.limited(DEFAULT_LIMITS.globalRunsPerHour);
     const d3 = dispatchIncoming(msg({ message_id: 12 }), ctx({ runs }));
     assert.equal(d3.action, 'answer');
+    assert.equal(d3.reason, 'run-limit');
     assert.ok(d3.reply.includes('Лимит'), d3.reply);
   });
 
