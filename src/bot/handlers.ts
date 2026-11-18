@@ -54,7 +54,6 @@ import {
   loadTickets,
   markDelivered,
   recoverStaleTickets,
-  waitForAnswer,
 } from '../core/interbot/tickets.js';
 import type { InterbotTicket } from '../core/interbot/tickets.js';
 import {
@@ -402,6 +401,90 @@ async function sendPhaseResult(bot: Bot, chatId: number, run: PhaseRun, taskId?:
  * @param bot — экземпляр grammy Bot
  * @param deps — cwd проекта и геттер пина
  */
+/**
+ * Один проход фонового тикера /ask (VL-432).
+ *
+ * grammy обрабатывает апдейты последовательно (bot.js:192 «handle updates
+ * sequentially») — хендлер с `await waitForAnswer` глушел long polling до
+ * sync_timeout (120 с). Теперь хендлер выходит сразу, а ожидание идёт здесь:
+ * опрашиваем тикеты из `waiters` по файлу реестра.
+ *
+ * Ветки по статусу тикета:
+ * - `answered` → снять из map (ДО await — дубль невозможен) и доставить reply
+ *   в личку через sendChatAnswer; пустой reply — зеркало старого поведения
+ *   `answered && final.reply` → «Ответа нет» (контракт текстов не меняется);
+ * - `expired`/`delivered` → снять из map БЕЗ уведомления: поздний ответ уже
+ *   доставляет deliverLateTicket (AC4/AC6, однократность);
+ * - `pending` с прошедшим дедлайном → снять из map, «Ответа нет за N с» в
+ *   личку запросившего, тикет остаётся pending (AC3, async-fallback прежний);
+ * - тикет исчез из реестра → снять из map молча.
+ *
+ * Дедлайн берётся из `deadline` тикета (создан от sync_timeout_sec, без
+ * MCP-потолка 55 с — он только для пути interbotAsk).
+ *
+ * Никогда не бросает — вызывается через void (ошибка логируется снаружи).
+ *
+ * @param opts.now — подмена часов для fake-clock тестов (как waitForAnswer)
+ * @param opts.trace — trace-лог режима `vibelog bot --trace` (VL-429)
+ */
+export async function askWaiterTick(
+  bot: Bot,
+  cwd: string,
+  waiters: Map<string, { chatId: number; timeout: number }>,
+  opts: { now?: () => number; trace?: (...args: unknown[]) => void } = {},
+): Promise<void> {
+  if (waiters.size === 0) return; // пусто → ни одного чтения файла
+  const now = opts.now ?? Date.now;
+  const trace = opts.trace ?? ((): void => {});
+  const tickets = loadTickets(cwd); // ОДНО чтение на проход
+  for (const [ticketId, w] of [...waiters]) {
+    const t = tickets.find((x) => x.id === ticketId);
+    if (!t) {
+      waiters.delete(ticketId); // тикет исчез — снять молча
+      trace('ask-tick: тикет', ticketId, 'не найден в реестре → снят');
+      continue;
+    }
+    if (t.status === 'answered') {
+      waiters.delete(ticketId); // снять ДО await — дубль невозможен (AC4)
+      trace('ask-tick: answered → доставка в личку chatId=', w.chatId);
+      if (t.reply) {
+        await sendChatAnswer(bot, w.chatId, t.reply);
+      } else {
+        // Пустой reply: зеркало старого `answered && final.reply` → «Ответа нет»
+        await sendText(
+          bot,
+          w.chatId,
+          escapeMarkdownV2(
+            `Ответа нет за ${w.timeout} с. Тикет ${ticketId} остаётся активным: ` +
+              'запоздавший ответ придёт отдельным сообщением (async-fallback).'
+          )
+        );
+      }
+      continue;
+    }
+    if (t.status !== 'pending') {
+      // expired/delivered — уведомление не наше, его шлёт deliverLateTicket
+      waiters.delete(ticketId);
+      trace('ask-tick: статус', t.status, '→ снят без уведомления (AC6)');
+      continue;
+    }
+    if (now() > new Date(t.deadline).getTime()) {
+      waiters.delete(ticketId); // снять до отправки — однократность (AC4)
+      trace('ask-tick: дедлайн прошёл → «Ответа нет», тикет остаётся pending');
+      // AC3: тикет в реестре НЕ трогаем — поздний ответ уйдёт через
+      // answerTicket → expired → deliverLateTicket (прежний async-путь)
+      await sendText(
+        bot,
+        w.chatId,
+        escapeMarkdownV2(
+          `Ответа нет за ${w.timeout} с. Тикет ${ticketId} остаётся активным: ` +
+            'запоздавший ответ придёт отдельным сообщением (async-fallback).'
+        )
+      );
+    }
+  }
+}
+
 export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   // ── VL-429: режим --trace — лог ВСЕХ входящих update и исходящих api.*-вызовов ──
   // Мусора много — это осознанно (диагностика потерь между ботами).
@@ -461,6 +544,13 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   // Паттерн awaitingComment — память процесса: рестарт бота теряет паузу,
   // висящий tool_call закроется синтетическим отказом при следующем сообщении.
   const chatPauses = new Map<number, ChatPause>();
+  // VL-432: /ask-тикеты, ожидающие доставки ответа в личку:
+  // ticketId → { chatId, timeout }. Паттерн awaitingComment — память процесса:
+  // рестарт термит висящее ожидание, сами тикеты (файл) переживают (AC4).
+  // Ключ — ticketId, а не chatId: один чат может отправить второй /ask, пока
+  // ждёт первый, — запись первого не должна затираться («один тикет — одна
+  // запись» по построению).
+  const askWaiters = new Map<string, { chatId: number; timeout: number }>();
 
   /**
    * VL-429: trace-лог interbot-ветки (режим `vibelog bot --trace`).
@@ -1917,22 +2007,17 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       timeoutSec: timeout,
       ...(parsed.channel || parsed.to ? {} : {}),
     });
+    // VL-432: кладём в карту ожидания ДО первого await (sendMd ниже) — окно
+    // гонки «ответ чужого бота раньше карты» нулевое, тикер её увидит.
+    askWaiters.set(ticket.id, { chatId: ctx.chat.id, timeout });
     await sendMd(
       ctx,
       `⏳ Вопрос отправлен в канал «${escapeMarkdownV2(channel.id)}», жду ответ до ${timeout} с…`
     );
-    const { answered, ticket: final } = await waitForAnswer(deps.cwd, ticket.id);
-    if (answered && final.reply) {
-      await sendChatAnswer(bot, ctx.chat.id, final.reply);
-      return;
-    }
-    await sendMd(
-      ctx,
-      escapeMarkdownV2(
-        `Ответа нет за ${timeout} с. Тикет ${ticket.id} остаётся активным: ` +
-          'запоздавший ответ придёт отдельным сообщением (async-fallback).'
-      )
-    );
+    // VL-432: хендлер ВЫХОДИТ сразу — grammy ждёт завершения хендлеров перед
+    // следующим getUpdates (bot.js:192), синхронный waitForAnswer здесь глушел
+    // long polling до 120 с (бот был глух ко всем сообщениям). Ожидание идёт
+    // фоном: ответ/дедлайн доставляет askWaiterTick (setInterval внизу).
   });
   bot.command('chat', async (ctx) => {
     if (!requireBind(ctx)) return;
@@ -2573,6 +2658,24 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       await sendMd(ctx, 'Неверный код. Проверьте консоль запущенного vibelog bot.');
     }
   });
+
+  // ── VL-432: фоновый тикер /ask — доставка ответа и дедлайн без блокировки polling ──
+  // Хендлер /ask кладёт тикет в askWaiters и выходит; grammy при этом свободен
+  // обрабатывать остальные апдейты. Интервал 500 мс (как pollMs waitForAnswer):
+  // пустая карта и анти-перекрытие (askTicking) — вхолостую не читаем файл.
+  // unref(): таймер не удерживает процесс/воркеры vitest (VL-139/140) — бота
+  // и так держит alive long polling; при рестарте карта умирает с процессом.
+  let askTicking = false;
+  const askTimer = setInterval(() => {
+    if (askWaiters.size === 0 || askTicking) return;
+    askTicking = true;
+    void askWaiterTick(bot, deps.cwd, askWaiters, { trace })
+      .catch((err) => console.error('[ask] тик ожидания ответа упал:', err))
+      .finally(() => {
+        askTicking = false;
+      });
+  }, 500);
+  askTimer.unref();
 
   // VL-191: возобновление автоочерери при старте бота — running-элементы →
   // pending (onExit процесса-предшественника потерян), при running:true

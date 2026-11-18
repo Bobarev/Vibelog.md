@@ -18,9 +18,9 @@ import { join } from 'node:path';
 import { clearPhaseEnv } from '../test-env.mjs';
 import { Bot } from 'grammy';
 
-import { registerHandlers } from '../../dist/bot/handlers.js';
+import { registerHandlers, askWaiterTick } from '../../dist/bot/handlers.js';
 import { writeComms } from '../../dist/core/comms.js';
-import { createTicket, loadTickets } from '../../dist/core/interbot/tickets.js';
+import { answerTicket, createTicket, loadTickets } from '../../dist/core/interbot/tickets.js';
 
 const roots = [];
 let restoreEnv;
@@ -281,5 +281,88 @@ describe('VL-430 AC6: trace-перехват через transformer', () => {
       lines.some((l) => l.includes('[trace] api.sendMessage')),
       `нет [trace] api.sendMessage; логи: ${lines.filter((l) => l.includes('[trace]')).join(' || ')}`,
     );
+  });
+});
+
+// ── VL-432: фоновый тикер /ask — неблокирующее ожидание ответа ──
+// askWaiterTick зовётся напрямую (без setInterval): fake-clock через opts.now,
+// сеть — стаб bot.api через transformer (паттерн stubApi выше).
+describe('VL-432: askWaiterTick — фоновый тикер /ask', () => {
+  let cwd;
+  beforeEach(() => {
+    cwd = root();
+    setupComms(cwd);
+  });
+
+  /** Бот только со стабом api (без registerHandlers — тикер зовём сами). */
+  function tickBot() {
+    const bot = makeBot();
+    const calls = stubApi(bot);
+    return { bot, calls };
+  }
+
+  it('AC6/AC2: answered до дедлайна → ответ в личку, снятие с карты, повторный тик без отправок (AC4)', async () => {
+    const { bot, calls } = tickBot();
+    const t = createTicket(cwd, { id: 'ask-vl432-1', channel_id: 'g1', question_msg_id: 78, timeoutSec: 120 });
+    answerTicket(cwd, 78, 'понг из UI');
+    const waiters = new Map([[t.id, { chatId: 555, timeout: 120 }]]);
+
+    await askWaiterTick(bot, cwd, waiters);
+
+    assert.equal(waiters.size, 0, 'тикет снят с карты после доставки');
+    const blob = JSON.stringify(calls);
+    assert.match(blob, /понг из UI/, 'reply доставлен в личку');
+    assert.ok(calls.some((c) => c.method === 'sendRichMessage'), 'доставка rich-ответом');
+
+    // Однократность: повторный тик по пустой карте — ни одного send (AC4)
+    await askWaiterTick(bot, cwd, waiters);
+    assert.equal(calls.length, 1, 'повторный тик без новых send');
+  });
+
+  it('AC6 fake-clock: answered при now за дедлайном → всё равно доставка, не «Ответа нет»', async () => {
+    const { bot, calls } = tickBot();
+    const t = createTicket(cwd, { id: 'ask-vl432-2', channel_id: 'g1', question_msg_id: 79, timeoutSec: 120 });
+    answerTicket(cwd, 79, 'понг'); // ответ пришёл до дедлайна — статус заморожен
+    const waiters = new Map([[t.id, { chatId: 555, timeout: 120 }]]);
+
+    await askWaiterTick(bot, cwd, waiters, { now: () => Date.now() + 60_000 });
+
+    assert.equal(waiters.size, 0);
+    const blob = JSON.stringify(calls);
+    assert.match(blob, /понг/);
+    assert.doesNotMatch(blob, /Ответа нет/, 'answered важнее дедлайна');
+  });
+
+  it('AC3: дедлайн прошёл, входа нет → «Ответа нет» в личку, тикет остаётся pending', async () => {
+    const { bot, calls } = tickBot();
+    const t = createTicket(cwd, { id: 'ask-vl432-3', channel_id: 'g1', question_msg_id: 80, timeoutSec: -1 });
+    const waiters = new Map([[t.id, { chatId: 555, timeout: 120 }]]);
+
+    await askWaiterTick(bot, cwd, waiters);
+
+    assert.equal(waiters.size, 0, 'дедлайн → снятие с карты');
+    const blob = JSON.stringify(calls);
+    assert.match(blob, /Ответа нет за 120 с/, 'текст контракта сохранён');
+    assert.match(blob, /async.{0,3}fallback/, 'текст контракта сохранён (MarkdownV2 экранирует дефис)');
+    assert.equal(loadTickets(cwd)[0].status, 'pending', 'тикет остаётся pending (AC3)');
+  });
+
+  it('AC6: expired → снятие с карты БЕЗ уведомления (deliverLateTicket владеет этим)', async () => {
+    const { bot, calls } = tickBot();
+    createTicket(cwd, { id: 'ask-vl432-4', channel_id: 'g1', question_msg_id: 81, timeoutSec: -1 });
+    const upd = answerTicket(cwd, 81, 'запоздавший понг'); // now > deadline → expired
+    assert.equal(upd.status, 'expired');
+    const waiters = new Map([[upd.id, { chatId: 555, timeout: 120 }]]);
+
+    await askWaiterTick(bot, cwd, waiters);
+
+    assert.equal(waiters.size, 0, 'expired снят с карты');
+    assert.equal(calls.length, 0, 'тикер не дублирует уведомление (AC4/AC6)');
+  });
+
+  it('пустая карта → no-op: файл не читается, send нет', async () => {
+    const { bot, calls } = tickBot();
+    await askWaiterTick(bot, cwd, new Map());
+    assert.equal(calls.length, 0);
   });
 });
