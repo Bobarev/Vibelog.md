@@ -25,15 +25,14 @@ import {
   InstallError,
   diffLines,
   forceOverwrite,
-  isAllConflictsSkipped,
   resolveConflicts,
-  resolveInstallContext,
   skipAllConflicts,
 } from '../../core/install.js';
-import type { InstallContext, InstallPlan, InstallPlanFile } from '../../core/install.js';
+import type { InstallPlan, InstallPlanFile } from '../../core/install.js';
 import { formatCommand } from '../../core/install-deps.js';
 import type { DepsRunner } from '../../core/install-deps.js';
-import { installWithDeps } from '../../core/install-chain.js';
+import { batchExitCode, installBatch, validateInstallRefs } from '../../core/install-batch.js';
+import type { InstallBatchResult, ValidatedInstallRefs } from '../../core/install-batch.js';
 import type { ConflictStrategy, InstallChainOutcome } from '../../core/install-chain.js';
 import type { OwnershipEntry } from '../../core/install-registry-deps.js';
 import { RATE_LIMIT_BUDGET_MS } from '../../core/gitverse-http.js';
@@ -246,11 +245,11 @@ async function askConflicts(
  *
  * Вся последовательность установки (манифест → план → `registryDependencies`
  * → владение файлами → npm-зависимости → конфликты → одна транзакция) живёт
- * в `core/install-chain.ts` (VL-390): тем же оркестратором пользуется
- * `vb create` для компонентов шаблона. Здесь остаётся CLI-слой: флаги,
- * вопросы пользователю, печать плана и итога, код выхода.
+ * в `core/install-batch.ts` (VL-424): валидация всех рефов до сети, цикл
+ * батча со стопом на первой ошибке. Здесь остаётся CLI-слой: флаги,
+ * вопросы пользователю, печать плана/итога, код выхода.
  *
- * @param positional — позиционные аргументы (первый — `<alias>/<repo>/<name>`)
+ * @param positional — позиционные аргументы (рефы `<alias>/<repo>/<name>`, может быть несколько)
  * @param flags — флаги команды
  * @param cwd — текущая рабочая директория
  * @param deps — инъекция раннера пакетного менеджера (тесты)
@@ -262,23 +261,28 @@ export async function runInstall(
   deps: { runner?: DepsRunner } = {},
 ): Promise<void> {
   let options: InstallOptions;
-  let ctx: InstallContext;
+  let validated: ValidatedInstallRefs;
   try {
     options = parseOptions(flags);
-    const rawPath = positional[0] ?? '';
-    if (rawPath.trim() === '') {
-      throw new InstallError(
-        'не указан компонент: ожидалось «vb install <alias>/<repo>/<name>», например vibelog.md/ui/button',
-        1,
-      );
-    }
-    ctx = resolveInstallContext(cwd, rawPath, options.branch ? { branch: options.branch } : {});
+    // Все позиционные — рефы батча; проверка пустоты и валидация КАЖДОГО
+    // рефа — в validateInstallRefs, до первого сетевого запроса (AC2).
+    validated = validateInstallRefs(
+      cwd,
+      positional.filter(Boolean),
+      options.branch ? { branch: options.branch } : {},
+    );
   } catch (err) {
     return fail(err);
   }
 
+  // Дедупликация: повтор рефа не выполняется второй раз, но пользователь
+  // обязан узнать, что его аргумент «съеден» (AC3).
+  for (const dup of validated.duplicates) {
+    printWarning(`Повтор рефа «${dup}» — установлю только один раз`);
+  }
+
   // VL-381: прогресс сетевых шагов идёт в stderr — stdout остаётся планом.
-  const tokenInfo = readTokenWithSource(ctx.root);
+  const tokenInfo = readTokenWithSource(validated.root);
   const progress = createProgressPrinter({
     verbose: options.verbose,
     hasToken: tokenInfo.token !== '',
@@ -287,10 +291,17 @@ export async function runInstall(
     writeProgressLine(`токен: ${tokenSourceLabel(tokenInfo.source)}`);
   }
 
-  // Печать плана — до вопроса про пакеты: пользователь должен видеть, что
-  // именно ставится, прежде чем соглашаться на правку package.json.
+  // Состояние на элемент: сбрасывается в onBeforeItem, чтобы вывод
+  // одиночной установки не зависел от предыдущих элементов батча.
   let plansPrinted = false;
   let depsDryRunMessage = false;
+  // ref элемента, который сейчас качается — для сообщения об отмене (AC4).
+  let currentRef = '';
+  // Память отказа от npm-пакетов на весь запуск (AC5): иначе при трёх
+  // элементах с общим missing (clsx) пользователь отвечает на один и тот же
+  // вопрос трижды. Согласие НЕ мемоизируется: после установки package.json
+  // перечитывается, и новые пакеты дают новый вопрос.
+  let depsDeclined = false;
 
   const conflictStrategy: ConflictStrategy = async (plan, lock) => {
     if (options.force) {
@@ -312,19 +323,106 @@ export async function runInstall(
     }
   };
 
-  let outcome: InstallChainOutcome;
+  /** Итог npm-зависимостей одного элемента (печать — в onElementDone). */
+  const printDepsOutcome = (outcome: InstallChainOutcome): void => {
+    const depsOutcome = outcome.deps;
+    if (depsOutcome.run !== undefined) {
+      const run = depsOutcome.run;
+      if (run.fallbackFrom) {
+        printWarning(`Пакетный менеджер «${run.fallbackFrom}» не найден — использован npm`);
+      }
+      if (run.ok) {
+        printSuccess(`Установлены пакеты: ${depsOutcome.confirmed.join(', ')}`);
+      } else {
+        printWarning(
+          `Зависимости не установлены (${run.error ?? 'ненулевой код выхода'}): компонент может не работать`,
+        );
+      }
+    } else if (depsOutcome.missing.length > 0 && !depsDryRunMessage) {
+      if (options.yes || !isInteractive()) {
+        printWarning(
+          `Зависимости не установлены (--yes/не-TTY): выполните вручную «${formatCommand(depsOutcome.command)}» — без них компонент может не работать`,
+        );
+      } else {
+        printWarning(
+          `Зависимости не установлены: выполните вручную «${formatCommand(depsOutcome.command)}» — без них компонент может не работать`,
+        );
+      }
+    }
+  };
+
+  /** Итоговый блок одного элемента (прежний вывод одиночной установки). */
+  const printElementSummary = (outcome: InstallChainOutcome): void => {
+    const chain = outcome.plans;
+    const depPlans = chain.slice(0, outcome.depCount);
+    const results = outcome.results;
+    for (let i = 0; i < chain.length; i += 1) {
+      const current = chain[i];
+      const isDep = i < depPlans.length;
+      if (isDep) {
+        printSuccess(`Установлена зависимость реестра: ${current.ref} v${current.item.version}`);
+      }
+      for (const path of results[i].written) printSuccess(`Записан: ${path}`);
+      for (const file of current.willSkip) {
+        const reason =
+          file.action === 'skip-identical'
+            ? 'содержимое совпадает'
+            : 'конфликт, файл не перезаписан (используйте --force)';
+        printInfo(`Пропущен: ${file.relPath} — ${reason}`);
+      }
+    }
+    for (const entry of outcome.reuses) {
+      printInfo(`Файл переиспользован из «${entry.owner}»: ${entry.relPath}`);
+    }
+    for (const item of outcome.transferred) {
+      printInfo(`Владение файлом передано: ${item}`);
+    }
+    if (results.some((result) => result.lockWritten)) {
+      printSuccess(
+        `Обновлён lock: ${validated.config.lockFile} (${chain.map((c) => `${c.item.name} v${c.item.version}`).join(', ')})`,
+      );
+    } else {
+      printInfo('installed.lock.json не изменён: запись уже актуальна');
+    }
+  };
+
+  let batch: InstallBatchResult;
   try {
-    outcome = await installWithDeps({
-      root: ctx.root,
-      config: ctx.config,
-      lock: ctx.lock,
-      ref: ctx.ref,
+    batch = await installBatch({
+      root: validated.root,
+      config: validated.config,
+      lock: validated.lock,
+      refs: validated.refs,
       ...(options.branch ? { branch: options.branch } : {}),
       fetchOptions: { onProgress: progress },
       dryRun: options.dryRun,
       onConflict: conflictStrategy,
+      deps: {
+        ...(deps.runner !== undefined ? { runner: deps.runner } : {}),
+        confirm: async (missing) => {
+          // --yes означает «без вопросов», а не «правь package.json»:
+          // молчаливая установка зависимостей недопустима (решение задачи).
+          if (depsDeclined || options.dryRun || options.yes || !isInteractive()) return false;
+          const prompts = createPromptSession();
+          try {
+            const ok = await prompts.askConfirm(
+              `Установить отсутствующие пакеты (${missing.length})?`,
+              true,
+            );
+            if (!ok) depsDeclined = true;
+            return ok;
+          } finally {
+            prompts.close();
+          }
+        },
+      },
       hooks: {
-        onBeforeItem: (ref) => writeProgressLine(`→ скачиваю ${ref}…`),
+        onBeforeItem: (ref) => {
+          plansPrinted = false;
+          depsDryRunMessage = false;
+          currentRef = ref;
+          writeProgressLine(`→ скачиваю ${ref}…`);
+        },
         onBeforeContents: (item) => writeProgressLine(`→ скачиваю файлы (${item.files.length})…`),
         onPlanReady: (info) => {
           for (let i = 0; i < info.plans.length; i += 1) {
@@ -344,105 +442,66 @@ export async function runInstall(
             printInfo('Режим --dry-run: пакеты не устанавливаются.');
           }
         },
-      },
-      deps: {
-        ...(deps.runner !== undefined ? { runner: deps.runner } : {}),
-        confirm: async (missing) => {
-          // --yes означает «без вопросов», а не «правь package.json»:
-          // молчаливая установка зависимостей недопустима (решение задачи).
-          if (options.dryRun || options.yes || !isInteractive()) return false;
-          const prompts = createPromptSession();
-          try {
-            return await prompts.askConfirm(`Установить отсутствующие пакеты (${missing.length})?`, true);
-          } finally {
-            prompts.close();
-          }
+        // Поэлементный итог: печать в привычном месте, поэтому вывод
+        // одиночной установки побайтово прежний.
+        onElementDone: (ref, outcome) => {
+          if (!plansPrinted) throw new InstallError('план установки не построен', 3);
+          printDepsOutcome(outcome);
+          if (options.dryRun) return;
+          printElementSummary(outcome);
         },
       },
     });
   } catch (err) {
     if (err instanceof PromptCancelledError) {
-      printInfo('Отменено. Файлы не изменены.');
+      if (currentRef !== '') {
+        printInfo(`Отменено на ${currentRef}: уже установленные элементы не изменяются, отменённый не записан.`);
+      } else {
+        printInfo('Отменено. Файлы не изменены.');
+      }
       process.exitCode = 5;
       return;
     }
     return fail(err);
   }
 
-  // --- Секция npm-зависимостей: итог после попытки установки ---
-  const depsOutcome = outcome.deps;
-  if (depsOutcome.run !== undefined) {
-    const run = depsOutcome.run;
-    if (run.fallbackFrom) {
-      printWarning(`Пакетный менеджер «${run.fallbackFrom}» не найден — использован npm`);
-    }
-    if (run.ok) {
-      printSuccess(`Установлены пакеты: ${depsOutcome.confirmed.join(', ')}`);
-    } else {
-      printWarning(
-        `Зависимости не установлены (${run.error ?? 'ненулевой код выхода'}): компонент может не работать`,
-      );
-    }
-  } else if (depsOutcome.missing.length > 0 && !depsDryRunMessage) {
-    if (options.yes || !isInteractive()) {
-      printWarning(
-        `Зависимости не установлены (--yes/не-TTY): выполните вручную «${formatCommand(depsOutcome.command)}» — без них компонент может не работать`,
-      );
-    } else {
-      printWarning(
-        `Зависимости не установлены: выполните вручную «${formatCommand(depsOutcome.command)}» — без них компонент может не работать`,
-      );
-    }
+  // --- Сводка после батча ---
+  if (batch.failed !== undefined) {
+    const { ref, error } = batch.failed;
+    printError(
+      `Установлено ${batch.results.length} из ${validated.refs.length}; ошибка на ${ref}: ${error.message}`,
+    );
+    process.exitCode = error.code;
+    return;
   }
 
-  const chain = outcome.plans;
-  const depPlans = chain.slice(0, outcome.depCount);
-  const plan = chain[chain.length - 1];
-  if (!plansPrinted) return fail(new InstallError('план установки не построен', 3));
-
   if (options.dryRun) {
-    // Ни temp-каталога, ни записи: план уже посчитан, выходим с 0.
+    // Ни temp-каталога, ни записи: планы уже посчитаны, выходим с 0.
     printInfo('Режим --dry-run: файлы не изменялись.');
     process.exitCode = 0;
     return;
   }
 
-  // --- Итоговый блок ---
-  const results = outcome.results;
-  for (let i = 0; i < chain.length; i += 1) {
-    const current = chain[i];
-    const isDep = i < depPlans.length;
-    if (isDep) printSuccess(`Установлена зависимость реестра: ${current.ref} v${current.item.version}`);
-    for (const path of results[i].written) printSuccess(`Записан: ${path}`);
-    for (const file of current.willSkip) {
-      const reason =
-        file.action === 'skip-identical'
-          ? 'содержимое совпадает'
-          : 'конфликт, файл не перезаписан (используйте --force)';
-      printInfo(`Пропущен: ${file.relPath} — ${reason}`);
-    }
-  }
-  for (const entry of outcome.reuses) {
-    printInfo(`Файл переиспользован из «${entry.owner}»: ${entry.relPath}`);
-  }
-  for (const item of outcome.transferred) {
-    printInfo(`Владение файлом передано: ${item}`);
-  }
-  if (results.some((result) => result.lockWritten)) {
-    printSuccess(
-      `Обновлён lock: ${ctx.config.lockFile} (${chain.map((c) => `${c.item.name} v${c.item.version}`).join(', ')})`,
-    );
-  } else {
-    printInfo('installed.lock.json не изменён: запись уже актуальна');
-  }
-
-  const writtenTotal = results.reduce((sum, result) => sum + result.written.length, 0);
-  const skippedTotal = chain.reduce((sum, current) => sum + current.willSkip.length, 0);
+  const outcomes = batch.results.map((element) => element.outcome);
+  const writtenTotal = outcomes.reduce(
+    (sum, outcome) => sum + outcome.results.reduce((s, r) => s + r.written.length, 0),
+    0,
+  );
+  const skippedTotal = outcomes.reduce(
+    (sum, outcome) => sum + outcome.plans.reduce((s, p) => s + p.willSkip.length, 0),
+    0,
+  );
 
   if (writtenTotal === 0 && skippedTotal > 0) {
-    if (isAllConflictsSkipped(plan)) {
+    if (batchExitCode(batch.results) === 4) {
+      // У каждого элемента последний план цепочки весь skip-conflict —
+      // прежняя одиночная семантика, обобщённая на батч (AC6).
+      const skippedOwn = outcomes.reduce(
+        (sum, outcome) => sum + outcome.plans[outcome.plans.length - 1].willSkip.length,
+        0,
+      );
       printWarning(
-        `Пропущено файлов: ${plan.willSkip.length} — все файлы конфликтуют; используйте --force для перезаписи`,
+        `Пропущено файлов: ${skippedOwn} — все файлы конфликтуют; используйте --force для перезаписи`,
       );
       process.exitCode = 4;
       return;
@@ -452,8 +511,9 @@ export async function runInstall(
     return;
   }
 
-  const conflictSkips = chain.reduce(
-    (sum, current) => sum + current.willSkip.filter((f) => f.action === 'skip-conflict').length,
+  const conflictSkips = outcomes.reduce(
+    (sum, outcome) =>
+      sum + outcome.plans.reduce((s, p) => s + p.willSkip.filter((f) => f.action === 'skip-conflict').length, 0),
     0,
   );
   if (conflictSkips > 0) {
@@ -461,7 +521,7 @@ export async function runInstall(
       `Пропущено файлов по конфликту: ${conflictSkips} — используйте --force для перезаписи`,
     );
   }
-  process.exitCode = 0;
+  process.exitCode = batchExitCode(batch.results);
 }
 
 /** Печатает ошибку установки одной строкой и выставляет код выхода. */
