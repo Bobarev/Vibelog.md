@@ -67,6 +67,13 @@ tags: []
 5. §4.3: отказ от npm-пакетов в батче запоминается на весь запуск (один вопрос/одно предупреждение); согласие не мемоизируется — у следующего элемента missing пересчитывается.
 6. Оркестратор батча — `src/core/install-batch.ts` (`validateInstallRefs`, `installBatch`, `batchExitCode`); `vb create` (`installTemplateComponents`) остаётся на прежней семантике (continue при ошибке) — расхождение осознанное.
 
+**v1.8 относительно v1.7 (VL-426, тип `registry:block` и развод контрактов):**
+1. §3.3: поддерживается тип `registry:block` — installable-сборка «копируй и правь»; сверено с официальной схемой shadcn (`$schema` в `registry.json` → `https://ui.shadcn.com/schema/registry-item.json`). Прочие типы той схемы (`registry:theme`, `registry:page`, `registry:file`, `registry:style`, `registry:base`, `registry:font`, `registry:item`) — «не поддерживаются v1»: белый список типов расширен осознанно, не молча.
+2. §3.3: развод контрактов «компоненты / блоки»: `registry:ui` — строгий API и стабильность между версиями 0.x (перечисленные пропсы и события) против `registry:block` — слабая стабильность: описываются состав (`files`), пропсы-ориентиры и установка, формат «переноси и правь», гарантий совместимости между версиями блока не даётся.
+3. §3.1/§3.3/§8: новый алиас `blocks` (`src/lib/blocks`) — явно зафиксированный target-базис блоков (вариант B, §8 п.13); `aliasForType`: `registry:block` → `blocks`.
+4. §2.3/§4.3: `vb install` распознаёт `registry:block` — файлы сборки ставятся как есть, без проверок API компонента; npm-зависимости и `registryDependencies` (один уровень) идут тем же путём, что и у `registry:ui`.
+5. §3.3: раздел «Блоки» в описании типов; §4.3 — миграция старых конфигов без `aliases.blocks`.
+
 ---
 
 ## 1. Назначение и границы
@@ -87,6 +94,7 @@ tags: []
 - `vb create` с клонированием подпапки шаблона (`sparse-checkout`);
 - `vb init` — расширение существующего wizard-а: секция `components` + `installed.lock.json`;
 - `vb install` — доставка файлов, проверка `dependencies` и `registryDependencies` одного уровня, запись lock;
+- installable-блоки `registry:block` — установка файлов сборки как есть в алиас `blocks` (§3.3, §4.3);
 - реестр `Vibelog-md/ui` с корневым элементом `base` и компонентами `Button`, `Input`, `Label`, `Card`;
 - шаблон `svelte-minimal` в `Vibelog-md/templates`.
 
@@ -187,6 +195,8 @@ vb install <registry-alias>/<repo>/<component> [<ref>…] [флаги]
 
 Семантика батча (VL-424): **валидация всех рефов до сети** (опечатка в последнем аргументе не даёт частичной установки), **дедупликация** повторяющихся рефов с предупреждением, **стоп на первой ошибке** элемента (уже записанные не откатываются — повтор идемпотентен добирает), отказ от npm-пакетов запоминается на весь запуск (один вопрос на батч). Батч-атомарности («всё или ничего») нет — осознанно.
 
+Элемент типа `registry:block` распознаётся штатно (§3.3): файлы сборки ставятся как есть в алиас `blocks`, без проверок API компонента; поведение блока правится потребителем.
+
 ---
 
 ## 3. Схемы файлов
@@ -204,7 +214,8 @@ vb install <registry-alias>/<repo>/<component> [<ref>…] [флаги]
       "components": "src/lib/components",
       "ui": "src/lib/components/ui",
       "utils": "src/lib/utils.ts",
-      "css": "src/app.css"
+      "css": "src/app.css",
+      "blocks": "src/lib/blocks"
     },
     "lockFile": ".vibelog/installed.lock.json"
   }
@@ -219,7 +230,8 @@ vb install <registry-alias>/<repo>/<component> [<ref>…] [флаги]
 - `urlTemplate` не хранится — зашит в CLI (переопределяется `VIBELOG_REGISTRY_BASE_URL` для тестов);
 - в будущем `branch` допускается как объект `{ "default": "master", "ui": "master" }` без ломающей миграции;
 - `components.schemaVersion` — целое, несовпадение → код `2`;
-- отсутствие секции — не ошибка: `vb install` сообщает «выполните `vb init --components`» (код `2`).
+- отсутствие секции — не ошибка: `vb install` сообщает «выполните `vb init --components`» (код `2`);
+- `aliases.blocks` — база installable-блоков `registry:block` (VL-426, §3.3): ключа может не быть в старых settings.json — чтение такого конфига работает как раньше, а `vb install` блока падает кодом `2` с подсказкой миграции «`vb init --components`» (§4.3).
 
 ### 3.2. `.vibelog/installed.lock.json`
 
@@ -303,7 +315,7 @@ vb install <registry-alias>/<repo>/<component> [<ref>…] [флаги]
 - `dependencies` — имена npm-пакетов без версий;
 - `registryDependencies` — `<alias>/<repo>/<name>`, разрешается **один уровень**;
 - `files[].path` — путь в репозитории реестра;
-- `files[].target` — путь **относительно базы алиаса**, без дублирующего префикса (`ui/` для `registry:ui`). Алиас выбирается по `type`: `registry:lib` → `utils`, `registry:ui` → `ui`, `registry:hook`/`registry:component` → `components`;
+- `files[].target` — путь **относительно базы алиаса**, без дублирующего префикса (`ui/` для `registry:ui`). Алиас выбирается по `type`: `registry:lib` → `utils`, `registry:ui` → `ui`, `registry:hook`/`registry:component` → `components`, `registry:block` → `blocks` (VL-426);
 - **структуру задаёт `target`**: один файл — плоско (`button.svelte`), несколько — каталог (`card/card.svelte`);
 - **переходы вверх (`..`) в `target` зависят от типа алиаса** (VL-383):
   - для алиасов-**файлов** (`utils`, `css`) база — каталог файла-алиаса, поэтому `../<file>` легален: ровно один уровень вверх и именно имя файла (`../utils.ts` при `aliases.utils = "src/lib/utils.ts"` → `src/lib/utils.ts`). Глубже или в подкаталог — запрещено (`../sub/x.ts`, `../../evil.ts` → код `3`);
@@ -312,6 +324,40 @@ vb install <registry-alias>/<repo>/<component> [<ref>…] [флаги]
 - проверка семантики путей живёт **в одном месте** — `resolveAliasPath` (там известен алиас и возможна финальная проверка «внутри проекта»). Валидация формы (`validateRegistryItem`) проверяет только непустоту, не-абсолютность и не-`~`; про `..` она ничего не знает — легальность `..` зависит от типа алиаса;
 - `version` — **ручная** в `registry.json`; сборка валидирует `X.Y.Z`, из git-тега не выводит;
 - схема валидируется при сборке; невалидный элемент не попадает в выдачу.
+
+**Типы элементов (сверено со схемой shadcn, VL-426).** `$schema` в `registry.json` ссылается на официальную схему `https://ui.shadcn.com/schema/registry-item.json`; её enum типов шире нашего белого списка. **Поддерживаются v1:** `registry:ui`, `registry:lib`, `registry:hook`, `registry:component`, `registry:block`. **Не поддерживаются v1** (отклоняются валидацией с перечнем допустимых — осознанно, не молча): `registry:theme`, `registry:page`, `registry:file`, `registry:style`, `registry:base`, `registry:font`, `registry:item`.
+
+**Развод контрактов «компоненты / блоки» (VL-426):**
+
+| | `registry:ui` — компонент | `registry:block` — блок |
+|---|---|---|
+| Что описывает | строгий API: перечисленные пропсы и события | состав (`files`), пропсы-ориентиры и установка |
+| Стабильность | между версиями 0.x — стабильность API | слабая: формат «переноси и правь», гарантий совместимости между версиями блока не даётся |
+| Кто правит | изменения API — осознанное решение реестра | поведение блока правится потребителем — это ожидаемо |
+
+Пример элемента-блока (`header` — мультифайловая сборка):
+
+```json
+{
+  "name": "header",
+  "type": "registry:block",
+  "version": "1.0.0",
+  "dependencies": [],
+  "registryDependencies": [],
+  "files": [
+    { "path": "src/lib/blocks/header/header.svelte", "target": "header/header.svelte", "type": "registry:block" },
+    { "path": "src/lib/blocks/header/header-links.svelte", "target": "header/header-links.svelte", "type": "registry:block" }
+  ]
+}
+```
+
+`files[].target` блока — **относительно базы алиаса `blocks`** (точка входа та же, `resolveAliasPath`): алиас-каталог, поэтому переходы вверх (`..`) запрещены полностью — как у `ui`/`components`; итоговый путь обязан остаться внутри корня проекта.
+
+#### Блоки
+
+**Блок** — installable-сборка из нескольких файлов «копируй и правь»: каркас целой секции UI (например, шапка из нескольких файлов), которую потребитель переносит к себе и дорабатывает. Чем отличается от компонента: у `registry:ui` задан строгий API и стабильность между версиями 0.x (таблица выше), у `registry:block` — только состав, пропсы-ориентиры и установка; гарантий совместимости между версиями блока не даётся.
+
+Как ставить и править: `vb install <alias>/<repo>/<имя-блока>` кладёт файлы сборки как есть в `src/lib/blocks/<имя>/` (база — алиас `blocks`, §3.1) без проверок API компонента; npm-зависимости и `registryDependencies` (один уровень) обрабатываются как у обычного элемента (§4.3). Дальнейшее поведение блока правится потребителем: файлы принадлежат проекту (decision-7), правки не отслеживаются и не мигрируются автоматически при обновлении блока в реестре.
 
 ### 3.4. `registry.json` реестра
 
@@ -440,7 +486,7 @@ ui/
 4. Валидировать JSON **парсингом тела** (`content-type` = `text/plain`).
 5. **Разрешить `registryDependencies` (один уровень):** отсутствующие в lock — установить шагами 3–10 без их собственных зависимостей, с предупреждением.
 6. **Проверить `dependencies`:** сверить с `package.json`. Отсутствующие — предложить установить; `--yes` — предупредить и продолжить; `--dry-run` — показать и выйти.
-7. Целевые пути: `aliases.ui` + `target` для `registry:ui`; иные типы — через соответствующий алиас. Проверка выхода за корень.
+7. Целевые пути: `aliases.ui` + `target` для `registry:ui`; иные типы — через соответствующий алиас (`registry:block` → `blocks`: файлы сборки как есть, без проверок API компонента — §3.3). Проверка выхода за корень.
 8. **Конфликты:** файла нет — писать; хеш совпадает с lock — пропустить и обновить запись; хеш отличается — спросить (`перезаписать`/`пропустить`/`diff`); `--force` — перезаписать; `--yes` без `--force` — пропустить с предупреждением.
 9. Записать во временный каталог внутри проекта, затем переместить.
 10. Вычислить sha256, обновить `installed.lock.json` атомарно.
@@ -481,6 +527,15 @@ ui/
 - **`--dry-run`:** планы всех элементов, ни temp-каталога, ни записей, lock не изменён. **`--branch`** — один на весь батч.
 - **Семантика vs `vb create`:** `installTemplateComponents` остаётся на прежней механике (continue при ошибке, `onUnresolved=throw`, всегда `skipAllConflicts`) — стоп ≠ continue осознанно, не унифицировать.
 - Тесты: `src/core/install-batch.test.mjs` (16 кейсов на HTTP-фикстуре: валидация 0 запросов, порядок/трединг lock, дедуп, стоп, проброс не-`InstallError`, `batchExitCode`, dry-run).
+
+**Реализовано в VL-426** (`registry:block`, алиас `blocks`, история v1.8):
+
+- Валидация типа: `REGISTRY_ITEM_TYPES` (`src/core/registry-fetch.ts`) принимает `registry:block`; прочие типы схемы shadcn (`registry:page` и др.) — ошибка `invalid_schema` с перечнем допустимых (§3.3): белый список расширен осознанно, не молча.
+- `aliasForType` (`src/core/install.ts`): `registry:block` → `blocks`; особого пути для блоков нет: npm-зависимости и `registryDependencies` (один уровень) идут тем же кодом, что и у `registry:ui`; никаких «проверок API компонента» у блоков нет — по контракту их быть не должно (§3.3).
+- `defaultComponentsConfig`: `aliases.blocks = "src/lib/blocks"`; `mergeComponentsConfig` дополняет недостающее — старые конфиги получают запись при следующем `vb init --components` (и при `--force`; ручные правки при merge сохраняются).
+- **Миграция:** в старых settings.json ключа `blocks` нет. Чтение такого конфига работает как раньше (компоненты ставятся), но `vb install` элемента `registry:block` падает кодом `2` с подсказкой «выполните `vb init --components`, либо добавьте `aliases.blocks` вручную» — конфиг, а не дефолт кода, источник истины о базе блоков.
+- `resolveAliasPath`: алиас `blocks` — каталог (как `ui`/`components`): `..` в `target` запрещён полностью, итоговый путь — внутри корня (§3.3, VL-383).
+- Тесты: `install.test.mjs` (установка блока, идемпотентность, `registry:page` → код 3, legacy-конфиг → код 2), `install-registry-deps.test.mjs` (блок с `registryDependencies`: `base` первым), `registry-fetch.test.mjs` (белый список типов), `components-config.test.mjs` (алиас `blocks`, merge, `..`), `init-components.test.mjs` (запись `blocks` при init).
 
 ---
 
@@ -601,6 +656,7 @@ ui/
 10. **Структура файлов** — задаётся `target`.
 11. **Ветка по умолчанию** — `master`.
 12. **Где живут репозитории** — каждый репозиторий самостоятельный проект Vibelog.md (§11).
+13. **Target-базис блоков (VL-426)** — отдельный алиас `blocks` (`src/lib/blocks`), а не молчаливое наследование базы `ui` «как у мультифайловых элементов»: развод «атомы со строгим API vs каркасы копируй-и-правь» должен быть виден в файловойсистеме (продолжение decision-2), а 0.x + переписываемый doc-25 — самый дешёвый момент завести алиас; позже это стало бы ломающим перемещением для уже установивших блоки.
 
 ---
 
