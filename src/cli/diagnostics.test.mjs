@@ -95,6 +95,8 @@ const EXPECTED_MCP_TOOLS = [
   'decision_list',
   'decision_update',
   'decision_view',
+  // VL-428: синхронный interbot-вопрос в Telegram-группу
+  'interbot_ask',
 ];
 
 // Читаем версию динамически из package.json, чтобы тесты не ломались при бампе

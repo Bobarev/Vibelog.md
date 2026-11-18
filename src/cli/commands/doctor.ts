@@ -284,6 +284,8 @@ const MCP_TOOL_PREFIXES = [
   'git_status',
   // VL-363: репорт бага в upstream через GitVerse Issues
   'upstream_',
+  // VL-428: interbot-вопрос в Telegram-группу (interbot_ask)
+  'interbot_',
   // VL-398: конструктор workflow (workflow_get / workflow_apply)
   'workflow_',
   // VL-412: архитектурные решения (decision_list/view/create/update)

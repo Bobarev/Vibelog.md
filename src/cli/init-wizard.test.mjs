@@ -124,14 +124,18 @@ describe('VL-210 — консольный wizard init', () => {
     assert.ok(!existsSync(join(testDir, '.env')), '.env не создаётся при отказе');
   });
 
-  it('init --secrets-location env --bot-token пишет .env с шапкой', () => {
+  it('init --bot-token: секрет уходит в comms.yaml, .env очищен от TELEGRAM_* (VL-428)', () => {
     runCli(
       'init', 'SecretsEnv', '--prefix', 'se', '--yes',
       '--agents', '', '--bot-token', '456:def', '--skip-bot-check',
     );
     const env = readFileSync(join(testDir, '.env'), 'utf-8');
-    assert.ok(env.includes('TELEGRAM_BOT_TOKEN=456:def'), env);
+    // VL-428: токен мигрировал в .vibelog/comms.yaml — в .env не дублируется
+    // (секрет живёт в одном месте; шапка .env сохраняется для legacy-ключей)
+    assert.ok(!env.includes('TELEGRAM_BOT_TOKEN'), env);
     assert.ok(env.startsWith('# Vibelog'), env);
+    const comms = readFileSync(join(testDir, '.vibelog', 'comms.yaml'), 'utf-8');
+    assert.match(comms, /bot_token:\s*['"]?456:def/, comms);
   });
 
   it('повторный init без --force и без TTY — ошибка с подсказкой', () => {
@@ -192,14 +196,17 @@ describe('VL-210 — консольный wizard init', () => {
     assert.equal(settings.models.available['openai/gpt-4o'].model, 'openai/gpt-4o');
   });
 
-  it('VL-324: --bot-proxy пишется в .env, пустой прокси ключа не создаёт', () => {
+  it('VL-324/VL-428: --bot-proxy мигрирует в comms.yaml, пустой прокси ключа не создаёт', () => {
     runCli(
       'init', 'Proxy', '--prefix', 'px', '--yes',
       '--agents', '', '--bot-token', '1:a', '--skip-bot-check',
       '--bot-proxy', 'socks5://127.0.0.1:1080',
     );
+    // VL-428: прокси, как и токен, живёт в comms.yaml, а не в .env
+    const comms = readFileSync(join(testDir, '.vibelog', 'comms.yaml'), 'utf-8');
+    assert.match(comms, /proxy:\s*['"]?socks5:\/\/127\.0\.0\.1:1080/, comms);
     const env = readFileSync(join(testDir, '.env'), 'utf-8');
-    assert.ok(env.includes('TELEGRAM_PROXY=socks5://127.0.0.1:1080'), env);
+    assert.ok(!env.includes('TELEGRAM_PROXY'), env);
 
     fresh();
     runCli(
@@ -208,6 +215,11 @@ describe('VL-210 — консольный wizard init', () => {
     );
     const env2 = readFileSync(join(testDir, '.env'), 'utf-8');
     assert.ok(!env2.includes('TELEGRAM_PROXY'), env2);
+    // Без --bot-proxy ключ proxy в comms.yaml не появляется
+    const comms2 = existsSync(join(testDir, '.vibelog', 'comms.yaml'))
+      ? readFileSync(join(testDir, '.vibelog', 'comms.yaml'), 'utf-8')
+      : '';
+    assert.ok(!comms2.includes('proxy:'), comms2);
   });
 
   it('VL-324: --secrets-location system не пишет .env, но сообщает имена', () => {

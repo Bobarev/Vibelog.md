@@ -131,6 +131,12 @@ export const MCP_GROUPS: readonly { title: string; names: readonly string[] }[] 
     title: 'Upstream (баг-репорты между проектами)',
     names: ['upstream_report_bug', 'upstream_list_reports', 'upstream_ack_report'],
   },
+  {
+    // VL-428: interbot-каналы — межпроектная коммуникация агентов
+    // через общую Telegram-группу (doc-32)
+    title: 'Interbot (каналы межпроектной связи)',
+    names: ['interbot_ask'],
+  },
 ];
 
 /** Заголовок группы для инструментов, которых нет ни в одной группе. */

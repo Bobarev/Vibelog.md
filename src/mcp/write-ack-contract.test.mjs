@@ -192,6 +192,9 @@ describe('VL-306 — все write-инструменты отвечают JSON-a
       'backlog_trigger_phase',
       'backlog_auto_queue',
       'backlog_supervisor',
+      // VL-428: отправка в Telegram и ожидание ответа — сетевой вызов;
+      // ответ — текст чужого бота, а не снимок applied (JSON-ack не применим)
+      'interbot_ask',
     ]);
     const missing = listTools()
       .map(t => t.name)
@@ -349,6 +352,7 @@ const ACK_OUT_OF_SCOPE = {
   reference_sync: 'ходит в сеть — сценарий недетерминирован в офлайн-тесте',
   upstream_report_bug: 'ходит в сеть (GitVerse Issues) — сценарий недетерминирован в офлайн-тесте; JSON-ack проверяется в gitverse-issues.test.mjs и upstream-tool.test.mjs',
   upstream_ack_report: 'работает поверх git-инбокса (clone/pull/push) — сценарий в офлайн-тесте недетерминирован; JSON-ack проверяется в upstream-tool.test.mjs',
+  interbot_ask: 'ходит в Telegram Bot API и ждёт ответ до 55 с — сценарий недетерминирован в офлайн-тесте; текстовая семантика (ответ/таймаут) проверяется в ask.test.mjs',
 };
 
 describe('VL-351 — каждый write-инструмент отвечает JSON-ack', () => {
@@ -529,6 +533,7 @@ const UNCHANGED_NOT_APPLICABLE = {
   write_file: 'запись файла: сравнение содержимого вне домена backlog (отдельный инструмент)',
   upstream_report_bug: 'создание issue во внешней системе: каждый вызов даёт новый номер (дедуп — номер issue, а не сравнение полей)',
   upstream_ack_report: 'ack не идемпотентен по ключу: повторный accept с тем же task_id перезаписывает те же значения (не noop-ответ, а повторная запись того же файла); решение по отчёту — не «поле задачи», сравнение снимков неприменимо',
+  interbot_ask: 'каждый вызов отправляет новое сообщение в Telegram-группу и создаёт тикет: состояние «до» не существует, повтор — второе сообщение (дедуп — по тикету/message_id, а не сравнение полей)',
   // VL-412: создание решения — каждый вызов даёт новый decision-N
   decision_create: 'создание решения: каждый вызов даёт новый decision-N (id = max+1), состояние «до» не существует',
 };
@@ -678,6 +683,7 @@ const PARTIAL_EXEMPT = {
   // неполным (решение может быть зафиксировано одним заголовком).
   decision_create: 'title обязателен: решение без заголовка не существует; ADR-секции (context/decision/consequences/alternatives) — дополнение, которое пишется отдельным decision_update',
   decision_update: 'обновление применяет переданные поля; «необязательных по смыслу» полей нет — правка точечная по секциям',
+  interbot_ask: 'question обязателен (отказ приходит ДО отправки); channel/kind/to — дефолтные (default_channel, question), их отсутствие не делает вызов неполным',
 };
 
 describe('VL-357 — отсутствие необязательного по смыслу поля даёт partial, а не rejected', () => {

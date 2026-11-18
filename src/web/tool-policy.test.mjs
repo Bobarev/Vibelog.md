@@ -103,8 +103,9 @@ describe('VL-219 — chatToolDefs', () => {
 
     // Остальные MCP-инструменты присутствуют, кроме условно-видимых:
     // VL-375/VL-391 — инструменты upstream в cwd без секции upstream скрыты
-    // (fail-closed, тот же предикат, что в handleToolsList).
-    const conditionalUpstream = ['upstream_report_bug', 'upstream_list_reports', 'upstream_ack_report'];
+    // (fail-closed, тот же предикат, что в handleToolsList);
+    // VL-428 — interbot_ask скрыт без каналов comms.yaml (тот же предикат).
+    const conditionalUpstream = ['upstream_report_bug', 'upstream_list_reports', 'upstream_ack_report', 'interbot_ask'];
     for (const t of listTools()) {
       if (CHAT_DISALLOWED_TOOLS.includes(t.name)) continue;
       if (conditionalUpstream.includes(t.name)) {
