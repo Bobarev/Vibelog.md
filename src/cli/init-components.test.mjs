@@ -106,6 +106,7 @@ describe('VL-336 — шаг «компоненты» в vibelog init', () => {
         ui: 'src/lib/components/ui',
         utils: 'src/lib/utils.ts',
         css: 'src/app.css',
+        blocks: 'src/lib/blocks',
       },
       lockFile: '.vibelog/installed.lock.json',
     });
@@ -168,6 +169,8 @@ describe('VL-336 — шаг «компоненты» в vibelog init', () => {
     const components = readSettings().components;
     assert.equal(components.aliases.components, 'app/components');
     assert.equal(components.aliases.css, 'app/app.css');
+    // VL-426: старый конфиг без blocks дополняется дефолтом при merge
+    assert.equal(components.aliases.blocks, 'src/lib/blocks');
     assert.equal(components.registries['мой-реестр'].owner, 'me');
     // Дефолтный реестр добавлен, существующий сохранён
     assert.ok(components.registries['vibelog.md']);
@@ -241,6 +244,7 @@ describe('VL-336 — шаг «компоненты» в vibelog init', () => {
       defaults,
     );
     assert.equal(merged.aliases.ui, defaults.aliases.ui);
+    assert.equal(merged.aliases.blocks, defaults.aliases.blocks);
     assert.deepEqual(merged.registries, defaults.registries);
   });
 

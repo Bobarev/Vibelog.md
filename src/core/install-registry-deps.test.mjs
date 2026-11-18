@@ -94,6 +94,7 @@ function defaultComponents() {
       ui: 'src/lib/components/ui',
       utils: 'src/lib/utils.ts',
       css: 'src/app.css',
+      blocks: 'src/lib/blocks',
     },
     lockFile: '.vibelog/installed.lock.json',
   };
@@ -188,6 +189,44 @@ function makeCtx(name = 'button') {
     ref: `vibelog.md/ui/${name}`,
   };
 }
+
+describe('VL-426: блок с registryDependencies ставится через общую цепочку', () => {
+  it('header (registry:block) + base: base в src/lib/utils.ts, блок в src/lib/blocks/header/', async () => {
+    freshProject();
+    const utils = 'export const cn = () => "";\n';
+    seedItem(baseItem({ dependencies: ['clsx', 'tailwind-merge'] }), {
+      'src/lib/utils.ts': utils,
+    });
+    const header = {
+      name: 'header',
+      type: 'registry:block',
+      version: '1.0.0',
+      dependencies: [],
+      registryDependencies: ['vibelog.md/ui/base'],
+      files: [
+        {
+          path: 'src/lib/blocks/header/header.svelte',
+          target: 'header/header.svelte',
+          type: 'registry:block',
+        },
+      ],
+    };
+    seedItem(header, { 'src/lib/blocks/header/header.svelte': 'header\n' });
+
+    const { out, code } = await runCli('install', 'vibelog.md/ui/header', '--yes');
+    assert.equal(code, 0, out);
+    // Зависимость применяется первой (порядок цепочки VL-390), блок — по
+    // алиасу blocks: оба пути работают для registry:block без исключений
+    assert.equal(readFileSync(join(testDir, 'src/lib/utils.ts'), 'utf-8'), utils);
+    assert.equal(
+      readFileSync(join(testDir, 'src/lib/blocks/header/header.svelte'), 'utf-8'),
+      'header\n',
+    );
+    const lock = readLockFile();
+    assert.ok(lock.components.base, 'base должен попасть в lock');
+    assert.ok(lock.components.header, 'header должен попасть в lock');
+  });
+});
 
 describe('parseRegistryRef', () => {
   it('разбирает три сегмента', () => {

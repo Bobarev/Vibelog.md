@@ -209,12 +209,18 @@ export interface InstallFetchOptions {
   onProgress?: ProgressCallback;
 }
 
-/** Соответствие типа файла реестра алиасу проекта (doc-25 §4.3 шаг 7). */
+/**
+ * Соответствие типа файла реестра алиасу проекта (doc-25 §4.3 шаг 7).
+ *
+ * `registry:block` → `blocks` (VL-426): installable-сборка «копируй и правь»
+ * живёт в отдельном каталоге, а не в `ui` — развод виден в файловой системе.
+ */
 const TYPE_ALIAS: Record<string, AliasName> = {
   'registry:ui': 'ui',
   'registry:lib': 'utils',
   'registry:hook': 'components',
   'registry:component': 'components',
+  'registry:block': 'blocks',
 };
 
 /**
