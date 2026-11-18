@@ -321,7 +321,11 @@ export function startWebServer(
       console.error(`Ошибка сервера: ${err.message}`);
     }
     stopSupervisorTimer();
-    process.exit(1);
+    // VL-427 (AC3): в режиме up сбой веба не должен ронять бота — маркер
+    // ставит runUp ДО вызова сервера. Метка для waitWebReady: событие могло
+    // всплыть раньше, чем runUp подпишется на error
+    (server as Server & { startupError?: Error }).startupError = err;
+    if (process.env.VIBELOG_UP !== '1') process.exit(1);
   });
 
   // VL-270: сервер закрыли (тест, /web stop) — тик обязан остановиться вместе

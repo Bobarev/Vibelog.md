@@ -46,6 +46,7 @@ export const CLI_COMMANDS: readonly CliCommandEntry[] = [
   { name: 'mcp', summary: 'MCP-сервер по stdio: mcp start' },
   { name: 'browser', summary: 'Веб-интерфейс проекта (--port, --host)' },
   { name: 'bot', summary: 'Telegram-бот: фазы и действия из чата' },
+  { name: 'up', summary: 'Веб и Telegram-бот одной командой в одном процессе' },
   { name: 'qwen-debug', summary: 'Дебаг-прогон qwen (ping, stream-json) для диагностики агента' },
   { name: 'agent', summary: 'Чат с LLM-агентом (TUI); run — headless-запуск фазы' },
   { name: 'session', summary: 'Сводка и обзор транскрипта сессии агента (summary|outline)' },

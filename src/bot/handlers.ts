@@ -50,7 +50,7 @@ import { saveSettingsPatch, loadSettings } from '../core/settings.js';
 import { loadModels } from '../core/models.js';
 import { commandsHelp, helpText } from './registry.js';
 import { rootCliPath, spawnReplacementBot, vibelogCliPath } from './restart.js';
-import { clearWebServer, currentWebServer, parseWebCommand, spawnWebServer, stopWebServer } from './web.js';
+import { clearWebServer, currentWebServer, parseWebCommand, spawnWebServer, stopWebServer, upWebReply } from './web.js';
 import { buildTaskWorktree, ensureTaskWorktree, taskBranchName, worktreeCliPath } from '../core/worktree.js';
 import type { PhaseExitCallback, PhaseRun, StartResult } from '../web/orchestrator.js';
 // VL-180: startTaskPhase — общий с вебом хелпер «комментарий → фаза»
@@ -1468,6 +1468,14 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     const parsed = parseWebCommand((ctx.match ?? '').toString());
     if ('error' in parsed) {
       await sendMd(ctx, parsed.error);
+      return;
+    }
+    // VL-427 (AC5): режим up — сервер уже работает в этом же процессе;
+    // спавн дочернего browser дал бы второй сервер на том же порту,
+    // kill для stop неприменим — остановка только Ctrl+C
+    const upReply = upWebReply(parsed.action, deps.cwd);
+    if (upReply !== null) {
+      await sendMd(ctx, upReply);
       return;
     }
     if (parsed.action === 'stop') {

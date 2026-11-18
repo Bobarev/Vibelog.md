@@ -168,12 +168,14 @@ describe('shouldSkip — когда проверка пропускается', 
   });
 });
 
-describe('shouldNotifyAtStartup — VL-206: проверка до route для bot/browser', () => {
-  it('bot/browser → true (с флагами команды тоже)', () => {
+describe('shouldNotifyAtStartup — VL-206: проверка до route для bot/browser/up', () => {
+  it('bot/browser/up → true (с флагами команды тоже)', () => {
     assert.equal(shouldNotifyAtStartup(['browser']), true);
     assert.equal(shouldNotifyAtStartup(['bot']), true);
+    assert.equal(shouldNotifyAtStartup(['up']), true, 'VL-427: up — долгоживущая команда');
     assert.equal(shouldNotifyAtStartup(['browser', '--no-open']), true);
     assert.equal(shouldNotifyAtStartup(['bot', '--help']), true);
+    assert.equal(shouldNotifyAtStartup(['up', '--port', '0']), true, 'VL-427: up с флагами');
   });
 
   it('остальные команды, mcp, пустой argv, голые флаги → false', () => {

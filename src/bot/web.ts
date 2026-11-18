@@ -17,9 +17,43 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { loadConfig } from '../core/config.js';
 
 /** Текущий дочерний процесс веб-сервера (синглтон модуля). */
 let webChild: ChildProcess | null = null;
+
+/**
+ * Ответ на /web в режиме `vb up` (VL-427, AC5): сервер работает в этом же
+ * процессе — дочерний `browser` спавнить нельзя (второй сервер на том же
+ * порту), а /web stop не может убить сервер: kill дочернего процесса здесь
+ * неприменим.
+ *
+ * Порт берётся из маркера VIBELOG_UP_PORT (up пишет фактический порт после
+ * listen), fallback — default_port из config; рассинхрон --port у up и конфига
+ * задокументирован в doc-7.
+ *
+ * @param action — разобранное действие /web
+ * @param cwd — рабочая директория проекта (config)
+ * @param env — окружение (для тестов — явный объект вместо process.env)
+ * @returns текст ответа или null, если режим up не активен
+ */
+export function upWebReply(
+  action: 'start' | 'stop',
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env
+): string | null {
+  if (env.VIBELOG_UP !== '1') return null;
+  if (action === 'stop') {
+    return '⏹ Веб-сервер работает в режиме vb up (один процесс с ботом) — остановите его Ctrl+C в терминале';
+  }
+  let port = parseInt(env.VIBELOG_UP_PORT ?? '', 10);
+  if (!Number.isFinite(port) || port <= 0) {
+    try {
+      port = (loadConfig(cwd).default_port as number) || 3030;
+    } catch { port = 3030; }
+  }
+  return `🌐 Веб уже запущен в этом процессе: ${webServerUrl(port)}`;
+}
 
 /**
  * Разбирает аргументы /web: пусто/`start` → запуск; `start VL-N` → запуск
