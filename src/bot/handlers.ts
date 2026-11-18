@@ -403,6 +403,51 @@ async function sendPhaseResult(bot: Bot, chatId: number, run: PhaseRun, taskId?:
  * @param deps — cwd проекта и геттер пина
  */
 export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
+  // ── VL-429: режим --trace — лог ВСЕХ входящих update и исходящих api.*-вызовов ──
+  // Мусора много — это осознанно (диагностика потерь между ботами).
+  if (deps.trace) {
+    console.log('[trace] глобальный лог включён: все входящие update и исходящие api.-вызовы');
+    bot.use(async (ctx, next) => {
+      const updType = Object.keys(ctx.update)[0] ?? 'unknown';
+      const parts = [`[trace] update ${updType}`];
+      const m = ctx.message ?? ctx.editedMessage;
+      if (m !== undefined) {
+        parts.push(`chat=${m.chat.id}`, `mid=${m.message_id}`);
+        if (m.from !== undefined) {
+          parts.push(
+            `from=${m.from.id}${m.from.username !== undefined ? '@' + m.from.username : ''}${m.from.is_bot ? '(bot)' : ''}`,
+          );
+        }
+        if (m.reply_to_message !== undefined) parts.push(`reply_to=${m.reply_to_message.message_id}`);
+        const text =
+          'text' in m && typeof m.text === 'string'
+            ? m.text
+            : 'caption' in m && typeof m.caption === 'string'
+              ? m.caption
+              : '';
+        if (text !== '') parts.push(`text=${JSON.stringify(text.slice(0, 300))}`);
+      } else if (ctx.callbackQuery !== undefined) {
+        parts.push(`cb=${JSON.stringify((ctx.callbackQuery as { data?: string }).data ?? '')}`);
+      }
+      console.log(parts.join(' '));
+      await next();
+    });
+    // VL-430 (AC6): перехват через transformer, а НЕ instance-patch на bot.api.
+    // grammy в handleUpdate создаёт НОВЫЙ экземпляр Api на каждый update и
+    // передаёт его в Context (bot.js: handleUpdate → new Api → new Context) —
+    // ctx.reply/ctx.api.sendMessage шли мимо own-свойств bot.api, и sendMessage
+    // из ctx-вызовов (/ask, sendMd) в лог не попадал. Трансформеры из
+    // bot.api.config копируются в каждый per-update Api (installedTransformers),
+    // поэтому ловятся оба пути. Фильтр по 3 именам обязателен: трансформер
+    // видит и getUpdates (polling) — без фильтра лог залился бы поллингом.
+    bot.api.config.use((prev, method, payload, signal) => {
+      if (method === 'sendMessage' || method === 'sendRichMessage' || method === 'answerCallbackQuery') {
+        const shown = JSON.stringify(payload ?? {}).slice(0, 300);
+        console.log(`[trace] api.${method} →`, shown);
+      }
+      return prev(method, payload, signal);
+    });
+  }
   // Чаты, ожидающие ввода пина (в памяти процесса, не в файле)
   const awaitingPin = new Set<number>();
   // Чаты, ожидающие ввода комментария после кнопки «Комментарий» (VL-78):
@@ -631,8 +676,23 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     console.error('[interbot] recovery тикетов при старте не удалась:', (err as Error).message);
   }
 
-  bot.on('message:text', async (ctx, next) => {
+  bot.on('message', async (ctx, next) => {
     const m = ctx.message;
+    // ── VL-430: rich-ответ чужого бота не имеет поля text (тот же паттерн,
+    // что VL-93 в reply-resume) — фильтр message:text такое сообщение не
+    // пропускал, и ветка тикета/dispatch молча теряла ответ. Текст вычисляется
+    // ДО trace и всех веток; guard первым (lesson-291: порядок next()):
+    // нетекстовые (фото/стикер) уходят next() — поведение веток ниже не меняется.
+    // Проверено по filter.js: старый фильтр message:text пропускал и пустой
+    // text ('' != null в leaf-предикате), а rich-сообщение (без свойства
+    // text) не пропускал вовсе. Сохраняем ровно это: '' при наличии свойства
+    // text — ветка работает; '' от richToText (rich без текста) — next().
+    const textProp = 'text' in m && typeof m.text === 'string' ? m.text : undefined;
+    const text = textProp ?? ('rich_message' in m ? richToText(m.rich_message) : undefined);
+    if (text === undefined || (text === '' && textProp === undefined)) {
+      await next();
+      return;
+    }
     // VL-429 (--trace): вход — идентификаторы и усечённый текст; токены и
     // comms.yaml в лог не попадают (AC2/AC4)
     trace(
@@ -640,7 +700,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       'chat_id=', ctx.chat?.id,
       'from=', { id: m.from?.id, username: m.from?.username, is_bot: m.from?.is_bot },
       'reply_to=', m.reply_to_message?.message_id,
-      'text=', m.text.slice(0, 100),
+      'text=', text.slice(0, 100),
     );
     // Только ЧУЖИЕ боты: свои сообщения (в т.ч. наши ответы) — не наша зона
     if (!m.from?.is_bot || m.from.id === ctx.me.id) {
@@ -675,7 +735,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     const incoming = {
       message_id: m.message_id,
       chat_id: chatId,
-      text: m.text,
+      text,
       from_id: m.from.id,
       ...(m.from.username ? { from_username: m.from.username } : {}),
       is_bot: true,
@@ -689,7 +749,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       loadTickets(deps.cwd).some((t) => t.question_msg_id === repliedTo);
     trace('ветка тикета: reply_to=', repliedTo ?? '—', 'совпадение=', ticketMatch);
     if (ticketMatch && repliedTo !== undefined) {
-      const updated = answerTicket(deps.cwd, repliedTo, m.text);
+      const updated = answerTicket(deps.cwd, repliedTo, text);
       trace(
         'answerTicket →',
         updated === null ? 'null (ответ без тикета)' : `статус=${updated.status}`,
@@ -734,7 +794,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       return; // в цепочку grammy не идём: interbot-сообщение — наша зона
     }
     // ── Входящий вопрос → read-only ран через startPrompt (AC3, AC7) ──
-    const prompt = buildIncomingPrompt(m.text, channel);
+    const prompt = buildIncomingPrompt(text, channel);
     const replyTo = m.message_id;
     const onExit: PhaseExitCallback = (run) => {
       const answer =
