@@ -86,6 +86,83 @@ describe('spawnReplacementBot (VL-70)', () => {
   });
 });
 
+describe('VL-427: режим up замещающего процесса (AC6)', () => {
+  const spawnEnv = () => {
+    const { TELEGRAM_BOT_TOKEN: _omit, ...env } = process.env;
+    return env;
+  };
+
+  /** Stub-cli: печатает argv (без node и пути) — видим, кем создан процесс. */
+  const argvStub = (dir) => {
+    const stub = join(dir, 'stub-argv.mjs');
+    writeFileSync(stub, 'console.log(process.argv.slice(2).join(" "));\n', 'utf-8');
+    return stub;
+  };
+
+  it('маркер VIBELOG_UP=1 → замещающий запущен с аргументом up и --port', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'vibelog-restart-up-'));
+    try {
+      const stub = argvStub(cwd);
+      const env = { ...spawnEnv(), VIBELOG_UP: '1', VIBELOG_UP_PORT: '4123' };
+      const child = spawnReplacementBot(cwd, 'pipe', stub, env);
+      let stdout = '';
+      child.stdout.on('data', (d) => { stdout += d; });
+      const code = await new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', (c) => resolve(c));
+      });
+      assert.equal(code, 0, `stub завершился с кодом: ${code}`);
+      assert.equal(stdout.trim(), 'up --port 4123', `argv замещающего: ${stdout}`);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('без маркера → прежний аргумент bot (регрессия VL-70/VL-143)', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'vibelog-restart-bot-'));
+    try {
+      const stub = argvStub(cwd);
+      const child = spawnReplacementBot(cwd, 'pipe', stub, spawnEnv());
+      let stdout = '';
+      child.stdout.on('data', (d) => { stdout += d; });
+      const code = await new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', (c) => resolve(c));
+      });
+      assert.equal(code, 0, `stub завершился с кодом: ${code}`);
+      assert.equal(stdout.trim(), 'bot', `argv замещающего: ${stdout}`);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('маркеры VIBELOG_UP/VIBELOG_UP_PORT strip-ятся из env замещающего', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'vibelog-restart-stripup-'));
+    try {
+      const stub = join(cwd, 'stub-env.mjs');
+      writeFileSync(
+        stub,
+        'console.log((process.env.VIBELOG_UP ?? "UNSET") + "|" + (process.env.VIBELOG_UP_PORT ?? "UNSET"));\n',
+        'utf-8'
+      );
+      const env = { ...spawnEnv(), VIBELOG_UP: '1', VIBELOG_UP_PORT: '4123' };
+      const child = spawnReplacementBot(cwd, 'pipe', stub, env);
+      let stdout = '';
+      child.stdout.on('data', (d) => { stdout += d; });
+      const code = await new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', (c) => resolve(c));
+      });
+      assert.equal(code, 0, `stub завершился с кодом: ${code}`);
+      assert.equal(stdout.trim(), 'UNSET|UNSET', `env замещающего: ${stdout}`);
+      // исходный объект env теста не мутирован (VL-140: изоляция тестов)
+      assert.equal(env.VIBELOG_UP, '1');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('фикс бага рестарта (VL-143): замещающий процесс без файловых ключей', () => {
   it('дефолтный env НЕ наследует ключи, записанные loadDotEnv', async () => {
     // Сценарий бага: родитель записал KEY из .env в process.env → дочерний

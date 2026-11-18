@@ -86,13 +86,33 @@ export function spawnReplacementBot(
   cliPath: string = vibelogCliPath(),
   env?: NodeJS.ProcessEnv
 ): ChildProcess {
-  const child = spawn(process.execPath, [cliPath, 'bot'], {
+  // Источник маркера режима up: явный env (тесты) или env родителя
+  // без файловых ключей (прод, VL-143)
+  const effectiveEnv: NodeJS.ProcessEnv = env ?? defaultReplacementEnv();
+  const childEnv: NodeJS.ProcessEnv = { ...effectiveEnv };
+  // VL-427: маркер режима strip-ится из env замещающего процесса — иначе
+  // была бы петля «маркер от маркера»; новый процесс выставит его сам,
+  // если его тоже запустили через up
+  delete childEnv.VIBELOG_UP;
+  delete childEnv.VIBELOG_UP_PORT;
+  // VL-427 (AC6): режим up читается из effectiveEnv (process.env в проде,
+  // явный env-объект в тестах): замещающий процесс должен поднять и бота,
+  // и веб, иначе после /restart веб в режиме up умирал бы. --port
+  // пробрасывается из фактического VIBELOG_UP_PORT, если известен.
+  const upMode = effectiveEnv.VIBELOG_UP === '1';
+  const args = [cliPath];
+  args.push(upMode ? 'up' : 'bot');
+  const upPort = parseInt(effectiveEnv.VIBELOG_UP_PORT ?? '', 10);
+  if (upMode && Number.isFinite(upPort) && upPort > 0) {
+    args.push('--port', String(upPort));
+  }
+  const child = spawn(process.execPath, args, {
     cwd,
     stdio,
     detached: true,
     // VL-143: дефолт — process.env минус файловые ключи (см. defaultReplacementEnv);
-    // явный env используется в тестах и не стриппируется
-    env: env ?? defaultReplacementEnv(),
+    // явный env используется в тестах и не стриппируется (кроме маркеров up, VL-427)
+    env: childEnv,
   });
   child.unref();
   return child;

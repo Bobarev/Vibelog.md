@@ -36,10 +36,11 @@ const SKIP_COMMANDS = ['mcp', 'qwen-debug'];
 
 /**
  * Команды, у которых уведомление выполняется при запуске ДО route (VL-206):
- * bot/browser долгоживущие — route() для них не завершается до остановки
+ * bot/browser/up долгоживущие — route() для них не завершается до остановки
  * сервиса, поэтому пост-route вызов из bin/vibelog.mjs никогда бы не наступил.
+ * up — VL-427: маршрут живёт, пока не остановятся обе части.
  */
-export const STARTUP_NOTIFY_COMMANDS = ['bot', 'browser'];
+export const STARTUP_NOTIFY_COMMANDS = ['bot', 'browser', 'up'];
 
 /** Значения env-гарда, означающие «отключить проверку обновлений». */
 const SKIP_ENV_VALUES = ['true', '1', 'yes'];

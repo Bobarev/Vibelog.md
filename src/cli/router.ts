@@ -29,6 +29,8 @@ import { runCapabilities } from './commands/capabilities.js';
 import { runInstructions } from './commands/instructions.js';
 import { runMcp } from './commands/mcp.js';
 import { runBrowser } from './commands/browser.js';
+// VL-427: веб + бот одной командой в одном процессе
+import { runUp } from './commands/up.js';
 import { runVersion } from './commands/version.js';
 import { runDoctor } from './commands/doctor.js';
 // VL-341: сводка «где я» — версия, задачи, фазы, очередь, grant, git
@@ -121,6 +123,10 @@ export async function route(args: string[]): Promise<void> {
       return;
     case 'bot':
       return runBot(positional, flags, cwd);
+    // VL-427: веб-сервер и Telegram-бот одной командой в одном процессе
+    // (как и bot, не возвращается, пока живёт сервис)
+    case 'up':
+      return runUp(positional, flags, cwd);
     case 'qwen-debug':
       return runQwenDebug(cwd);
     case 'agent':
@@ -187,6 +193,7 @@ ${colorize('Команды:', colors.bold)}
   ${colorize('board', colors.cyan)} [--export]                   Канбан-доска
   ${colorize('browser', colors.cyan)} [--port N] [--host ADDR]   Веб-интерфейс
   ${colorize('bot', colors.cyan)}                             Telegram-бот (grammy)
+  ${colorize('up', colors.cyan)} [--port N] [--host A] [--no-open]  Веб и Telegram-бот одной командой в одном процессе
   ${colorize('agent', colors.cyan)} [task-id]               Чат с LLM-агентом (TUI); run <фаза> <task-id> — headless-запуск фазы; analyze <ref> — анализ сессии
   ${colorize('session', colors.cyan)} summary|outline <id> [--task VL-N] [--json]  Сводка/обзор транскрипта сессии
   ${colorize('qwen-debug', colors.cyan)}                  Дебаг-прогон qwen (ping, stream-json)
@@ -587,6 +594,19 @@ vibelog bot
 введите его в Telegram после /start: chat_id допишется в .env (TELEGRAM_CHAT_IDS).
 
 Команды: /tasks, /task <id>, /board`,
+
+    up: `
+vibelog up [--port N] [--host ADDR] [--no-open]
+
+Веб-интерфейс и Telegram-бот в ОДНОМ процессе (VL-427): один терминал —
+и URL доски, и пин-код бота. Флаги — только веб-часть (как у browser);
+токен бота: TELEGRAM_BOT_TOKEN в .env (как у команды bot).
+
+Сбой одной части не роняет другую: нет токена → бот сообщает об ошибке,
+веб продолжает работать; занятый порт → ошибка веба, бот стартует.
+В режиме up /web из чата отвечает «веб уже запущен» (без второго сервера,
+порт — из VIBELOG_UP_PORT или config; /web stop — только Ctrl+C в терминале),
+/restart перезапускает замещающий процесс в том же режиме (up).`,
 
     agent: `
 vibelog agent [task-id] [--resume <session-ref>]
