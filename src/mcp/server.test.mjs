@@ -1,7 +1,7 @@
 import { describe, it, beforeAll, afterAll } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -818,6 +818,43 @@ describe('MCP-сервер', () => {
       assert.equal(fin.result.isError, true, 'несуществующая задача — фатальная ошибка');
       assert.ok(fin.result.content[0].text.includes('не найдена'),
         `нет сообщения «не найдена»: ${fin.result.content[0].text}`);
+    });
+
+    // ——— VL-425: центральный guard обязательного id (инцидент lb-gift LB-16) ———
+
+    it('VL-425: finish_phase без id → isError «Не передан обязательный аргумент id», без TypeError и записей', async () => {
+      const tasksPath = join(backlogDir, 'tasks');
+      const snap = () => Object.fromEntries(
+        readdirSync(tasksPath).map((f) => [f, readFileSync(join(tasksPath, f), 'utf-8')]),
+      );
+      const before = snap();
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        // Воспроизведение инцидента: модель стабильно не передавала args.id
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { aborted: true, comment: 'тест без id (VL-425)' } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      assert.equal(fin.result.isError, true, 'отсутствующий id — isError на транспорте');
+      const text = fin.result.content[0].text;
+      assert.ok(text.includes('Не передан обязательный аргумент id задачи (обязательное поле схемы)'),
+        `нет текста guard'а: ${text}`);
+      assert.ok(!text.includes('Cannot read properties'),
+        `TypeError не должен просочиться: ${text}`);
+      assert.deepEqual(snap(), before, 'записей при отказе нет (байтово до/после)');
+    });
+
+    it('VL-425: числовой id нормализуется по task_prefix проекта — «Задача mcp-99999 не найдена»', async () => {
+      const responses = await callMcp([
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'backlog_finish_phase', arguments: { id: 99999, comment: 'числовой id' } } },
+      ]);
+      const fin = responses.find(r => r.id === 2);
+      assert.equal(fin.result.isError, true, 'несуществующая задача — ошибка, но ПОСЛЕ нормализации');
+      const text = fin.result.content[0].text;
+      assert.ok(text.includes('mcp-99999'),
+        `число не превращено в «<task_prefix>-N» проекта: ${text}`);
+      assert.ok(!text.includes('Не передан обязательный'),
+        `id передан и нормализован — это «не найдена», а не guard: ${text}`);
     });
   });
 

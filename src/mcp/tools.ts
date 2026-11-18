@@ -21,7 +21,7 @@ import {
 } from '../core/store.js';
 import { searchTasksRanked } from '../core/search.js';
 import { isReady, validateDeps } from '../core/deps.js';
-import { loadConfig, normalizeTaskType } from '../core/config.js';
+import { loadConfig, normalizeTaskType, taskPrefix, taskIdPattern } from '../core/config.js';
 import {
   writeMilestone, listMilestones, getMilestone,
   renameMilestone, deleteMilestone, archiveMilestone,
@@ -1053,8 +1053,101 @@ export async function handleToolCall(
   cwd: string,
   opts?: HandleToolCallOpts,
 ): Promise<string> {
-  const out = await handleToolCallInner(name, args, cwd, opts);
-  return withPhaseBlock(name, args, cwd, out);
+  // VL-425: центральный guard обязательного id — ДО handleToolCallInner,
+  // чтобы отказ не оставил ни одной записи (и не сжигал budget фазы на
+  // TypeError из глубины). Инцидент lb-gift LB-16: 24 вызова finish_phase
+  // подряд падали «Cannot read properties of undefined» — модель стабильно
+  // не передавала args.id, а required схемы MCP SDK на входе не валидирует.
+  const guarded = guardRequiredId(name, args, cwd);
+  const out = await handleToolCallInner(name, guarded, cwd, opts);
+  return withPhaseBlock(name, guarded, cwd, out);
+}
+
+/**
+ * Нормализация обязательного аргумента id (VL-425).
+ *
+ * - строка: trim; пустая → null (отказ); числовая ("16") → canonical
+ *   «prefix-N» по task_prefix конфига проекта; прочие строки — как есть
+ *   (id не обязан матчить паттерн: «задача не найдена» скажет);
+ * - целое число ≥ 0 (16) → «prefix-N» — модель часто присылает НОМЕР
+ *   задачи вместо полного id, в проекте с task_prefix LB → LB-16;
+ *   дробные/отрицательные → null;
+ * - undefined/null/прочее (объекты, boolean) → null.
+ *
+ * Результат числовой нормализации проверяется taskIdPattern (AC2):
+ * не совпал — null, вызов получает тот же отказ, что и при отсутствии id.
+ *
+ * @param cwd — рабочая директория проекта (источник task_prefix)
+ * @param value — значение args.id как пришло от модели
+ * @returns канонический id либо null (значение непригодно)
+ */
+export function normalizeTaskId(cwd: string, value: unknown): string | null {
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value) || value < 0) return null;
+    const candidate = `${taskPrefix(cwd)}-${value}`;
+    return taskIdPattern(cwd).test(candidate) ? candidate : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') return null;
+    if (/^\d+$/.test(trimmed)) {
+      const candidate = `${taskPrefix(cwd)}-${trimmed}`;
+      return taskIdPattern(cwd).test(candidate) ? candidate : null;
+    }
+    return trimmed;
+  }
+  return null;
+}
+
+/**
+ * Инструменты с контрактом «никогда не бросает» (VL-268 AC3): supervisor-домен
+ * сам валидирует id и отвечает структурированным {ok:false,error}. Guard
+ * НОРМАЛИЗУЕТ им id (16 → prefix-N, как всем), но при непригодном id не
+ * бросает — возвращает исходные аргументы handler'у, чья валидация и должна
+ * ответить («Не указан id задачи…» — контракт VL-268 не нарушен).
+ */
+const STRUCTURED_ID_ERRORS: ReadonlySet<string> = new Set([
+  'backlog_trigger_phase',
+  'backlog_phase_status',
+]);
+
+/**
+ * Центральный guard обязательного поля id (VL-425).
+ *
+ * Читает required из схемы инструмента в listTools() — единый источник
+ * правды — и закрывает разом ВСЕ id-инструменты: в toolAddComment/
+ * toolViewTask/toolUpdateDependencies/toolFinishPhase args.id шёл
+ * `as string` без проверки и ронял TypeError в getTask. Поле `comment`
+ * guard НЕ трогает — у него контракт VL-253 (авто-отчёт при отсутствии),
+ * generic-guard по required его сломал бы.
+ *
+ * Отказ — контролируемая ошибка НА границе: server.ts отдаёт её как
+ * isError-ответ с внятным текстом (модель исправляется с первого повтора,
+ * а не крутит луп до исчерпания бюджета), web-чат ловит её в executeTool.
+ * Записей при отказе нет ни одной — ошибка летит до handleToolCallInner.
+ *
+ * @param name — имя инструмента
+ * @param args — аргументы вызова (не мутируются: возвращается копия)
+ * @param cwd — рабочая директория проекта
+ * @throws если обязательный id отсутствует/пуст/непригоден к нормализации
+ */
+function guardRequiredId(name: string, args: ToolArgs, cwd: string): ToolArgs {
+  const def = listTools().find((t) => t.name === name);
+  const required = (def?.inputSchema as { required?: unknown } | undefined)?.required;
+  if (!Array.isArray(required) || !required.includes('id')) return args;
+  const normalized = normalizeTaskId(cwd, args.id);
+  if (normalized === null) {
+    if (STRUCTURED_ID_ERRORS.has(name)) return args; // валидация — на стороне домена
+    // Текст без вставки конкретного id (решение Pavel, VL-425): просто
+    // констатация отсутствия обязательного аргумента и требование повторить
+    // вызов с ним — раньше модель получала бессмысленный TypeError и
+    // повторяла упавший вызов до исчерпания wall-time фазы.
+    throw new Error(
+      'Не передан обязательный аргумент id задачи (обязательное поле схемы). Повтори вызов, добавив id задачи.',
+    );
+  }
+  // Копия, не мутация входа: идемпотентность/логи видят исходные аргументы
+  return { ...args, id: normalized };
 }
 
 /**

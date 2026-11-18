@@ -198,7 +198,9 @@ describe('VL-4 — MCP: type в create/list/update', () => {
       await assert.rejects(
         handleToolCall('backlog_update_task', bad, testDir),
         (err) => {
-          assert.ok(err.message.includes('Не передан id задачи'), `неожиданное сообщение: ${err.message}`);
+          // VL-425: сообщение теперь даёт центральный guard обязательного id
+          // (центральная формулировка вместо per-tool missingIdMessage)
+          assert.ok(err.message.includes('Не передан обязательный аргумент id задачи'), `неожиданное сообщение: ${err.message}`);
           assert.ok(!/toLowerCase/.test(err.message), `сообщение содержит toLowerCase: ${err.message}`);
           return true;
         }
