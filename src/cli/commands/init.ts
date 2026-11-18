@@ -20,6 +20,8 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { findBacklogDir } from '../../core/paths.js';
 import { loadProjectEnv } from '../../bot/env.js';
+// VL-428: одноразовый перенос TELEGRAM_* из .env в comms.yaml (wizard-флоу)
+import { migrateEnvToComms } from '../../core/comms.js';
 import { resolveActiveModel } from '../../core/models.js';
 import {
   applySetup,
@@ -184,6 +186,21 @@ export async function runInit(args: string[], flags: FlagValues, cwd: string): P
   // не видит того, что wizard только что дописал в .env — без этого проверки
   // ниже шли бы с пустым ROUTERAI_API_KEY (401) и без TELEGRAM_PROXY (timeout).
   loadProjectEnv(cwd);
+
+  // VL-428: секреты/чаты Telegram мигрируют из legacy .env в
+  // .vibelog/comms.yaml (идемпотентно). После loadProjectEnv: процесс уже
+  // видит токен через process.env для getMe-проверок ниже, а файл .env
+  // очищается от TELEGRAM_* — секреты не живут в двух местах (риск VL-428).
+  if (answers.secretsLocation !== 'system') {
+    try {
+      const moved = migrateEnvToComms(cwd);
+      if (moved.length > 0) {
+        result.written.push(`.vibelog/comms.yaml (перенесено: ${moved.join(', ')})`);
+      }
+    } catch (err) {
+      result.warnings.push(`миграция TELEGRAM_* в comms.yaml: ${(err as Error).message}`);
+    }
+  }
 
   // Отчёт: что записано/пропущено (без значений секретов).
   // Легаси-строки («Создана директория…», «Создан конфиг…», «MCP-сервер

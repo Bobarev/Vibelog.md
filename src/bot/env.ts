@@ -17,12 +17,15 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { registerFileEnvKeys, fileLoadedEnvKeys, detectLegacyEnvSection } from '../core/settings.js';
 import { upsertDotEnv, parseChatIds, TELEGRAM_CHAT_IDS_KEY } from '../core/env-file.js';
+import { readComms, writeComms, commsPath, migrateEnvToComms } from '../core/comms.js';
 
 // Re-export по плану VL-143: набор файловых ключей удобно брать из env.js
 export { fileLoadedEnvKeys };
 // VL-329: парсер списка chat_id и имя ключа живут в core/env-file.ts —
 // их использует и ядро wizard-а (core/setup.ts), которому нельзя зависеть от bot/
 export { parseChatIds, TELEGRAM_CHAT_IDS_KEY };
+// VL-428: миграция секретов в comms.yaml доступна из точек входа бота
+export { migrateEnvToComms };
 
 /**
  * Читает <cwd>/.env и записывает пары KEY=VALUE в process.env.
@@ -73,6 +76,15 @@ export function loadDotEnv(cwd: string): void {
 let legacyEnvWarned = false;
 
 /**
+ * cwd для чтения comms.yaml в readBotChats (VL-428): у readBotChats нет
+ * параметра cwd (читатели зовут его из process-контекста), поэтому
+ * используется process.cwd() — бот, браузер и CLI запускаются в корне проекта.
+ */
+function cwdOf(): string {
+  return process.cwd();
+}
+
+/**
  * Общая загрузка env проекта (VL-189): только `.env`.
  *
  * Единая точка входа для всех режимов, которым нужен env проекта при
@@ -114,6 +126,9 @@ export function loadProjectEnv(cwd: string): void {
  * @returns список chat_id (пустой — бот ни к одному чату не привязан)
  */
 export function readBotChats(): number[] {
+  // VL-428: comms.yaml приоритетнее legacy .env (миграция переносит чаты)
+  const commsChats = readComms(cwdOf(), { warn: () => {} }).chats;
+  if (commsChats.length > 0) return commsChats;
   const raw = process.env[TELEGRAM_CHAT_IDS_KEY];
   const ids = parseChatIds(raw);
   if (raw !== undefined && raw.trim() !== '' && ids.length === 0) {
@@ -135,5 +150,12 @@ export function readBotChats(): number[] {
  * @returns true, если файл изменён
  */
 export function saveBotChats(cwd: string, ids: number[]): boolean {
-  return upsertDotEnv(cwd, TELEGRAM_CHAT_IDS_KEY, ids.join(','), { overwrite: true });
+  // VL-428: привязки живут в comms.yaml (секретные/личные id вне git);
+  // .env — legacy, при наличии migrateEnvToComms чаты уже перенесены
+  const config = readComms(cwd, { warn: () => {} });
+  const merged = Array.from(new Set([...config.chats, ...ids]));
+  if (merged.length === config.chats.length && existsSync(commsPath(cwd))) return false;
+  writeComms(cwd, { ...config, chats: merged });
+  process.env[TELEGRAM_CHAT_IDS_KEY] = merged.join(',');
+  return true;
 }

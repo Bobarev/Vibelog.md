@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { handleToolCall, listTools } from './tools.js';
 import { isUpstreamConfigured } from '../core/gitverse-issues.js';
+import { isCommsConfigured } from '../core/comms.js';
 import { tmpFile } from '../core/tmp.js';
 import type { ToolArgs } from './tools.js';
 
@@ -224,6 +225,13 @@ export const UPSTREAM_TOOLS: readonly string[] = [
 ];
 
 /**
+ * Инструменты interbot-связи (VL-428): видны только при настроенном
+ * comms.yaml (есть каналы) — зеркально UPSTREAM_TOOLS, набор имён
+ * обязан совпадать в MCP-сервере и веб-чате (tool-policy.ts).
+ */
+export const INTERBOT_TOOLS: readonly string[] = ['interbot_ask'];
+
+/**
  * Обрабатывает метод tools/list.
  *
  * VL-375: список фильтруется по состоянию проекта — инструменты upstream
@@ -238,7 +246,10 @@ export const UPSTREAM_TOOLS: readonly string[] = [
  */
 function handleToolsList(id: RpcId, cwd: string, send: SendResponse): void {
   const tools = listTools().filter(
-    (tool) => !UPSTREAM_TOOLS.includes(tool.name) || isUpstreamConfigured(cwd),
+    (tool) =>
+      (!UPSTREAM_TOOLS.includes(tool.name) || isUpstreamConfigured(cwd)) &&
+      // VL-428: без каналов в comms.yaml interbot_ask всё равно не сработает
+      (!INTERBOT_TOOLS.includes(tool.name) || isCommsConfigured(cwd)),
   );
   send(id, {
     tools,

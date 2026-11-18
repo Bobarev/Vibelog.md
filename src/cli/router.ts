@@ -263,7 +263,7 @@ vibelog init [name] [--prefix LB] [--mode fresh|upgrade] [--yes] [--web]
                         (system — не писать, завести переменные самому; env — .env)
   --secrets-overwrite   — перезаписать уже существующие секреты
   --bot, --bot-token <t>, --bot-chats <ids>, --bot-proxy <url>  — Telegram-бот
-                        (привязка чатов пишется в .env: TELEGRAM_CHAT_IDS)
+                        (секреты и привязка чатов мигрируют в .vibelog/comms.yaml)
 
 LLM (только если выбран vb):
   --gateway <id> --base-url <url> --api-key-env <VAR> --api-key <key>
@@ -589,9 +589,10 @@ vibelog model <subcommand>
     bot: `
 vibelog bot
 
-Запускает Telegram-бота (long polling). Токен: TELEGRAM_BOT_TOKEN в .env
-(единственный источник секретов). При старте в консоль печатается пин-код —
-введите его в Telegram после /start: chat_id допишется в .env (TELEGRAM_CHAT_IDS).
+Запускает Telegram-бота (long polling). Токен: .vibelog/comms.yaml
+(secrets.telegram; legacy — TELEGRAM_BOT_TOKEN в .env, при старте мигрирует).
+При старте в консоль печатается пин-код — введите его в Telegram после /start:
+chat_id запишутся в .vibelog/comms.yaml (chats).
 
 Команды: /tasks, /task <id>, /board`,
 
@@ -600,7 +601,7 @@ vibelog up [--port N] [--host ADDR] [--no-open]
 
 Веб-интерфейс и Telegram-бот в ОДНОМ процессе (VL-427): один терминал —
 и URL доски, и пин-код бота. Флаги — только веб-часть (как у browser);
-токен бота: TELEGRAM_BOT_TOKEN в .env (как у команды bot).
+токен бота: .vibelog/comms.yaml (как у команды bot).
 
 Сбой одной части не роняет другую: нет токена → бот сообщает об ошибке,
 веб продолжает работать; занятый порт → ошибка веба, бот стартует.

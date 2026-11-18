@@ -26,12 +26,18 @@ import { chunkRich } from './rich.js';
  * Копия `sendText` из `handlers.ts` (там она приватная, а импорт дал бы цикл).
  * Обе ветки глушат сетевые ошибки: сообщение теряется, но polling продолжается.
  */
-async function sendMdFallback(bot: Bot, chatId: number, text: string): Promise<void> {
+async function sendMdFallback(
+  bot: Bot,
+  chatId: number,
+  text: string,
+  replyTo?: number,
+): Promise<void> {
+  const other = replyTo !== undefined ? { reply_parameters: { message_id: replyTo } } : {};
   try {
-    await bot.api.sendMessage(chatId, text, { parse_mode: 'MarkdownV2' });
+    await bot.api.sendMessage(chatId, text, { parse_mode: 'MarkdownV2', ...other });
   } catch {
     try {
-      await bot.api.sendMessage(chatId, text);
+      await bot.api.sendMessage(chatId, text, other);
     } catch {
       // Сеть недоступна — сообщение теряется, polling продолжится
     }
@@ -50,11 +56,31 @@ async function sendMdFallback(bot: Bot, chatId: number, text: string): Promise<v
  * @param bot — экземпляр grammy Bot
  * @param chatId — адресат
  * @param text — сырой GFM-текст ответа персоны
+ * @param opts.replyTo — message_id, на которое ответить reply (VL-428:
+ *   ответ чужому боту в канале обязан быть reply на его вопрос)
  */
-export async function sendChatAnswer(bot: Bot, chatId: number, text: string): Promise<void> {
+export async function sendChatAnswer(
+  bot: Bot,
+  chatId: number,
+  text: string,
+  opts: { replyTo?: number } = {},
+): Promise<void> {
   try {
     for (const part of chunkRich(text)) {
-      await bot.api.sendRichMessage(chatId, { markdown: part });
+      if (opts.replyTo !== undefined) {
+        // Каст: rich-расширение принимает reply_parameters третьим аргументом;
+        // если сервер их проигнорирует — сообщение уйдёт без reply, но контент
+        // не потеряется (главное — ответ дошёл)
+        await (
+          bot.api.sendRichMessage as unknown as (
+            chatId: number,
+            payload: unknown,
+            other?: unknown,
+          ) => Promise<unknown>
+        )(chatId, { markdown: part }, { reply_parameters: { message_id: opts.replyTo } });
+      } else {
+        await bot.api.sendRichMessage(chatId, { markdown: part });
+      }
     }
   } catch (err) {
     console.error('sendRichMessage не прошёл, фолбэк на MarkdownV2:', err);
@@ -66,7 +92,7 @@ export async function sendChatAnswer(bot: Bot, chatId: number, text: string): Pr
       (i, n) => `\n\n_часть ${i}\\/${n}_`
     );
     for (const part of parts) {
-      await sendMdFallback(bot, chatId, part);
+      await sendMdFallback(bot, chatId, part, opts.replyTo);
     }
   }
 }

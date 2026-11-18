@@ -54,7 +54,13 @@ export function parseYaml(text: string): Record<string, unknown> {
     // Обрабатываем ДО управления стеком, т.к. элементы массива
     // не меняют уровень вложенности — они принадлежат текущему контейнеру
     if (trimmedLine.startsWith('- ') || trimmedLine === '-') {
+      const dashIndent = indent;
       const value = trimmedLine === '-' ? '' : trimmedLine.slice(2);
+      // Элемент-объект вида `- key: value` (массивы объектов, VL-428):
+      // закрываем кадры предыдущего элемента (отступ > отступа дефиса)
+      while (stack.length > 1 && stack[stack.length - 1].indent > dashIndent) {
+        stack.pop();
+      }
       const parentKey = findParentKey(stack);
       if (parentKey !== null) {
         // Находим кадр стека, содержащий массив, и добавляем элемент
@@ -62,7 +68,22 @@ export function parseYaml(text: string): Record<string, unknown> {
           const frame = stack[s];
           const container = frame.obj[parentKey];
           if (frame.parentKey === parentKey && Array.isArray(container)) {
-            container.push(parseScalar(value));
+            const kv = value === '' ? null : value.match(/^([\w][\w_-]*):\s*(.*)\s*$/);
+            if (kv !== null) {
+              // Элемент-объект: `- key: value`, продолжение — строки на
+              // отступе dashIndent+2 (карусель стека разбирает их как kv)
+              const item: Record<string, unknown> = {};
+              item[kv[1]] = parseScalar(kv[2].trim());
+              container.push(item);
+              stack.push({ indent: dashIndent + 2, obj: item });
+            } else if (value === '') {
+              // Пустой элемент: объект по следующим строкам (отступ > дефиса)
+              const item: Record<string, unknown> = {};
+              container.push(item);
+              stack.push({ indent: dashIndent + 2, obj: item });
+            } else {
+              container.push(parseScalar(value));
+            }
             break;
           }
         }
@@ -257,7 +278,31 @@ export function stringifyYaml(obj: Record<string, unknown>, indent: number = 0):
       } else {
         lines.push(`${prefix}${key}:`);
         for (const item of value) {
-          lines.push(`${prefix}  - ${escapeScalar(item)}`);
+          // Элемент-объект (VL-428, массивы каналов): `- key: value` +
+          // продолжение на отступе dashIndent+2 — иначе String(item)
+          // даёт '[object Object]' и парсер не соберёт объект
+          if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
+            const entries = Object.entries(item as Record<string, unknown>);
+            if (entries.length === 0) {
+              lines.push(`${prefix}  -`);
+              continue;
+            }
+            const [firstKey, firstVal] = entries[0];
+            if (firstVal === null || firstVal === undefined) {
+              // Пустое первое значение: `-` + все ключи на продолжении
+              lines.push(`${prefix}  -`);
+              lines.push(stringifyYaml(item as Record<string, unknown>, indent + 2));
+              continue;
+            }
+            lines.push(`${prefix}  - ${firstKey}: ${escapeScalar(firstVal)}`);
+            const rest: Record<string, unknown> = {};
+            for (const [k, v] of entries.slice(1)) rest[k] = v;
+            if (Object.keys(rest).length > 0) {
+              lines.push(stringifyYaml(rest, indent + 2));
+            }
+          } else {
+            lines.push(`${prefix}  - ${escapeScalar(item)}`);
+          }
         }
       }
     } else if (typeof value === 'object') {

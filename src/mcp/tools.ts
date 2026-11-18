@@ -98,6 +98,8 @@ import { commitFiles } from './git-commit.js';
 import { gitStatus } from './git-status.js';
 // VL-363: репорт бага в upstream через GitVerse Issues
 import { GitverseError, isUpstreamConfigured, reportBug, tokenHint, resolveUpstreamConfig } from '../core/gitverse-issues.js';
+// VL-428: interbot_ask — синхронный вопрос боту другого проекта
+import { interbotAsk } from '../core/interbot/ask.js';
 import {
   MIN_REPORT_ID_PREFIX,
   REPORTS_DIR,
@@ -956,6 +958,37 @@ export function listTools(): ToolDefinition[] {
         required: [],
       },
     },
+    // === Interbot: синхронный вопрос боту другого проекта (VL-428) ===
+    {
+      name: 'interbot_ask',
+      description:
+        'Задать вопрос боту другого Vibelog-проекта через общую Telegram-группу (doc-32). ' +
+        'Канал: default_channel из .vibelog/comms.yaml, явный channel — переопределяет, единственный ' +
+        'канал — автоподхват; несколько без default и без явного — ошибка со списком. ' +
+        'Ожидание ответа — до min(sync_timeout_sec, 55 с): по таймауту возвращается аккуратный ' +
+        '«ответа нет» БЕЗ ошибки MCP — тикет остаётся, запоздавший ответ придёт комментарием к task. ' +
+        'Виден только при настроенном comms.yaml (секция channels).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          question: { type: 'string', description: 'Вопрос чужому боту (обязателен)' },
+          channel: {
+            type: 'string',
+            description: 'id канала из comms.yaml; без него — default_channel или единственный канал',
+          },
+          to: { type: 'string', description: 'Адресат — @username чужого бота (префикс к сообщению)' },
+          task: {
+            type: 'string',
+            description: 'ID задачи-контекста: запоздавший ответ будет доставлен её комментарием',
+          },
+          kind: {
+            type: 'string',
+            description: 'Тип запроса: info | question | decision_request (approval-флоу получателя)',
+          },
+        },
+        required: ['question'],
+      },
+    },
     // === GitVerse Issues: репорт бага в upstream-проект (VL-363) ===
     {
       name: 'upstream_report_bug',
@@ -1296,6 +1329,11 @@ async function handleToolCallInner(
     // незакоммиченного). Идемпотентность by-key не нужна: чтение.
     case 'git_status':
       return gitStatus(cwd, { paths: (args.paths as string[]) ?? [] });
+    // VL-428: синхронный interbot-вопрос через Telegram-группу. Тикет
+    // пишется в файл (граница процессов бот ≠ MCP), ожидание ограничено
+    // лимитом MCP-клиента — таймаут возвращает текст, не ошибку (AC5).
+    case 'interbot_ask':
+      return interbotAsk(cwd, args);
     // VL-363: репорт бага в upstream через GitVerse Issues. Сетевой write:
     // идемпотентность by-key не применяется (дедуп даёт номер issue, а
     // повторный вызов создаст второй issue — это осознанно: репорт уникален).

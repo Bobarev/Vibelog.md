@@ -13,6 +13,8 @@ import { generatePin } from '../../bot/pin.js';
 import { registerHandlers } from '../../bot/handlers.js';
 import { syncCommands } from '../../bot/registry.js';
 import { recoverStalePhaseStatuses } from '../../core/phase-transient.js';
+// VL-428: одноразовая миграция TELEGRAM_* из .env в comms.yaml при старте
+import { migrateEnvToComms } from '../../core/comms.js';
 
 /**
  * Выполняет команду bot.
@@ -30,6 +32,16 @@ export async function runBot(
   // просто "vibelog bot", без node --env-file (VL-37, просьба Pavel);
   // общий хелпер loadProjectEnv (VL-189) — тот же код в браузере и чате
   loadProjectEnv(cwd);
+  // VL-428: секреты/чаты Telegram мигрируют из legacy .env в comms.yaml
+  // (идемпотентно: уже перенесённые ключи в .env отсутствуют)
+  try {
+    const moved = migrateEnvToComms(cwd);
+    if (moved.length > 0) {
+      console.log(`Секреты перенесены в .vibelog/comms.yaml: ${moved.join(', ')}`);
+    }
+  } catch (err) {
+    console.error(`[comms] миграция из .env не удалась: ${(err as Error).message}`);
+  }
   // VL-196: recovery «зависших» транзиентных In Progress после рестарта
   // процесса (AC3) — бот так же долго живёт и запускает фазы, как и веб
   try {
@@ -40,7 +52,7 @@ export async function runBot(
   const token = resolveToken(cwd);
   if (!token) {
     console.error(
-      'Токен Telegram-бота не найден. Задайте TELEGRAM_BOT_TOKEN в .env (единственный источник секретов)'
+      'Токен Telegram-бота не найден. Задайте secrets.telegram.bot_token в .vibelog/comms.yaml или TELEGRAM_BOT_TOKEN в .env'
     );
     return;
   }

@@ -33,7 +33,8 @@ import type { ToolSpec } from '../agent/tools.js';
 import { searchProjectFiles } from '../agent/search-files.js';
 import { listTools } from '../mcp/tools.js';
 import { isUpstreamConfigured } from '../core/gitverse-issues.js';
-import { UPSTREAM_TOOLS } from '../mcp/server.js';
+import { UPSTREAM_TOOLS, INTERBOT_TOOLS } from '../mcp/server.js';
+import { isCommsConfigured } from '../core/comms.js';
 import { ASK_USER_TOOL, MAX_OPTIONS, MIN_OPTIONS } from './chat-question.js';
 import { makeMemoryForgetTool, makeMemoryRememberTool, MEMORY_FORGET_TOOL, MEMORY_REMEMBER_TOOL } from './chat-memory.js';
 import { ASK_PERSONA_TOOL, readSubagentSettings } from '../core/subagents.js';
@@ -371,6 +372,9 @@ export function chatToolDefs(
     // VL-375/VL-391: ненастроенный upstream в чате так же бессмысленен,
     // как и в MCP-сервере — тот же предикат и тот же список, что в handleToolsList.
     .filter(t => !UPSTREAM_TOOLS.includes(t.name) || isUpstreamConfigured(cwd))
+    // VL-428: тот же предикат, что в handleToolsList MCP — без каналов
+    // comms.yaml interbot_ask в чате бессмысленен
+    .filter(t => !INTERBOT_TOOLS.includes(t.name) || isCommsConfigured(cwd))
     .map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
   defs.push(makeReadFileTool(cwd), makeWriteFileTool(cwd), makeEditTool(cwd), makeSearchFilesTool(cwd));
   // VL-422: внешние MCP-инструменты — после локальных, ДО ask_user и ДО
