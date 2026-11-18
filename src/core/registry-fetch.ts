@@ -133,12 +133,22 @@ export const REGISTRY_ERROR_EXIT_CODE = 3;
 /** Ветка реестра по умолчанию: в репозиториях GitVerse ветки `main` нет. */
 export const DEFAULT_REGISTRY_BRANCH = 'master';
 
-/** Известные типы элементов реестра (формат shadcn). */
+/**
+ * Поддерживаемые типы элементов реестра (формат shadcn, VL-426, doc-25 §3.3).
+ *
+ * Сверено с официальной схемой `$schema` из `registry.json`
+ * (`https://ui.shadcn.com/schema/registry-item.json`): её enum шире — там ещё
+ * `registry:theme`, `registry:page`, `registry:file`, `registry:style`,
+ * `registry:base`, `registry:font`, `registry:item`. Эти типы НЕ поддерживаются
+ * v1 и отклоняются валидацией осознанно (не молча): белый список — контракт.
+ */
 export const REGISTRY_ITEM_TYPES = [
   'registry:ui',
   'registry:lib',
   'registry:hook',
   'registry:component',
+  /** Installable-сборка «копируй и правь» (VL-426, doc-25 §3.3). */
+  'registry:block',
 ] as const;
 
 /** Тип элемента реестра. */

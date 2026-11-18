@@ -134,6 +134,7 @@ function defaultComponents() {
       ui: 'src/lib/components/ui',
       utils: 'src/lib/utils.ts',
       css: 'src/app.css',
+      blocks: 'src/lib/blocks',
     },
     lockFile: '.vibelog/installed.lock.json',
   };
@@ -232,6 +233,87 @@ describe('diffLines', () => {
     assert.ok(out.includes('+ c'));
     const long = diffLines('x\n'.repeat(100), 'y\n'.repeat(100), 5);
     assert.ok(long.length <= 6);
+  });
+});
+
+describe('VL-426: установка registry:block', () => {
+  /** Мультифайловый блок `header` (сборка «копируй и правь»). */
+  function headerBlockItem(overrides = {}) {
+    return {
+      name: 'header',
+      type: 'registry:block',
+      version: '1.0.0',
+      dependencies: [],
+      registryDependencies: [],
+      files: [
+        {
+          path: 'src/lib/blocks/header/header.svelte',
+          target: 'header/header.svelte',
+          type: 'registry:block',
+        },
+        {
+          path: 'src/lib/blocks/header/header-links.svelte',
+          target: 'header/header-links.svelte',
+          type: 'registry:block',
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  it('файлы сборки ставятся как есть в src/lib/blocks/<имя>/, lock записан, повтор идемпотентен', async () => {
+    freshProject();
+    seedItem(headerBlockItem(), {
+      'src/lib/blocks/header/header.svelte': 'header\n',
+      'src/lib/blocks/header/header-links.svelte': 'links\n',
+    });
+
+    const first = await runCli('install', 'vibelog.md/ui/header', '--yes');
+    assert.equal(first.code, 0, first.out);
+    // Целевая база — алиас blocks (НЕ ui): развод контрактов виден в ФС
+    assert.equal(
+      readFileSync(join(testDir, 'src/lib/blocks/header/header.svelte'), 'utf-8'),
+      'header\n',
+    );
+    assert.equal(
+      readFileSync(join(testDir, 'src/lib/blocks/header/header-links.svelte'), 'utf-8'),
+      'links\n',
+    );
+    const lock = readLockFile();
+    assert.equal(Object.keys(lock.components.header.files).length, 2);
+    assert.ok(lock.components.header.files['src/lib/blocks/header/header.svelte']);
+
+    const lockRaw = readLockRaw();
+    const second = await runCli('install', 'vibelog.md/ui/header', '--yes');
+    assert.equal(second.code, 0, second.out);
+    assert.equal(readLockRaw(), lockRaw, 'повтор не должен переписывать lock');
+    assert.match(second.out, /изменений нет/);
+  });
+
+  it('registry:page → код 3: белый список типов не расширен молча', async () => {
+    freshProject();
+    seedItem(buttonItem({ type: 'registry:page' }), {
+      'src/lib/components/ui/button.svelte': 'x\n',
+    });
+    const { out, code } = await runCli('install', 'vibelog.md/ui/button', '--yes');
+    assert.equal(code, 3, out);
+    // Ошибка перечисляет допустимые типы — пользователь видит контракт
+    assert.match(out, /registry:ui/);
+    assert.ok(!existsSync(join(testDir, 'src/lib/components/ui/button.svelte')));
+  });
+
+  it('старый конфиг без aliases.blocks → код 2 с подсказкой миграции', async () => {
+    const components = defaultComponents();
+    delete components.aliases.blocks;
+    freshProject(components);
+    seedItem(headerBlockItem(headerBlockItem().files ? { files: [headerBlockItem().files[0]] } : {}), {
+      'src/lib/blocks/header/header.svelte': 'header\n',
+    });
+
+    const { out, code } = await runCli('install', 'vibelog.md/ui/header', '--yes');
+    assert.equal(code, 2, out);
+    assert.match(out, /vb init --components/);
+    assert.ok(!existsSync(join(testDir, 'src/lib/blocks')), 'без aliases.blocks ничего не пишется');
   });
 });
 

@@ -27,10 +27,12 @@ import {
   COMPONENTS_SCHEMA_VERSION,
   ComponentsConfigError,
   aliasDir,
+  defaultComponentsConfig,
   emptyLock,
   hashContent,
   hashFile,
   lockPath,
+  mergeComponentsConfig,
   readComponentsConfig,
   readLock,
   requireComponentsConfig,
@@ -443,6 +445,52 @@ describe('хеширование (VL-333)', () => {
 
   it('изменение содержимого меняет хеш', () => {
     assert.notEqual(hashContent('a'), hashContent('b'));
+  });
+});
+
+describe('VL-426: алиас blocks и тип registry:block', () => {
+  it('defaultComponentsConfig содержит aliases.blocks = src/lib/blocks', () => {
+    const dir = makeProject(testRoot, 'blocks-default');
+    assert.equal(defaultComponentsConfig(dir).aliases.blocks, 'src/lib/blocks');
+  });
+
+  it('старый конфиг без blocks читается как раньше, merge дополняет и закрепляет', () => {
+    const dir = makeProject(testRoot, 'blocks-legacy');
+    writeSettings(dir, { components: validConfig() });
+    const legacy = readComponentsConfig(dir);
+    // ключа blocks нет вовсе: чтение не падает и не добавляет его молча
+    assert.deepEqual(legacy, validConfig());
+
+    const merged = mergeComponentsConfig(legacy, defaultComponentsConfig(dir));
+    assert.equal(merged.aliases.blocks, 'src/lib/blocks');
+    assert.equal(merged.aliases.ui, 'src/lib/components/ui');
+    assert.equal(merged.registries['vibelog.md'].owner, 'Vibelog-md');
+
+    writeComponentsConfig(dir, merged);
+    assert.equal(readComponentsConfig(dir).aliases.blocks, 'src/lib/blocks');
+  });
+
+  it('resolveAliasPath: blocks не задан → код 2 с подсказкой миграции', () => {
+    const dir = makeProject(testRoot, 'blocks-missing');
+    const err = expectError(
+      () => resolveAliasPath(dir, validConfig(), 'blocks', 'header/header.svelte'),
+      2,
+      'aliases.blocks',
+    );
+    assert.match(err.message, /vb init --components/);
+  });
+
+  it('resolveAliasPath: база blocks — каталог, «..» запрещён (как у ui)', () => {
+    const dir = makeProject(testRoot, 'blocks-resolve');
+    const config = {
+      ...validConfig(),
+      aliases: { ...validConfig().aliases, blocks: 'src/lib/blocks' },
+    };
+    assert.equal(
+      resolveAliasPath(dir, config, 'blocks', 'header/header.svelte'),
+      join(dir, 'src', 'lib', 'blocks', 'header', 'header.svelte'),
+    );
+    expectError(() => resolveAliasPath(dir, config, 'blocks', '../evil.svelte'), 3, 'target');
   });
 });
 

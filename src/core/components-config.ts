@@ -59,6 +59,15 @@ export interface Aliases {
   utils: string;
   /** Файл глобальных стилей (не каталог!). */
   css: string;
+  /**
+   * Каталог installable-блоков `registry:block` (VL-426, doc-25 §3.3).
+   *
+   * Опционален: введён позже четырёх исходных алиасов, поэтому старые
+   * settings.json его не содержат — чтение таких конфигов работает как
+   * раньше, а отсутствие для `vb install` блока становится ошибкой кода 2
+   * с подсказкой «vb init --components» (см. `aliasBase`).
+   */
+  blocks?: string;
 }
 
 /** Секция `components` в `.vibelog/settings.json`. */
@@ -93,8 +102,13 @@ export interface LockFile {
   components: Record<string, LockedComponent>;
 }
 
-/** Имена алиасов — фиксированный набор (порядок важен для стабильной записи). */
-export const ALIAS_KEYS = ['components', 'ui', 'utils', 'css'] as const;
+/**
+ * Имена алиасов — фиксированный набор (порядок важен для стабильной записи).
+ *
+ * `blocks` добавлен в VL-426 (алиас для `registry:block`); в старых конфигах
+ * его нет — чтение это допускает (см. `Aliases.blocks`).
+ */
+export const ALIAS_KEYS = ['components', 'ui', 'utils', 'css', 'blocks'] as const;
 
 /** Имя алиаса. */
 export type AliasName = (typeof ALIAS_KEYS)[number];
@@ -230,6 +244,11 @@ function normalizeComponents(cwd: string, raw: Record<string, unknown>): Compone
   const aliases: Record<string, string> = {};
   for (const alias of ALIAS_KEYS) {
     const value = raw.aliases[alias];
+    // VL-426: `blocks` введён позже четырёх исходных алиасов — старые
+    // settings.json его не содержат, и чтение обязано работать как раньше
+    // (иначе сломалась бы установка обычных компонентов). Отсутствие
+    // обрабатывает `aliasBase`: установка блока даст код 2 с подсказкой.
+    if (value === undefined && alias === 'blocks') continue;
     if (typeof value !== 'string' || value.trim() === '') {
       throw new ComponentsConfigError(
         `поле aliases.${alias}: ожидалась непустая строка`,
@@ -251,6 +270,9 @@ function normalizeComponents(cwd: string, raw: Record<string, unknown>): Compone
       ui: aliases.ui,
       utils: aliases.utils,
       css: aliases.css,
+      // Ключ появляется только при наличии в settings.json: старый конфиг
+      // читается и пишется без изменений (стабильный diff в git, VL-426).
+      ...(aliases.blocks !== undefined ? { blocks: aliases.blocks } : {}),
     },
     lockFile: raw.lockFile as string,
   };
@@ -297,6 +319,34 @@ export function requireComponentsConfig(cwd: string): ComponentsConfig {
 }
 
 /**
+ * Значение алиаса с единой диагностикой (VL-426, doc-25 §4.3).
+ *
+ * `aliases.blocks` введён позже четырёх исходных алиасов: в старых
+ * settings.json его нет. Чтение такого конфига — не ошибка (см.
+ * `normalizeComponents`), но установка блока обязана честно упасть кодом 2
+ * с подсказкой миграции, а не молча положить файлы неизвестно куда —
+ * конфиг, а не дефолт кода, источник истины о базе блоков.
+ */
+function aliasBase(config: ComponentsConfig, alias: AliasName): string {
+  const base = config.aliases[alias];
+  if (typeof base !== 'string' || base.trim() === '') {
+    if (alias === 'blocks') {
+      throw new ComponentsConfigError(
+        'алиас blocks не задан в секции components (.vibelog/settings.json) — выполните «vb init --components» (дополнит конфиг), либо добавьте aliases.blocks вручную, например «src/lib/blocks»',
+        2,
+        'aliases.blocks',
+      );
+    }
+    throw new ComponentsConfigError(
+      `поле aliases.${alias}: пустое значение`,
+      3,
+      `aliases.${alias}`,
+    );
+  }
+  return base;
+}
+
+/**
  * Склеивает `aliases[alias]` с относительным `target` компонента.
  *
  * `target` приходит из сети (манифест реестра), поэтому проверяется
@@ -318,10 +368,7 @@ export function resolveAliasPath(
       'alias',
     );
   }
-  const base = config.aliases[alias];
-  if (typeof base !== 'string' || base.trim() === '') {
-    throw new ComponentsConfigError(`поле aliases.${alias}: пустое значение`, 3, `aliases.${alias}`);
-  }
+  const base = aliasBase(config, alias);
   validateAliasPath(cwd, alias, base);
 
   if (typeof target !== 'string' || target.trim() === '') {
@@ -629,7 +676,7 @@ export function writeLock(cwd: string, config: ComponentsConfig, lock: LockFile)
 
 /** Абсолютный путь алиаса без target (корень каталога/файл-приёмник). */
 export function aliasDir(cwd: string, config: ComponentsConfig, alias: AliasName): string {
-  const base = config.aliases[alias];
+  const base = aliasBase(config, alias);
   validateAliasPath(cwd, alias, base);
   return join(resolve(cwd), base);
 }
@@ -655,6 +702,10 @@ export function defaultComponentsConfig(cwd: string): ComponentsConfig {
       ui: 'src/lib/components/ui',
       utils: 'src/lib/utils.ts',
       css: 'src/app.css',
+      // VL-426: отдельный алиас для `registry:block` — не `ui`: развод
+      // «атомы со строгим API vs каркасы копируй-и-правь» виден в ФС
+      // (doc-25 §3.1/§3.3, решение по target-базису блоков).
+      blocks: 'src/lib/blocks',
     },
     lockFile: '.vibelog/installed.lock.json',
   };
@@ -675,10 +726,15 @@ export function mergeComponentsConfig(
   defaults: ComponentsConfig,
 ): ComponentsConfig {
   if (existing === null) return defaults;
-  const merged: Record<string, string> = { ...existing.aliases };
+  const merged: Record<string, string | undefined> = { ...existing.aliases };
   for (const alias of ALIAS_KEYS) {
-    if (typeof merged[alias] !== 'string' || merged[alias].trim() === '') {
-      merged[alias] = defaults.aliases[alias];
+    const current = merged[alias];
+    const fallback = defaults.aliases[alias];
+    // «Дополнить недостающее»: старый конфиг без `blocks` получает дефолт
+    // при следующем `vb init --components`; заданное пользователем не
+    // затирается (пустое значение — тоже дополняется, как и раньше).
+    if ((typeof current !== 'string' || current.trim() === '') && typeof fallback === 'string') {
+      merged[alias] = fallback;
     }
   }
   return {
@@ -687,10 +743,11 @@ export function mergeComponentsConfig(
     // состав: существующие реестры остаются, недостающие добавляются
     registries: { ...defaults.registries, ...existing.registries },
     aliases: {
-      components: merged.components,
-      ui: merged.ui,
-      utils: merged.utils,
-      css: merged.css,
+      components: merged.components ?? defaults.aliases.components,
+      ui: merged.ui ?? defaults.aliases.ui,
+      utils: merged.utils ?? defaults.aliases.utils,
+      css: merged.css ?? defaults.aliases.css,
+      blocks: merged.blocks,
     },
     lockFile:
       typeof existing.lockFile === 'string' && existing.lockFile.trim() !== ''

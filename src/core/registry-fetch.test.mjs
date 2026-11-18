@@ -825,9 +825,14 @@ describe('VL-335: validateRegistryItem', () => {
     assert.deepEqual(item.dependencies, []);
   });
 
-  it('отклоняет неизвестный type', () => {
+  it('VL-426: принимает registry:block (тип официальной схемы shadcn)', () => {
+    const item = validateRegistryItem(validItem({ type: 'registry:block' }), 'button');
+    assert.equal(item.type, 'registry:block');
+  });
+
+  it('VL-426: отклоняет неподдерживаемый type (registry:page вне белого списка)', () => {
     assert.throws(
-      () => validateRegistryItem(validItem({ type: 'registry:block' }), 'button'),
+      () => validateRegistryItem(validItem({ type: 'registry:page' }), 'button'),
       (err) => err instanceof RegistryFetchError && err.kind === 'invalid_schema',
     );
   });
