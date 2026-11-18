@@ -536,17 +536,18 @@ export async function runWizard(
       : 'Настроить Telegram-бота?';
     const wantBot = await session.askConfirm(botQuestion, false);
     if (wantBot) {
-      const token = await session.askText('Токен бота (TELEGRAM_BOT_TOKEN)', '');
+      const token = await session.askText('Токен бота (сохранится в .vibelog/comms.yaml)', '');
       // VL-324: прокси бота — отдельный этап сразу после токена. Пустое
-      // значение не пишем вовсе: ключ TELEGRAM_PROXY в .env должен
-      // отсутствовать, иначе grammY попытается идти через пустой URL.
+      // значение не пишем вовсе: ключ TELEGRAM_PROXY не должен присутствовать,
+      // иначе grammY попытается идти через пустой URL.
       const proxy = await session.askText(
-        'Прокси бота (TELEGRAM_PROXY, Enter — не задавать)',
+        'Прокси бота (comms.yaml; Enter — не задавать)',
         '',
       );
-      // VL-329: chat_id сохраняются в .env (TELEGRAM_CHAT_IDS), не в settings.json
+      // VL-428: chat_id сохраняются в .vibelog/comms.yaml, не в settings.json
+      // и не в .env (миграция переносит legacy-ключи при init)
       const chatsRaw = await session.askText(
-        'chat_id через запятую (опционально, сохранятся в .env)',
+        'chat_id через запятую (опционально, сохранятся в .vibelog/comms.yaml)',
         '',
       );
       bot = {

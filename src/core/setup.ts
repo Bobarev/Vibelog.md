@@ -26,6 +26,8 @@ import type { GatewayConfig, ModelsConfig } from './models.js';
 import { loadWorkflows } from './workflow.js';
 import { readEnvFile, writeSecrets } from './setup-secrets.js';
 import { upsertDotEnv } from './env-file.js';
+// VL-428: comms.yaml — секреты/чаты Telegram (чтение состояния проекта)
+import { readComms } from './comms.js';
 import { parseChatIds } from './env-file.js';
 import type { SecretsLocation } from './setup-secrets.js';
 import { hasVibelogMcp, setupMcp } from './setup-mcp.js';
@@ -225,11 +227,14 @@ export function readSetupState(cwd: string, modeOverride?: SetupMode): SetupStat
   const models = loadModels(cwd);
   const envFile = readEnvFile(cwd);
 
-  // VL-329: chat_id — личная привязка, живёт в .env (TELEGRAM_CHAT_IDS),
-  // а не в коммитимом settings.json
-  const chats = parseChatIds(envFile.TELEGRAM_CHAT_IDS);
+  // VL-329/VL-428: chat_id и токен — личные данные, живут в .vibelog/comms.yaml
+  // (legacy — .env: TELEGRAM_CHAT_IDS/TELEGRAM_BOT_TOKEN, мигрирует при init)
+  const comms = readComms(cwd, { warn: () => {} });
+  const chats = Array.from(new Set([...parseChatIds(envFile.TELEGRAM_CHAT_IDS), ...comms.chats]));
   const botConfigured =
-    envFile.TELEGRAM_BOT_TOKEN !== undefined || process.env.TELEGRAM_BOT_TOKEN !== undefined;
+    envFile.TELEGRAM_BOT_TOKEN !== undefined ||
+    process.env.TELEGRAM_BOT_TOKEN !== undefined ||
+    comms.bot_token !== undefined;
 
   const defaultAgentRaw = settings.default_agent;
   const defaultAgent = typeof defaultAgentRaw === 'string' && defaultAgentRaw !== ''

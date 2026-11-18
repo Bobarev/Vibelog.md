@@ -808,3 +808,40 @@ export function richToText(value: unknown): string {
   }
   return '';
 }
+
+/** Аргументы /ask (VL-428). */
+export interface AskCommand {
+  question: string;
+  channel?: string;
+  to?: string;
+}
+
+/**
+ * Разбор `/ask` (VL-428, doc-32 §6): синхронный вопрос боту другого проекта.
+ *
+ * Синтаксис: `/ask [--channel <id>] [@адресат] <вопрос>`.
+ * Канал: без `--channel` — default_channel/единственный (resolveChannel,
+ * несколько без default — ошибка со списком). Адресат — @username чужого
+ * бота, префиксуется к тексту вопроса.
+ *
+ * @param text — то, что после /ask (ctx.match), либо полный текст команды
+ */
+export function parseAskCommand(text: string): AskCommand | { error: string } {
+  let t = text.trim().replace(/^\/ask(:\S+)?\s*/, '');
+  let channel: string | undefined;
+  const chMatch = t.match(/^--channel[=\s]+(\S+)(?:\s+|$)/);
+  if (chMatch) {
+    channel = chMatch[1];
+    t = t.slice(chMatch[0].length);
+  }
+  let to: string | undefined;
+  const toMatch = t.match(/^(@[A-Za-z0-9_]{5,32})(?:\s+|$)/);
+  if (toMatch) {
+    to = toMatch[1];
+    t = t.slice(toMatch[0].length);
+  }
+  if (t.trim() === '') {
+    return { error: 'Синтаксис: /ask [--channel <id>] [@адресат] <вопрос>' };
+  }
+  return { question: t.trim(), ...(channel ? { channel } : {}), ...(to ? { to } : {}) };
+}

@@ -7,7 +7,7 @@
  */
 
 import type { Bot, Context } from 'grammy';
-import { createTaskFile, getTask, listTasks, updateTaskFile } from '../core/store.js';
+import { createTaskFile, getTask, listTasks, updateTaskFile, addComment } from '../core/store.js';
 import { loadConfig } from '../core/config.js';
 import type { Task } from '../core/task.js';
 import { getGitLog, getGitStatus } from '../core/git.js';
@@ -46,6 +46,26 @@ import {
 } from './rich.js';
 import { loadBotSettings, resolveDefaultAgent, saveBotSettings } from './settings.js';
 import { readBotChats, saveBotChats } from './env.js';
+// VL-428: comms.yaml (каналы, секреты, таймаут) и тикеты interbot-связи
+import { readComms, resolveChannel, syncTimeoutSec } from '../core/comms.js';
+import {
+  answerTicket,
+  createTicket,
+  loadTickets,
+  markDelivered,
+  recoverStaleTickets,
+  waitForAnswer,
+} from '../core/interbot/tickets.js';
+import type { InterbotTicket } from '../core/interbot/tickets.js';
+import {
+  buildIncomingPrompt,
+  classifyAnswer,
+  createDedupCache,
+  createRateLimiter,
+  createRunLimiter,
+  DEFAULT_LIMITS,
+  dispatchIncoming,
+} from './interbot.js';
 import { saveSettingsPatch, loadSettings } from '../core/settings.js';
 import { loadModels } from '../core/models.js';
 import { commandsHelp, helpText } from './registry.js';
@@ -62,6 +82,7 @@ import {
   extractSessionRef,
   richToText,
   parseAnalyzeCommand,
+  parseAskCommand,
   parseAutoCommand,
   parseChatCommand,
   parseCloseCommand,
@@ -537,6 +558,180 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       `🚀 Фаза Comment (${agent}) запущена для *${task.id}*, PID ${result.pid}`
     );
   }
+
+  // ── VL-428: входящие interbot-сообщения от ботов в каналах (doc-32 §4) ──
+  // Регистрируется ДО всех bot.command: чужое сообщение в группе-канале не
+  // должно падать в пин/мост, а свои ветки зовут next() и сохраняют всю
+  // цепочку grammy (ловушка порядка VL-37). Фильтры — чистая логика
+  // ./interbot.ts (dedup/depth/rate/runs/addressing — юнит-тесты).
+  const interbotDedup = createDedupCache();
+  const interbotRate = createRateLimiter();
+  const interbotRuns = createRunLimiter();
+  // Цепочка reply: process-память (глубина считается за жизнь процесса бота)
+  const interbotReplyMap = new Map<number, number>();
+  // Решения, ожидающие кнопки админа (вариант C): seq → карточка
+  const pendingDecisions = new Map<
+    number,
+    { answer: string; chatId: number; replyTo: number }
+  >();
+  let decisionSeq = 0;
+
+  /**
+   * Async-fallback (AC6): запоздавший ответ — комментарий к задаче-контексту
+   * тикета + уведомление в боте, статус delivered.
+   */
+  async function deliverLateTicket(t: InterbotTicket): Promise<void> {
+    const text =
+      `⏰ Запоздавший ответ из канала «${t.channel_id}» (тикет ${t.id}):\n\n` +
+      (t.reply ?? '');
+    if (t.context.task) {
+      try {
+        addComment(deps.cwd, t.context.task, text, '@interbot');
+      } catch (err) {
+        console.error(
+          '[interbot] не удалось добавить комментарий к',
+          t.context.task,
+          (err as Error).message,
+        );
+      }
+    }
+    const cfg = readComms(deps.cwd, { warn: () => {} });
+    const notify =
+      cfg.channels.find((c) => c.id === t.channel_id)?.admin_chat ?? cfg.chats[0];
+    if (notify !== undefined) await sendChatAnswer(bot, notify, text);
+    markDelivered(deps.cwd, t.id);
+  }
+
+  // Разбор протухших тикетов при старте бота (паттерн recoverStalePhaseStatuses,
+  // VL-196; AC6) + досылка ответов, не доставленных до рестарта
+  try {
+    recoverStaleTickets(deps.cwd);
+    for (const t of loadTickets(deps.cwd)) {
+      if (t.status === 'expired' && t.reply) void deliverLateTicket(t);
+    }
+  } catch (err) {
+    console.error('[interbot] recovery тикетов при старте не удалась:', (err as Error).message);
+  }
+
+  bot.on('message:text', async (ctx, next) => {
+    const m = ctx.message;
+    // Только ЧУЖИЕ боты: свои сообщения (в т.ч. наши ответы) — не наша зона
+    if (!m.from?.is_bot || m.from.id === ctx.me.id) {
+      await next();
+      return;
+    }
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) {
+      await next();
+      return;
+    }
+    const cfg = readComms(deps.cwd, { warn: () => {} });
+    const channel = cfg.channels.find((c) => c.group_id === chatId);
+    if (!channel) {
+      // Не канал interbot — обычный чат, дальше по цепочке (пин/мост)
+      await next();
+      return;
+    }
+    if (m.reply_to_message) {
+      interbotReplyMap.set(m.message_id, m.reply_to_message.message_id);
+      // Ограничение памяти: карта растёт только внутри процесса бота
+      if (interbotReplyMap.size > 5000) {
+        const oldest = interbotReplyMap.keys().next().value;
+        if (oldest !== undefined) interbotReplyMap.delete(oldest);
+      }
+    }
+    const incoming = {
+      message_id: m.message_id,
+      chat_id: chatId,
+      text: m.text,
+      from_id: m.from.id,
+      ...(m.from.username ? { from_username: m.from.username } : {}),
+      is_bot: true,
+      ...(m.reply_to_message ? { reply_to_message_id: m.reply_to_message.message_id } : {}),
+      ...(m.reply_to_message?.from ? { reply_to_from_id: m.reply_to_message.from.id } : {}),
+    };
+    // ── Ветка ответа на НАШ вопрос (тикет) — минуя диспатч (AC5/AC6) ──
+    const repliedTo = m.reply_to_message?.message_id;
+    if (
+      repliedTo !== undefined &&
+      loadTickets(deps.cwd).some((t) => t.question_msg_id === repliedTo)
+    ) {
+      const updated = answerTicket(deps.cwd, repliedTo, m.text);
+      if (updated === null) {
+        // «Ответ без тикета»: потерянное сообщение — лог для диагностики
+        console.warn(
+          `[interbot] ответ без тикета: message_id=${m.message_id} reply_to=${repliedTo}`,
+        );
+        return;
+      }
+      // Запоздали (после дедлайна) → async-fallback: комментарий + уведомление
+      if (updated.status === 'expired') void deliverLateTicket(updated);
+      return;
+    }
+    const decision = dispatchIncoming(incoming, {
+      channel,
+      ourBotId: ctx.me.id,
+      ourUsername: ctx.me.username ?? '',
+      replyMap: interbotReplyMap,
+      dedup: interbotDedup,
+      rate: interbotRate,
+      runs: interbotRuns,
+      limits: DEFAULT_LIMITS,
+    });
+    if (decision.action !== 'process') {
+      // Игнор (пустой reply) или служебный ответ (depth/лимиты)
+      if (decision.reply) {
+        await sendChatAnswer(bot, chatId, decision.reply, { replyTo: m.message_id });
+      }
+      return; // в цепочку grammy не идём: interbot-сообщение — наша зона
+    }
+    // ── Входящий вопрос → read-only ран через startPrompt (AC3, AC7) ──
+    const prompt = buildIncomingPrompt(m.text, channel);
+    const replyTo = m.message_id;
+    const onExit: PhaseExitCallback = (run) => {
+      const answer =
+        run.result?.result ??
+        (run.exitCode === 0 ? '' : 'Ран завершился с ошибкой — повтори вопрос позже.');
+      if (!answer) return;
+      const kind = classifyAnswer(answer);
+      // Вариант C: decision_request ВСЕГДА через inline-кнопки в admin_chat
+      // (даже при approval=auto); info/question — по режиму канала
+      const needsAdmin = kind === 'decision_request' || channel.approval === 'admin';
+      if (needsAdmin && channel.admin_chat !== undefined) {
+        const id = ++decisionSeq;
+        pendingDecisions.set(id, { answer, chatId, replyTo });
+        if (pendingDecisions.size > 50) {
+          const oldest = pendingDecisions.keys().next().value;
+          if (oldest !== undefined) pendingDecisions.delete(oldest);
+        }
+        void bot.api
+          .sendMessage(
+            channel.admin_chat,
+            `⚖️ ${kind === 'decision_request' ? 'Требуется решение' : 'Согласование ответа'} ` +
+              `(канал «${channel.label ?? channel.id}»):\n\n${answer.slice(0, 3000)}`,
+            {
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: '✅ Опубликовать', callback_data: `ibot:ok:${id}` },
+                    { text: '⛔ Отклонить', callback_data: `ibot:no:${id}` },
+                  ],
+                ],
+              },
+            },
+          )
+          .catch((err) => console.error('[interbot] карточка решения не отправлена:', err));
+      } else {
+        void sendChatAnswer(bot, chatId, answer, { replyTo });
+      }
+    };
+    const result = startPrompt(deps.cwd, prompt, onExit, resolveDefaultAgent(deps.cwd));
+    if ('error' in result) {
+      await sendChatAnswer(bot, chatId, `⚠️ Не удалось запустить ран: ${result.error}`, {
+        replyTo: m.message_id,
+      });
+    }
+  });
 
   bot.command('start', async (ctx) => {
     const chatId = ctx.chat?.id;
@@ -1545,6 +1740,56 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   // Регистрируется ПОСЛЕ /web и ДО callback_query: все bot.command обязаны
   // стоять до catch-all message:text (ловушка порядка grammy, doc-1).
   // Ответ: подтверждение режима + последнее сообщение персоны из треда.
+  // ── VL-428: /ask — синхронный вопрос боту другого проекта (doc-32 §6) ──
+  // Канал: default_channel → --channel → единственный; адресат — @username.
+  // Ожидание — полный sync_timeout_sec (лимита MCP-клиента тут нет);
+  // таймаут — аккуратный «ответа нет», тикет остаётся на async-fallback.
+  bot.command('ask', async (ctx) => {
+    if (!requireBind(ctx)) return;
+    const parsed = parseAskCommand((ctx.match ?? '').toString());
+    if ('error' in parsed) {
+      await sendMd(ctx, escapeMarkdownV2(parsed.error));
+      return;
+    }
+    const resolved = resolveChannel(deps.cwd, parsed.channel);
+    if ('error' in resolved) {
+      await sendMd(ctx, escapeMarkdownV2(resolved.error));
+      return;
+    }
+    const channel = resolved.channel;
+    const text = parsed.to ? `${parsed.to} ${parsed.question}` : parsed.question;
+    let sent: { message_id: number };
+    try {
+      sent = await ctx.api.sendMessage(channel.group_id, text);
+    } catch (err) {
+      await sendMd(ctx, escapeMarkdownV2(`Не удалось отправить вопрос: ${(err as Error).message}`));
+      return;
+    }
+    const timeout = syncTimeoutSec(deps.cwd);
+    const ticket = createTicket(deps.cwd, {
+      id: `ask-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      channel_id: channel.id,
+      question_msg_id: sent.message_id,
+      timeoutSec: timeout,
+      ...(parsed.channel || parsed.to ? {} : {}),
+    });
+    await sendMd(
+      ctx,
+      `⏳ Вопрос отправлен в канал «${escapeMarkdownV2(channel.id)}», жду ответ до ${timeout} с…`
+    );
+    const { answered, ticket: final } = await waitForAnswer(deps.cwd, ticket.id);
+    if (answered && final.reply) {
+      await sendChatAnswer(bot, ctx.chat.id, final.reply);
+      return;
+    }
+    await sendMd(
+      ctx,
+      escapeMarkdownV2(
+        `Ответа нет за ${timeout} с. Тикет ${ticket.id} остаётся активным: ` +
+          'запоздавший ответ придёт отдельным сообщением (async-fallback).'
+      )
+    );
+  });
   bot.command('chat', async (ctx) => {
     if (!requireBind(ctx)) return;
     const chatId = ctx.chat?.id;
@@ -1650,6 +1895,37 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         return;
       }
       await ctx.answerCallbackQuery({ text: 'Решение уже принято или устарело' }).catch(() => {});
+      return;
+    }
+    // ── VL-428: кнопки approval-флоу interbot (вариант C) ──
+    // data = ibot:ok|no:<id> — публикация/отклонение решения из admin_chat.
+    // Префиксы не пересекаются с chata:/comment:/next:/resume:.
+    if (data.startsWith('ibot:')) {
+      const [act, rawId] = data.slice('ibot:'.length).split(':');
+      const id = Number(rawId);
+      const pending = pendingDecisions.get(id);
+      if (!pending || (act !== 'ok' && act !== 'no')) {
+        await ctx
+          .answerCallbackQuery({ text: 'Решение уже принято или устарело' })
+          .catch(() => {});
+        return;
+      }
+      if (!requireBind(ctx)) {
+        await ctx
+          .answerCallbackQuery({ text: 'Бот не привязан к чату — выполните /start' })
+          .catch(() => {});
+        return;
+      }
+      pendingDecisions.delete(id);
+      if (act === 'ok') {
+        await ctx.answerCallbackQuery({ text: '✅ Опубликовано' }).catch(() => {});
+        await sendChatAnswer(bot, pending.chatId, pending.answer, { replyTo: pending.replyTo });
+      } else {
+        await ctx.answerCallbackQuery({ text: '⛔ Отклонено' }).catch(() => {});
+        await sendChatAnswer(bot, pending.chatId, '⛔ Админ отклонил публикацию решения.', {
+          replyTo: pending.replyTo,
+        });
+      }
       return;
     }
     // ── Кнопка «Комментарий» (VL-78): режим ожидания текста ──

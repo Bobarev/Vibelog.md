@@ -429,9 +429,10 @@ function settingsTopic(cwd: string): string {
   lines.push('`qwen-debug/`, `tmp/`, `supervisor/`, `worktrees/`, `idempotency.json`,');
   lines.push('`auto-queue.json`, `phase-in-progress.json`, `*.log`.');
   lines.push('');
-  lines.push('**Секретов в `settings.json` нет**: токены, API-ключи и `TELEGRAM_CHAT_IDS` живут');
-  lines.push('только в `.env` в корне проекта (приоритет: shell-окружение → `.env`). Секция `env`');
-  lines.push('в `settings.json` больше не читается.');
+  lines.push('**Секретов в `settings.json` нет**: Telegram-токены и `TELEGRAM_CHAT_IDS` живут');
+  lines.push('в `.vibelog/comms.yaml` (legacy `.env` — TELEGRAM_*, мигрирует при init/старте бота),');
+  lines.push('API-ключи — в `.env` (приоритет: shell-окружение → файл). Секция `env` в');
+  lines.push('`settings.json` больше не читается.');
   lines.push('');
   lines.push('Полный справочник ключей: `vibelog capabilities --json` (секции `settingsKeys`, `configKeys`).');
   lines.push('');

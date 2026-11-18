@@ -277,7 +277,10 @@ export async function checkTelegramToken(
   opts: { fetchImpl?: typeof fetch; proxy?: string; timeoutMs?: number } = {},
 ): Promise<BotCheckResult> {
   if (!token || token.trim() === '') {
-    return { ok: false, error: 'Токен не задан. Проверьте TELEGRAM_BOT_TOKEN.' };
+    return {
+      ok: false,
+      error: 'Токен не задан. Задайте secrets.telegram.bot_token в .vibelog/comms.yaml или TELEGRAM_BOT_TOKEN в .env.',
+    };
   }
   const proxy = (opts.proxy ?? '').trim();
   // Тип fetch подинъектированного мока уже совпадает с typeof fetch, а
@@ -309,7 +312,7 @@ export async function checkTelegramToken(
       const description = typeof obj.description === 'string' ? obj.description : `HTTP ${res.status}`;
       return {
         ok: false,
-        error: `Токен невалиден (${description}). Проверьте TELEGRAM_BOT_TOKEN или прокси.`,
+        error: `Токен невалиден (${description}). Проверьте secrets.telegram в .vibelog/comms.yaml или TELEGRAM_BOT_TOKEN/прокси.`,
       };
     }
     const result = (obj.result ?? {}) as Record<string, unknown>;

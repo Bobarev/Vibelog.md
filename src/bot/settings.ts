@@ -16,6 +16,7 @@
 
 import type { AgentName } from './commands.js';
 import { loadSettings, saveSettingsPatch, settingsPath } from '../core/settings.js';
+import { resolveCommsSecret } from '../core/comms.js';
 import { readBotChats } from './env.js';
 
 /**
@@ -315,8 +316,7 @@ export function saveBotSettings(cwd: string, settings: BotSettings): void {
  * @returns токен или null, если не задан
  */
 export function resolveToken(cwd: string): string | null {
-  void cwd;
-  return process.env.TELEGRAM_BOT_TOKEN ?? null;
+  return resolveCommsSecret(cwd, 'bot_token');
 }
 
 /**
@@ -330,8 +330,7 @@ export function resolveToken(cwd: string): string | null {
  * @returns URL прокси или null, если прокси не задан
  */
 export function resolveProxy(cwd: string): string | null {
-  void cwd;
-  return process.env.TELEGRAM_PROXY ?? null;
+  return resolveCommsSecret(cwd, 'proxy');
 }
 
 /**
