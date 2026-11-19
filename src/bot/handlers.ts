@@ -64,6 +64,7 @@ import {
   createRunLimiter,
   DEFAULT_LIMITS,
   dispatchIncoming,
+  rememberReplyPair,
 } from './interbot.js';
 import { saveSettingsPatch, loadSettings } from '../core/settings.js';
 import { loadModels } from '../core/models.js';
@@ -1020,7 +1021,9 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       // Игнор (пустой reply) или служебный ответ (depth/лимиты)
       if (decision.reply) {
         trace('служебный ответ → sendChatAnswer, replyTo=', m.message_id);
-        await sendChatAnswer(bot, chatId, decision.reply, { replyTo: m.message_id });
+        const svcIds = await sendChatAnswer(bot, chatId, decision.reply, { replyTo: m.message_id });
+        // VL-434 (fix A): свой служебный reply тоже входит в цепочку depth
+        rememberReplyPair(interbotReplyMap, svcIds, m.message_id);
       } else {
         trace('игнор: пустой reply, сообщение пропущено молча');
       }
@@ -1108,18 +1111,22 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
           .catch((err) => console.error('[interbot] карточка решения не отправлена:', err));
       } else {
         trace('ответ → группа chatId=', chatId, 'sendChatAnswer replyTo=', replyTo);
-        void sendChatAnswer(bot, chatId, answer, { replyTo }).then((ids) =>
-          rememberThreadPair([...ids, replyTo], { question: text, answer }),
-        );
+        void sendChatAnswer(bot, chatId, answer, { replyTo }).then((ids) => {
+          // VL-434 (fix A): свои id ответа → reply_to в карту цепочки —
+          // иначе depth обрывается на собственном сообщении и лимит мёртв
+          rememberReplyPair(interbotReplyMap, ids, replyTo);
+          rememberThreadPair([...ids, replyTo], { question: text, answer });
+        });
       }
     };
     trace('старт рана, prompt:', prompt.slice(0, 100));
     const result = (deps.startPrompt ?? startPrompt)(deps.cwd, prompt, onExit, resolveDefaultAgent(deps.cwd));
     if ('error' in result) {
+      // VL-434 (fix B): ошибка старта НЕ публикуется в группу — только
+      // trace/консоль. Rich-сообщение с reply чужой dispatch читал как
+      // вопрос → петля «ошибка ↔ отчёт об ошибке» каждые 1–2 с.
       trace('старт рана НЕ удался:', result.error);
-      await sendChatAnswer(bot, chatId, `⚠️ Не удалось запустить ран: ${result.error}`, {
-        replyTo: m.message_id,
-      });
+      console.error('[interbot] старт рана не удался:', result.error);
     }
   });
 
@@ -2309,6 +2316,8 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         const ids = await sendChatAnswer(bot, pending.chatId, pending.answer, {
           replyTo: pending.replyTo,
         });
+        // VL-434 (fix A): опубликованный ответ reply-цепочки — в карту depth
+        rememberReplyPair(interbotReplyMap, ids, pending.replyTo);
         rememberThreadPair([...ids, pending.replyTo], {
           question: pending.question,
           answer: pending.answer,
@@ -2316,9 +2325,11 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         trace('ibot:ok отправлен, chatId=', pending.chatId, 'replyTo=', pending.replyTo);
       } else {
         await ctx.answerCallbackQuery({ text: '⛔ Отклонено' }).catch(() => {});
-        await sendChatAnswer(bot, pending.chatId, '⛔ Админ отклонил публикацию решения.', {
+        const noIds = await sendChatAnswer(bot, pending.chatId, '⛔ Админ отклонил публикацию решения.', {
           replyTo: pending.replyTo,
         });
+        // VL-434 (fix A): служебный отказ тоже reply-звено цепочки
+        rememberReplyPair(interbotReplyMap, noIds, pending.replyTo);
         trace('ibot:no отправлен, chatId=', pending.chatId, 'replyTo=', pending.replyTo);
       }
       return;

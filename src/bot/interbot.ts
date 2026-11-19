@@ -214,6 +214,47 @@ function escapeRe(s: string): string {
 }
 
 /**
+ * Регистрация СВОИХ отправленных id → reply_to в карте цепочки (VL-434, fix A).
+ *
+ * Свои сообщения бота в апдейты Telegram не приходят (handlers-ветка пропускает
+ * `m.from.id === ctx.me.id`), поэтому без этой записи цепочка разрывалась на
+ * собственном сообщении-ответе и depth всегда = 1 (штатный рубеж maxDepth не
+ * срабатывал → interbot-шторм). Паттерн FIFO-санитки — как у interbotReplyMap
+ * в handlers-ветке (≤5000).
+ */
+export function rememberReplyPair(
+  map: Map<number, number>,
+  ids: readonly number[],
+  replyTo: number,
+): void {
+  for (const id of ids) map.set(id, replyTo);
+  if (map.size > 5000) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+}
+
+/**
+ * Служебные тексты ботов, которые НЕ являются вопросами (VL-434, fix B).
+ *
+ * Ошибки/статусы («Не удалось запустить ран», «Цепочка слишком длинная» и т.п.)
+ * публикуются в группу rich-сообщением и чужим dispatch читались как входящий
+ * вопрос → петля «ошибка ↔ отчёт об ошибке». Префиксы — по началу текста
+ * (после trim): guard на стороне получателя дополняет fix B-1 (отказ от
+ * публикации ошибки старта в группу).
+ */
+export function isServiceMessage(text: string): boolean {
+  const t = text.trim();
+  return [
+    '⚠️ Не удалось запустить ран',
+    '⚠️ Ран упал',
+    '⛔ Админ отклонил публикацию решения.',
+    'Цепочка слишком длинная (лимит depth)',
+    'Лимит входящих запросов в час',
+  ].some((p) => t.startsWith(p));
+}
+
+/**
  * Диспетчер входящего сообщения: dedup → depth → addressing → решение.
  *
  * @returns decision.action=process — запускать ран; иначе ответ/игнор
@@ -258,6 +299,12 @@ export function dispatchIncoming(
       };
     return { action: 'process', depth: 0, kind: 'question' };
   }
+  // VL-434 (fix B): служебные тексты чужого бота не запускаем — молчаливый
+  // пропуск (пустой reply → handlers не создаёт сообщение, материала для
+  // петли «ошибка ↔ отчёт» нет). До dedup/rate/depth — служебное не должно
+  // сжигать лимиты.
+  if (msg.is_bot && isServiceMessage(msg.text))
+    return { action: 'answer', depth: 0, reply: '', reason: 'ignore' };
   // dedup
   if (ctx.dedup.check(msg.message_id))
     return { action: 'answer', depth: 0, reply: '', reason: 'dedup' };

@@ -18,6 +18,8 @@ import {
   dispatchIncoming,
   classifyAnswer,
   buildIncomingPrompt,
+  rememberReplyPair,
+  isServiceMessage,
   DEFAULT_LIMITS,
 } from '../../dist/bot/interbot.js';
 
@@ -352,5 +354,94 @@ describe('VL-433: человек в interbot-канале (Q1, AC1/AC2/AC5)', ()
     const plain = buildIncomingPrompt('что с форматом?', channel());
     assert.ok(!plain.includes('цитата'));
     assert.ok(!plain.includes('Предыдущий вопрос'));
+  });
+});
+
+// ── VL-434: depth считает СВОИ сообщения + служебные тексты не диспатчатся ──
+
+describe('VL-434 fix A: rememberReplyPair замыкает цепочку собственных ответов', () => {
+  it('AC1: пары пишутся (свой id → reply_to), FIFO-санитка ≤5000', () => {
+    const map = new Map();
+    rememberReplyPair(map, [101, 102], 100);
+    assert.equal(map.get(101), 100);
+    assert.equal(map.get(102), 100);
+    // Санитка: >5000 → выкидывается oldest
+    for (let i = 0; i < 5010; i++) rememberReplyPair(map, [2000 + i], 1999);
+    assert.ok(map.size <= 5001, `size=${map.size}`);
+    assert.equal(map.has(101), false, 'oldest выкинут по FIFO');
+  });
+
+  it('AC1: цепочка с чередованием чужих/своих сообщений даёт растущий depth', () => {
+    // Вопрос чужого 10 → наш ответ 101 (зарегистрирован rememberReplyPair) →
+    // чужое уточнение 11 (reply на 101) → наш ответ 102 → чужое 12 (reply на 102)
+    const map = new Map();
+    // handlers-ветка пишет чужие пары из апдейтов:
+    map.set(11, 101);
+    map.set(12, 102);
+    // fix A: свои отправленные ответы:
+    rememberReplyPair(map, [101], 10);
+    rememberReplyPair(map, [102], 11);
+    assert.equal(replyDepth(11, map), 2, '11 → 101 → 10 (глубина не обрывается на своём)');
+    assert.equal(replyDepth(12, map), 4, '12 → 102 → 11 → 101 → 10');
+    // Регрессия «как было до fix A»: без своих пар depth висит на 1
+    const broken = new Map([[11, 101]]);
+    assert.equal(replyDepth(11, broken), 1, 'без fix A цепочка рвётся на своём id');
+  });
+
+  it('AC2: на превышении maxDepth — штатный ответ «Цепочка слишком длинная», без process', () => {
+    // Цепочка: 13 → 102 → 11 → 101 → 10 (4 хопа > maxDepth=2)
+    const map = new Map([
+      [13, 102],
+      [11, 101],
+    ]);
+    rememberReplyPair(map, [101], 10);
+    rememberReplyPair(map, [102], 11);
+    const d = dispatchIncoming(msg({ message_id: 13 }), ctx({ replyMap: map }));
+    assert.equal(d.action, 'answer');
+    assert.equal(d.reason, 'depth');
+    assert.ok(d.reply.includes('Цепочка слишком длинная'), d.reply);
+    assert.ok(d.reply.includes('эскалируй'), d.reply);
+  });
+});
+
+describe('VL-434 fix B: служебные сообщения чужих ботов не запускают ран', () => {
+  it('AC4: каждый служебный маркер → answer/ignore без reply (материала для петли нет)', () => {
+    const service = [
+      '⚠️ Не удалось запустить ран: Запуск уже выполняется',
+      '⚠️ Ран упал, ответа нет (канал «main»): ...',
+      '⛔ Админ отклонил публикацию решения.',
+      'Цепочка слишком длинная (лимит depth) — эскалируй вопрос человеку.',
+      'Лимит входящих запросов в час исчерпан — повтори позже.',
+    ];
+    for (const text of service) {
+      const d = dispatchIncoming(msg({ message_id: 40, text }), ctx({ channel: channel('all') }));
+      assert.equal(d.action, 'answer', text);
+      assert.equal(d.reason, 'ignore', text);
+      assert.equal(d.reply, '', 'пустой reply → handlers молчит, ответа нет');
+    }
+  });
+
+  it('AC4: обычный вопрос бота и человек с тем же текстом — не задеты (регрессия)', () => {
+    assert.equal(isServiceMessage('/question@OurBot что с релизом?'), false);
+    const d = dispatchIncoming(msg({ message_id: 41 }), ctx({ channel: channel('all') }));
+    assert.equal(d.action, 'process', 'обычный вопрос идёт в ран');
+    // Служебный текст ЧЕЛОВЕКА — guard только для ботов (эвристика не ломает людей)
+    const h = dispatchIncoming(
+      humanMsg({ message_id: 42, text: '⚠️ Не удалось запустить ран: тест' }),
+      ctx({ channel: channel('all') }),
+    );
+    assert.equal(h.action, 'process');
+  });
+
+  it('AC4: guard работает и при addressing=mention (до dedup/rate — лимиты не сжигает)', () => {
+    const dedup = createDedupCache();
+    const rate = createRateLimiter();
+    for (let i = 0; i < DEFAULT_LIMITS.botRatePerMin; i++) rate.limited(777, DEFAULT_LIMITS.botRatePerMin);
+    const d = dispatchIncoming(
+      msg({ message_id: 43, text: '⚠️ Не удалось запустить ран: X' }),
+      ctx({ dedup, rate }),
+    );
+    assert.equal(d.reason, 'ignore', 'служебное не проходит через rate/dedup-ветки');
+    assert.equal(dedup.check(43), false, 'dedup не зарегистрировал служебное');
   });
 });

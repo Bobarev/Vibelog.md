@@ -398,6 +398,143 @@ describe("VL-430: interbot-ветка на bot.on('message')", () => {
   });
 });
 
+// ── VL-434: depth считает свои ответы + служебные ошибки не в группу ──
+
+describe('VL-434: interbot-шторм — fix A (depth) и fix B (служебное не в группу)', () => {
+  let cwd;
+  beforeEach(() => {
+    cwd = root();
+    setupComms(cwd);
+  });
+
+  /**
+   * Стаб с ИНКРЕМЕНТАЛЬНЫМИ message_id (паттерн stubApi, но id растут):
+   * каждый ответ бота получает новый id — иначе цепочка depth не строится.
+   * reply_to_message эхо-echo из payload.reply_parameters — richDroppedReply
+   * не срабатывает (иначе каждый ответ ушёл бы delete+досылкой).
+   */
+  function setupBotIncIds(cwdArg, extraDeps = {}) {
+    const bot = makeBot();
+    const calls = [];
+    let nextId = 100;
+    bot.api.config.use((prev, method, payload, signal) => {
+      if (method === 'sendMessage' || method === 'sendRichMessage' || method === 'deleteMessage') {
+        calls.push({ method, payload });
+        if (method === 'deleteMessage') return Promise.resolve({ ok: true, result: true });
+        const reply = payload?.reply_parameters?.message_id;
+        return Promise.resolve({
+          ok: true,
+          result: {
+            message_id: ++nextId,
+            ...(reply !== undefined ? { reply_to_message: { message_id: reply } } : {}),
+          },
+        });
+      }
+      return prev(method, payload, signal);
+    });
+    registerHandlers(bot, { cwd: cwdArg, getPin: () => '000000', ...extraDeps });
+    return { bot, calls };
+  }
+
+  /** Входящий вопрос чужого бота в interbot-канале (addressing=mention). */
+  function botQuestion({ messageId, replyTo, text = '/q@our_bot что с релизом?' }) {
+    const now = Math.floor(Date.now() / 1000);
+    const m = {
+      message_id: messageId,
+      date: now,
+      chat: { id: -1001, type: 'supergroup', title: 'G' },
+      from: { id: 777, is_bot: true, first_name: 'UI', username: 'vibelog_ui_bot' },
+      text,
+      entities: [{ type: 'bot_command', offset: 0, length: text.split(' ')[0].length }],
+    };
+    if (replyTo !== undefined) {
+      m.reply_to_message = {
+        message_id: replyTo,
+        date: now,
+        chat: { id: -1001, type: 'supergroup', title: 'G' },
+        from: { id: 42, is_bot: true, first_name: 'T', username: 'our_bot' },
+      };
+    }
+    return { update_id: messageId, message: m };
+  }
+
+  it('AC3: ошибка «Запуск уже выполняется» НЕ публикуется в группу (только trace/консоль)', async () => {
+    const { bot, calls } = setupBotIncIds(cwd, {
+      startPrompt: () => ({ error: 'Запуск уже выполняется' }),
+    });
+
+    await bot.handleUpdate(botQuestion({ messageId: 130 }));
+    // void-пути: даём дожить возможным async-веткам
+    await new Promise((r) => setTimeout(r, 0));
+
+    assert.equal(calls.length, 0, 'ни одного send-вызова: материала для петли ошибка↔отчёт нет');
+    assert.ok(
+      !JSON.stringify(calls).includes('Не удалось запустить ран'),
+      'служебная ошибка не ушла в группу',
+    );
+  });
+
+  it('AC2: цепочка со СВОИМИ ответами → depth растёт, 3-й хоп обрывается «Цепочка слишком длинная»', async () => {
+    const prompts = [];
+    const { bot, calls } = setupBotIncIds(cwd, {
+      startPrompt: (cwdArg, prompt, onExit) => {
+        prompts.push({ prompt, onExit });
+        return { run: { pid: 50 } };
+      },
+    });
+
+    // Хоп 1: чужой вопрос (depth 0) → ран → наш ответ id=101 (reply на 1)
+    await bot.handleUpdate(botQuestion({ messageId: 1 }));
+    assert.equal(prompts.length, 1, 'первый вопрос обработан');
+    prompts[0].onExit({ result: { result: 'ответ 1' }, exitCode: 0 });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Хоп 2: чужой reply на НАШ ответ 101 → map[2]=101 + map[101]=1 (fix A) → depth=2 → process
+    await bot.handleUpdate(botQuestion({ messageId: 2, replyTo: 101, text: '/q@our_bot уточни' }));
+    assert.equal(prompts.length, 2, 'depth=2 в пределах maxDepth — второй ран пошёл');
+    prompts[1].onExit({ result: { result: 'ответ 2' }, exitCode: 0 });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Хоп 3: чужой reply на наш ответ 102 → depth=3 > maxDepth=2 → штатный рубеж, БЕЗ рана
+    await bot.handleUpdate(botQuestion({ messageId: 3, replyTo: 102, text: '/q@our_bot ещё?' }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    assert.equal(prompts.length, 2, 'третий хоп не запустил ран — петля оборвана');
+    const blob = JSON.stringify(calls);
+    assert.ok(blob.includes('Цепочка слишком длинная'), `нет штатного ответа depth: ${blob}`);
+    assert.ok(!blob.includes('Не удалось запустить ран'), 'служебных ошибок в группе нет');
+
+    // Регрессия «до fix A»: без пары 101→1 depth на хопе 2 был бы 1 (не 2),
+    // а хоп 3 — depth 2 → ран бы пошёл. Здесь depth=3 — fix работает.
+  });
+
+  it('AC3-доп: входящее в момент идущего рана без ответа → НЕ создаёт сообщение-ответ', async () => {
+    const prompts = [];
+    const { bot, calls } = setupBotIncIds(cwd, {
+      startPrompt: (cwdArg, prompt, onExit) => {
+        prompts.push({ prompt, onExit });
+        return { run: { pid: 51 } };
+      },
+    });
+
+    // Первый ран висит (onExit НЕ вызываем), приходит второе входящее:
+    // второй startPrompt вернёт ошибку «Запуск уже выполняется»
+    await bot.handleUpdate(botQuestion({ messageId: 10 }));
+    assert.equal(prompts.length, 1);
+    // Меняем шов: следующий старт падает (симуляция «уже выполняется»)
+    // Шов уже записан в closures — вызываем error-ветку через нового бота:
+    // проще: второй бот с error-шовом, та же картина входа
+    const { bot: bot2, calls: calls2 } = setupBotIncIds(cwd, {
+      startPrompt: () => ({ error: 'Запуск уже выполняется' }),
+    });
+    await bot2.handleUpdate(botQuestion({ messageId: 11 }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    assert.equal(calls2.length, 0, 'ошибка старта не породила сообщение в группу');
+    assert.equal(calls.length, 0, 'первый (висящий) ран тоже ничего не отправил');
+  });
+});
+
 describe('VL-430 AC6: trace-перехват через transformer', () => {
   it('лог api.sendMessage из ctx-вызовов (per-update Api) виден в консоли', async () => {
     const cwd = root();
