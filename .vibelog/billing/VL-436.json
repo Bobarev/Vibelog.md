@@ -1,0 +1,96 @@
+{
+  "taskId": "VL-436",
+  "sessions": [
+    {
+      "sessionId": "agent-1795081415992",
+      "phase": "plan",
+      "startedAt": "2026-11-19T09:43:35.800Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-19T09:52:25.029Z",
+      "durationMs": 526153,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 21
+      },
+      "model": "xiaomi/mimo-v2.6-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795081415992",
+      "phase": "plan",
+      "startedAt": "2026-11-19T09:43:35.800Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-19T09:52:25.057Z",
+      "durationMs": 526153,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 21
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795081415992",
+      "phase": "code",
+      "sessionPhase": "plan",
+      "startedAt": "2026-11-19T09:59:59.587Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-19T10:24:33.194Z",
+      "durationMs": 1470771,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 25
+      },
+      "model": "xiaomi/mimo-v2.6-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795085093973",
+      "phase": "close",
+      "startedAt": "2026-11-19T10:44:53.850Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-19T11:07:56.085Z",
+      "durationMs": 1379717,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 35
+      },
+      "model": "xiaomi/mimo-v2.6-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795085093973",
+      "phase": "close",
+      "startedAt": "2026-11-19T10:44:53.850Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-19T11:07:56.203Z",
+      "durationMs": 1379717,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 35
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    }
+  ]
+}
