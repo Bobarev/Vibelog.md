@@ -63,6 +63,47 @@ function nonEmpty(value: unknown): string | undefined {
   return trimmed === '' ? undefined : trimmed;
 }
 
+/** Сколько символов сырого значения эхом отдаём модели в тексте ошибки (VL-435). */
+const ECHO_LIMIT = 200;
+
+/** Блок ожидаемого формата — повторяется в каждой ошибке разбора (VL-435). */
+const EXPECTED_FORMAT =
+  'Формат: question — строка, options — массив 2–8 объектов {id,label}; ' +
+  'один вызов = один вопрос — задавайте по одному вопросу, серию вопросов — очередью вызовов';
+
+/** Усечение эха до ECHO_LIMIT символов. */
+function truncateEcho(text: string): string {
+  return text.length > ECHO_LIMIT ? `${text.slice(0, ECHO_LIMIT)}…` : text;
+}
+
+/**
+ * Короткое описание фактически полученного значения для текста ошибки (VL-435):
+ * «поле отсутствует» / «пустая строка» / «число 42» / «строка "…"» / «объект {…}».
+ *
+ * Модель обязана видеть, что реально пришло: без этого она получает утверждение,
+ * противоречащее тому, что послала, и слепо повторяет ту же битую сериализацию
+ * (жалобы из тредов: серия одинаковых ошибок → отказ от инструмента).
+ */
+function describeReceived(value: unknown): string {
+  if (value === undefined) return 'поле отсутствует';
+  if (value === null) return 'null';
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') return 'пустая строка';
+    return `строка "${truncateEcho(trimmed)}"`;
+  }
+  if (typeof value === 'number') return `число ${String(value)}`;
+  if (typeof value === 'boolean') return `логическое ${String(value)}`;
+  let json: string;
+  try {
+    json = JSON.stringify(value) ?? String(value);
+  } catch {
+    // циклические ссылки у JSON.stringify — не роняем разбор ради эха
+    json = String(value);
+  }
+  return `${Array.isArray(value) ? 'массив' : value !== null && typeof value === 'object' ? 'объект' : typeof value} "${truncateEcho(json)}"`;
+}
+
 /**
  * Разбор и валидация аргументов `ask_user` ДО постановки хода на паузу.
  *
@@ -70,17 +111,51 @@ function nonEmpty(value: unknown): string | undefined {
  * вариантов, дубли `id` — это ошибка модели, и она возвращается ей как
  * tool-результат, а ход продолжается (паузы не будет).
  *
+ * VL-435: ранние кейсы различаются, и каждый называет фактически полученное
+ * значение/эхо:
+ * (б) `__raw` — аргументы не разобрались (битый JSON), эхо сырья;
+ * (в′) options — строка (двойное кодирование), эхо строки;
+ * (а) question отсутствует/пуст — фактическое значение;
+ * (в) options не массив (прочие типы) — фактический тип/значение.
+ *
  * @param args — аргументы вызова от модели
  */
 export function parseAskUserArgs(args: Record<string, unknown> | undefined): AskUserParse {
   const raw = args ?? {};
+  // (б) Сырьё битого JSON: parseToolArguments (src/agent/llm.ts) кладёт его под
+  // ключ __raw. До этой ветки модель получала «question пуст» — утверждение,
+  // противоречащее тому, что она послала, — и повторяла тот же битый вызов
+  // (тред chat-mwlriz6x: 3 ошибки подряд → «спрошу текстом», отказ от инструмента).
+  if ('__raw' in raw) {
+    return {
+      ok: false,
+      error: `ask_user: аргументы не разобраны (битый JSON) — пришло: "${truncateEcho(String(raw.__raw ?? ''))}". ${EXPECTED_FORMAT}`,
+    };
+  }
+  // (в′) options — строка: проверяется ДО question, потому что в воспроизведении
+  // из треда вопрос упакован внутрь этой строки и поле question отсутствует —
+  // без приоритета этой ветки сработал бы кейс (а) и модель не увидела бы про формат options.
+  if (typeof raw.options === 'string') {
+    return {
+      ok: false,
+      error:
+        `ask_user: options пришло строкой, а не массивом (двойное кодирование): "${truncateEcho(raw.options)}" — ` +
+        `передавайте options массивом объектов [{id,label,...}], а не JSON-строкой. ${EXPECTED_FORMAT}`,
+    };
+  }
   const question = nonEmpty(raw.question);
   if (question === undefined) {
-    return { ok: false, error: 'ask_user: поле question обязательно и не может быть пустым' };
+    return {
+      ok: false,
+      error: `ask_user: поле question обязательно и не может быть пустым — получено: ${describeReceived(raw.question)}. ${EXPECTED_FORMAT}`,
+    };
   }
   const rawOptions = raw.options;
   if (!Array.isArray(rawOptions)) {
-    return { ok: false, error: 'ask_user: поле options обязательно и должно быть массивом вариантов' };
+    return {
+      ok: false,
+      error: `ask_user: options должен быть массивом вариантов — получено: ${describeReceived(rawOptions)}. ${EXPECTED_FORMAT}`,
+    };
   }
   if (rawOptions.length < MIN_OPTIONS || rawOptions.length > MAX_OPTIONS) {
     return {

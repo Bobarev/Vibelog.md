@@ -177,6 +177,23 @@ describe('VL-330 — отказы валидации', () => {
     assert.equal(events.at(-1).type, 'done');
   });
 
+  it('VL-435: аргументы-сырьё (__raw, битый JSON) → ошибка с эхом и подсказкой, паузы нет', async () => {
+    // склейка двух вопросов в один вызов: parseToolArguments положил сырьё под __raw
+    const glued = '{"question":"Первый вопрос?","options":[{"id":"a","label":"A"}]} {"question":"Второй вопрос?"';
+    const { llm } = fakeLlm([
+      { toolCalls: [{ id: 'tc-q-raw', name: 'ask_user', arguments: { __raw: glued } }] },
+      { text: 'Понял, спрошу по одному.' },
+    ]);
+    const events = await collect({ message: 'спроси', threadId: 't-ask-raw' }, { llm });
+    assert.ok(!events.some(e => e.type === 'question'), 'битый вызов не ставит паузу');
+    const err = events.find(e => e.type === 'tool_end' && e.isError === true);
+    assert.ok(err, 'ошибка вернулась модели');
+    const payload = JSON.parse(err.result);
+    assert.ok(payload.error.includes(glued.slice(0, 50)), 'эхо __raw дошло до модели');
+    assert.match(payload.error, /по одному вопросу/);
+    assert.equal(events.at(-1).type, 'done');
+  });
+
   it('чужой optionId отклоняется понятной ошибкой', async () => {
     const { llm } = fakeLlm([
       { toolCalls: [{ id: 'tc-q-3', name: 'ask_user', arguments: askArgs }] },

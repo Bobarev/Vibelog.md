@@ -81,12 +81,17 @@ describe('VL-330 — parseAskUserArgs: валидация до паузы', () =
     assert.equal(parsed.value.allowCustom, false);
   });
 
-  it('пустой question → ошибка', () => {
+  it('пустой question → ошибка с фактическим значением (VL-435)', () => {
     for (const question of ['', '   ', undefined, 42]) {
       const parsed = parseAskUserArgs(validArgs({ question }));
       assert.equal(parsed.ok, false, `question=${JSON.stringify(question)}`);
       assert.match(parsed.error, /question/);
+      assert.match(parsed.error, /получено:/, `нет эха для question=${JSON.stringify(question)}`);
     }
+    // каждая ошибка называет фактически полученное значение (AC1)
+    assert.match(parseAskUserArgs(validArgs({ question: '' })).error, /пустая строка/);
+    assert.match(parseAskUserArgs(validArgs({ question: undefined })).error, /поле отсутствует/);
+    assert.match(parseAskUserArgs(validArgs({ question: 42 })).error, /число 42/);
   });
 
   it('меньше двух вариантов → ошибка', () => {
@@ -102,10 +107,43 @@ describe('VL-330 — parseAskUserArgs: валидация до паузы', () =
     assert.match(parsed.error, /от 2 до 8/);
   });
 
-  it('options не массив → ошибка', () => {
-    const parsed = parseAskUserArgs(validArgs({ options: 'yes/no' }));
+  it('options не массив → ошибка с фактическим типом (VL-435)', () => {
+    // строка — отдельный кейс (двойное кодирование), но текст тоже называет тип
+    const asString = parseAskUserArgs(validArgs({ options: 'yes/no' }));
+    assert.equal(asString.ok, false);
+    assert.match(asString.error, /options/);
+    assert.match(asString.error, /строкой/);
+    assert.match(asString.error, /yes\/no/);
+
+    const asNumber = parseAskUserArgs(validArgs({ options: 42 }));
+    assert.equal(asNumber.ok, false);
+    assert.match(asNumber.error, /options/);
+    assert.match(asNumber.error, /число 42/);
+  });
+
+  it('VL-435 (регресс №1): options пришло строкой с question внутри — ошибка про формат options', () => {
+    // воспроизведение из треда: модель упаковала payload в JSON-строку-options
+    const packed = '[{"question":"Как продолжить?","options":[{"id":"yes","label":"Да"},{"id":"no","label":"Нет"}]}]';
+    const parsed = parseAskUserArgs({ options: packed });
     assert.equal(parsed.ok, false);
-    assert.match(parsed.error, /options/);
+    assert.match(parsed.error, /options пришло строкой/);
+    assert.ok(parsed.error.includes(packed.slice(0, 50)), 'эхо строки-options в ошибке');
+    assert.match(parsed.error, /не JSON-строкой/);
+    // вопрос мог отсутствовать как поле — ошибка всё равно про options, а не про question
+    assert.ok(!parsed.error.includes('question обязательно'), 'не списываем на пустой question');
+  });
+
+  it('VL-435 (регресс №2): склейка двух вопросов (битый JSON) — эхо __raw и подсказка по одному вопросу', () => {
+    const glued = '{"question":"Первый вопрос?","options":[{"id":"a","label":"A"}]} {"question":"Второй вопрос?"';
+    const parsed = parseAskUserArgs({ __raw: glued });
+    assert.equal(parsed.ok, false);
+    assert.match(parsed.error, /аргументы не разобраны/);
+    assert.ok(parsed.error.includes(glued.slice(0, 50)), 'эхо __raw в ошибке');
+    assert.match(parsed.error, /по одному вопросу/);
+    assert.match(parsed.error, /один вызов = один вопрос/);
+    // ожидаемый формат (AC2): question — строка, options — массив 2–8 {id,label}
+    assert.match(parsed.error, /question — строка/);
+    assert.match(parsed.error, /options — массив 2–8 объектов \{id,label\}/);
   });
 
   it('дубли id → ошибка', () => {
