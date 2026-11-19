@@ -2,7 +2,9 @@
  * Гейт «есть ли что отвечать» (VL-436, doc-34 §3.2, этап 1).
  *
  * Дешёвая классификация входящего ДО запуска полного рана: короткий промпт,
- * дефолтная модель проекта, таймаут 2–3 с. Смысл (шторм-инцидент 2026-11-19):
+ * дефолтная модель проекта, таймаут 8000 мс (VL-437: оценка doc-34 «2–3 с»
+ * НЕ прошла на живце — факт: короткий вызов mimo 3–5 с, ран 6–7 с).
+ * Смысл (шторм-инцидент 2026-11-19):
  * раньше «стоило ли отвечать» решала модель ВНУТРИ рана, где её роль
  * «отвечать» — отсюда мета-отчёты, выглядящие как содержательные реплики, и
  * петля. Теперь слушающий выбирает: `read_only` — прочитал и промолчал
@@ -12,12 +14,15 @@
  * - модель гейта — дефолтная проекта (`createLlmClient({cwd})`:
  *   settings.models.default → env VIBELOG_LLM_MODEL, паттерн приоритета как
  *   у ранов, БЕЗ меты сессии); отдельная настройка — отложена (decision-модели);
- * - таймаут по умолчанию 2500 мс: AbortSignal прокидывается в fetch,
- *   ПЛЮС Promise.race со сторожем — даже если чтение стрима не оборвётся по
- *   signal, гейт вернётся к сроку (двойная страховка);
- * - fail-open: любой сбой (нет модели, сеть, таймаут, непонятный ответ
- *   парсера) → `react` + `error` в результате — потерянный вопрос дороже
- *   лишнего ответа; сбой всегда виден вызывающему для trace.
+ * - таймаут по умолчанию 8000 мс (VL-437, выровнен по фактической latency;
+ *   инвариант «гейт быстрее рана 10+ с» сохранён): AbortSignal прокидывается
+ *   в fetch, ПЛЮС Promise.race со сторожем — даже если чтение стрима не
+ *   оборвётся по signal, гейт вернётся к сроку (двойная страховка);
+ * - fail-open: любой сбой (нет модели, сеть, таймаут, пустой или непонятный
+ *   ответ парсера) → `react` + `error` в результате — потерянный вопрос
+ *   дороже лишнего ответа; сбой всегда виден вызывающему для trace;
+ * - диагностика сырого ответа (AC2): `raw`/`usage` в GateResult → trace —
+ *   по ним видно, что реально вернул streamChat (текст/длина/reasoning-токены).
  *
  * `runGate` НИКОГДА не бросает — вся диагностика в `GateResult.error`.
  */
@@ -27,8 +32,15 @@ import { createLlmClient } from '../agent/llm.js';
 import { loadApiMode } from '../agent/llm-env.js';
 import type { IncomingMsg } from './interbot.js';
 
-/** Таймаут гейта по умолчанию, мс (спека: 2–3 с — гейт не задерживает вход). */
-export const GATE_TIMEOUT_MS = 2500;
+/**
+ * Таймаут гейта по умолчанию, мс (VL-437, doc-34 §3.2/§8.1).
+ *
+ * Прежний дефолт 2500 мс и оценка «2–3 с» — НЕВЕРНАЯ оценка, не прошедшая
+ * на живце 2026-11-19 (7 вызовов → 7 сбоев): короткий вызов mimo через
+ * Xiaomi-роутер 3–5 с, ран с 12–14k системника 6–7 с. Инвариант спеки
+ * «гейт не задерживает вход» = «быстрее рана» — выполняется и при 8000 мс.
+ */
+export const GATE_TIMEOUT_MS = 8000;
 
 /** Вердикт гейта: запускать ран или читать молча. */
 export type GateVerdict = 'react' | 'read_only';
@@ -36,8 +48,12 @@ export type GateVerdict = 'react' | 'read_only';
 /** Результат гейта: вердикт + текст сбоя (fail-open: сбой всегда → react). */
 export interface GateResult {
   verdict: GateVerdict;
-  /** Причина сбоя: сеть/таймаут/отсутствие модели/непонятный ответ. */
+  /** Причина сбоя: сеть/таймаут/отсутствие модели/пустой/непонятный ответ. */
   error?: string;
+  /** Сырой ответ модели до парсинга (первые ~120 символов) — для trace. */
+  raw?: string;
+  /** Usage вызова: output/reasoning-токены — диагностика пустого ответа. */
+  usage?: { output_tokens?: number; reasoning_tokens?: number };
 }
 
 /**
@@ -72,7 +88,10 @@ export function buildGatePrompt(msg: IncomingMsg): string {
  * @returns 'react' | 'read_only' | null
  */
 export function parseGateVerdict(raw: string): GateVerdict | null {
-  const t = raw.toLowerCase();
+  // VL-437 (AC2): нормализация — регистр, обёрточные пробелы/переносы,
+  // схлопывание внутренних пробелов; маркеры ищутся в реальном тексте
+  // ответа (в нормализованной форме — терпимы «READ_ONLY\n», « react. »)
+  const t = raw.toLowerCase().trim().replace(/\s+/g, ' ');
   if (t.includes('read_only')) return 'read_only';
   if (t.includes('react')) return 'react';
   return null;
@@ -112,18 +131,45 @@ export async function runGate(
         client.streamChat(
           [{ role: 'user', content: buildGatePrompt(msg) }],
           undefined,
-          { signal: controller.signal, maxTokens: 16 },
+          // VL-437 (AC2): 16 токенов НЕ хватало reasoning-модели mimo —
+          // reasoning съедал бюджет, content выходил пустым (2 пустых
+          // вердикта на живце 2026-11-19); 64 — с запасом на слово-вердикт
+          { signal: controller.signal, maxTokens: 64 },
         ),
         timeout,
       ]);
-      const verdict = parseGateVerdict(res.text ?? '');
+      // VL-437 (AC2): сырой ответ + usage ДО парсинга — trace-диагностика
+      // «что реально вернул streamChat» (текст/длина/reasoning-токены)
+      const rawText = res.text ?? '';
+      const diag: Pick<GateResult, 'raw' | 'usage'> = {
+        raw: rawText.slice(0, 120),
+        ...(res.usage
+          ? {
+              usage: {
+                output_tokens: res.usage.output_tokens,
+                reasoning_tokens: res.usage.reasoning_tokens,
+              },
+            }
+          : {}),
+      };
+      // Пустой ответ — отдельная ясная причина fail-open (раньше маскировался
+      // под «непонятный»: «непонятный ответ гейта: » с пустым хвостом)
+      if (rawText.trim() === '') {
+        return {
+          verdict: 'react',
+          ...diag,
+          error: `пустой ответ гейта (длина 0, usage: ${JSON.stringify(diag.usage ?? {})})`,
+        };
+      }
+      const verdict = parseGateVerdict(rawText);
       if (verdict === null) {
         return {
           verdict: 'react',
-          error: `непонятный ответ гейта: ${(res.text ?? '').slice(0, 80)}`,
+          ...diag,
+          error: `непонятный ответ гейта: ${rawText.slice(0, 80)}`,
         };
       }
-      return { verdict };
+      return { verdict, ...diag };
     } finally {
       clearTimeout(timer);
     }

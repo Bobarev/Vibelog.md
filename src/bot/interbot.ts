@@ -234,6 +234,30 @@ export function rememberReplyPair(
   }
 }
 
+/** Реплика ветки для process-памяти истории (VL-437, doc-32 §8 Q3-б). */
+export interface BranchEntry {
+  author: string;
+  text: string;
+}
+
+/**
+ * Запись реплики в память ветки + FIFO-санитка (VL-437, Q3-б).
+ *
+ * Паттерн — как у rememberReplyPair/interbotReplyMap: память живёт за жизнь
+ * процесса бота, при переполнении удаляется самая старая запись. Дефолтный
+ * лимит ~20 реплик — контекст «последних сообщений ветки с нашим участием»
+ * для секции истории в buildIncomingPrompt (антидубль: модель видит свой
+ * прошлый ответ и не повторяет его).
+ */
+export function pushBranchEntry(
+  feed: BranchEntry[],
+  entry: BranchEntry,
+  limit = 20,
+): void {
+  feed.push(entry);
+  if (feed.length > limit) feed.splice(0, feed.length - limit);
+}
+
 /**
  * Служебные тексты ботов, которые НЕ являются вопросами (VL-434, fix B).
  *
@@ -378,7 +402,11 @@ export function stripDecisionMarker(text: string): string {
 export function buildIncomingPrompt(
   question: string,
   channel: CommsChannel,
-  opts: { quote?: string; context?: { question: string; answer: string } } = {},
+  opts: {
+    quote?: string;
+    context?: { question: string; answer: string };
+    history?: readonly BranchEntry[];
+  } = {},
 ): string {
   const parts = [
     `Ты отвечаешь на вопрос другой бот-проект в Telegram-канале «${channel.label ?? channel.id}».`,
@@ -400,6 +428,20 @@ export function buildIncomingPrompt(
     // прочитано без ответа); строку «Ответ:» не рисуем, иначе в промпт
     // попадает голая «Ответ: »
     if (opts.context.answer) parts.push('Ответ: ' + opts.context.answer.slice(0, 2000));
+  }
+  // VL-437 (doc-32 §8, Q3-б): секция истории ветки — антидубль-контекст.
+  // Расширение паттерна секции context (не нововведение): модель видит
+  // последние реплики с нашим участием, в т.ч. СВОЙ прошлый ответ, и не
+  // повторяет его (наблюдение «ui повторил свой ответ»). Капы: вызывающий
+  // берёт последние 10 записей, каждая реплика — до 400 символов.
+  if (opts.history && opts.history.length > 0) {
+    parts.push(
+      '',
+      'Последние реплики ветки (уже сказанное НЕ повторяй — ответь иначе либо <no_answer>):',
+    );
+    for (const e of opts.history) {
+      parts.push(`${e.author}: ${e.text.slice(0, 400)}`);
+    }
   }
   parts.push('', 'Вопрос:', question);
   return parts.join('\n');

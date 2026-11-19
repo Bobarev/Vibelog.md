@@ -969,4 +969,59 @@ describe('VL-436: interbot-гейт и право молчать (doc-34)', () =
     await new Promise((r) => setTimeout(r, 0));
     assert.equal(calls.length, 0, 'ошибка старта без отправок в группу');
   });
+
+  it('AC3/AC4 (VL-437): память ветки — входы и наш ответ попадают в секцию истории следующего рана', async () => {
+    // approval=auto, БЕЗ admin_chat → публикация сразу в группу (точка записи feed)
+    writeComms(cwd, {
+      bot_token: '777:test-token',
+      chats: [111],
+      sync_timeout_sec: 120,
+      channels: [
+        { id: 'g1', transport: 'telegram', group_id: -1001, addressing: 'mention', approval: 'auto' },
+      ],
+    });
+    const prompts = [];
+    const onExits = [];
+    const { bot, calls } = gateBot({
+      gate: async (c, incoming) =>
+        incoming.text.includes('спасибо') ? { verdict: 'read_only' } : { verdict: 'react' },
+      startPrompt: (cwdArg, prompt, onExit) => {
+        prompts.push(prompt);
+        onExits.push(onExit);
+        return { run: { pid: 8 } };
+      },
+    });
+    // 1) read_only-вход пишется в память ветки (ран не запускается)
+    await bot.handleUpdate(botQuestion({ messageId: 680, text: '/q@our_bot всем спасибо!' }));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(prompts.length, 0, 'read_only → без рана');
+    // 2) react: read_only-вход виден в истории; ТЕКУЩИЙ вопрос — только в «Вопрос:»
+    await bot.handleUpdate(botQuestion({ messageId: 681, text: '/q@our_bot что с релизом?' }));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(prompts.length, 1, 'ран запущен');
+    assert.ok(prompts[0].includes('Последние реплики ветки'), 'секция истории есть');
+    assert.ok(prompts[0].includes('всем спасибо!'), 'read_only-вход в истории');
+    assert.equal(
+      (prompts[0].match(/что с релизом\?/g) || []).length,
+      1,
+      'текущий вопрос не дублируется в секции истории (запись после промпта)',
+    );
+    // 3) публикация ответа в группу → feed: «мы: <ответ>»
+    onExits[0]({ result: { result: 'Релиз закрыт вчера.' }, exitCode: 0 });
+    await new Promise((r) => setTimeout(r, 10));
+    const groupMsg = calls.find(
+      (c) => (c.method === 'sendMessage' || c.method === 'sendRichMessage') && c.payload?.chat_id === -1001,
+    );
+    assert.ok(groupMsg, 'ответ опубликован в группу (точка записи feed)');
+    // 4) повторная тема → модель видит свой прошлый ответ (антидубль)
+    await bot.handleUpdate(botQuestion({ messageId: 682, text: '/q@our_bot а релиз точно закрыт?' }));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(prompts.length, 2, 'второй ран запущен');
+    assert.ok(prompts[1].includes('Последние реплики ветки'), 'секция истории во втором промпте');
+    assert.ok(
+      prompts[1].includes('мы: Релиз закрыт вчера.'),
+      'наш прошлый ответ виден модели — антидубль',
+    );
+    assert.ok(prompts[1].includes('что с релизом?'), 'вход первого рана в истории');
+  });
 });

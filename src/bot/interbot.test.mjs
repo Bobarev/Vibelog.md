@@ -19,6 +19,7 @@ import {
   classifyAnswer,
   buildIncomingPrompt,
   rememberReplyPair,
+  pushBranchEntry,
   isServiceMessage,
   stripDecisionMarker,
   DEFAULT_LIMITS,
@@ -483,5 +484,56 @@ describe('VL-436 AC5: stripDecisionMarker — срезка перед публи
     const raw = '[DECISION] перейти на новый формат?';
     assert.equal(classifyAnswer(raw), 'decision_request', 'парсер получает исходный текст');
     assert.equal(classifyAnswer(stripDecisionMarker(raw)), 'info', 'после срезки — чистая реплика');
+  });
+});
+
+// ── VL-437: память ветки Q3-б (doc-32 §8) — feed + секция истории ──
+
+describe('VL-437 AC3: pushBranchEntry — запись и FIFO-санитка памяти ветки', () => {
+  it('записывает реплики и держит дефолтный лимит 20 (старые уходят)', () => {
+    const feed = [];
+    for (let i = 1; i <= 25; i++) pushBranchEntry(feed, { author: 'мы', text: `ответ ${i}` });
+    assert.equal(feed.length, 20, 'лимит 20 записей');
+    assert.equal(feed[0].text, 'ответ 6', 'самая старая запись удалена');
+    assert.equal(feed[19].text, 'ответ 25', 'последняя запись на месте');
+  });
+
+  it('кастомный лимит — паттерн санитки interbotReplyMap', () => {
+    const feed = [];
+    pushBranchEntry(feed, { author: 'а', text: '1' }, 2);
+    pushBranchEntry(feed, { author: 'б', text: '2' }, 2);
+    pushBranchEntry(feed, { author: 'в', text: '3' }, 2);
+    assert.deepEqual(feed.map((e) => e.text), ['2', '3']);
+  });
+});
+
+describe('VL-437 AC3: buildIncomingPrompt — секция «Последние реплики ветки»', () => {
+  it('history кладёт секцию с репликами и антидубль-инструкцией перед «Вопрос:»', () => {
+    const p = buildIncomingPrompt('а релиз точно закрыт?', channel(), {
+      history: [
+        { author: 'чужой бот', text: 'что с релизом?' },
+        { author: 'мы', text: 'Релиз закрыт вчера.' },
+      ],
+    });
+    const sec = p.indexOf('Последние реплики ветки');
+    const q = p.indexOf('Вопрос:');
+    assert.ok(sec >= 0, 'секция истории есть');
+    assert.ok(sec < q, 'секция — перед «Вопрос:»');
+    assert.ok(p.includes('чужой бот: что с релизом?'), 'вход в истории');
+    assert.ok(p.includes('мы: Релиз закрыт вчера.'), 'наш ответ виден модели (антидубль)');
+    assert.match(p, /НЕ повторяй/, 'антидубль-инструкция');
+  });
+
+  it('реплика истории ограничена 400 символами', () => {
+    const long = 'x'.repeat(500);
+    const p = buildIncomingPrompt('вопрос', channel(), { history: [{ author: 'мы', text: long }] });
+    assert.ok(p.includes('мы: ' + 'x'.repeat(400)), 'обрезка до 400');
+    assert.ok(!p.includes('x'.repeat(401)), 'лишние символы не попали');
+  });
+
+  it('без history форма промпта не меняется (регресс VL-433/436)', () => {
+    const p = buildIncomingPrompt('что с форматом?', channel());
+    assert.ok(!p.includes('Последние реплики ветки'), 'секции нет без opts');
+    assert.ok(p.includes('Вопрос:\nчто с форматом?'), 'прежняя форма сохранена');
   });
 });

@@ -67,17 +67,39 @@ describe('VL-436: parseGateVerdict (форма ответа модели)', () =
     assert.equal(parseGateVerdict('ok'), null);
     assert.equal(parseGateVerdict('вопрос требует анализа'), null);
   });
+
+  it('AC2: нормализация — регистр/обёрточные пробелы/переносы, маркеры в реальном тексте', () => {
+    assert.equal(parseGateVerdict('\n  READ_ONLY  \n'), 'read_only');
+    assert.equal(parseGateVerdict('Вердикт: read_only.'), 'read_only');
+    assert.equal(parseGateVerdict('read_only — так лучше'), 'read_only');
+    assert.equal(parseGateVerdict('  React.  '), 'react');
+    assert.equal(parseGateVerdict('react\n'), 'react');
+  });
 });
 
 describe('VL-436 AC1/AC2: runGate — вердикт и fail-open', () => {
   it('ответ модели read_only → read_only (без error)', async () => {
     const r = await runGate(root(), msg(), { client: mockClient('read_only') });
-    assert.deepEqual(r, { verdict: 'read_only' });
+    assert.equal(r.verdict, 'read_only');
+    assert.equal(r.error, undefined);
+    // VL-437 (AC2): сырой ответ и usage — для trace-диагностики
+    assert.equal(r.raw, 'read_only');
+    assert.equal(r.usage?.output_tokens, 0);
   });
 
   it('ответ модели react → react (без error)', async () => {
     const r = await runGate(root(), msg(), { client: mockClient('react') });
-    assert.deepEqual(r, { verdict: 'react' });
+    assert.equal(r.verdict, 'react');
+    assert.equal(r.error, undefined);
+    assert.equal(r.raw, 'react');
+  });
+
+  it('AC2: пустой ответ модели → fail-open react + ясная причина «пустой ответ», не «непонятный»', async () => {
+    const r = await runGate(root(), msg(), { client: mockClient('   \n  ') });
+    assert.equal(r.verdict, 'react');
+    assert.match(r.error ?? '', /пустой ответ гейта/);
+    assert.doesNotMatch(r.error ?? '', /непонятный/);
+    assert.equal(r.raw, '   \n  ', 'сырой ответ сохраняется для trace');
   });
 
   it('AC2: клиент бросил → fail-open react + error (путь в ран не закрыт)', async () => {

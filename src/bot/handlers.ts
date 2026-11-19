@@ -64,9 +64,11 @@ import {
   createRunLimiter,
   DEFAULT_LIMITS,
   dispatchIncoming,
+  pushBranchEntry,
   rememberReplyPair,
   stripDecisionMarker,
 } from './interbot.js';
+import type { BranchEntry } from './interbot.js';
 // VL-436 (doc-34 §3.2): гейт react|read_only — дешёвая классификация до рана
 import { runGate } from './gate.js';
 import type { GateResult } from './gate.js';
@@ -762,6 +764,12 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       if (oldest !== undefined) interbotThreadMemory.delete(oldest);
     }
   }
+  // VL-437 (doc-32 §8, Q3-б): память ветки «последние N реплик с нашим
+  // участием» — входы, дошедшие до гейта, + наши опубликованные ответы.
+  // Секция истории в buildIncomingPrompt даёт модели антидубль-контекст
+  // (видит свой прошлый ответ → не повторяет); лимит 20, FIFO — санитка
+  // в pushBranchEntry (паттерн interbotReplyMap/rememberThreadPair)
+  const interbotBranchFeed: BranchEntry[] = [];
   // Решения, ожидающие кнопки админа (вариант C): seq → карточка
   // VL-433: + question — исходный вопрос человека для памяти ветки (ibot:ok)
   const pendingDecisions = new Map<
@@ -1055,11 +1063,26 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       'гейт:', gateRes.verdict,
       gateRes.error ? `сбой: ${gateRes.error}` : '',
     );
+    // VL-437 (AC2): сырой ответ гейта — что реально вернул streamChat
+    // (текст/длина/reasoning-токены); по этой строке диагностируется пустота
+    trace(
+      'гейт сырой: длина=', (gateRes.raw ?? '').length,
+      'raw=', JSON.stringify(gateRes.raw ?? ''),
+      'usage=', JSON.stringify(gateRes.usage ?? {}),
+    );
+    // Автор входа для памяти ветки — как в buildGatePrompt гейта
+    const inAuthor = incoming.from_username
+      ? `@${incoming.from_username}`
+      : incoming.is_bot
+        ? 'чужой бот'
+        : 'человек';
     if (gateRes.verdict === 'read_only') {
       // Контекст ветки: последующие reply-уточнения видят прочитанное
       // сообщение (answer '' — «прочитал и промолчал», строку «Ответ:»
       // buildIncomingPrompt не рисует)
       rememberThreadPair([m.message_id], { question: text, answer: '' });
+      // VL-437 (Q3-б): вход пишется в память ветки — последующие раны видят
+      pushBranchEntry(interbotBranchFeed, { author: inAuthor, text });
       trace('гейт: read_only — ран не запущен, сообщение прочитано, message_id=', m.message_id);
       return;
     }
@@ -1078,7 +1101,17 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
             : undefined;
     const context =
       parent === undefined ? undefined : interbotThreadMemory.get(parent.message_id);
-    const prompt = buildIncomingPrompt(text, channel, { quote, context });
+    // VL-437 (Q3-б): секция «Последние реплики ветки» — модель видит свой
+    // прошлый ответ и не дублирует его; последние 10 записей, каждая
+    // реплика cap'нута (400 символов) внутри buildIncomingPrompt
+    const prompt = buildIncomingPrompt(text, channel, {
+      quote,
+      context,
+      history: interbotBranchFeed.slice(-10),
+    });
+    // Вход пишется ПОСЛЕ построения промпта: текущий вопрос не дублируется
+    // в секции истории — он и так в «Вопрос:»
+    pushBranchEntry(interbotBranchFeed, { author: inAuthor, text });
     const replyTo = m.message_id;
     const onExit: PhaseExitCallback = (run) => {
       const answer =
@@ -1161,6 +1194,9 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
           // иначе depth обрывается на собственном сообщении и лимит мёртв
           rememberReplyPair(interbotReplyMap, ids, replyTo);
           rememberThreadPair([...ids, replyTo], { question: text, answer: published });
+          // VL-437 (Q3-б): наш ответ — в память ветки (антидубль для
+          // последующих ран по повторной теме)
+          pushBranchEntry(interbotBranchFeed, { author: 'мы', text: published });
         });
       }
     };
@@ -2371,6 +2407,9 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
           question: pending.question,
           answer: published,
         });
+        // VL-437 (Q3-б): согласованный ответ — в память ветки (точка
+        // публикации ibot:ok, как и onExit выше)
+        pushBranchEntry(interbotBranchFeed, { author: 'мы', text: published });
         trace('ibot:ok отправлен, chatId=', pending.chatId, 'replyTo=', pending.replyTo);
       } else {
         await ctx.answerCallbackQuery({ text: '⛔ Отклонено' }).catch(() => {});
