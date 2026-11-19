@@ -223,3 +223,134 @@ describe('VL-428: классификация и промпт (AC7)', () => {
     assert.ok(p.includes('.env'), 'запрет чтения секретов явный');
   });
 });
+
+// ── VL-433: человек в interbot-канале — семантика Q1/Q3 ──
+
+/** Сообщение ЧЕЛОВЕКА (не бота) в interbot-канале. */
+function humanMsg(overrides = {}) {
+  return {
+    message_id: 50,
+    chat_id: -1001,
+    text: 'что с релизом?',
+    from_id: 500,
+    from_username: 'vasya',
+    is_bot: false,
+    ...overrides,
+  };
+}
+
+describe('VL-433: человек в interbot-канале (Q1, AC1/AC2/AC5)', () => {
+  it('AC1: без @ и без reply → process у всех ботов, независимо от addressing-конфига', () => {
+    const d = dispatchIncoming(humanMsg(), ctx());
+    assert.equal(d.action, 'process', 'addressing=mention на людей не действует');
+    assert.equal(d.depth, 0, 'depth на людей не распространяется');
+    const dAll = dispatchIncoming(humanMsg({ message_id: 51 }), ctx({ channel: channel('all') }));
+    assert.equal(dAll.action, 'process');
+  });
+
+  it('AC2: @наш → process; @чужой → not-addressed (молча)', () => {
+    const us = dispatchIncoming(humanMsg({ text: '@OurBot подскажи' }), ctx());
+    assert.equal(us.action, 'process');
+    const other = dispatchIncoming(
+      humanMsg({ message_id: 51, text: '@OtherBot подскажи' }),
+      ctx(),
+    );
+    assert.equal(other.action, 'answer');
+    assert.equal(other.reason, 'not-addressed');
+    assert.equal(other.reply, '', 'адресация чужому — молча, без ответа в группу');
+  });
+
+  it('AC2: reply на сообщение бота → конкретный бот (наш — process, чужой — ignore)', () => {
+    const replyUs = dispatchIncoming(
+      humanMsg({ message_id: 52, reply_to_message_id: 1, reply_to_from_id: 42, reply_to_is_bot: true }),
+      ctx(),
+    );
+    assert.equal(replyUs.action, 'process');
+    const replyOther = dispatchIncoming(
+      humanMsg({ message_id: 53, reply_to_message_id: 2, reply_to_from_id: 777, reply_to_is_bot: true }),
+      ctx(),
+    );
+    assert.equal(replyOther.action, 'answer');
+    assert.equal(replyOther.reason, 'not-addressed');
+  });
+
+  it('AC2: reply на чужого бота приоритетнее @наш (конфликт → только адресат)', () => {
+    const conflict = dispatchIncoming(
+      humanMsg({
+        message_id: 54,
+        text: '@OurBot а что думаешь?',
+        reply_to_message_id: 3,
+        reply_to_from_id: 777,
+        reply_to_is_bot: true,
+      }),
+      ctx(),
+    );
+    assert.equal(conflict.action, 'answer');
+    assert.equal(conflict.reason, 'not-addressed');
+  });
+
+  it('reply на сообщение ЧЕЛОВЕКА — не адресация боту (без @ → ко всем)', () => {
+    const d = dispatchIncoming(
+      humanMsg({ message_id: 55, reply_to_message_id: 4, reply_to_from_id: 600, reply_to_is_bot: false }),
+      ctx(),
+    );
+    assert.equal(d.action, 'process');
+  });
+
+  it('AC5: свой rate — humanRatePerMin, а не botRatePerMin; bucket бота не задет', () => {
+    assert.notEqual(DEFAULT_LIMITS.humanRatePerMin, DEFAULT_LIMITS.botRatePerMin);
+    const rate = createRateLimiter();
+    for (let i = 0; i < DEFAULT_LIMITS.humanRatePerMin; i++) {
+      assert.equal(rate.limited(500, DEFAULT_LIMITS.humanRatePerMin), false, `#${i}`);
+    }
+    const d = dispatchIncoming(humanMsg({ message_id: 60 }), ctx({ rate }));
+    assert.equal(d.action, 'answer');
+    assert.equal(d.reason, 'rate');
+    // Разные ключи: бот в своём bucket не ограничен
+    assert.equal(rate.limited(777, DEFAULT_LIMITS.botRatePerMin), false);
+  });
+
+  it('AC5: depth-цепочка на людей НЕ распространяется (глубокий reply → process)', () => {
+    const map = new Map([
+      [50, 49],
+      [49, 48],
+      [48, 47],
+      [47, 46],
+    ]);
+    const d = dispatchIncoming(humanMsg(), ctx({ replyMap: map }));
+    assert.equal(d.action, 'process', 'глубина цепочки человека не отсекается');
+    assert.equal(d.depth, 0);
+  });
+
+  it('AC5: dedup по message_id общий с ботами', () => {
+    const dedup = createDedupCache();
+    assert.equal(dedup.check(50), false, 'первый проход');
+    const d = dispatchIncoming(humanMsg(), ctx({ dedup }));
+    assert.equal(d.action, 'answer');
+    assert.equal(d.reason, 'dedup');
+  });
+
+  it('runs/час: общий лимит распространяется и на людей (стоимость)', () => {
+    const runs = createRunLimiter();
+    for (let i = 0; i < DEFAULT_LIMITS.globalRunsPerHour; i++) runs.limited(DEFAULT_LIMITS.globalRunsPerHour);
+    const d = dispatchIncoming(humanMsg({ message_id: 61 }), ctx({ runs }));
+    assert.equal(d.action, 'answer');
+    assert.equal(d.reason, 'run-limit');
+  });
+
+  it('AC3: buildIncomingPrompt с цитатой и контекстом ветки; без opts — прежняя форма', () => {
+    const p = buildIncomingPrompt('а если добавить флаг?', channel(), {
+      quote: 'Вот ответ бота по пункту 1',
+      context: { question: 'что с релизом?', answer: 'релиз в пятницу' },
+    });
+    assert.ok(p.includes('Вот ответ бота по пункту 1'), 'цитата родителя в промпте');
+    assert.ok(p.includes('что с релизом?'), 'прошлый вопрос ветки');
+    assert.ok(p.includes('релиз в пятницу'), 'прошлый ответ ветки');
+    assert.ok(p.indexOf('цитата') < p.indexOf('Вопрос:'), 'цитата — до секции «Вопрос:»');
+    assert.ok(p.indexOf('Предыдущий вопрос') < p.indexOf('Вопрос:'), 'контекст — до «Вопрос:»');
+    // Без opts форма прежняя (регресс VL-428)
+    const plain = buildIncomingPrompt('что с форматом?', channel());
+    assert.ok(!plain.includes('цитата'));
+    assert.ok(!plain.includes('Предыдущий вопрос'));
+  });
+});

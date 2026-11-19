@@ -25,21 +25,31 @@ import { chunkRich } from './rich.js';
  *
  * Копия `sendText` из `handlers.ts` (там она приватная, а импорт дал бы цикл).
  * Обе ветки глушат сетевые ошибки: сообщение теряется, но polling продолжается.
+ *
+ * @returns message_id отправленного сообщения (VL-433: id идёт в память
+ *   ветки) либо undefined при сетевом сбое
  */
 async function sendMdFallback(
   bot: Bot,
   chatId: number,
   text: string,
   replyTo?: number,
-): Promise<void> {
+): Promise<number | undefined> {
   const other = replyTo !== undefined ? { reply_parameters: { message_id: replyTo } } : {};
+  const idOf = (res: unknown): number | undefined =>
+    typeof res === 'object' && res !== null && typeof (res as { message_id?: unknown }).message_id === 'number'
+      ? (res as { message_id: number }).message_id
+      : undefined;
   try {
-    await bot.api.sendMessage(chatId, text, { parse_mode: 'MarkdownV2', ...other });
+    const res = await bot.api.sendMessage(chatId, text, { parse_mode: 'MarkdownV2', ...other });
+    return idOf(res);
   } catch {
     try {
-      await bot.api.sendMessage(chatId, text, other);
+      const res = await bot.api.sendMessage(chatId, text, other);
+      return idOf(res);
     } catch {
       // Сеть недоступна — сообщение теряется, polling продолжится
+      return undefined;
     }
   }
 }
@@ -74,13 +84,21 @@ function richDroppedReply(res: unknown): boolean {
  *   ответ чужому боту в канале обязан быть reply на его вопрос; VL-429:
  *   если rich-сервер проигнорировал reply_parameters — сообщение удаляется
  *   и досылается через sendMessage с reply_parameters, reply не теряется)
+ * @returns message_id всех реально отправленных частей (VL-433: ids нужны
+ *   для регистрации пары «вопрос/ответ» в памяти ветки). Удалённый при
+ *   richDroppedReply id НЕ возвращается; ничего не ушло — пустой массив.
  */
 export async function sendChatAnswer(
   bot: Bot,
   chatId: number,
   text: string,
   opts: { replyTo?: number } = {},
-): Promise<void> {
+): Promise<number[]> {
+  const sentIds: number[] = [];
+  const idOf = (res: unknown): number | undefined =>
+    typeof res === 'object' && res !== null && typeof (res as { message_id?: unknown }).message_id === 'number'
+      ? (res as { message_id: number }).message_id
+      : undefined;
   try {
     for (const part of chunkRich(text)) {
       if (opts.replyTo !== undefined) {
@@ -106,10 +124,17 @@ export async function sendChatAnswer(
           } catch {
             // Удаление недоступно — досылаем с reply всё равно (reply важнее дубля)
           }
-          await sendMdFallback(bot, chatId, part, opts.replyTo);
+          const id = await sendMdFallback(bot, chatId, part, opts.replyTo);
+          if (id !== undefined) sentIds.push(id);
+        } else {
+          // Непроверяемый ответ (без числового id) — просто не регистрируем
+          const id = idOf(res);
+          if (id !== undefined) sentIds.push(id);
         }
       } else {
-        await bot.api.sendRichMessage(chatId, { markdown: part });
+        const res = await bot.api.sendRichMessage(chatId, { markdown: part });
+        const id = idOf(res);
+        if (id !== undefined) sentIds.push(id);
       }
     }
   } catch (err) {
@@ -122,7 +147,9 @@ export async function sendChatAnswer(
       (i, n) => `\n\n_часть ${i}\\/${n}_`
     );
     for (const part of parts) {
-      await sendMdFallback(bot, chatId, part, opts.replyTo);
+      const id = await sendMdFallback(bot, chatId, part, opts.replyTo);
+      if (id !== undefined) sentIds.push(id);
     }
   }
+  return sentIds;
 }

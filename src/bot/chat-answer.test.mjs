@@ -22,9 +22,11 @@ import { TELEGRAM_TEXT_LIMIT } from '../../dist/bot/formatting.js';
  *   'without' — только message_id (reply проигнорирован, VL-429),
  *   по умолчанию {} — ответ непроверяем (детект невозможен)
  * @param opts.deleteFails — deleteMessage бросает (VL-429: reply всё равно досылается)
+ * @param opts.mdHardFail — sendMessage бросает всегда (VL-433: полный сбой сети)
  */
 function fakeBot(opts = {}) {
   const calls = [];
+  let msgSeq = 70; // инкрементальные message_id sendMessage (VL-433: возврат ids)
   return {
     calls,
     api: {
@@ -38,6 +40,7 @@ function fakeBot(opts = {}) {
         return {};
       },
       async sendMessage(chatId, text, other) {
+        if (opts.mdHardFail) throw new Error('NETWORK_DOWN');
         if (opts.mdFails && other?.parse_mode) throw new Error("400 can't parse entities");
         calls.push({
           method: 'text',
@@ -46,7 +49,7 @@ function fakeBot(opts = {}) {
           parseMode: other?.parse_mode,
           replyTo: other?.reply_parameters?.message_id,
         });
-        return {};
+        return { message_id: ++msgSeq };
       },
       async deleteMessage(chatId, messageId) {
         if (opts.deleteFails) throw new Error('400 MESSAGE_DELETE_FAILED');
@@ -142,5 +145,31 @@ describe('sendChatAnswer (VL-414)', () => {
     const text = bot.calls.find((c) => c.method === 'text');
     assert.ok(text, 'дубль лучше потерянного reply (AC6)');
     assert.equal(text.replyTo, 7);
+  });
+
+  // ── VL-433: возврат message_id для памяти ветки ──
+
+  it('VL-433: возвращает ids отправленных rich-частей (reply принят)', async () => {
+    const bot = fakeBot({ richReply: 'with' });
+    const ids = await sendChatAnswer(bot, 42, 'ответ с reply', { replyTo: 7 });
+    assert.deepEqual(ids, [55], 'id rich-ответа возвращается');
+  });
+
+  it('VL-433: rich проигнорировал reply → удалённый id НЕ возвращается, id фолбэка — возвращается', async () => {
+    const bot = fakeBot({ richReply: 'without' });
+    const ids = await sendChatAnswer(bot, 42, 'ответ с reply', { replyTo: 7 });
+    assert.deepEqual(ids, [71], 'только id досланного sendMessage (первый msgSeq)');
+  });
+
+  it('VL-433: непроверяемый ответ (без message_id) — пустой массив, не падение', async () => {
+    const bot = fakeBot();
+    const ids = await sendChatAnswer(bot, 42, 'ответ с reply', { replyTo: 7 });
+    assert.deepEqual(ids, [], 'id нет — пара в память не пишется');
+  });
+
+  it('VL-433: полный сбой сети — пустой массив (сообщение потеряно, ошибок нет)', async () => {
+    const bot = fakeBot({ richFails: true, mdHardFail: true });
+    const ids = await sendChatAnswer(bot, 42, 'ответ персоны');
+    assert.deepEqual(ids, []);
   });
 });

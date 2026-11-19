@@ -294,22 +294,83 @@ describe("VL-430: interbot-ветка на bot.on('message')", () => {
     assert.equal(loadTickets(cwd)[0].status, 'pending', 'тикет не тронут');
   });
 
-  it('AC4-регрессия: текст пользователя проходит interbot-ветку next() до нижних веток', async () => {
-    const { bot, calls, state } = setupBot(cwd);
+  // ── VL-433: человек в interbot-канале — семантика Q1/Q3 ──
+
+  it('VL-433 AC1/AC4: человек из interbot-канала БЕЗ адресации → process (не next, шов startPrompt)', async () => {
+    const prompts = [];
+    const { bot, state } = setupBot(cwd, {
+      startPrompt: (cwdArg, prompt, onExit) => {
+        prompts.push({ cwdArg, prompt, onExit });
+        return { run: { pid: 42 } };
+      },
+    });
     createTicket(cwd, { id: 'ask-t4', channel_id: 'g1', question_msg_id: 78, timeoutSec: 120 });
 
-    // /help от обычного пользователя: interbot-ветка (не бот → next()) не должна
-    // сорвать цепочку — команда help ниже по цепочке обязана отработать
-    // (catch-all пина ниже команд последний, sentinel после registerHandlers
-    // для текста недостижим — он и не должен достигаться, ловушка VL-37).
+    // /help от обычного пользователя в чате -1001 (= interbot-канал):
+    // ветка НЕ делает next() (AC4) и запускает ран (AC1, без @ → ко всем)
     await bot.handleUpdate(userTextUpdate({}));
 
-    assert.equal(state.sentinel, 0, 'catch-all пина перехватывает текст (не next) — как раньше');
+    assert.equal(state.sentinel, 0, 'interbot-ветка не отдаёт людей канала в нижние ветки');
+    assert.equal(prompts.length, 1, 'запущен один ран через шов HandlerDeps.startPrompt');
+    assert.ok(prompts[0].prompt.includes('/help'), 'промпт — текст сообщения человека');
+    assert.equal(loadTickets(cwd)[0].status, 'pending', 'чужой тикет не тронут');
+  });
+
+  it('VL-433 AC4-регрессия: человек в чате ВНЕ interbot-канала — next(), команды работают как раньше', async () => {
+    const prompts = [];
+    const { bot, calls } = setupBot(cwd, {
+      startPrompt: () => {
+        prompts.push(1);
+        return { run: { pid: 43 } };
+      },
+    });
+    // Личка человека (chat вне comms) — канал не найден → next() по-прежнему
+    const upd = userTextUpdate({});
+    upd.message.chat = { id: 555, type: 'private', first_name: 'U' };
+    await bot.handleUpdate(upd);
+
+    assert.equal(prompts.length, 0, 'вне канала ветка не обрабатывает');
     assert.ok(
       calls.some((c) => c.method === 'sendMessage'),
-      'help-команда ниже по цепочке отработала → interbot вызвал next()',
+      'help-команда ниже по цепочке отработала → next() сохранился',
     );
-    assert.equal(loadTickets(cwd)[0].status, 'pending', 'чужой тикет не тронут');
+  });
+
+  it('VL-433 AC3: reply-уточнение → prompt с цитатой родителя и парой «вопрос/ответ» из памяти', async () => {
+    const captured = [];
+    const { bot, state } = setupBot(cwd, {
+      startPrompt: (cwdArg, prompt, onExit) => {
+        captured.push({ prompt, onExit });
+        return { run: { pid: 44 } };
+      },
+    });
+
+    // 1) Первый вопрос человека (без адресации) → onExit с ответом в группу
+    await bot.handleUpdate(userTextUpdate({ messageId: 120, text: 'что с релизом?' }));
+    assert.equal(captured.length, 1);
+    captured[0].onExit({ result: { result: 'релиз в пятницу' }, exitCode: 0 });
+    // sendChatAnswer — void .then: ждём microtask/macrotask на регистрацию пары
+    await new Promise((r) => setTimeout(r, 0));
+
+    // 2) Уточнение: reply на наш «ответ» (stub вернул message_id 61)
+    const upd = userTextUpdate({ messageId: 121, text: 'а во сколько?' });
+    upd.message.reply_to_message = {
+      message_id: 61,
+      date: 0,
+      chat: { id: -1001, type: 'supergroup', title: 'G' },
+      from: { id: 42, is_bot: true, first_name: 'T', username: 'our_bot' },
+      rich_message: {
+        blocks: [{ type: 'paragraph', text: [{ type: 'text', text: 'релиз в пятницу' }] }],
+      },
+    };
+    await bot.handleUpdate(upd);
+
+    assert.equal(captured.length, 2, 'уточнение → второй ран (только у адресата — reply на нас)');
+    const p = captured[1].prompt;
+    assert.ok(p.includes('релиз в пятницу'), 'цитата сообщения-родителя (rich → richToText) в промпте');
+    assert.ok(p.includes('что с релизом?'), 'прошлый вопрос ветки из process-памяти');
+    assert.ok(p.indexOf('цитата') < p.indexOf('Вопрос:'), 'цитата — до секции «Вопрос:»');
+    assert.equal(state.sentinel, 0, 'уточнение не уходит в нижние ветки');
   });
 
   it('AC1-регрессия: пустой text проходит в ветку как раньше (filter.js: leaf != null)', async () => {

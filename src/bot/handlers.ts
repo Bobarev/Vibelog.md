@@ -141,6 +141,11 @@ export interface HandlerDeps {
    * импорт из ../web/chat.js (паттерн ChatDeps.llm).
    */
   startChatRun?: typeof startChatRun;
+  /**
+   * VL-433: тестовый шов — подмена startPrompt во входящей interbot-ветке
+   * (юнит-тесты не спавнят реальный LLM-ход; паттерн startChatRun VL-431).
+   */
+  startPrompt?: typeof startPrompt;
 }
 
 /**
@@ -731,10 +736,26 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   const interbotRuns = createRunLimiter();
   // Цепочка reply: process-память (глубина считается за жизнь процесса бота)
   const interbotReplyMap = new Map<number, number>();
+  // VL-433 (Q3): память ветки «последний вопрос/ответ» для контекста
+  // reply-уточнений человека — message_id → пара (ключи: id всех отправленных
+  // частей ответа + id вопроса); санитка как у interbotReplyMap
+  const interbotThreadMemory = new Map<number, { question: string; answer: string }>();
+  /** Регистрация пары по ключам + FIFO-санитка памяти ветки (VL-433). */
+  function rememberThreadPair(
+    keys: number[],
+    pair: { question: string; answer: string },
+  ): void {
+    for (const key of keys) interbotThreadMemory.set(key, pair);
+    if (interbotThreadMemory.size > 1000) {
+      const oldest = interbotThreadMemory.keys().next().value;
+      if (oldest !== undefined) interbotThreadMemory.delete(oldest);
+    }
+  }
   // Решения, ожидающие кнопки админа (вариант C): seq → карточка
+  // VL-433: + question — исходный вопрос человека для памяти ветки (ibot:ok)
   const pendingDecisions = new Map<
     number,
-    { answer: string; chatId: number; replyTo: number }
+    { answer: string; chatId: number; replyTo: number; question: string }
   >();
   let decisionSeq = 0;
 
@@ -904,9 +925,12 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       'reply_to=', m.reply_to_message?.message_id,
       'text=', text.slice(0, 100),
     );
-    // Только ЧУЖИЕ боты: свои сообщения (в т.ч. наши ответы) — не наша зона
-    if (!m.from?.is_bot || m.from.id === ctx.me.id) {
-      trace('пропуск: сообщение не от чужого бота → next()');
+    // Свои сообщения (в т.ч. наши ответы) и служебные без from — не наша
+    // зона. VL-433: людей НЕ отсекаем — человек из interbot-канала
+    // обрабатывается ниже в ветке (НЕ next()); человек вне канала уйдёт
+    // next() после поиска канала — личка/пин/мост прежние.
+    if (m.from === undefined || m.from.id === ctx.me.id) {
+      trace('пропуск: своё/служебное сообщение → next()');
       await next();
       return;
     }
@@ -940,13 +964,20 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       text,
       from_id: m.from.id,
       ...(m.from.username ? { from_username: m.from.username } : {}),
-      is_bot: true,
+      // VL-433: is_bot — реальный признак автора (человек в interbot-канале
+      // ветвится в dispatch по своим правилам Q1); reply_to_is_bot нужен
+      // humanAddressing для «reply на сообщение бота»
+      is_bot: m.from.is_bot,
       ...(m.reply_to_message ? { reply_to_message_id: m.reply_to_message.message_id } : {}),
       ...(m.reply_to_message?.from ? { reply_to_from_id: m.reply_to_message.from.id } : {}),
+      ...(m.reply_to_message?.from ? { reply_to_is_bot: m.reply_to_message.from.is_bot } : {}),
     };
     // ── Ветка ответа на НАШ вопрос (тикет) — минуя диспатч (AC5/AC6) ──
     const repliedTo = m.reply_to_message?.message_id;
+    // VL-433: тикет-ветка — только для чужих ботов; человек, отвечающий на
+    // НАШ тикет-вопрос, идёт в dispatch как уточнение (reply на нас → process)
     const ticketMatch =
+      m.from.is_bot &&
       repliedTo !== undefined &&
       loadTickets(deps.cwd).some((t) => t.question_msg_id === repliedTo);
     trace('ветка тикета: reply_to=', repliedTo ?? '—', 'совпадение=', ticketMatch);
@@ -996,7 +1027,21 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       return; // в цепочку grammy не идём: interbot-сообщение — наша зона
     }
     // ── Входящий вопрос → read-only ран через startPrompt (AC3, AC7) ──
-    const prompt = buildIncomingPrompt(text, channel);
+    // VL-433 (Q3): контекст уточнения — цитата сообщения-родителя (текст;
+    // rich_message → richToText) + последний вопрос/ответ ветки из
+    // process-памяти (ключи — id ответов/вопроса, см. rememberThreadPair)
+    const parent = m.reply_to_message;
+    const quote =
+      parent === undefined
+        ? undefined
+        : typeof parent.text === 'string' && parent.text !== ''
+          ? parent.text
+          : parent.rich_message
+            ? richToText(parent.rich_message)
+            : undefined;
+    const context =
+      parent === undefined ? undefined : interbotThreadMemory.get(parent.message_id);
+    const prompt = buildIncomingPrompt(text, channel, { quote, context });
     const replyTo = m.message_id;
     const onExit: PhaseExitCallback = (run) => {
       const answer =
@@ -1038,7 +1083,7 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       trace('onExit: exitCode=', run.exitCode, 'kind=', kind, 'needsAdmin=', needsAdmin);
       if (needsAdmin && channel.admin_chat !== undefined) {
         const id = ++decisionSeq;
-        pendingDecisions.set(id, { answer, chatId, replyTo });
+        pendingDecisions.set(id, { answer, chatId, replyTo, question: text });
         if (pendingDecisions.size > 50) {
           const oldest = pendingDecisions.keys().next().value;
           if (oldest !== undefined) pendingDecisions.delete(oldest);
@@ -1063,11 +1108,13 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
           .catch((err) => console.error('[interbot] карточка решения не отправлена:', err));
       } else {
         trace('ответ → группа chatId=', chatId, 'sendChatAnswer replyTo=', replyTo);
-        void sendChatAnswer(bot, chatId, answer, { replyTo });
+        void sendChatAnswer(bot, chatId, answer, { replyTo }).then((ids) =>
+          rememberThreadPair([...ids, replyTo], { question: text, answer }),
+        );
       }
     };
     trace('старт рана, prompt:', prompt.slice(0, 100));
-    const result = startPrompt(deps.cwd, prompt, onExit, resolveDefaultAgent(deps.cwd));
+    const result = (deps.startPrompt ?? startPrompt)(deps.cwd, prompt, onExit, resolveDefaultAgent(deps.cwd));
     if ('error' in result) {
       trace('старт рана НЕ удался:', result.error);
       await sendChatAnswer(bot, chatId, `⚠️ Не удалось запустить ран: ${result.error}`, {
@@ -2259,7 +2306,13 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       pendingDecisions.delete(id);
       if (act === 'ok') {
         await ctx.answerCallbackQuery({ text: '✅ Опубликовано' }).catch(() => {});
-        await sendChatAnswer(bot, pending.chatId, pending.answer, { replyTo: pending.replyTo });
+        const ids = await sendChatAnswer(bot, pending.chatId, pending.answer, {
+          replyTo: pending.replyTo,
+        });
+        rememberThreadPair([...ids, pending.replyTo], {
+          question: pending.question,
+          answer: pending.answer,
+        });
         trace('ibot:ok отправлен, chatId=', pending.chatId, 'replyTo=', pending.replyTo);
       } else {
         await ctx.answerCallbackQuery({ text: '⛔ Отклонено' }).catch(() => {});

@@ -20,6 +20,8 @@ export interface InterbotLimits {
   dedupTtlMs: number;
   /** Сообщений от одного чужого бота в минуту. */
   botRatePerMin: number;
+  /** Сообщений от одного ЧЕЛОВЕКА в минуту (VL-433: своя константа, не botRatePerMin). */
+  humanRatePerMin: number;
   /** Глобальный лимит входящих LLM-ранов в час. */
   globalRunsPerHour: number;
   /** Максимальная глубина reply-цепочки (включительно). */
@@ -30,6 +32,7 @@ export interface InterbotLimits {
 export const DEFAULT_LIMITS: InterbotLimits = {
   dedupTtlMs: 10 * 60 * 1000,
   botRatePerMin: 10,
+  humanRatePerMin: 5,
   globalRunsPerHour: 20,
   maxDepth: 2,
 };
@@ -46,6 +49,8 @@ export interface IncomingMsg {
   reply_to_message_id?: number;
   /** from_id автора сообщения, на которое reply (для «reply на нас»). */
   reply_to_from_id?: number;
+  /** Автор сообщения-родителя — бот? (VL-433: reply на бота = адресация). */
+  reply_to_is_bot?: boolean;
 }
 
 /** Решение по входящему сообщению.
@@ -178,6 +183,31 @@ export function mentionsUs(text: string, ourUsername: string): boolean {
   return re.test(text);
 }
 
+/**
+ * Адресация сообщения ЧЕЛОВЕКА (VL-433, Q1): reply на сообщение бота
+ * приоритетнее @упоминания (конфликт «reply на B + @C» → только B —
+ * Q2-уточнение живёт на reply).
+ *
+ * - reply на сообщение бота → 'us'/'other' по reply_to_from_id;
+ * - любой @упоминание не-наш → 'other': боты не знают списка имён канала,
+ *   поэтому различают только «мне / чужому / никому» (@человека трактуется
+ *   как чужая адресация — осознанная эвристика, VL-433);
+ * - иначе 'none' → вопрос ко ВСЕМ ботам канала (addressing-конфиг канала
+ *   на людей не действует).
+ */
+export function humanAddressing(
+  msg: IncomingMsg,
+  opts: { ourBotId: number; ourUsername: string },
+): 'us' | 'other' | 'none' {
+  if (msg.reply_to_is_bot) {
+    return msg.reply_to_from_id === opts.ourBotId ? 'us' : 'other';
+  }
+  if (/(?:^|\s)@[\w]+\b/.test(msg.text)) {
+    return mentionsUs(msg.text, opts.ourUsername) ? 'us' : 'other';
+  }
+  return 'none';
+}
+
 /** Экранирование строки для RegExp (юзернеймы Telegram безопасны, но на всякий). */
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -204,8 +234,30 @@ export function dispatchIncoming(
   },
 ): IncomingDecision {
   const { limits, channel } = ctx;
-  // 0. Только сообщения от ботов
-  if (!msg.is_bot) return { action: 'process', depth: 0, kind: 'question' } as never;
+  // 0. Человек (VL-433, Q1): своя семантика адресации — конфиг addressing
+  // канала и depth НЕ применяются, rate — своя константа humanRatePerMin,
+  // dedup и runs/час — общие с ботами. @/reply → конкретный бот; без
+  // адресации → process (каждый бот канала отвечает своим раном).
+  if (!msg.is_bot) {
+    if (ctx.dedup.check(msg.message_id))
+      return { action: 'answer', depth: 0, reply: '', reason: 'dedup' };
+    if (ctx.rate.limited(msg.from_id, limits.humanRatePerMin))
+      return { action: 'answer', depth: 0, reply: '', reason: 'rate' };
+    const addr = humanAddressing(msg, {
+      ourBotId: ctx.ourBotId,
+      ourUsername: ctx.ourUsername,
+    });
+    if (addr === 'other')
+      return { action: 'answer', depth: 0, reply: '', reason: 'not-addressed' };
+    if (ctx.runs.limited(limits.globalRunsPerHour))
+      return {
+        action: 'answer',
+        depth: 0,
+        reply: 'Лимит входящих запросов в час исчерпан — повтори позже.',
+        reason: 'run-limit',
+      };
+    return { action: 'process', depth: 0, kind: 'question' };
+  }
   // dedup
   if (ctx.dedup.check(msg.message_id))
     return { action: 'answer', depth: 0, reply: '', reason: 'dedup' };
@@ -250,15 +302,36 @@ export function classifyAnswer(answer: string): 'decision_request' | 'info' | 'q
   return 'info';
 }
 
-/** Правила read-only промпта входящего рана (AC: утечки контекста нет). */
-export function buildIncomingPrompt(question: string, channel: CommsChannel): string {
-  return [
+/**
+ * Промпт входящего рана (AC: утечки контекста нет).
+ *
+ * VL-433 (Q3): opts.quote — цитата сообщения-родителя reply-уточнения
+ * человека; opts.context — последний вопрос/ответ ветки из process-памяти.
+ * Обе секции опциональны и добавляются только при наличии — форма
+ * прежних вызовов (без opts) не меняется.
+ */
+export function buildIncomingPrompt(
+  question: string,
+  channel: CommsChannel,
+  opts: { quote?: string; context?: { question: string; answer: string } } = {},
+): string {
+  const parts = [
     `Ты отвечаешь на вопрос другой бот-проект в Telegram-канале «${channel.label ?? channel.id}».`,
     'Отвечай кратко и по делу. Используй ТОЛЬКО чтение файлов backlog/ и docs/ этого проекта.',
     'НИКОГДА не читай и не цитируй .env, .vibelog/settings.json, .vibelog/comms.yaml, секреты, токены и чужие проекты.',
     'Если вопрос требует архитектурного решения — начни ответ с метки [DECISION] в первой строке.',
-    '',
-    'Вопрос:',
-    question,
-  ].join('\n');
+  ];
+  if (opts.quote) {
+    parts.push('', 'Сообщение, на которое отвечает человек (цитата):', opts.quote.slice(0, 1500));
+  }
+  if (opts.context) {
+    parts.push(
+      '',
+      'Предыдущий вопрос и ответ в этой ветке:',
+      'Вопрос: ' + opts.context.question.slice(0, 1000),
+      'Ответ: ' + opts.context.answer.slice(0, 2000),
+    );
+  }
+  parts.push('', 'Вопрос:', question);
+  return parts.join('\n');
 }
