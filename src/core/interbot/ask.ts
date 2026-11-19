@@ -41,6 +41,10 @@ export interface InterbotAskArgs {
   to?: unknown;
   task?: unknown;
   kind?: unknown;
+  /** VL-431: контекст треда веб-чата (подставляется сервером в executeTool). */
+  thread_id?: unknown;
+  /** VL-431: id текущего tool_call хода (серверная подстановка). */
+  tool_call_id?: unknown;
 }
 
 /** Разобранные и валидированные аргументы. */
@@ -50,6 +54,8 @@ export interface ParsedAsk {
   to?: string;
   task?: string;
   kind?: string;
+  thread_id?: string;
+  tool_call_id?: string;
 }
 
 /**
@@ -66,6 +72,10 @@ export function parseAskArgs(args: InterbotAskArgs): ParsedAsk | { error: string
   const to = str(args.to);
   const task = str(args.task);
   const kind = str(args.kind);
+  // VL-431: серверная подстановка контекста треда; без полей — прежнее
+  // поведение (Telegram-only фолбэк), семантика str: пусто → undefined
+  const threadId = str(args.thread_id);
+  const toolCallId = str(args.tool_call_id);
   if (kind !== undefined && !['info', 'question', 'decision_request'].includes(kind)) {
     return {
       error: `interbot_ask: неизвестный kind «${kind}» (ожидается info|question|decision_request)`,
@@ -77,6 +87,8 @@ export function parseAskArgs(args: InterbotAskArgs): ParsedAsk | { error: string
     ...(to ? { to } : {}),
     ...(task ? { task } : {}),
     ...(kind ? { kind } : {}),
+    ...(threadId ? { thread_id: threadId } : {}),
+    ...(toolCallId ? { tool_call_id: toolCallId } : {}),
   };
 }
 
@@ -151,11 +163,14 @@ export async function interbotAsk(cwd: string, rawArgs: InterbotAskArgs): Promis
     channel_id: channel.id,
     question_msg_id: messageId,
     timeoutSec: capSec,
-    ...(parsed.task || parsed.kind
+    ...(parsed.task || parsed.kind || parsed.thread_id || parsed.tool_call_id
       ? {
           context: {
             ...(parsed.task ? { task: parsed.task } : {}),
             ...(parsed.kind ? { kind: parsed.kind } : {}),
+            // VL-431: куда доставить поздний ответ (ветка deliverLateTicket)
+            ...(parsed.thread_id ? { thread_id: parsed.thread_id } : {}),
+            ...(parsed.tool_call_id ? { tool_call_id: parsed.tool_call_id } : {}),
           },
         }
       : {}),

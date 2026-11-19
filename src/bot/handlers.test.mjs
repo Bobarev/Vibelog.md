@@ -140,10 +140,10 @@ function userTextUpdate({ messageId = 91, text = '/help' } = {}) {
  * Регистрирует обработчики + sentinel ПОСЛЕ registerHandlers: если interbot-ветка
  * вызвала next(), sentinel сработает; ветка тикета next() не делает — sentinel молчит.
  */
-function setupBot(cwd) {
+function setupBot(cwd, extraDeps = {}) {
   const bot = makeBot();
   const calls = stubApi(bot);
-  registerHandlers(bot, { cwd, getPin: () => '000000' });
+  registerHandlers(bot, { cwd, getPin: () => '000000', ...extraDeps });
   const state = { sentinel: 0 };
   bot.on('message', () => {
     state.sentinel += 1;
@@ -191,6 +191,97 @@ describe("VL-430: interbot-ветка на bot.on('message')", () => {
     const blob = JSON.stringify(calls);
     assert.match(blob, /Запоздавший ответ/);
     assert.match(blob, /запоздавший понг/, 'текст rich в уведомлении');
+  });
+
+  it('VL-431 AC3: поздний ответ с thread_id → дописка пары + авто-ход + delivered', async () => {
+    // Тестовый шов HandlerDeps.startChatRun: реальный LLM-ход не стартуем
+    const runs = [];
+    const { bot, calls } = setupBot(cwd, {
+      startChatRun: (body, runCwd) => {
+        runs.push({ body, runCwd });
+        return { run: { threadId: body.threadId } };
+      },
+    });
+    // Тред существует (getChatThread требует файла истории)
+    const threadId = 'chat-late-1';
+    const dir = join(cwd, '.vibelog', 'chat-sessions');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `${threadId}.jsonl`),
+      JSON.stringify({ role: 'user', content: 'привет' }) + '\n',
+      'utf8',
+    );
+    createTicket(cwd, {
+      id: 'ask-late-1',
+      channel_id: 'g1',
+      question_msg_id: 78,
+      timeoutSec: -10,
+      context: { thread_id: threadId },
+    });
+
+    await bot.handleUpdate(richTicketUpdate({ messageId: 83, expired: true }));
+
+    // void-async: ждём завершения через поллинг статуса (паттерн AC2)
+    let status = '';
+    for (let i = 0; i < 150 && status !== 'delivered'; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      status = loadTickets(cwd)[0]?.status ?? '';
+    }
+    assert.equal(status, 'delivered', 'markDelivered после успешной дописки');
+
+    // (а) jsonl дополнен виртуальной парой
+    const lines = readFileSync(join(dir, `${threadId}.jsonl`), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    const pair = lines.slice(-2);
+    assert.equal(pair[0].role, 'assistant');
+    assert.equal(pair[0].tool_calls[0].id, 'async-ask-late-1');
+    assert.equal(pair[0].tool_calls[0].name, 'interbot_ask');
+    assert.equal(pair[1].role, 'tool');
+    assert.equal(pair[1].tool_call_id, 'async-ask-late-1');
+    assert.match(pair[1].content, /запоздавший понг/, 'content — поздний ответ');
+
+    // (б) авто-ход стартовал со стимулом
+    assert.equal(runs.length, 1, 'startChatRun вызван один раз');
+    assert.equal(runs[0].body.threadId, threadId);
+    assert.match(runs[0].body.message, /Поздний interbot-ответ/);
+    assert.match(runs[0].body.message, /доведи его до пользователя/);
+    assert.equal(runs[0].runCwd, cwd);
+
+    // (в) ветки взаимоисключающие: Telegram-уведомление НЕ шлём
+    const notify = calls.find((c) => c.method === 'sendRichMessage');
+    assert.ok(!notify, 'с thread_id прежний путь (Telegram) не работает');
+  });
+
+  it('VL-431 AC5: тред не найден → фолбэк на прежний путь (комментарий + Telegram)', async () => {
+    const runs = [];
+    const { bot, calls } = setupBot(cwd, {
+      startChatRun: (body) => {
+        runs.push(body);
+        return { run: {} };
+      },
+    });
+    createTicket(cwd, {
+      id: 'ask-late-2',
+      channel_id: 'g1',
+      question_msg_id: 78,
+      timeoutSec: -10,
+      context: { thread_id: 'no-such-thread' },
+    });
+
+    await bot.handleUpdate(richTicketUpdate({ messageId: 84, expired: true }));
+
+    let status = '';
+    for (let i = 0; i < 150 && status !== 'delivered'; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      status = loadTickets(cwd)[0]?.status ?? '';
+    }
+    assert.equal(status, 'delivered', 'тикет доставлен прежним путём');
+    assert.equal(runs.length, 0, 'авто-ход не стартовал (дописка не удалась)');
+    const notify = calls.find((c) => c.method === 'sendRichMessage');
+    assert.ok(notify, 'уведомление отправлено прежним путём');
+    assert.match(JSON.stringify(calls), /Запоздавший ответ/);
   });
 
   it('AC3: фото без text и rich_message → next(), тикеты не тронуты', async () => {

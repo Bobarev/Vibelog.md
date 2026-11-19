@@ -394,6 +394,71 @@ function appendChatMessages(cwd: string, threadId: string, messages: ChatMessage
 }
 
 /**
+ * VL-431: серверная подстановка контекста треда в `interbot_ask` (AC1).
+ *
+ * Модель не участвует: `thread_id`/`tool_call_id` дописываются в args ПОСЛЕ
+ * всех guard'ов (дедуп/grant/роль считают args модели как есть — их ключи не
+ * меняются), схема инструмента не меняется. Без `thread_id` вызывающая
+ * сторона получает прежние args — поведение MCP-пути не меняется (AC2).
+ *
+ * Чистая функция — юнит-тесты подстановки без запуска хода.
+ *
+ * @param toolCallId — id текущего tool_call хода (для записи в контекст тикета)
+ */
+export function interbotThreadArgs(
+  name: string,
+  args: Record<string, unknown>,
+  threadId: string,
+  toolCallId?: string,
+): Record<string, unknown> {
+  if (name !== 'interbot_ask' || threadId === '') return args;
+  return {
+    ...args,
+    thread_id: threadId,
+    ...(toolCallId !== undefined && toolCallId !== '' ? { tool_call_id: toolCallId } : {}),
+  };
+}
+
+/**
+ * VL-431: дописка в конец истории треда позднего interbot-ответа (AC3).
+ *
+ * Валидная у всех провайдеров структура — виртуальная пара
+ * assistant(tool_calls: [{id: async-<ticketId>, name: interbot_ask}]) →
+ * tool(tool_call_id, content): role 'tool' допустим только как ответ на
+ * assistant с tool_calls, поэтому пара пишется ОДНОЙ записью appendChatMessages.
+ * Старые закрытые tool_call_id не переиспользуются.
+ *
+ * Хвост с pending tool_calls (approval-пауза) закрывается синтетикой ДО
+ * дописки — иначе провайдер отклонит payload (assistant→assistant без
+ * tool-результата, lesson-74: валидация пары до записи).
+ *
+ * @returns true — пара дописана; false — тред не найден/id пуст (файл не тронут)
+ */
+export function appendLateInterbotPair(
+  cwd: string,
+  threadId: string,
+  ticketId: string,
+  content: string,
+): boolean {
+  if (ticketId.trim() === '') return false;
+  const history = getChatThread(cwd, threadId);
+  if (history === null) return false;
+  // Закрыть висящие tool_calls хвоста синтетикой — иначе провайдер отклонит
+  const closed = closePendingToolCalls(history);
+  if (closed > 0) appendChatMessages(cwd, threadId, history.slice(-closed));
+  const callId = `async-${ticketId}`;
+  appendChatMessages(cwd, threadId, [
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{ id: callId, name: 'interbot_ask', arguments: {} }],
+    },
+    { role: 'tool', tool_call_id: callId, content },
+  ]);
+  return true;
+}
+
+/**
  * Запись события подтверждения (VL-256): диагностика потерь allowance-гейтов.
  *
  * Формат — JSONL рядом с историей треда (`<threadId>.approvals.jsonl`,
@@ -1649,7 +1714,7 @@ async function produce(
    * модель видит ОДИН формат ответа и от инструментов, и от guard'а.
    */
   const toolGuard = createTurnToolGuard({ maxPerResponse: resolveChatMaxToolCalls(cwd) });
-  const executeTool = async (name: string, args: Record<string, unknown>): Promise<string> => {
+  const executeTool = async (name: string, args: Record<string, unknown>, toolCallId?: string): Promise<string> => {
     const verdict = toolGuard.check(name, args);
     if (verdict === 'duplicate') return duplicateCallResult();
     if (verdict === 'limit') return limitCallResult(toolGuard.maxPerResponse());
@@ -1663,8 +1728,12 @@ async function produce(
     // циклу: запрещённый write не должен даже спрашивать разрешения).
     const personaDenied = personaDeniedAck(activePersona, name);
     if (personaDenied !== null) return personaDenied;
+    // VL-431: ПОСЛЕ всех guard'ов (дедуп/grant/роль считают args модели как
+    // есть — инъекция не должна менять их ключи) подставляем контекст треда
+    // в interbot_ask: серверно, модель и схема args не участвуют (AC1).
+    const execArgs = interbotThreadArgs(name, args, threadId, toolCallId);
     const local = localHandlers.get(name);
-    const raw = local ? await local.handler(args) : await handleToolCall(name, args, cwd, { defaultStatus: resolveDefaultStatus(activePersona) });
+    const raw = local ? await local.handler(execArgs) : await handleToolCall(name, execArgs, cwd, { defaultStatus: resolveDefaultStatus(activePersona) });
     // VL-402: успешная запись памяти — событие `memory` в ленту (AC2).
     // Публикуется здесь, а не в цикле хода: executeTool — единая точка
     // исполнения (обычный цикл, resume, advanceToNextApproval), иначе запись,
@@ -1792,7 +1861,7 @@ async function produce(
     let content: string;
     if (approved) {
       try {
-        content = await executeTool(target.name, target.arguments);
+        content = await executeTool(target.name, target.arguments, target.id);
       } catch (err) {
         content = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
       }
@@ -2030,7 +2099,7 @@ async function produce(
       let result: string;
       let isError = false;
       try {
-        result = await executeTool(tc.name, tc.arguments);
+        result = await executeTool(tc.name, tc.arguments, tc.id);
       } catch (err) {
         result = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
         isError = true;
@@ -2633,7 +2702,7 @@ async function advanceToNextApproval(
   threadId: string,
   queue: EventQueue,
   skipId: string,
-  execute: (name: string, args: Record<string, unknown>) => Promise<string>,
+  execute: (name: string, args: Record<string, unknown>, toolCallId?: string) => Promise<string>,
   persona?: PersonaConfig | null,
 ): Promise<ToolCall | null> {
   for (const tc of pendingToolCalls(history)) {
@@ -2685,7 +2754,7 @@ async function advanceToNextApproval(
     let result: string;
     let isError = false;
     try {
-      result = await execute(tc.name, tc.arguments);
+      result = await execute(tc.name, tc.arguments, tc.id);
     } catch (err) {
       result = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
       isError = true;

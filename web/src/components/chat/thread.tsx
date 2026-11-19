@@ -1099,6 +1099,48 @@ export function ChatPage() {
   }, [load.status, load.run?.status, load.runtimeThreadId])
 
   /**
+   * VL-431 (AC4): фоновый refetch истории, пока тред открыт.
+   *
+   * Существующий поллинг выше работает только при run.status === "running"
+   * (вкладка уже знает о ходе). Поздний interbot-ответ стартует авто-ход из
+   * БОТ-процесса — вкладка в простое об этом не знает: раз в 5 с перечитываем
+   * историю и перезагружаем её при росте числа сообщений (в jsonl уже дописан
+   * поздний ответ / появился ответ авто-хода). При активном локальном стриме
+   * этой вкладки не дёргаем — стрим сам дописывает ленту.
+   */
+  const runtimeRunning = useAuiState(s => s.thread.isRunning)
+  React.useEffect(() => {
+    if (load.status !== "ready") return
+    const id = load.runtimeThreadId
+    if (!id) return
+    const baseCount = load.messages.length
+    let cancelled = false
+    const timer = setInterval(async () => {
+      if (cancelled) return
+      // Локальный стрим идёт — лента обновляется сама, refetch не нужен
+      if (runtimeRunning) return
+      try {
+        const res = await fetch(`/api/chat/threads/${encodeURIComponent(id)}`)
+        if (!res.ok || cancelled) return
+        const data = (await res.json()) as ThreadHistoryResponse
+        if (cancelled) return
+        if (data.messages.length > baseCount) {
+          // jsonl вырос (поздний ответ / авто-ход) — полная перезагрузка
+          // истории паттерном setRetry (как в поллинге running)
+          loadedRef.current = undefined
+          setRetry(r => r + 1)
+        }
+      } catch {
+        // сеть моргнула — следующая попытка через 5 с
+      }
+    }, 5000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [load.status, load.runtimeThreadId, load.messages.length, runtimeRunning])
+
+  /**
    * VL-406: ход, запущенный в ЭТОЙ вкладке, тоже должен оставить исход.
    *
    * Пока стрим идёт, `load.run` не обновляется (это состояние с сервера на

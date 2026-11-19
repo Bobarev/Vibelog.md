@@ -120,8 +120,8 @@ import {
   questionText,
 } from './chat-pause.js';
 import type { ChatPause } from './chat-pause.js';
-import { getChatThread } from '../web/chat.js';
-import { cancelChatRun } from '../web/chat-runs.js';
+import { getChatThread, appendLateInterbotPair, startChatRun } from '../web/chat.js';
+import { cancelChatRun, readTurnState, STALE_RUN_IDLE_MS } from '../web/chat-runs.js';
 import { isQuestionExpired, questionAskedAt } from '../web/chat-question.js';
 
 /** Зависимости обработчиков (пин — из замыкания runBot, cwd — проект). */
@@ -135,6 +135,12 @@ export interface HandlerDeps {
    * бота не меняется (AC1).
    */
   trace?: boolean;
+  /**
+   * VL-431: тестовый шов — подмена `startChatRun` в ветке поздней доставки
+   * (юнит-тесты не запускают реальный LLM-ход). По умолчанию — реальный
+   * импорт из ../web/chat.js (паттерн ChatDeps.llm).
+   */
+  startChatRun?: typeof startChatRun;
 }
 
 /**
@@ -735,11 +741,25 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
   /**
    * Async-fallback (AC6): запоздавший ответ — комментарий к задаче-контексту
    * тикета + уведомление в боте, статус delivered.
+   *
+   * VL-431: если у тикета есть context.thread_id (ответ пришёл из веб-чата) —
+   * поздний ответ доставляется В ТРЕД: виртуальная пара assistant(tool_calls
+   * async-<id> interbot_ask) → tool(content) дописывается в jsonl, затем
+   * авто-ход startChatRun со стимулом (guard параллельного хода — sidecar
+   * turn.json, паттерн chat-bridge). markDelivered — строго ПОСЛЕ успешной
+   * дописки; при сбое авто-хода дописка остаётся в jsonl — ход догонит
+   * следующим событием (AC5). Ветки взаимоисключающие: с thread_id
+   * комментарий/Telegram НЕ шлём; без него — прежний путь без изменений.
    */
   async function deliverLateTicket(t: InterbotTicket): Promise<void> {
     const text =
       `⏰ Запоздавший ответ из канала «${t.channel_id}» (тикет ${t.id}):\n\n` +
       (t.reply ?? '');
+    const threadId = t.context.thread_id;
+    if (threadId !== undefined && threadId !== '') {
+      await deliverLateToThread(t, threadId, text);
+      return;
+    }
     if (t.context.task) {
       try {
         addComment(deps.cwd, t.context.task, text, '@interbot');
@@ -756,6 +776,95 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       cfg.channels.find((c) => c.id === t.channel_id)?.admin_chat ?? cfg.chats[0];
     if (notify !== undefined) await sendChatAnswer(bot, notify, text);
     markDelivered(deps.cwd, t.id);
+  }
+
+  /**
+   * VL-431 (AC3/AC4): поздний ответ → веб-тред: отложить дописку при живом
+   * ходе → виртуальная пара в jsonl → markDelivered → авто-ход startChatRun.
+   *
+   * Guard живого хода (межпроцессный интерливинг: дописка бот-процесса не
+   * должна встать между assistant и tool-строками хода веб-сервера): пока
+   * sidecar turn.json `running` и свежий — poll до завершения, потолок
+   * STALE_RUN_IDLE_MS; по истечении дописываем всё равно (AC5: «дописка
+   * остаётся») и ограничиваемся guard'ом авто-хода.
+   */
+  async function deliverLateToThread(
+    t: InterbotTicket,
+    threadId: string,
+    text: string,
+  ): Promise<void> {
+    const deadline = Date.now() + STALE_RUN_IDLE_MS;
+    for (;;) {
+      const state = readTurnState(deps.cwd, threadId);
+      const running = state?.status === 'running';
+      const lastAt = Date.parse(state?.lastEventAt ?? state?.startedAt ?? '');
+      const fresh = Number.isFinite(lastAt) && Date.now() - lastAt < STALE_RUN_IDLE_MS;
+      if (!running || !fresh || Date.now() >= deadline) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    let appended = false;
+    try {
+      appended = appendLateInterbotPair(deps.cwd, threadId, t.id, text);
+    } catch (err) {
+      // IO-ошибка jsonl — не теряем ответ: прежний путь (комментарий + Telegram)
+      console.error(
+        '[interbot] дописка в тред',
+        threadId,
+        'не удалась:',
+        (err as Error).message,
+      );
+    }
+    if (!appended) {
+      // Тред не найден/id пуст/IO-ошибка — фолбэк на существующий путь целиком
+      if (t.context.task) {
+        try {
+          addComment(deps.cwd, t.context.task, text, '@interbot');
+        } catch (err) {
+          console.error(
+            '[interbot] не удалось добавить комментарий к',
+            t.context.task,
+            (err as Error).message,
+          );
+        }
+      }
+      const cfg = readComms(deps.cwd, { warn: () => {} });
+      const notify =
+        cfg.channels.find((c) => c.id === t.channel_id)?.admin_chat ?? cfg.chats[0];
+      if (notify !== undefined) await sendChatAnswer(bot, notify, text);
+      markDelivered(deps.cwd, t.id);
+      return;
+    }
+    // Дописка прошла — тикет доставлен (markDelivered строго после append)
+    markDelivered(deps.cwd, t.id);
+    // Авто-ход: guard параллельного хода (sidecar turn.json, паттерн
+    // chat-bridge) — идущий ход не трогаем, дописка догонит его следующим
+    // событием (AC5). Сбой старта не критичен: jsonl уже дополнен.
+    const state = readTurnState(deps.cwd, threadId);
+    if (state?.status === 'running') {
+      const lastAt = Date.parse(state.lastEventAt ?? state.startedAt);
+      if (Number.isFinite(lastAt) && Date.now() - lastAt < STALE_RUN_IDLE_MS) {
+        trace('поздний interbot-ответ: авто-ход пропущен — в треде идёт ход');
+        return;
+      }
+    }
+    const runStarter = deps.startChatRun ?? startChatRun;
+    try {
+      const started = runStarter(
+        {
+          threadId,
+          message:
+            `Поздний interbot-ответ из interbot-канала «${t.channel_id}» ` +
+            `(тикет ${t.id}) доставлен — доведи его до пользователя`,
+        },
+        deps.cwd,
+      );
+      if ('error' in started) {
+        trace('поздний interbot-ответ: авто-ход не стартовал:', started.error);
+      }
+    } catch (err) {
+      // Дописка уже в jsonl — ход догонит следующим событием (AC5)
+      console.error('[interbot] авто-ход позднего ответа не удался:', (err as Error).message);
+    }
   }
 
   // Разбор протухших тикетов при старте бота (паттерн recoverStalePhaseStatuses,

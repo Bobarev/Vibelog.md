@@ -26,7 +26,7 @@ export interface InterbotTicket {
   asked_at: string;
   deadline: string;
   status: TicketStatus;
-  context: { task?: string; session?: string; kind?: string };
+  context: { task?: string; session?: string; kind?: string; thread_id?: string; tool_call_id?: string };
   reply?: string;
 }
 
@@ -80,7 +80,7 @@ export function createTicket(
     channel_id: string;
     question_msg_id: number;
     timeoutSec: number;
-    context?: { task?: string; session?: string };
+    context?: { task?: string; session?: string; kind?: string; thread_id?: string; tool_call_id?: string };
   },
 ): InterbotTicket {
   const now = Date.now();

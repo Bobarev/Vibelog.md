@@ -114,6 +114,23 @@ describe('VL-428: parseAskArgs (валидация)', () => {
       kind: 'decision_request',
     });
   });
+
+  it('VL-431: thread_id/tool_call_id разбираются, без них полей нет (AC2)', () => {
+    const p = parseAskArgs({
+      question: 'x',
+      thread_id: ' chat-abc ',
+      tool_call_id: ' call_7 ',
+    });
+    assert.equal(p.thread_id, 'chat-abc');
+    assert.equal(p.tool_call_id, 'call_7');
+    // пустые значения отбрасываются — прежнее поведение (Telegram-only)
+    const empty = parseAskArgs({ question: 'x', thread_id: '   ', tool_call_id: '' });
+    assert.ok(!('thread_id' in empty));
+    assert.ok(!('tool_call_id' in empty));
+    const none = parseAskArgs({ question: 'x' });
+    assert.ok(!('thread_id' in none));
+    assert.ok(!('tool_call_id' in none));
+  });
 });
 
 describe('VL-428: interbot_ask — канал и отправка (AC4)', () => {
@@ -219,6 +236,29 @@ describe('VL-428: interbot_ask — синхронное ожидание (AC5)',
       const out = await promise;
       assert.equal(out, 'План утверждён.');
       assert.equal(loadTickets(cwd)[0].status, 'answered');
+    } finally {
+      mock.restore();
+    }
+  });
+
+  it('VL-431: thread_id/tool_call_id пишутся в context тикета (AC2)', async () => {
+    const cwd = root();
+    setupComms(cwd, { timeout: 30 });
+    const mock = mockFetch(42);
+    try {
+      const promise = interbotAsk(cwd, {
+        question: 'статус?',
+        thread_id: 'chat-42',
+        tool_call_id: 'call_42',
+      });
+      for (let i = 0; i < 40 && loadTickets(cwd).length === 0; i++) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      const t = loadTickets(cwd)[0];
+      assert.equal(t.context.thread_id, 'chat-42', 'контекст треда сохранён');
+      assert.equal(t.context.tool_call_id, 'call_42', 'tool_call_id сохранён');
+      answerTicket(cwd, t.question_msg_id, 'ок');
+      await promise;
     } finally {
       mock.restore();
     }
