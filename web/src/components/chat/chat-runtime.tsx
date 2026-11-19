@@ -37,6 +37,7 @@
 import * as React from "react"
 import {
   AssistantRuntimeProvider,
+  useAuiState,
   useLocalRuntime,
   type ChatModelAdapter,
   type ChatModelRunOptions,
@@ -409,6 +410,38 @@ export function subscribeActiveUsage(listener: () => void): () => void {
   usageListeners.add(listener)
   return () => {
     usageListeners.delete(listener)
+  }
+}
+
+/**
+ * Состояние хода локального рантайма — module-state с подпиской (VL-439).
+ *
+ * Зеркало паттерна activeUsage выше: ChatPage живёт ВЫШЕ
+ * AssistantRuntimeProvider и не может звать `useAuiState` (без AuiProvider
+ * прокси контекста бросает «You are using a component or hook that requires
+ * an AuiProvider» — регрессия, уронившая страницу #/chat). Состояние пишет
+ * RunningStateSync внутри провайдера, читает ChatPage через
+ * useSyncExternalStore для guard'а фонового refetch (VL-431).
+ */
+let activeRunning = false
+const runningListeners = new Set<() => void>()
+
+/** Идёт ли сейчас локальный стрим (для useSyncExternalStore). */
+export function getActiveRunning(): boolean {
+  return activeRunning
+}
+
+/** Установка состояния хода (RunningStateSync). */
+export function setActiveRunning(running: boolean): void {
+  activeRunning = running
+  for (const listener of runningListeners) listener()
+}
+
+/** Подписка на изменение состояния хода (для useSyncExternalStore). */
+export function subscribeActiveRunning(listener: () => void): () => void {
+  runningListeners.add(listener)
+  return () => {
+    runningListeners.delete(listener)
   }
 }
 
@@ -884,6 +917,24 @@ const chatAdapter: ChatModelAdapter = {
 }
 
 /**
+ * Синхронизация isRunning рантайма в module-state (VL-439).
+ *
+ * Компонент — child AssistantRuntimeProvider, т.е. находится внутри
+ * AuiProvider (AssistantProviderBase оборачивает children), поэтому
+ * useAuiState здесь легален. Cleanup сбрасывает store при размонтировании
+ * провайдера (смена треда / уход со статуса ready): без рантайма
+ * локального стрима нет.
+ */
+function RunningStateSync() {
+  const running = useAuiState(s => s.thread.isRunning)
+  React.useEffect(() => {
+    setActiveRunning(running)
+    return () => setActiveRunning(false)
+  }, [running])
+  return null
+}
+
+/**
  * Провайдер чата (VL-207): threadId приходит из hash — при восстановлении
  * существующего треда серверные сообщения уходят в initialMessages, а
  * activeThreadId выставляется до первого хода (иначе resume/продолжение
@@ -944,5 +995,11 @@ export function ChatRuntimeProvider({
     }
   }, [threadId, allowList, initialUsage])
 
-  return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      {/* VL-439: isRunning → module-state для ChatPage (вне провайдера) */}
+      <RunningStateSync />
+      {children}
+    </AssistantRuntimeProvider>
+  )
 }

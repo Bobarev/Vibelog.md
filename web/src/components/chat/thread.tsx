@@ -63,7 +63,7 @@ import { useChatThreadId } from "@/lib/use-hash-route"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { ApprovalCard } from "./approval-card"
 import { QuestionCard } from "./question-card"
-import { CHAT_ERROR_PART, CHAT_MEMORY_PART, CHAT_PRICING_PART, CHAT_SUBAGENT_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider, getActivePersonaId, requestRetryLastTurn, setMemoryRemovals } from "./chat-runtime"
+import { CHAT_ERROR_PART, CHAT_MEMORY_PART, CHAT_PRICING_PART, CHAT_SUBAGENT_PART, CHAT_TRUNCATED_PART, ChatRuntimeProvider, getActivePersonaId, getActiveRunning, requestRetryLastTurn, setMemoryRemovals, subscribeActiveRunning } from "./chat-runtime"
 import { MemoryCard, type MemoryPartData } from "./memory-card"
 import { SubagentCard, type SubagentPartData } from "./subagent-card"
 import { PricingDriftCard } from "./pricing-drift-card"
@@ -1107,8 +1107,15 @@ export function ChatPage() {
    * историю и перезагружаем её при росте числа сообщений (в jsonl уже дописан
    * поздний ответ / появился ответ авто-хода). При активном локальном стриме
    * этой вкладки не дёргаем — стрим сам дописывает ленту.
+   *
+   * Исход хода берётся из module-state, а не useAuiState: ChatPage вне
+   * AuiProvider — хук в его теле ронял страницу (VL-439).
    */
-  const runtimeRunning = useAuiState(s => s.thread.isRunning)
+  const runtimeRunning = React.useSyncExternalStore(
+    subscribeActiveRunning,
+    getActiveRunning,
+    getActiveRunning,
+  )
   React.useEffect(() => {
     if (load.status !== "ready") return
     const id = load.runtimeThreadId
