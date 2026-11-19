@@ -30,6 +30,8 @@
 import type { LlmClient } from '../agent/llm.js';
 import { createLlmClient } from '../agent/llm.js';
 import { loadApiMode } from '../agent/llm-env.js';
+import { gateTimeoutMs, readComms } from '../core/comms.js';
+import { loadInterbotPrompt, renderPromptTemplate } from '../core/interbot-prompts.js';
 import type { IncomingMsg } from './interbot.js';
 
 /**
@@ -39,6 +41,10 @@ import type { IncomingMsg } from './interbot.js';
  * на живце 2026-11-19 (7 вызовов → 7 сбоев): короткий вызов mimo через
  * Xiaomi-роутер 3–5 с, ран с 12–14k системника 6–7 с. Инвариант спеки
  * «гейт не задерживает вход» = «быстрее рана» — выполняется и при 8000 мс.
+ *
+ * VL-438: это дефолт; фактическое значение — секция interbot_limits
+ * comms.yaml (gate_timeout_sec), читается на каждый вызов runGate —
+ * настройка горячая, перезапуск бота не нужен.
  */
 export const GATE_TIMEOUT_MS = 8000;
 
@@ -60,23 +66,26 @@ export interface GateResult {
  * Короткий промпт классификации (doc-34 §3.2) — без системных промптов рана,
  * без MCP: одна user-строка, ответ строго одно слово.
  *
+ * VL-438: текст читается из шаблона (.vibelog/prompts/interbot/gate.md →
+ * templates/prompts/interbot/ → встроенная строка) на каждый вызов —
+ * настройка горячая. Плейсхолдеры: {author} (@ник|чужой бот|человек),
+ * {kind} (бот|человек), {text} — собираются сервером.
+ *
  * @param msg — входящее сообщение (минимальная форма из dispatch)
+ * @param cwd — каталог проекта для чтения шаблона (без него — пакетный дефолт)
  */
-export function buildGatePrompt(msg: IncomingMsg): string {
+export function buildGatePrompt(msg: IncomingMsg, cwd?: string): string {
   const author = msg.from_username
     ? `@${msg.from_username}`
     : msg.is_bot
       ? 'чужой бот'
       : 'человек';
-  return [
-    'Ты — фильтр входящих сообщений interbot-канала другого проекта. Реши, есть ли в сообщении что-то, требующее НАШЕЙ реакции.',
-    'Верни ТОЛЬКО одно слово: react — если есть что отвечать; read_only — если отвечать нечего (прочитал и молчишь).',
-    'react: вопрос к нам; реплика в нашу ветку; обращение к человеку в нашем присутствии; приветствие человеку (разовая вежливость допустима).',
-    'read_only: отчёт или ответ другого бота о том же; служебная ошибка или статус; пустая вежливость либо уже отвеченное сообщение.',
-    '',
-    `Автор: ${author} (${msg.is_bot ? 'бот' : 'человек'}):`,
-    msg.text.slice(0, 2000),
-  ].join('\n');
+  const template = loadInterbotPrompt('gate', cwd);
+  return renderPromptTemplate(template, {
+    author,
+    kind: msg.is_bot ? 'бот' : 'человек',
+    text: msg.text.slice(0, 2000),
+  });
 }
 
 /**
@@ -111,7 +120,9 @@ export async function runGate(
   msg: IncomingMsg,
   opts: { client?: LlmClient; timeoutMs?: number } = {},
 ): Promise<GateResult> {
-  const timeoutMs = opts.timeoutMs ?? GATE_TIMEOUT_MS;
+  // VL-438: таймаут из comms.yaml (interbot_limits.gate_timeout_sec),
+  // без конфига — GATE_TIMEOUT_MS; чтение на каждый вызов — горячо
+  const timeoutMs = opts.timeoutMs ?? gateTimeoutMs(readComms(cwd, { warn: () => {} }));
   try {
     // Приоритет модели — как у ранов (llm.ts: options → models.default → env),
     // БЕЗ меты сессии; maxRetries: 0 — ретраи не влезут в таймаут гейта
@@ -129,7 +140,7 @@ export async function runGate(
     try {
       const res = await Promise.race([
         client.streamChat(
-          [{ role: 'user', content: buildGatePrompt(msg) }],
+          [{ role: 'user', content: buildGatePrompt(msg, cwd) }],
           undefined,
           // VL-437 (AC2): 16 токенов НЕ хватало reasoning-модели mimo —
           // reasoning съедал бюджет, content выходил пустым (2 пустых

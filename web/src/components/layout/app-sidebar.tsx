@@ -21,7 +21,7 @@
 
 import * as React from "react";
 
-import { Activity, Cpu, FileText, FolderCog, Kanban, Library, Lightbulb, MessageSquare, PlusCircle, Settings, SlidersHorizontal, Users, Wand2 } from "lucide-react";
+import { Activity, Cpu, FileText, FolderCog, Kanban, Library, Lightbulb, MessageSquare, PlusCircle, Radio, Settings, SlidersHorizontal, Users, Wand2 } from "lucide-react";
 
 import { Sidebar, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarRail } from "@/components/ui/sidebar";
 import { NavMain, type NavGroup } from "@/components/layout/nav-main";
@@ -106,6 +106,16 @@ const NAV_GROUPS: NavGroup[] = [
             url: "personas",
             icon: Users,
             activeWhen: ["personas", "persona"],
+          },
+          // Каналы interbot-связи (VL-438): #/channels — CRUD каналов,
+          // лимиты/таймауты/промпты из comms.yaml. Рядом с «Персонами»:
+          // обе — конфигурация поведения (паттерн VL-403)
+          {
+            id: "channels",
+            title: "Каналы",
+            url: "channels",
+            icon: Radio,
+            activeWhen: ["channels", "channel"],
           },
           { id: "config", title: "Конфиг проекта", url: "config", icon: FolderCog },
           // Мастер настройки проекта (VL-210): #/setup — агенты, LLM, секреты, бот, MCP

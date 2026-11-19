@@ -26,6 +26,8 @@ import { LessonsPage } from "@/components/lessons/lessons-page"
 import { ModelsPage } from "@/components/models/models-page"
 import { PersonaDetail } from "@/components/personas/persona-detail"
 import { PersonasPage } from "@/components/personas/personas-page"
+import { ChannelsPage } from "@/components/channels/channels-page"
+import { ChannelDetail } from "@/components/channels/channel-detail"
 import { usePreferences } from "@/components/preferences"
 import { ReferencesPage } from "@/components/references/references-page"
 import { ReferenceDetail } from "@/components/references/reference-detail"
@@ -33,7 +35,7 @@ import { SettingsPage } from "@/components/settings/settings"
 import { SetupPage } from "@/components/setup/setup-page"
 import { TasksPage } from "@/components/tasks/tasks-page"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
-import { useHashRoute, useReferenceId, useDocumentId, useLessonId, usePersonaId } from "@/lib/use-hash-route"
+import { useHashRoute, useReferenceId, useDocumentId, useLessonId, usePersonaId, useChannelId } from "@/lib/use-hash-route"
 import { QUICK_CREATE_EVENT, setQuickCreatePending } from "@/lib/quick-create"
 import { useProjectName } from "@/lib/use-project-name"
 
@@ -43,6 +45,7 @@ export function App() {
   const docId = useDocumentId()
   const lessonId = useLessonId()
   const personaId = usePersonaId()
+  const channelId = useChannelId()
   const { values } = usePreferences()
 
   // Название проекта в титле вкладки (VL-345, AC 2): бэкенд не подставляет
@@ -127,6 +130,10 @@ export function App() {
             <PersonasPage />
           ) : route === "persona" ? (
             <PersonaDetail id={personaId ?? ""} />
+          ) : route === "channels" ? (
+            <ChannelsPage />
+          ) : route === "channel" ? (
+            <ChannelDetail id={channelId ?? ""} />
           ) : (
             <Kanban />
           )}

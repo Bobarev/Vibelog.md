@@ -108,6 +108,7 @@ import {
 import { DEFAULT_PERSONA_ID, listPersonas, resolvePersona, type PersonaConfig } from './personas.js';
 // VL-403: CRUD ролей со страницы «Персоны» (GET/PUT/POST/DELETE /api/personas/:id)
 import { handlePersonasApi } from './personas-api.js';
+import { handleCommsApi } from './comms-api.js';
 // VL-402: отмена записи памяти персоны из ленты чата (кнопка «Убрать»)
 import { loadMemoryRemovals, removeMemoryByEvent } from './chat-memory.js';
 import { CHAT_SECTION_KEYS, loadBotSettings, saveBotSettings } from '../bot/settings.js';
@@ -560,6 +561,12 @@ export function handleApi(
     // наш, роутинг продолжается (паттерн handleSetupApi).
     const personasResponse = handlePersonasApi(method, url, body, cwd);
     if (personasResponse !== null) return personasResponse;
+
+    // /api/comms/* — страница «Каналы» (VL-438): CRUD interbot-каналов,
+    // глобальные лимиты/таймауты и промпты. null — URL не наш (паттерн
+    // handlePersonasApi); ветка после персон — маршруты не пересекаются.
+    const commsResponse = handleCommsApi(method, url, body, cwd, queryString);
+    if (commsResponse !== null) return commsResponse;
 
     // GET /api/references — список references (VL-174).
     // Тела (body) НЕ отдаём: список показывает только метаданные

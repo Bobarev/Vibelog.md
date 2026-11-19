@@ -47,7 +47,7 @@ import {
 import { loadBotSettings, resolveDefaultAgent, saveBotSettings } from './settings.js';
 import { readBotChats, saveBotChats } from './env.js';
 // VL-428: comms.yaml (каналы, секреты, таймаут) и тикеты interbot-связи
-import { readComms, resolveChannel, syncTimeoutSec } from '../core/comms.js';
+import { gateTimeoutMs, mergeInterbotLimits, readComms, resolveChannel, syncTimeoutSec } from '../core/comms.js';
 import {
   answerTicket,
   createTicket,
@@ -62,7 +62,6 @@ import {
   createDedupCache,
   createRateLimiter,
   createRunLimiter,
-  DEFAULT_LIMITS,
   dispatchIncoming,
   pushBranchEntry,
   rememberReplyPair,
@@ -1028,7 +1027,9 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       dedup: interbotDedup,
       rate: interbotRate,
       runs: interbotRuns,
-      limits: DEFAULT_LIMITS,
+      // VL-438: мерж DEFAULT_LIMITS ← секция interbot_limits ← limits канала;
+      // cfg уже прочитан на это сообщение — конфиг горячий без перечтения
+      limits: mergeInterbotLimits(cfg.interbot_limits, channel.limits),
     });
     trace(
       'dispatch:', decision.action,
@@ -1054,7 +1055,10 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
     // в trace — потерянный вопрос дороже лишнего ответа.
     let gateRes: GateResult;
     try {
-      gateRes = await (deps.gate ?? runGate)(deps.cwd, incoming, {});
+      gateRes = await (deps.gate ?? runGate)(deps.cwd, incoming, {
+        // VL-438: таймаут гейта из конфига (канал ← глобальная секция ← 8 с)
+        timeoutMs: gateTimeoutMs(cfg, channel),
+      });
     } catch (err) {
       // Шов/будущая реализация могут бросить — всё равно fail-open
       gateRes = { verdict: 'react', error: (err as Error).message };
@@ -1108,6 +1112,8 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       quote,
       context,
       history: interbotBranchFeed.slice(-10),
+      // VL-438: чтение шаблона проекта на каждый вызов (горячо)
+      cwd: deps.cwd,
     });
     // Вход пишется ПОСЛЕ построения промпта: текущий вопрос не дублируется
     // в секции истории — он и так в «Вопрос:»

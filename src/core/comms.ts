@@ -24,6 +24,61 @@ export type ChannelAddressing = 'mention' | 'all';
 /** Режим согласования: auto — бот отвечает сам; admin — inline-кнопки. */
 export type ChannelApproval = 'auto' | 'admin';
 
+/**
+ * Конфигурационные ключи лимитов interbot (snake_case — как в comms.yaml).
+ *
+ * Все поля опциональны: отсутствие = дефолт кода (DEFAULT_LIMITS /
+ * DEFAULT_GATE_TIMEOUT_SEC). Секция interbot_limits (глобальная) и поле
+ * limits канала (per-channel override, doc-32 §2) используют одни и те же
+ * ключи — мерж DEFAULT ← глобальная ← канал выполняет resolveInterbotLimits.
+ */
+export interface InterbotLimitsConfig {
+  /** Окно dedup, секунды (дедупликация сообщений). */
+  dedup_ttl_sec?: number;
+  /** Сообщений от одного чужого бота в минуту. */
+  bot_rate_per_min?: number;
+  /** Сообщений от одного человека в минуту. */
+  human_rate_per_min?: number;
+  /** Глобальный лимит входящих LLM-ранов в час. */
+  global_runs_per_hour?: number;
+  /** Максимальная глубина reply-цепочки (включительно). */
+  max_depth?: number;
+  /** Таймаут гейта «есть ли что отвечать», секунды. */
+  gate_timeout_sec?: number;
+}
+
+/**
+ * Разрешённые (смерженные) лимиты loop-защиты interbot (doc-32 §5).
+ *
+ * Тип и DEFAULT_LIMITS живут в core (lesson-208: константы настройки в
+ * src/core — чтобы CLI-мастер и веб-API не разъезжались в дефолтах);
+ * src/bot/interbot.ts реэкспортирует их для прежних импортов.
+ */
+export interface InterbotLimits {
+  /** Окно dedup, мс. */
+  dedupTtlMs: number;
+  /** Сообщений от одного чужого бота в минуту. */
+  botRatePerMin: number;
+  /** Сообщений от одного ЧЕЛОВЕКА в минуту (VL-433). */
+  humanRatePerMin: number;
+  /** Глобальный лимит входящих LLM-ранов в час. */
+  globalRunsPerHour: number;
+  /** Максимальная глубина reply-цепочки (включительно). */
+  maxDepth: number;
+}
+
+/** Дефолтные лимиты v1 (перенесены из src/bot/interbot.ts, VL-438). */
+export const DEFAULT_LIMITS: InterbotLimits = {
+  dedupTtlMs: 10 * 60 * 1000,
+  botRatePerMin: 10,
+  humanRatePerMin: 5,
+  globalRunsPerHour: 20,
+  maxDepth: 2,
+};
+
+/** Дефолтный таймаут гейта, секунды (VL-437: 8000 мс выровнены по живцу). */
+export const DEFAULT_GATE_TIMEOUT_SEC = 8;
+
 /** Канал interbot-связи (doc-32 §2). */
 export interface CommsChannel {
   id: string;
@@ -33,6 +88,8 @@ export interface CommsChannel {
   addressing: ChannelAddressing;
   approval: ChannelApproval;
   admin_chat?: number;
+  /** Per-channel override лимитов (doc-32 §2) поверх глобальной секции. */
+  limits?: InterbotLimitsConfig;
 }
 
 /** Полная конфигурация comms.yaml. */
@@ -43,6 +100,8 @@ export interface CommsConfig {
   channels: CommsChannel[];
   default_channel?: string;
   sync_timeout_sec: number;
+  /** Глобальная секция interbot_limits (VL-438): лимиты + таймаут гейта. */
+  interbot_limits?: InterbotLimitsConfig;
 }
 
 /** Декфолтный таймаут синхронного ожидания ответа, секунды (решение B, doc-32 §9). */
@@ -69,6 +128,7 @@ function readChannel(raw: unknown, warnings: string[]): CommsChannel | null {
     warnings.push(`канал без id/group_id пропущен: ${JSON.stringify(raw).slice(0, 120)}`);
     return null;
   }
+  const limits = readLimitsConfig(src.limits, `limits канала «${id}»`, warnings);
   return {
     id,
     ...(typeof src.label === 'string' ? { label: src.label } : {}),
@@ -77,7 +137,54 @@ function readChannel(raw: unknown, warnings: string[]): CommsChannel | null {
     addressing: src.addressing === 'all' ? 'all' : 'mention',
     approval: src.approval === 'admin' ? 'admin' : 'auto',
     ...(readChatId(src.admin_chat) !== undefined ? { admin_chat: readChatId(src.admin_chat) } : {}),
+    ...(limits !== undefined ? { limits } : {}),
   };
+}
+
+/**
+ * Валидация объекта лимитов (interbot_limits секции или limits канала).
+ *
+ * Только положительные целые по известным ключам; битые значения и
+ * неизвестные ключи отбрасываются с предупреждением (дефолт кода
+ * перекрывает отброшенное). Пустой результат → undefined (секции нет).
+ *
+ * @param where — подпись для предупреждений («секция interbot_limits» / …)
+ */
+function readLimitsConfig(
+  raw: unknown,
+  where: string,
+  warnings: string[],
+): InterbotLimitsConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    warnings.push(`${where}: ожидался объект — прочитано пусто`);
+    return undefined;
+  }
+  const src = raw as Record<string, unknown>;
+  const keys = [
+    'dedup_ttl_sec',
+    'bot_rate_per_min',
+    'human_rate_per_min',
+    'global_runs_per_hour',
+    'max_depth',
+    'gate_timeout_sec',
+  ] as const;
+  const out: InterbotLimitsConfig = {};
+  for (const key of keys) {
+    const v = src[key];
+    if (v === undefined) continue;
+    if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
+      warnings.push(`${where}.${key}: ожидалось положительное целое — значение отброшено`);
+      continue;
+    }
+    out[key] = v;
+  }
+  for (const key of Object.keys(src)) {
+    if (!(keys as readonly string[]).includes(key)) {
+      warnings.push(`${where}: неизвестный ключ «${key}» проигнорирован`);
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**
@@ -137,6 +244,8 @@ export function readComms(cwd: string, opts: { warn?: (msg: string) => void } = 
     typeof timeoutRaw === 'number' && Number.isInteger(timeoutRaw) && timeoutRaw > 0
       ? timeoutRaw
       : DEFAULT_SYNC_TIMEOUT_SEC;
+  // Секция interbot_limits (VL-438): глобальные лимиты + таймаут гейта
+  const interbotLimits = readLimitsConfig(src.interbot_limits, 'секция interbot_limits', warnings);
   for (const w of warnings) warn(w);
   return {
     ...(typeof tg.bot_token === 'string' && tg.bot_token !== '' ? { bot_token: tg.bot_token } : {}),
@@ -147,6 +256,7 @@ export function readComms(cwd: string, opts: { warn?: (msg: string) => void } = 
       ? { default_channel: src.default_channel }
       : {}),
     sync_timeout_sec: sync,
+    ...(interbotLimits !== undefined ? { interbot_limits: interbotLimits } : {}),
   };
 }
 
@@ -166,6 +276,7 @@ export function writeComms(cwd: string, config: CommsConfig): void {
     ...(config.chats.length > 0 ? { chats: config.chats } : {}),
     ...(config.default_channel ? { default_channel: config.default_channel } : {}),
     sync_timeout_sec: config.sync_timeout_sec,
+    ...(config.interbot_limits ? { interbot_limits: config.interbot_limits } : {}),
     ...(config.channels.length > 0
       ? {
           channels: config.channels.map((c) => ({
@@ -176,6 +287,7 @@ export function writeComms(cwd: string, config: CommsConfig): void {
             addressing: c.addressing,
             approval: c.approval,
             ...(c.admin_chat !== undefined ? { admin_chat: c.admin_chat } : {}),
+            ...(c.limits ? { limits: c.limits } : {}),
           })),
         }
       : {}),
@@ -353,6 +465,97 @@ export function resolveChannel(
 /** Глобальный таймаут синхронного ожидания ответа, секунды. */
 export function syncTimeoutSec(cwd: string): number {
   return readComms(cwd, { warn: () => {} }).sync_timeout_sec;
+}
+
+/**
+ * Мерж лимитов interbot: DEFAULT_LIMITS ← секция interbot_limits ← limits канала (VL-438).
+ *
+ * Каждый вызов читает comms.yaml — конфиг применяется горячо (readComms и так
+ * читается на каждое сообщение бота, горячее применение бесплатно).
+ *
+ * @param channel — канал входящего сообщения; его limits перекрывают глобальные
+ */
+export function resolveInterbotLimits(cwd: string, channel?: CommsChannel): InterbotLimits {
+  const cfg = readComms(cwd, { warn: () => {} });
+  return mergeInterbotLimits(cfg.interbot_limits, channel?.limits);
+}
+
+/**
+ * Чистый мерж без чтения файлов (юнит-тесты и уже прочитанный cfg).
+ *
+ * dedup_ttl_sec (сек, конфиг) → dedupTtlMs (мс, рантайм).
+ */
+export function mergeInterbotLimits(
+  global?: InterbotLimitsConfig,
+  channelLimits?: InterbotLimitsConfig,
+): InterbotLimits {
+  const g = global ?? {};
+  const c = channelLimits ?? {};
+  const pick = <K extends keyof InterbotLimitsConfig>(key: K): number | undefined =>
+    c[key] ?? g[key];
+  return {
+    dedupTtlMs: (pick('dedup_ttl_sec') ?? DEFAULT_LIMITS.dedupTtlMs / 1000) * 1000,
+    botRatePerMin: pick('bot_rate_per_min') ?? DEFAULT_LIMITS.botRatePerMin,
+    humanRatePerMin: pick('human_rate_per_min') ?? DEFAULT_LIMITS.humanRatePerMin,
+    globalRunsPerHour: pick('global_runs_per_hour') ?? DEFAULT_LIMITS.globalRunsPerHour,
+    maxDepth: pick('max_depth') ?? DEFAULT_LIMITS.maxDepth,
+  };
+}
+
+/**
+ * Таймаут гейта в мс: канал ← глобальная секция ← DEFAULT_GATE_TIMEOUT_SEC.
+ *
+ * Канал передаётся уже разрешённым (handlers знает его до вызова гейта);
+ * без канала — глобальный конфиг.
+ */
+export function gateTimeoutMs(cfg: Pick<CommsConfig, 'interbot_limits'>, channel?: CommsChannel): number {
+  const sec = channel?.limits?.gate_timeout_sec ?? cfg.interbot_limits?.gate_timeout_sec;
+  return (sec ?? DEFAULT_GATE_TIMEOUT_SEC) * 1000;
+}
+
+/**
+ * Read-modify-write сырого comms.yaml (VL-438): мутирует ТОЛЬКО целевые ключи,
+ * чужие top-level секции и secrets остаются как были.
+ *
+ * writeComms для веб-API не годится: он сериализует только известные поля
+ * CommsConfig и потерял бы чужие секции файла. Здесь файл читается как
+ * сырой YAML-объект, mutate правит нужные ветки, результат пишется
+ * атомарно (temp + rename, mode 0600 — паттерн writeComms/lesson-214).
+ *
+ * @param mutate — получает сырой объект файла; исключения летят наверх
+ *   (ни один байт не записан)
+ */
+export function patchCommsRaw(cwd: string, mutate: (raw: Record<string, unknown>) => void): void {
+  const path = commsPath(cwd);
+  let raw: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    const text = readFileSync(path, 'utf-8');
+    if (text.trim() !== '') {
+      // Битый YAML не мутируем: перезапись уничтожила бы файл целиком
+      try {
+        raw = parseYaml(text) ?? {};
+      } catch (err) {
+        throw new Error(`comms.yaml не разобран — запись отменена: ${(err as Error).message}`);
+      }
+    }
+  }
+  mutate(raw);
+  const header =
+    '# .vibelog/comms.yaml — СЕКРЕТЫ + коммуникации (VL-428). НЕ коммитить!\n' +
+    '# Приоритет чтения: shell env → comms.yaml → legacy .env\n';
+  const tmp = `${path}.vibelog-tmp`;
+  try {
+    mkdirSync(join(cwd, '.vibelog'), { recursive: true });
+    writeFileSync(tmp, header + stringifyYaml(raw) + '\n', { encoding: 'utf-8', mode: 0o600 });
+    renameSync(tmp, path);
+  } catch (err) {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // temp мог не создаться
+    }
+    throw new Error(`не удалось записать comms.yaml: ${(err as Error).message}`);
+  }
 }
 
 /**

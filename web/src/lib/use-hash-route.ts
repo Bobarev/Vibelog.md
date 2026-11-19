@@ -39,6 +39,8 @@ export type Route =
   | 'lesson'
   | 'personas'
   | 'persona'
+  | 'channels'
+  | 'channel'
   | 'activity';
 
 /** Текущий маршрут по location.hash. */
@@ -71,12 +73,18 @@ function parseHash(hash: string): Route {
   // 'personas' не начинается с 'persona/', но порядок фиксируем явно —
   // иначе список уедет на детальную страницу с пустым id, lesson-22)
   if (path === 'personas') return 'personas';
+  // ВАЖНО: 'channels' — списком точным совпадением ДО детального префикса
+  // 'channel/<id>' (VL-438, паттерн documents/document и lessons/lesson:
+  // порядок фиксируем явно — иначе список уедет на детальную страницу с
+  // пустым id, lesson-22)
+  if (path === 'channels') return 'channels';
   // ВАЖНО: 'reference/<id>' — после 'references' (не пересекаются, но рядом:
   // 'references' — список, 'reference/ref-N' — детальная страница VL-174)
   if (path.startsWith('reference/')) return 'reference';
   if (path.startsWith('document/')) return 'document';
   if (path.startsWith('lesson/')) return 'lesson';
   if (path.startsWith('persona/')) return 'persona';
+  if (path.startsWith('channel/')) return 'channel';
   return 'board';
 }
 
@@ -188,6 +196,27 @@ export function usePersonaId(): string | null {
   const [id, setId] = React.useState<string | null>(() => parsePersonaId(window.location.hash));
   React.useEffect(() => {
     const onChange = () => setId(parsePersonaId(window.location.hash));
+    window.addEventListener('hashchange', onChange);
+    return () => window.removeEventListener('hashchange', onChange);
+  }, []);
+  return id;
+}
+
+/** id канала из хеша `#/channel/<id>` (null, если маршрут другой). */
+function parseChannelId(hash: string): string | null {
+  const match = hash.match(/^#\/channel\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+/**
+ * Подписка на id канала из хеша (VL-438): детальная страница
+ * `#/channel/<id>` перерисовывается при смене id (навигация из списка без
+ * перезагрузки; guard пустого id — на стороне компонента, lesson-22).
+ */
+export function useChannelId(): string | null {
+  const [id, setId] = React.useState<string | null>(() => parseChannelId(window.location.hash));
+  React.useEffect(() => {
+    const onChange = () => setId(parseChannelId(window.location.hash));
     window.addEventListener('hashchange', onChange);
     return () => window.removeEventListener('hashchange', onChange);
   }, []);

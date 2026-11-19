@@ -13,29 +13,13 @@
  */
 
 import type { CommsChannel } from '../core/comms.js';
-
-/** Лимиты loop-защиты (doc-32 §5), переопределяются в тестах. */
-export interface InterbotLimits {
-  /** Окно dedup, мс. */
-  dedupTtlMs: number;
-  /** Сообщений от одного чужого бота в минуту. */
-  botRatePerMin: number;
-  /** Сообщений от одного ЧЕЛОВЕКА в минуту (VL-433: своя константа, не botRatePerMin). */
-  humanRatePerMin: number;
-  /** Глобальный лимит входящих LLM-ранов в час. */
-  globalRunsPerHour: number;
-  /** Максимальная глубина reply-цепочки (включительно). */
-  maxDepth: number;
-}
-
-/** Дефолтные лимиты v1. */
-export const DEFAULT_LIMITS: InterbotLimits = {
-  dedupTtlMs: 10 * 60 * 1000,
-  botRatePerMin: 10,
-  humanRatePerMin: 5,
-  globalRunsPerHour: 20,
-  maxDepth: 2,
-};
+// VL-438: шаблоны промптов interbot (файлы вместо хардкода)
+import { loadInterbotPrompt, renderPromptTemplate } from '../core/interbot-prompts.js';
+// VL-438: лимиты переехали в core (lesson-208) — реэкспорт для прежних импортов
+export { DEFAULT_LIMITS } from '../core/comms.js';
+export type { InterbotLimits } from '../core/comms.js';
+import { DEFAULT_LIMITS } from '../core/comms.js';
+import type { InterbotLimits } from '../core/comms.js';
 
 /** Минимальная форма входящего сообщения для фильтров (без grammy). */
 export interface IncomingMsg {
@@ -77,11 +61,17 @@ export type IncomingDecision =
 export function createDedupCache(now: () => number = Date.now) {
   const seen = new Map<number, number>();
   return {
-    /** true — уже обработано (дубль); свежее — регистрирует. */
-    check(messageId: number): boolean {
+    /**
+     * true — уже обработано (дубль); свежее — регистрирует.
+     *
+     * VL-438: ttlMs приходит из конфига (dedup_ttl_sec → ms, resolveInterbotLimits)
+     * на каждом сообщении — настройка применяется горячо, без перезапуска;
+     * без параметра — прежний дефолт 10 минут.
+     */
+    check(messageId: number, ttlMs: number = DEFAULT_LIMITS.dedupTtlMs): boolean {
       const ts = now();
       // Выкидываем протухшие на каждом входе — кэш не растёт неограниченно
-      for (const [id, at] of seen) if (ts - at > 10 * 60 * 1000) seen.delete(id);
+      for (const [id, at] of seen) if (ts - at > ttlMs) seen.delete(id);
       if (seen.has(messageId)) return true;
       seen.set(messageId, ts);
       return false;
@@ -290,7 +280,7 @@ export function dispatchIncoming(
     ourBotId: number;
     ourUsername: string;
     replyMap: ReadonlyMap<number, number>;
-    dedup: { check(id: number): boolean };
+    dedup: { check(id: number, ttlMs?: number): boolean };
     rate: { limited(key: number, perMin: number): boolean };
     runs: { limited(perHour: number): boolean };
     limits: InterbotLimits;
@@ -304,7 +294,7 @@ export function dispatchIncoming(
   // dedup и runs/час — общие с ботами. @/reply → конкретный бот; без
   // адресации → process (каждый бот канала отвечает своим раном).
   if (!msg.is_bot) {
-    if (ctx.dedup.check(msg.message_id))
+    if (ctx.dedup.check(msg.message_id, limits.dedupTtlMs))
       return { action: 'answer', depth: 0, reply: '', reason: 'dedup' };
     if (ctx.rate.limited(msg.from_id, limits.humanRatePerMin))
       return { action: 'answer', depth: 0, reply: '', reason: 'rate' };
@@ -330,7 +320,7 @@ export function dispatchIncoming(
   if (msg.is_bot && isServiceMessage(msg.text))
     return { action: 'answer', depth: 0, reply: '', reason: 'ignore' };
   // dedup
-  if (ctx.dedup.check(msg.message_id))
+  if (ctx.dedup.check(msg.message_id, limits.dedupTtlMs))
     return { action: 'answer', depth: 0, reply: '', reason: 'dedup' };
   // rate limit на бота
   if (ctx.rate.limited(msg.from_id, limits.botRatePerMin))
@@ -398,6 +388,13 @@ export function stripDecisionMarker(text: string): string {
  * человека; opts.context — последний вопрос/ответ ветки из process-памяти.
  * Обе секции опциональны и добавляются только при наличии — форма
  * прежних вызовов (без opts) не меняется.
+ *
+ * VL-438: текст читается из шаблона (.vibelog/prompts/interbot/incoming.md →
+ * templates/prompts/interbot/ → встроенная строка), opts.cwd — каталог
+ * проекта; без opts.cwd — пакетный дефолт (юнит-тесты). Секции
+ * quote/context/history собираются сервером и подставляются в
+ * одноимённые плейсхолдеры отдельными строками; пустая секция удаляет
+ * строку-плейсхолдер. Чтение на каждый вызов — настройка горячая.
  */
 export function buildIncomingPrompt(
   question: string,
@@ -406,43 +403,43 @@ export function buildIncomingPrompt(
     quote?: string;
     context?: { question: string; answer: string };
     history?: readonly BranchEntry[];
+    /** Каталог проекта для чтения шаблона (без него — пакетный дефолт). */
+    cwd?: string;
   } = {},
 ): string {
-  const parts = [
-    `Ты отвечаешь на вопрос другой бот-проект в Telegram-канале «${channel.label ?? channel.id}».`,
-    'Отвечай кратко и по делу. Используй ТОЛЬКО чтение файлов backlog/ и docs/ этого проекта.',
-    'НИКОГДА не читай и не цитируй .env, .vibelog/settings.json, .vibelog/comms.yaml, секреты, токены и чужие проекты.',
-    'Если вопрос требует архитектурного решения — начни ответ с метки [DECISION] в первой строке.',
-    // VL-436 (doc-34 §3.3): контракт «права молчать» — модель вправе признать
-    // вопрос пустым; ровно маркер → onExit ничего не отправляет (не в группу,
-    // не в карточку). Маркер только для нашего возврата, на приёме его не бывает.
-    'Если отвечать нечего — верни ровно <no_answer>. В группу при этом ничего не отправляется.',
-  ];
-  if (opts.quote) {
-    parts.push('', 'Сообщение, на которое отвечает человек (цитата):', opts.quote.slice(0, 1500));
-  }
+  // Секции: первая строка — пустая (разделитель блока в шаблоне)
+  const quote =
+    opts.quote !== undefined
+      ? ['', 'Сообщение, на которое отвечает человек (цитата):', opts.quote.slice(0, 1500)].join('\n')
+      : '';
+  let contextBlock = '';
   if (opts.context) {
-    parts.push('', 'Предыдущий вопрос и ответ в этой ветке:');
-    parts.push('Вопрос: ' + opts.context.question.slice(0, 1000));
+    const lines = ['', 'Предыдущий вопрос и ответ в этой ветке:'];
+    lines.push('Вопрос: ' + opts.context.question.slice(0, 1000));
     // VL-436: пустой answer — контекст из read_only-записи гейта (сообщение
     // прочитано без ответа); строку «Ответ:» не рисуем, иначе в промпт
     // попадает голая «Ответ: »
-    if (opts.context.answer) parts.push('Ответ: ' + opts.context.answer.slice(0, 2000));
+    if (opts.context.answer) lines.push('Ответ: ' + opts.context.answer.slice(0, 2000));
+    contextBlock = lines.join('\n');
   }
   // VL-437 (doc-32 §8, Q3-б): секция истории ветки — антидубль-контекст.
-  // Расширение паттерна секции context (не нововведение): модель видит
-  // последние реплики с нашим участием, в т.ч. СВОЙ прошлый ответ, и не
-  // повторяет его (наблюдение «ui повторил свой ответ»). Капы: вызывающий
-  // берёт последние 10 записей, каждая реплика — до 400 символов.
+  // Капы: вызывающий берёт последние 10 записей, каждая реплика — до 400
+  // символов внутри buildIncomingPrompt.
+  let historyBlock = '';
   if (opts.history && opts.history.length > 0) {
-    parts.push(
+    const lines = [
       '',
       'Последние реплики ветки (уже сказанное НЕ повторяй — ответь иначе либо <no_answer>):',
-    );
-    for (const e of opts.history) {
-      parts.push(`${e.author}: ${e.text.slice(0, 400)}`);
-    }
+    ];
+    for (const e of opts.history) lines.push(`${e.author}: ${e.text.slice(0, 400)}`);
+    historyBlock = lines.join('\n');
   }
-  parts.push('', 'Вопрос:', question);
-  return parts.join('\n');
+  const template = loadInterbotPrompt('incoming', opts.cwd);
+  return renderPromptTemplate(template, {
+    channel: channel.label ?? channel.id,
+    quote,
+    context: contextBlock,
+    history: historyBlock,
+    text: question,
+  });
 }
