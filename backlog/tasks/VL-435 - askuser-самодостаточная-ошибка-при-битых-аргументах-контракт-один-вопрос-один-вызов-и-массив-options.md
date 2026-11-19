@@ -1,11 +1,11 @@
 ---
 id: VL-435
 title: 'ask_user: самодостаточная ошибка при битых аргументах + контракт «один вопрос = один вызов» и массив options'
-status: Review
+status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-19 11:46'
-updated_date: '2026-11-19 12:29'
+updated_date: '2026-11-19 12:41'
 due_date: ''
 labels:
   - web-chat
@@ -28,14 +28,15 @@ modified_files:
   - src/web/chat-question.test.mjs
   - src/web/chat-ask-user.test.mjs
   - templates/prompts/chat-system.md
-lessons: []
+lessons:
+  - lesson-301
 token_usage:
   input: 0
   output: 0
   cache: 0
   total: 0
-  requests: 63
-  duration_ms: 2143612
+  requests: 80
+  duration_ms: 2797042
   by_phase:
     plan:
       input: 0
@@ -51,7 +52,7 @@ token_usage:
       input: 0
       output: 0
       cache: 0
-      requests: 11
+      requests: 28
 ---
 ## Description
 <!-- SECTION:DESCRIPTION:BEGIN -->
@@ -213,5 +214,10 @@ author: @agent
 created: 2026-11-19 12:29
 ---
 Фаза close прервана агентом (aborted): Фаза Close прервана: полный pnpm test красный после классификации — недетерминированные флаки ВНЕ diff VL-435. Прогон 1: 2 failed в src/web/orchestrator.test.mjs (VL-352: в коммите billing+файл задачи — timing fire-and-forget). Единственный разрешённый повтор после классификации: 1 failed в ДРУГОМ файле src/web/chat-usage-sse.test.mjs (VL-313: кумулятивная сумма input 120k≠180k). Классификация: коммит 1654542 затрагивает только src/web/chat-question.ts, src/web/tool-policy.ts, src/web/chat-quest — статус возвращён к Review.
+---
+author: @agent
+created: 2026-11-19 12:40
+---
+Фаза Close выполнена. Статус: Done. Коммиты: fix 1654542 (код + тесты + промпт, из Фазы Code), docs 6c80bed (CHANGELOG: запись Unreleased/Исправлено про самодостаточные ошибки ask_user и контракт паковки), docs a94f5b1 (урок lesson-301). Остатков кода не было: все modified_files (chat-question.ts, tool-policy.ts, 2 тест-файла, chat-system.md) уже закоммичены в 1654542. Проверка после коммита: pnpm build + полный pnpm test — 238 файлов / 4585 тестов зелёные (4 skipped), флаки предыдущего рана (orchestrator VL-352, chat-usage-sse VL-313) не повторились; ранний точечный фильтр покрыт зелёным полным прогоном. Документация: CHANGELOG запись добавлена; backlog/docs не менялось (ask_user нигде не описан, prompt-правки — в templates/prompts/chat-system.md, коммитились в Code); README не тронут. Урок: lesson-301 (создан, связан, закоммичен). Подзадач и refs нет. Не закоммичено: нет (файл задачи VL-435 коммитит framework после token_usage).
 ---
 <!-- COMMENTS:END -->
