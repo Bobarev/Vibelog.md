@@ -143,7 +143,7 @@ function userTextUpdate({ messageId = 91, text = '/help' } = {}) {
 function setupBot(cwd, extraDeps = {}) {
   const bot = makeBot();
   const calls = stubApi(bot);
-  registerHandlers(bot, { cwd, getPin: () => '000000', ...extraDeps });
+  registerHandlers(bot, { cwd, getPin: () => '000000', gate: async () => ({ verdict: 'react' }), ...extraDeps });
   const state = { sentinel: 0 };
   bot.on('message', () => {
     state.sentinel += 1;
@@ -432,7 +432,7 @@ describe('VL-434: interbot-шторм — fix A (depth) и fix B (служебн
       }
       return prev(method, payload, signal);
     });
-    registerHandlers(bot, { cwd: cwdArg, getPin: () => '000000', ...extraDeps });
+    registerHandlers(bot, { cwd: cwdArg, getPin: () => '000000', gate: async () => ({ verdict: 'react' }), ...extraDeps });
     return { bot, calls };
   }
 
@@ -653,5 +653,320 @@ describe('VL-432: askWaiterTick — фоновый тикер /ask', () => {
     const { bot, calls } = tickBot();
     await askWaiterTick(bot, cwd, new Map());
     assert.equal(calls.length, 0);
+  });
+});
+
+// ── VL-436: гейт react|read_only, право молчать <no_answer>, срезка [DECISION] ──
+// doc-34 §3.2/§3.3/§4. Стаб гейта в тестах обязателен (иначе реальный LLM-вызов,
+// паттерн VL-240): дефолт в хелперах — verdict react.
+
+describe('VL-436: interbot-гейт и право молчать (doc-34)', () => {
+  let cwd;
+  beforeEach(() => {
+    cwd = root();
+    setupComms(cwd);
+  });
+
+  /** Вопрос чужого бота в interbot-канале (паттерн VL-434). */
+  function botQuestion({ messageId, replyTo, text = '/q@our_bot что с релизом?' }) {
+    const now = Math.floor(Date.now() / 1000);
+    const m = {
+      message_id: messageId,
+      date: now,
+      chat: { id: -1001, type: 'supergroup', title: 'G' },
+      from: { id: 777, is_bot: true, first_name: 'UI', username: 'vibelog_ui_bot' },
+      text,
+      entities: [{ type: 'bot_command', offset: 0, length: text.split(' ')[0].length }],
+    };
+    if (replyTo !== undefined) {
+      m.reply_to_message = {
+        message_id: replyTo,
+        date: now,
+        chat: { id: -1001, type: 'supergroup', title: 'G' },
+        from: { id: 42, is_bot: true, first_name: 'T', username: 'our_bot' },
+      };
+    }
+    return { update_id: messageId, message: m };
+  }
+
+  /** Сообщение человека (+ опц. reply на другое сообщение). */
+  function humanUpd({ messageId, text, replyTo, replyFromBot = false }) {
+    const now = Math.floor(Date.now() / 1000);
+    const m = {
+      message_id: messageId,
+      date: now,
+      chat: { id: -1001, type: 'supergroup', title: 'G' },
+      from: { id: 500, is_bot: false, first_name: 'U', username: 'user' },
+      text,
+    };
+    if (replyTo !== undefined) {
+      m.reply_to_message = {
+        message_id: replyTo,
+        date: now,
+        chat: { id: -1001, type: 'supergroup', title: 'G' },
+        from: replyFromBot
+          ? { id: 777, is_bot: true, first_name: 'UI', username: 'vibelog_ui_bot' }
+          : { id: 500, is_bot: false, first_name: 'U', username: 'user' },
+      };
+    }
+    return { update_id: messageId, message: m };
+  }
+
+  /** Callback «✅ Опубликовать» на карточке решения в admin_chat. */
+  function ibotOkUpdate(seqId) {
+    const now = Math.floor(Date.now() / 1000);
+    return {
+      update_id: 9500,
+      callback_query: {
+        id: 'cb-vl436',
+        from: { id: 500, is_bot: false, first_name: 'U', username: 'admin' },
+        chat_instance: 'ci',
+        data: `ibot:ok:${seqId}`,
+        message: {
+          message_id: 700,
+          date: now,
+          chat: { id: 111, type: 'private', first_name: 'U' },
+          from: { id: 42, is_bot: true, first_name: 'T', username: 'our_bot' },
+          text: '⚖️ карточка решения',
+        },
+      },
+    };
+  }
+
+  /** Бот со стабом api (включая answerCallbackQuery) и инкрементальными id. */
+  function gateBot(extraDeps = {}) {
+    const bot = makeBot();
+    const calls = [];
+    let nextId = 300;
+    bot.api.config.use((prev, method, payload, signal) => {
+      if (
+        method === 'sendMessage' ||
+        method === 'sendRichMessage' ||
+        method === 'deleteMessage' ||
+        method === 'answerCallbackQuery'
+      ) {
+        calls.push({ method, payload });
+        if (method === 'deleteMessage' || method === 'answerCallbackQuery') {
+          return Promise.resolve({ ok: true, result: method === 'deleteMessage' ? true : true });
+        }
+        return Promise.resolve({
+          ok: true,
+          result: {
+            message_id: ++nextId,
+            ...(payload?.reply_parameters?.message_id !== undefined
+              ? { reply_to_message: { message_id: payload.reply_parameters.message_id } }
+              : {}),
+          },
+        });
+      }
+      return prev(method, payload, signal);
+    });
+    registerHandlers(bot, {
+      cwd,
+      getPin: () => '000000',
+      gate: async () => ({ verdict: 'react' }),
+      ...extraDeps,
+    });
+    return { bot, calls };
+  }
+
+  it('AC1: гейт read_only → ран НЕ запущен, ничего не отправлено, только trace-решение', async () => {
+    const logs = [];
+    const origLog = console.log;
+    console.log = (...a) => {
+      logs.push(a.join(' '));
+      origLog(...a);
+    };
+    let started = 0;
+    try {
+      const { bot, calls } = gateBot({
+        trace: true,
+        gate: async () => ({ verdict: 'read_only' }),
+        startPrompt: () => {
+          started += 1;
+          return { run: { pid: 1 } };
+        },
+      });
+      await bot.handleUpdate(botQuestion({ messageId: 600 }));
+      await new Promise((r) => setTimeout(r, 0));
+      assert.equal(started, 0, 'ран не запущен');
+      assert.equal(calls.length, 0, 'ни одной отправки');
+      assert.ok(
+        logs.some((l) => l.includes('гейт') && l.includes('read_only')),
+        `нет trace-решения гейта; логи: ${logs.filter((l) => l.includes('trace')).join(' || ')}`,
+      );
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  it('AC1: read_only обновляет контекст ветки — reply-уточнение видит прочитанное в prompt', async () => {
+    const prompts = [];
+    const { bot } = gateBot({
+      gate: async (c, incoming) =>
+        incoming.text.includes('всем спасибо') ? { verdict: 'read_only' } : { verdict: 'react' },
+      startPrompt: (cwdArg, prompt) => {
+        prompts.push(prompt);
+        return { run: { pid: 2 } };
+      },
+    });
+    // 1) человек — пустая вежливость → гейт read_only: контекст записан, тишина
+    await bot.handleUpdate(humanUpd({ messageId: 610, text: 'всем спасибо!' }));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(prompts.length, 0, 'read_only → без рана');
+    // 2) reply-уточнение на прочитанное → гейт react → prompt с контекстом ветки
+    await bot.handleUpdate(humanUpd({ messageId: 611, text: 'плюсую!', replyTo: 610 }));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(prompts.length, 1, 'react → ран запущен');
+    assert.ok(
+      prompts[0].includes('Предыдущий вопрос и ответ в этой ветке:'),
+      'контекст read_only-сообщения попал в промпт',
+    );
+    assert.ok(prompts[0].includes('Вопрос: всем спасибо!'), 'прочитанное сообщение видно ветке');
+    assert.ok(!prompts[0].includes('Ответ:'), 'голая «Ответ: » не рисуется');
+  });
+
+  it('AC1: гейт react → прежний путь, startPrompt зван', async () => {
+    const prompts = [];
+    const { bot, calls } = gateBot({
+      gate: async () => ({ verdict: 'react' }),
+      startPrompt: (cwdArg, prompt) => {
+        prompts.push(prompt);
+        return { run: { pid: 3 } };
+      },
+    });
+    await bot.handleUpdate(botQuestion({ messageId: 620 }));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(prompts.length, 1, 'ран пошёл');
+    assert.ok(prompts[0].includes('что с релизом?'), 'промпт входящего собран как раньше');
+    assert.equal(calls.length, 0, 'до onExit отправок нет');
+  });
+
+  it('AC2: сбой гейта (исключение шова) → fail-open react, путь в ран не закрыт, сбой в trace', async () => {
+    const logs = [];
+    const origLog = console.log;
+    console.log = (...a) => {
+      logs.push(a.join(' '));
+      origLog(...a);
+    };
+    let started = 0;
+    try {
+      const { bot } = gateBot({
+        trace: true,
+        gate: async () => {
+          throw new Error('модель упала');
+        },
+        startPrompt: () => {
+          started += 1;
+          return { run: { pid: 4 } };
+        },
+      });
+      await bot.handleUpdate(botQuestion({ messageId: 630 }));
+      await new Promise((r) => setTimeout(r, 0));
+      assert.equal(started, 1, 'fail-open: ран не закрыт');
+      assert.ok(
+        logs.some((l) => l.includes('гейт') && l.includes('react') && l.includes('сбой') && l.includes('модель упала')),
+        `нет trace сбоя гейта; логи: ${logs.filter((l) => l.includes('trace')).join(' || ')}`,
+      );
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  it('AC3: onExit ровно <no_answer> → ни в группу, ни в карточку (только trace)', async () => {
+    // admin_chat задан — карточка достижима, но <no_answer> возвращает ДО classifyAnswer
+    writeComms(cwd, {
+      bot_token: '777:test-token',
+      chats: [111],
+      sync_timeout_sec: 120,
+      channels: [
+        { id: 'g1', transport: 'telegram', group_id: -1001, addressing: 'mention', approval: 'auto', admin_chat: 111 },
+      ],
+    });
+    const onExits = [];
+    const { bot, calls } = gateBot({
+      startPrompt: (cwdArg, prompt, onExit) => {
+        onExits.push(onExit);
+        return { run: { pid: 5 } };
+      },
+    });
+    await bot.handleUpdate(botQuestion({ messageId: 640 }));
+    assert.equal(onExits.length, 1);
+    onExits[0]({ result: { result: '<no_answer>' }, exitCode: 0 });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(calls.length, 0, 'тишина: ни группы, ни карточки, ни уведомлений');
+  });
+
+  it('AC5: [DECISION] → карточка в admin_chat с меткой «решение»; ibot:ok публикует в группу БЕЗ маркера', async () => {
+    writeComms(cwd, {
+      bot_token: '777:test-token',
+      chats: [111],
+      sync_timeout_sec: 120,
+      channels: [
+        { id: 'g1', transport: 'telegram', group_id: -1001, addressing: 'mention', approval: 'auto', admin_chat: 111 },
+      ],
+    });
+    const onExits = [];
+    const { bot, calls } = gateBot({
+      startPrompt: (cwdArg, prompt, onExit) => {
+        onExits.push(onExit);
+        return { run: { pid: 6 } };
+      },
+    });
+    await bot.handleUpdate(botQuestion({ messageId: 650 }));
+    // classifyAnswer парсит маркер как раньше → decision_request → карточка
+    onExits[0]({ result: { result: '[DECISION] берём вариант B' }, exitCode: 0 });
+    await new Promise((r) => setTimeout(r, 10));
+    const card = calls.find((c) => c.method === 'sendMessage' && c.payload?.chat_id === 111);
+    assert.ok(card, `нет карточки в admin_chat: ${JSON.stringify(calls.map((c) => c.method))}`);
+    assert.ok(card.payload.text.includes('[DECISION]'), 'в карточке маркер остаётся');
+    assert.ok(card.payload.text.includes('Требуется решение'), 'карточка с меткой «решение»');
+    // Согласование: ibot:ok:1. requireBind читает comms из process.cwd() —
+    // переходим в tmp-каталог теста на время handleUpdate (restore в finally)
+    const prevCwd = process.cwd();
+    process.chdir(cwd);
+    try {
+      await bot.handleUpdate(ibotOkUpdate(1));
+    } finally {
+      process.chdir(prevCwd);
+    }
+    await new Promise((r) => setTimeout(r, 10));
+    const groupMsg = calls.find(
+      (c) => (c.method === 'sendMessage' || c.method === 'sendRichMessage') && c.payload?.chat_id === -1001,
+    );
+    assert.ok(groupMsg, `после approve текст не ушёл в группу: ${JSON.stringify(calls.map((c) => [c.method, c.payload?.chat_id]))}`);
+    const blob = JSON.stringify(groupMsg.payload);
+    assert.ok(blob.includes('берём вариант B'), `реплика цела: ${blob}`);
+    assert.ok(!blob.includes('DECISION'), `маркер срезан перед публикацией в группу: ${blob}`);
+  });
+
+  it('AC5: решение БЕЗ admin_chat → сразу в группу, но тоже без маркера', async () => {
+    const onExits = [];
+    const { bot, calls } = gateBot({
+      startPrompt: (cwdArg, prompt, onExit) => {
+        onExits.push(onExit);
+        return { run: { pid: 7 } };
+      },
+    });
+    await bot.handleUpdate(botQuestion({ messageId: 660 }));
+    onExits[0]({ result: { result: '[DECISION] Берём вариант B' }, exitCode: 0 });
+    await new Promise((r) => setTimeout(r, 10));
+    const groupMsg = calls.find(
+      (c) => (c.method === 'sendMessage' || c.method === 'sendRichMessage') && c.payload?.chat_id === -1001,
+    );
+    assert.ok(groupMsg, 'ответ ушёл в группу (нет admin_chat → ветка else)');
+    const blob = JSON.stringify(groupMsg.payload);
+    assert.ok(blob.includes('Берём вариант B'), `реплика цела: ${blob}`);
+    assert.ok(!blob.includes('DECISION'), `маркер срезан в точке публикации: ${blob}`);
+  });
+
+  it('AC4 (этап 3, VL-434): ошибка «Запуск уже выполняется» не публикуется — прогон существующего теста здесь не нужен', async () => {
+    // Дубль не заводим: эталонный тест AC3 описан в VL-434-блоке (строка ~461),
+    // здесь фиксируем только, что гейт не ломает этот путь: ошибка старта при
+    // verdict react не порождает отправок
+    const { bot, calls } = gateBot({ startPrompt: () => ({ error: 'Запуск уже выполняется' }) });
+    await bot.handleUpdate(botQuestion({ messageId: 670 }));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(calls.length, 0, 'ошибка старта без отправок в группу');
   });
 });

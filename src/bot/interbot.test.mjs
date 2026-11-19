@@ -20,6 +20,7 @@ import {
   buildIncomingPrompt,
   rememberReplyPair,
   isServiceMessage,
+  stripDecisionMarker,
   DEFAULT_LIMITS,
 } from '../../dist/bot/interbot.js';
 
@@ -443,5 +444,44 @@ describe('VL-434 fix B: служебные сообщения чужих бот�
     );
     assert.equal(d.reason, 'ignore', 'служебное не проходит через rate/dedup-ветки');
     assert.equal(dedup.check(43), false, 'dedup не зарегистрировал служебное');
+  });
+});
+
+// ── VL-436: контракт <no_answer> + срезка [DECISION] (doc-34 §3.3, §4) ──
+
+describe('VL-436 AC3: контракт <no_answer> в buildIncomingPrompt', () => {
+  it('промпт обязывает вернуть ровно <no_answer> при пустом ответе', () => {
+    const p = buildIncomingPrompt('что с форматом?', channel());
+    assert.ok(p.includes('<no_answer>'), 'маркер-контракт в промпте');
+    assert.match(p, /Если отвечать нечего — верни ровно <no_answer>/, 'формулировка спеки');
+  });
+
+  it('context с пустым answer (read_only-запись гейта) — строка «Ответ:» не рисуется', () => {
+    const p = buildIncomingPrompt('а если добавить флаг?', channel(), {
+      context: { question: 'всем спасибо!', answer: '' },
+    });
+    assert.ok(p.includes('Предыдущий вопрос и ответ в этой ветке:'), 'секция context есть');
+    assert.ok(p.includes('Вопрос: всем спасибо!'), 'прочитанное сообщение в контексте');
+    assert.ok(!p.includes('Ответ:'), 'голая «Ответ: » в промпт не попадает');
+  });
+});
+
+describe('VL-436 AC5: stripDecisionMarker — срезка перед публикацией', () => {
+  it('срезает ведущий маркер, разный регистр, маркер в середине', () => {
+    assert.equal(stripDecisionMarker('[DECISION] перейти на новый формат?'), 'перейти на новый формат?');
+    assert.equal(stripDecisionMarker('[decision] да'), 'да');
+    assert.equal(stripDecisionMarker('[DECISION]\nБерём вариант B'), 'Берём вариант B');
+    assert.equal(stripDecisionMarker('вариант [DECISION] X затирает Y'), 'вариант X затирает Y');
+  });
+
+  it('текст без маркера → noop (trim не меняет суть)', () => {
+    assert.equal(stripDecisionMarker('Готово, формат обновлён.'), 'Готово, формат обновлён.');
+    assert.equal(stripDecisionMarker('Вопрос: почему?'), 'Вопрос: почему?');
+  });
+
+  it('classifyAnswer работает ДО срезки — approval-ветка как раньше', () => {
+    const raw = '[DECISION] перейти на новый формат?';
+    assert.equal(classifyAnswer(raw), 'decision_request', 'парсер получает исходный текст');
+    assert.equal(classifyAnswer(stripDecisionMarker(raw)), 'info', 'после срезки — чистая реплика');
   });
 });

@@ -65,7 +65,11 @@ import {
   DEFAULT_LIMITS,
   dispatchIncoming,
   rememberReplyPair,
+  stripDecisionMarker,
 } from './interbot.js';
+// VL-436 (doc-34 §3.2): гейт react|read_only — дешёвая классификация до рана
+import { runGate } from './gate.js';
+import type { GateResult } from './gate.js';
 import { saveSettingsPatch, loadSettings } from '../core/settings.js';
 import { loadModels } from '../core/models.js';
 import { commandsHelp, helpText } from './registry.js';
@@ -147,6 +151,12 @@ export interface HandlerDeps {
    * (юнит-тесты не спавнят реальный LLM-ход; паттерн startChatRun VL-431).
    */
   startPrompt?: typeof startPrompt;
+  /**
+   * VL-436: тестовый шов — подмена гейта react|read_only во входящей
+   * interbot-ветке (юнит-тесты не ходят в LLM; паттерн startPrompt VL-433).
+   * Дефолт в ветке — реальный runGate (fail-open не зависит от шова).
+   */
+  gate?: typeof runGate;
 }
 
 /**
@@ -1029,6 +1039,30 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       }
       return; // в цепочку grammy не идём: interbot-сообщение — наша зона
     }
+    // ── Гейт «есть ли что отвечать» (VL-436, doc-34 §3.2, этап 1) ──
+    // Дешёвая классификация ДО startPrompt: read_only → контекст ветки
+    // обновлён, ран НЕ запускается, ничего не отправляем (только trace);
+    // react → прежний путь. Сбой/таймаут → fail-open react (§8.2) + сбой
+    // в trace — потерянный вопрос дороже лишнего ответа.
+    let gateRes: GateResult;
+    try {
+      gateRes = await (deps.gate ?? runGate)(deps.cwd, incoming, {});
+    } catch (err) {
+      // Шов/будущая реализация могут бросить — всё равно fail-open
+      gateRes = { verdict: 'react', error: (err as Error).message };
+    }
+    trace(
+      'гейт:', gateRes.verdict,
+      gateRes.error ? `сбой: ${gateRes.error}` : '',
+    );
+    if (gateRes.verdict === 'read_only') {
+      // Контекст ветки: последующие reply-уточнения видят прочитанное
+      // сообщение (answer '' — «прочитал и промолчал», строку «Ответ:»
+      // buildIncomingPrompt не рисует)
+      rememberThreadPair([m.message_id], { question: text, answer: '' });
+      trace('гейт: read_only — ран не запущен, сообщение прочитано, message_id=', m.message_id);
+      return;
+    }
     // ── Входящий вопрос → read-only ран через startPrompt (AC3, AC7) ──
     // VL-433 (Q3): контекст уточнения — цитата сообщения-родителя (текст;
     // rich_message → richToText) + последний вопрос/ответ ветки из
@@ -1078,6 +1112,12 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
         }
         return;
       }
+      // VL-436 (doc-34 §3.3, этап 2): контракт <no_answer> — модель вправе
+      // промолчать; ровно маркер → тишина: ни в группу, ни в карточку, только trace
+      if (answer.trim() === '<no_answer>') {
+        trace('onExit: <no_answer> — тишина, ничего не отправляем');
+        return;
+      }
       if (!answer) return;
       const kind = classifyAnswer(answer);
       // Вариант C: decision_request ВСЕГДА через inline-кнопки в admin_chat
@@ -1111,11 +1151,16 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
           .catch((err) => console.error('[interbot] карточка решения не отправлена:', err));
       } else {
         trace('ответ → группа chatId=', chatId, 'sendChatAnswer replyTo=', replyTo);
-        void sendChatAnswer(bot, chatId, answer, { replyTo }).then((ids) => {
+        // VL-436 (doc-34 §4, этап 4): в ленту не попадает протокольный
+        // текст — маркер [DECISION] срезается в точке публикации (classifyAnswer
+        // выше уже отработал); НОВЫЕ точки отправки ответа в группу тоже
+        // обязаны звать stripDecisionMarker
+        const published = stripDecisionMarker(answer);
+        void sendChatAnswer(bot, chatId, published, { replyTo }).then((ids) => {
           // VL-434 (fix A): свои id ответа → reply_to в карту цепочки —
           // иначе depth обрывается на собственном сообщении и лимит мёртв
           rememberReplyPair(interbotReplyMap, ids, replyTo);
-          rememberThreadPair([...ids, replyTo], { question: text, answer });
+          rememberThreadPair([...ids, replyTo], { question: text, answer: published });
         });
       }
     };
@@ -2313,14 +2358,18 @@ export function registerHandlers(bot: Bot, deps: HandlerDeps): void {
       pendingDecisions.delete(id);
       if (act === 'ok') {
         await ctx.answerCallbackQuery({ text: '✅ Опубликовано' }).catch(() => {});
-        const ids = await sendChatAnswer(bot, pending.chatId, pending.answer, {
+        // VL-436 (doc-34 §4): после согласования в группу уходит ЧИСТАЯ
+        // реплика — маркер [DECISION] срезается в точке публикации
+        // (в карточке он остался — там он и есть содержание)
+        const published = stripDecisionMarker(pending.answer);
+        const ids = await sendChatAnswer(bot, pending.chatId, published, {
           replyTo: pending.replyTo,
         });
         // VL-434 (fix A): опубликованный ответ reply-цепочки — в карту depth
         rememberReplyPair(interbotReplyMap, ids, pending.replyTo);
         rememberThreadPair([...ids, pending.replyTo], {
           question: pending.question,
-          answer: pending.answer,
+          answer: published,
         });
         trace('ibot:ok отправлен, chatId=', pending.chatId, 'replyTo=', pending.replyTo);
       } else {
