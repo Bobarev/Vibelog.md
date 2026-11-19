@@ -934,6 +934,16 @@ interface ChatLoadState {
   compaction?: CompactionState | null
   /** VL-332: состояние хода треда (индикатор «выполняется»). */
   run?: TurnRunState | null
+  /**
+   * VL-439: длина СЕРВЕРНОЙ истории (data.messages) на момент последней
+   * загрузки — база сравнения для фонового refetch (VL-431).
+   *
+   * Берётся не load.messages.length: historyToMessages сливает tool-строки
+   * в assistant-части, поэтому клиентская длина ВСЕГДА меньше серверной
+   * (тред с инструментами) — сравнение с ней давало ложный «рост jsonl»
+   * каждый тик и бесконечную перезагрузку треда (VL-439).
+   */
+  serverCount?: number
 }
 
 /**
@@ -980,7 +990,7 @@ export function ChatPage() {
       setMemoryRemovals([])
       // Реакция на смену hash-входа: сброс треда до следующего рендера
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setLoad({ status: "ready", messages: [], runtimeThreadId: undefined })
+      setLoad({ status: "ready", messages: [], runtimeThreadId: undefined, serverCount: 0 })
       setRuntimeKey(k => k + 1)
       return
     }
@@ -999,7 +1009,7 @@ export function ChatPage() {
             return
           }
           loadedRef.current = null
-          setLoad({ status: "ready", messages: [], runtimeThreadId: undefined })
+          setLoad({ status: "ready", messages: [], runtimeThreadId: undefined, serverCount: 0 })
           setRuntimeKey(k => k + 1)
         } catch (err) {
           failWith(`Не удалось подобрать последний тред: ${err instanceof Error ? err.message : String(err)}`)
@@ -1043,6 +1053,8 @@ export function ChatPage() {
           status: "ready",
           messages: historyToMessages(data.messages, { allowList: data.allowList }),
           runtimeThreadId: id,
+          // VL-439: база refetch-а — серверская длина, не клиентская
+          serverCount: data.messages.length,
           allowList: data.allowList ?? [],
           // VL-283: роль, зафиксированная за тредом (null — тред без ходов)
           persona: data.persona ?? null,
@@ -1120,7 +1132,10 @@ export function ChatPage() {
     if (load.status !== "ready") return
     const id = load.runtimeThreadId
     if (!id) return
-    const baseCount = load.messages.length
+    // VL-439: база — серверская длина (load.messages.length всегда меньше
+    // из-за слияния tool-строк — давал ложный рост каждый тик)
+    const baseCount = load.serverCount
+    if (baseCount === undefined) return
     let cancelled = false
     const timer = setInterval(async () => {
       if (cancelled) return
@@ -1145,7 +1160,7 @@ export function ChatPage() {
       cancelled = true
       clearInterval(timer)
     }
-  }, [load.status, load.runtimeThreadId, load.messages.length, runtimeRunning])
+  }, [load.status, load.runtimeThreadId, load.serverCount, runtimeRunning])
 
   /**
    * VL-406: ход, запущенный в ЭТОЙ вкладке, тоже должен оставить исход.
@@ -1161,7 +1176,9 @@ export function ChatPage() {
       const res = await fetch(`/api/chat/threads/${encodeURIComponent(id)}`)
       if (!res.ok) return
       const data = (await res.json()) as ThreadHistoryResponse
-      setLoad(prev => ({ ...prev, run: data.run ?? null }))
+      // VL-439: после локального хода база refetch-а догоняет jsonl —
+      // иначе тик увидел бы рост «на наши же пары» и перезагрузил ленту
+      setLoad(prev => ({ ...prev, run: data.run ?? null, serverCount: data.messages.length }))
     } catch {
       // сеть моргнула — состояние хода останется прежним
     }

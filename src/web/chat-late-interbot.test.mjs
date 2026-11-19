@@ -169,10 +169,14 @@ describe('VL-431: thread.tsx — фоновый refetch (AC4)', () => {
     const cleanupIdx = src.indexOf('фоновый refetch истории');
     assert.ok(cleanupIdx > 0);
     // в блоке cleanup эффекта есть clearInterval (стоп при unmount/уходе)
-    const effectEnd = src.indexOf('}, [load.status, load.runtimeThreadId, load.messages.length', cleanupIdx);
+    // VL-439: база refetch-а — serverCount (серверская длина): клиентская
+    // load.messages.length всегда меньше (tool-слияние) → вечный «рост»
+    const effectEnd = src.indexOf('}, [load.status, load.runtimeThreadId, load.serverCount', cleanupIdx);
     assert.ok(effectEnd > cleanupIdx, 'эффект завершается deps-массивом');
     const effectBody = src.slice(cleanupIdx, effectEnd);
     assert.match(effectBody, /clearInterval\(timer\)/, 'очистка при unmount');
     assert.match(effectBody, /runtimeRunning\) return/, 'локальный стрим не дёргает refetch');
+    assert.match(effectBody, /const baseCount = load\.serverCount/, 'база — серверская длина истории');
+    assert.doesNotMatch(effectBody, /const baseCount = load\.messages\.length/, 'не клиентская длина (VL-439)');
   });
 });
