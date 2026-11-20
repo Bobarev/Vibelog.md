@@ -1,0 +1,170 @@
+{
+  "taskId": "VL-439",
+  "sessions": [
+    {
+      "sessionId": "agent-1795106547622",
+      "phase": "spec",
+      "startedAt": "2026-11-19T16:42:27.521Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-19T16:43:15.074Z",
+      "durationMs": 44694,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 4
+      },
+      "model": "xiaomi/mimo-v2.6-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795106547622",
+      "phase": "spec",
+      "startedAt": "2026-11-19T16:42:27.521Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-19T16:43:15.094Z",
+      "durationMs": 44694,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 4
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795106606519",
+      "phase": "plan",
+      "startedAt": "2026-11-19T16:43:26.417Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-19T16:54:08.186Z",
+      "durationMs": 639346,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 27
+      },
+      "model": "xiaomi/mimo-v2.6-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795106606519",
+      "phase": "plan",
+      "startedAt": "2026-11-19T16:43:26.417Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-19T16:54:08.211Z",
+      "durationMs": 639346,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 27
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795106606519",
+      "phase": "code",
+      "sessionPhase": "plan",
+      "startedAt": "2026-11-19T16:55:49.998Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-19T17:07:32.940Z",
+      "durationMs": 699533,
+      "usage": {
+        "input": 110747,
+        "output": 136,
+        "cache": 110336,
+        "total": 110883,
+        "requests": 17,
+        "reasoning": 135
+      },
+      "model": "xiaomi/mimo-v2.6-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795106606519",
+      "phase": "code",
+      "sessionPhase": "plan",
+      "startedAt": "2026-11-19T17:07:32.960Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-19T17:13:59.193Z",
+      "durationMs": 381991,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 40
+      },
+      "model": "xiaomi/mimo-v2.6-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795106606519",
+      "phase": "plan",
+      "startedAt": "2026-11-19T17:25:37.548Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-19T17:39:55.465Z",
+      "durationMs": 854118,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 29
+      },
+      "model": "xiaomi/mimo-v2.6-flash",
+      "agent": "vb",
+      "source": "web"
+    },
+    {
+      "sessionId": "agent-1795139563507",
+      "phase": "close",
+      "startedAt": "2026-11-20T01:52:43.361Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-20T02:05:52.575Z",
+      "durationMs": 785759,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 13
+      },
+      "model": "xiaomi/mimo-v2.6-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795139563507",
+      "phase": "close",
+      "startedAt": "2026-11-20T01:52:43.361Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-20T02:05:52.743Z",
+      "durationMs": 785759,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 13
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    }
+  ]
+}
