@@ -2,7 +2,7 @@
   "default_agent": "vb",
   "max_wall_time": 2400,
   "max_requests": 80,
-  "branch_mode": true,
+  "branch_mode": false,
   "task_type_styles": {
     "bug": "danger",
     "feature": "success",
@@ -16,6 +16,7 @@
         "-y",
         "chrome-devtools-mcp@latest",
         "--executablePath=/Applications/Yandex.app/Contents/MacOS/Yandex",
+        "--workspace=.",
         "--isolated",
         "--headless=false",
         "--no-usage-statistics",
@@ -100,18 +101,6 @@
           "cache_per_1m": 0.254810088
         }
       },
-      "routerai/xiaomi/mimo-v2.5@gmicloud": {
-        "label": "gmicloud.rai/mimo-v2.5",
-        "gateway": "routerai",
-        "vendor": "gmicloud",
-        "model": "xiaomi/mimo-v2.5",
-        "api_mode": "responses",
-        "pricing": {
-          "input_per_1m": 12.63433353,
-          "output_per_1m": 25.26866706,
-          "cache_per_1m": 0.2707357185
-        }
-      },
       "routerai/deepseek/deepseek-v4-flash@baidu": {
         "label": "baidu.rai/deepseek-v4-flash",
         "gateway": "routerai",
@@ -119,9 +108,9 @@
         "model": "deepseek/deepseek-v4-flash",
         "api_mode": "responses",
         "pricing": {
-          "input_per_1m": 17.09351007,
-          "output_per_1m": 34.18702014,
-          "cache_per_1m": 3.418702014
+          "input_per_1m": 6.13837576716,
+          "output_per_1m": 12.2767515343,
+          "cache_per_1m": 1.22767515343
         }
       },
       "routerai/deepseek/deepseek-v4.1-flash@baidu": {
@@ -131,9 +120,9 @@
         "model": "deepseek/deepseek-v4.1-flash",
         "api_mode": "responses",
         "pricing": {
-          "input_per_1m": 35.0363871,
-          "output_per_1m": 140.1455484,
-          "cache_per_1m": 0.700727742
+          "input_per_1m": 5.9560731516,
+          "output_per_1m": 23.8242926064,
+          "cache_per_1m": 0.119121463032
         }
       },
       "routerai/deepseek/deepseek-v4.1-flash@morph": {
@@ -170,6 +159,19 @@
           "output_per_1m": 98.68050192,
           "cache_per_1m": 0.4934025096
         }
+      },
+      "routerai/deepseek/deepseek-v4.1-flash-1017/@morph": {
+        "label": "DeepSeek: DeepSeek V4.1 Flash 1017",
+        "gateway": "routerai",
+        "vendor": "morph",
+        "model": "deepseek/deepseek-v4.1-flash-1017",
+        "api_mode": "chat",
+        "context_window": 1048576,
+        "pricing": {
+          "input_per_1m": 6.956551173,
+          "output_per_1m": 61.31197644,
+          "cache_per_1m": 0.589538235
+        }
       }
     }
   },
@@ -183,14 +185,33 @@
     },
     "auditor": {
       "label": "Аудитор",
-      "description": "Находит несоответствия, создаёт задачи на фикс",
       "prompt": "auditor",
+      "description": "Находит несоответствия, создаёт задачи на фикс",
+      "default_status": "Spec",
       "allow_tools": [
         "backlog_search",
         "read_file",
-        "search_files"
-      ],
-      "default_status": "Spec"
+        "search_files",
+        "backlog_create_task",
+        "backlog_update_task",
+        "ask_user",
+        "ask_persona",
+        "memory_remember",
+        "edit",
+        "backlog_add_comment",
+        "document_list",
+        "document_view",
+        "document_update",
+        "document_edit",
+        "document_search",
+        "document_create"
+      ]
+    },
+    "architect": {
+      "label": "Архитектор",
+      "prompt": "architect",
+      "description": "Исследует код и backlog глубже, создаёт задачи в Planned",
+      "default_status": "Planned"
     }
   },
   "commit_coauthor": true,
@@ -210,5 +231,22 @@
       "from-vl"
     ],
     "type": "bug"
+  },
+  "components": {
+    "schemaVersion": 1,
+    "registries": {
+      "vibelog.md": {
+        "owner": "Vibelog-md",
+        "branch": "master"
+      }
+    },
+    "aliases": {
+      "components": "src/lib/components",
+      "ui": "src/lib/components/ui",
+      "utils": "src/lib/utils.ts",
+      "css": "src/app.css",
+      "blocks": "src/lib/blocks"
+    },
+    "lockFile": ".vibelog/installed.lock.json"
   }
 }

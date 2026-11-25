@@ -1,0 +1,96 @@
+{
+  "taskId": "VL-440",
+  "sessions": [
+    {
+      "sessionId": "agent-1795610211555",
+      "phase": "spec",
+      "startedAt": "2026-11-25T12:36:51.430Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-25T12:37:09.953Z",
+      "durationMs": 13729,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 4
+      },
+      "model": "xiaomi/mimo-v2.6-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795610211555",
+      "phase": "spec",
+      "startedAt": "2026-11-25T12:36:51.430Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-25T12:37:09.993Z",
+      "durationMs": 13729,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 4
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795610266741",
+      "phase": "plan",
+      "startedAt": "2026-11-25T12:37:46.622Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-25T12:41:03.952Z",
+      "durationMs": 194702,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 13
+      },
+      "model": "xiaomi/mimo-v2.6-flash",
+      "agent": "vb",
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795610266741",
+      "phase": "plan",
+      "startedAt": "2026-11-25T12:37:46.622Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-25T12:41:03.981Z",
+      "durationMs": 194702,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 13
+      },
+      "agent": "vb",
+      "fallback": true,
+      "source": "bot"
+    },
+    {
+      "sessionId": "agent-1795610266741",
+      "phase": "code",
+      "sessionPhase": "plan",
+      "startedAt": "2026-11-25T12:41:15.616Z",
+      "startedAtKind": "run",
+      "finishedAt": "2026-11-25T13:09:58.437Z",
+      "durationMs": 1719938,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cache": 0,
+        "total": 0,
+        "requests": 39
+      },
+      "model": "xiaomi/mimo-v2.6-flash",
+      "agent": "vb",
+      "source": "bot"
+    }
+  ]
+}

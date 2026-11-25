@@ -1,0 +1,7 @@
+{
+    "npm.exclude": [
+        "**/backlog/**",
+        "**/web/**",
+        "**/.vibelog/**"
+    ]
+}
