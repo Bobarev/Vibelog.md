@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-18 20:53'
-updated_date: '2026-11-18 21:36'
+updated_date: '2026-11-25 15:42'
 due_date: ''
 labels:
   - interbot
@@ -13,7 +13,7 @@ labels:
   - trace
   - vl-428
 dependencies: []
-milestone: ''
+milestone: v1.15
 references: []
 priority: high
 type: bug
@@ -104,6 +104,11 @@ token_usage:
 
 Риски: --trace не должен лить чувствительные данные (усечение текста, запрет на comms-секции); лог-спам при потоке сообщений — префикс + возможность включать только в dev-запуске.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+<!-- SECTION:NOTES:BEGIN -->
+Trace расширен по ходу диагностики (просьба пользователя, выполнено в чате до фазы): в начало registerHandlers добавлен глобальный блок при deps.trace — (1) bot.use-мидлварь логирует ЛЮБОЙ входящий update (тип, chat, mid, from с (bot), reply_to, text/caption усечённо 300 символов, callback data); (2) перехват bot.api.sendMessage / sendRichMessage / answerCallbackQuery с логом аргументов (усечение 300). Существующие interbot-трейсы (ветка тикета, dispatch, onExit) сохранены. Ожидание: следующий тест покажет, доходит ли update от UI-бота на MD и в каком виде (с reply_to или без).
+<!-- SECTION:NOTES:END -->
 
 ## Comments
 <!-- COMMENTS:BEGIN -->

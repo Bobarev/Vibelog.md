@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-17 13:51'
-updated_date: '2026-11-17 14:46'
+updated_date: '2026-11-25 15:42'
 due_date: ''
 labels:
   - web
   - mcp
   - chat
 dependencies: []
-milestone: ''
+milestone: v1.15
 references: []
 priority: medium
 type: ''

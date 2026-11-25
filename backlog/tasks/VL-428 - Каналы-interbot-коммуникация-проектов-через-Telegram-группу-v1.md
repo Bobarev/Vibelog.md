@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-18 11:30'
-updated_date: '2026-11-18 17:14'
+updated_date: '2026-11-25 15:42'
 due_date: ''
 labels:
   - interbot
@@ -13,7 +13,7 @@ labels:
   - channels
   - mcp
 dependencies: []
-milestone: ''
+milestone: v1.15
 references: []
 priority: high
 type: feature

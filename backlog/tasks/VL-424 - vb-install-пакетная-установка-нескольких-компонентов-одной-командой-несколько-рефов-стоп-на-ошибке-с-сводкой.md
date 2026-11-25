@@ -5,14 +5,14 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-17 19:48'
-updated_date: '2026-11-18 08:53'
+updated_date: '2026-11-25 15:42'
 due_date: ''
 labels:
   - vb-cli
   - install
   - registry
 dependencies: []
-milestone: ''
+milestone: v1.15
 references: []
 priority: medium
 type: ''

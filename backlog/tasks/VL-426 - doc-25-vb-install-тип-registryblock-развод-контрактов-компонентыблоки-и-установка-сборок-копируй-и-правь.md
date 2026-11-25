@@ -5,7 +5,7 @@ status: Done
 assignee: []
 reporter: ''
 created_date: '2026-11-18 07:34'
-updated_date: '2026-11-18 09:15'
+updated_date: '2026-11-25 15:42'
 due_date: ''
 labels:
   - doc-25
@@ -13,7 +13,7 @@ labels:
   - vb-cli
   - upstream
 dependencies: []
-milestone: ''
+milestone: v1.15
 references:
   - ref-33
 priority: medium
