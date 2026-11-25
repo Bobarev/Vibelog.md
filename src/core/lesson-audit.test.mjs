@@ -331,14 +331,18 @@ function duplicateReportSimilarity(findings) {
 
 describe('VL-279 — loadLessonsForTask: фильтры и кап (AC8)', () => {
   it('needs-review/outdated/superseded и протухшие не подставляются, кап соблюдён', () => {
+    // Даты фикстур — относительно сегодняшнего дня: абсолютные даты протухали
+    // через staleDays (180 дней) и роняли тест по календарю (дата-бомба,
+    // паттерн VL-421/4955487 — там таким же способом лечился MCP-тест).
+    const fresh = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
     writeLesson('lesson-821', {
       title: 'Свежий урок про промпты', tags: ['promptfilter'],
       source_tasks: ['VL-1'], linked_tasks: ['VL-1'],
-      updated_date: '2026-05-25', last_verified: '2026-05-25',
+      updated_date: fresh, last_verified: fresh,
     });
     writeLesson('lesson-822', {
       title: 'На проверке', status: 'needs-review', tags: ['promptfilter'],
-      source_tasks: ['VL-1'], updated_date: '2026-05-25',
+      source_tasks: ['VL-1'], updated_date: fresh,
     });
     writeLesson('lesson-823', {
       title: 'Протухший про промпты', tags: ['promptfilter'],
